@@ -31,7 +31,9 @@ impl InsightArenaContract {
     // ── Config read ───────────────────────────────────────────────────────────
 
     /// Return the current global [`Config`]. TTL is extended on each call.
+    /// Reverts with `Paused` when the contract is in emergency-halt mode.
     pub fn get_config(env: Env) -> Result<Config, InsightArenaError> {
+        config::ensure_not_paused(&env)?;
         config::get_config(&env)
     }
 
@@ -54,4 +56,85 @@ impl InsightArenaContract {
 
     // Contract modules (market, prediction, user, leaderboard, season, invite)
     // will be implemented here using the canonical DataKey enum.
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+//
+// Soroban storage can only be accessed from within a registered contract context.
+// These tests use the auto-generated `InsightArenaContractClient` (available when
+// the `testutils` feature is enabled) to call through the real ABI and exercise
+// `ensure_not_paused` indirectly via `get_config`, which is guarded by it.
+
+#[cfg(test)]
+mod config_tests {
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, Env};
+
+    use super::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
+
+    /// Register a fresh contract instance and return its client.
+    fn deploy(env: &Env) -> InsightArenaContractClient<'_> {
+        let id = env.register(InsightArenaContract, ());
+        InsightArenaContractClient::new(env, &id)
+    }
+
+    // (a) Contract initialised and not paused → get_config (guarded) succeeds
+    #[test]
+    fn ensure_not_paused_ok_when_running() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+
+        client.initialize(&admin, &oracle, &200_u32);
+
+        // get_config is the first publicly guarded function; passing means Ok(())
+        client.get_config();
+    }
+
+    // (b) Admin sets paused = true → get_config reverts with Paused
+    #[test]
+    fn ensure_not_paused_err_when_paused() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+
+        client.initialize(&admin, &oracle, &200_u32);
+        client.set_paused(&true);
+
+        // try_* variant returns Err(Ok(ContractError)) instead of panicking
+        let result = client.try_get_config();
+        assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+    }
+
+    // Edge case: guard returns NotInitialized when the contract hasn't been set up
+    #[test]
+    fn ensure_not_paused_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = deploy(&env);
+
+        let result = client.try_get_config();
+        assert!(matches!(result, Err(Ok(InsightArenaError::NotInitialized))));
+    }
+
+    // Unpause after pause → guard passes again
+    #[test]
+    fn ensure_not_paused_ok_after_unpause() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+
+        client.initialize(&admin, &oracle, &200_u32);
+        client.set_paused(&true);
+        client.set_paused(&false);
+
+        // Must succeed after resuming
+        client.get_config();
+    }
 }

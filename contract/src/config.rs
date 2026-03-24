@@ -132,11 +132,16 @@ pub fn transfer_admin(env: &Env, new_admin: Address) -> Result<(), InsightArenaE
     Ok(())
 }
 
-/// Guard used at the top of every sensitive non-admin entry point.
+/// Guard used at the top of every user-facing entry point.
 ///
-/// Extends the Config TTL on every call (counts as a read).
-/// Returns `Paused` when the platform is in emergency-halt mode.
-pub fn ensure_not_paused(env: &Env) -> Result<(), InsightArenaError> {
+/// Visibility is `pub(crate)` — this function is intentionally **not** part of
+/// the public contract ABI; it is an internal safety check only.
+///
+/// Behaviour:
+/// - Returns `Err(NotInitialized)` if the contract has not been set up yet.
+/// - Returns `Err(Paused)` while `config.is_paused == true`.
+/// - Returns `Ok(())` otherwise, extending the Config TTL as a side-effect.
+pub(crate) fn ensure_not_paused(env: &Env) -> Result<(), InsightArenaError> {
     let config = load_config(env)?;
     bump_config(env);
     if config.is_paused {
