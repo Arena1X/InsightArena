@@ -9,6 +9,7 @@ import HowItWorksSection from "@/component/Homepage/HowItWorksSection";
 
 import ReputationSection from "@/component/Homepage/ReputationSection";
 import Faq from "@/component/Homepage/Faq";
+import Feature from "@/component/Homepage/Feature";
 import ComparisonSection from "@/component/Homepage/ComparisonSection";
 
 export default function Home() {
@@ -68,7 +69,7 @@ export default function Home() {
           <Header />
           <HeroSection />
           <ReputationSection />
-
+<Feature />
           <HowItWorksSection />
           <ComparisonSection />
           <Faq />
