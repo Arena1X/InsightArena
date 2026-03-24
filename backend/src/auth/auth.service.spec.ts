@@ -20,13 +20,14 @@ describe('AuthService', () => {
     it('should generate a valid challenge format', () => {
       const challenge = service.generateChallenge('some-address');
 
-      // Expected format: InsightArena:nonce:{timestamp}:{random}
+      // Expected format: InsightArena:nonce:{timestamp}:{random}:{stellar_address}
       const parts = challenge.split(':');
-      expect(parts.length).toBe(4);
+      expect(parts.length).toBe(5);
       expect(parts[0]).toBe('InsightArena');
       expect(parts[1]).toBe('nonce');
       expect(!isNaN(Number(parts[2]))).toBeTruthy();
       expect(parts[3].length).toBeGreaterThan(0);
+      expect(parts[4]).toBe('some-address');
     });
 
     it('should generate unique challenges', () => {
