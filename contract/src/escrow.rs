@@ -102,7 +102,7 @@ pub fn release_payout(env: &Env, to: &Address, amount: i128) -> Result<(), Insig
 /// contract address is the authoritative solvency source for both auditing and
 /// later invariant checks.
 pub fn get_contract_balance(env: &Env) -> i128 {
-    let cfg = config::get_config(env).expect("contract must be initialized");
+    let cfg = config::get_config_readonly(env).expect("contract must be initialized");
     token::Client::new(env, &cfg.xlm_token).balance(&env.current_contract_address())
 }
 
@@ -217,10 +217,10 @@ pub fn transfer_fee(env: &Env, to: &Address, amount: i128) -> Result<(), Insight
 }
 
 pub fn get_treasury_balance(env: &Env) -> i128 {
-    let cfg = config::get_config(env).expect("Config missing");
-    let client = token::Client::new(env, &cfg.xlm_token);
-    let contract = env.current_contract_address();
-    client.balance(&contract)
+    env.storage()
+        .persistent()
+        .get(&DataKey::Treasury)
+        .unwrap_or(0)
 }
 #[cfg(test)]
 mod escrow_tests {
@@ -231,7 +231,10 @@ mod escrow_tests {
     use crate::storage_types::{DataKey, Prediction};
     use crate::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 
-    use super::{assert_escrow_solvent, get_contract_balance, lock_stake, refund, release_payout};
+    use super::{
+        assert_escrow_solvent, get_contract_balance, get_treasury_balance, lock_stake, refund,
+        release_payout,
+    };
 
     fn register_token(env: &Env) -> Address {
         let token_admin = Address::generate(env);
@@ -469,6 +472,64 @@ mod escrow_tests {
 
         let balance = env.as_contract(&client.address, || get_contract_balance(&env));
         assert_eq!(balance, stake_a + stake_b);
+    }
+
+    #[test]
+    fn test_get_balance_does_not_touch_treasury_storage() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let xlm_token = register_token(&env);
+        let client = deploy(&env, &xlm_token);
+        let seeded_treasury = 77_000_000_i128;
+
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Treasury, &seeded_treasury);
+        });
+
+        let _ = env.as_contract(&client.address, || get_contract_balance(&env));
+
+        let treasury_after: i128 = env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Treasury)
+                .unwrap_or(0)
+        });
+        assert_eq!(treasury_after, seeded_treasury);
+    }
+
+    #[test]
+    fn test_get_treasury_balance_defaults_to_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let xlm_token = register_token(&env);
+        let client = deploy(&env, &xlm_token);
+
+        let treasury = env.as_contract(&client.address, || get_treasury_balance(&env));
+        assert_eq!(treasury, 0);
+    }
+
+    #[test]
+    fn test_get_treasury_balance_reads_storage_not_contract_token_balance() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let xlm_token = register_token(&env);
+        let client = deploy(&env, &xlm_token);
+        let stored_treasury = 12_345_678_i128;
+
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Treasury, &stored_treasury);
+        });
+
+        // Seed contract token balance with a different value to verify this
+        // getter is sourced from Treasury storage only.
+        fund(&env, &xlm_token, &client.address, 99_999_999);
+
+        let treasury = env.as_contract(&client.address, || get_treasury_balance(&env));
+        assert_eq!(treasury, stored_treasury);
     }
 
     #[test]

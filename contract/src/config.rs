@@ -90,6 +90,14 @@ pub fn get_config(env: &Env) -> Result<Config, InsightArenaError> {
     Ok(config)
 }
 
+/// Return the current global [`Config`] without mutating storage.
+///
+/// This helper is intended for strict view functions that must avoid any state
+/// writes, including TTL extension side-effects.
+pub fn get_config_readonly(env: &Env) -> Result<Config, InsightArenaError> {
+    load_config(env)
+}
+
 /// Update the protocol fee rate. Caller must be the stored admin.
 pub fn update_protocol_fee(env: &Env, new_fee_bps: u32) -> Result<(), InsightArenaError> {
     let mut config = load_config(env)?;
