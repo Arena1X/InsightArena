@@ -132,7 +132,8 @@ describe('PredictionsService', () => {
         tx_hash: 'abc123',
         chosen_outcome: 'Yes',
       });
-      expect(mockSoroban.submitPrediction).toHaveBeenCalledWith(
+      const { submitPrediction } = mockSoroban;
+      expect(submitPrediction).toHaveBeenCalledWith(
         user.stellar_address,
         market.on_chain_market_id,
         'Yes',

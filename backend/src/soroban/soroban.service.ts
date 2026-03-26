@@ -14,7 +14,7 @@ export class SorobanService {
    *
    * TODO: Replace stub with real Soroban contract invocation via stellar-sdk.
    */
-  async submitPrediction(
+  submitPrediction(
     userStellarAddress: string,
     marketOnChainId: string,
     chosenOutcome: string,
@@ -30,6 +30,6 @@ export class SorobanService {
       .toString('hex')
       .padEnd(64, '0')
       .slice(0, 64);
-    return { tx_hash: stub };
+    return Promise.resolve({ tx_hash: stub });
   }
 }
