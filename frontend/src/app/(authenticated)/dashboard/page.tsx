@@ -1,8 +1,11 @@
 import CompetitionsJoined from "@/component/CompetitionsJoined";
+import ReputationSnapshot from "@/component/ReputationSnapshot";
 
 export default function DashboardPage() {
   return (
     <div className="space-y-6">
+      <ReputationSnapshot />
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {/* Dashboard content cards */}
         <div className="bg-[#0f172a] rounded-2xl p-6 border border-gray-700/30">
@@ -10,13 +13,13 @@ export default function DashboardPage() {
           <p className="text-3xl font-bold text-[#4FD1C5]">12</p>
           <p className="text-gray-400 text-sm">Currently tracking</p>
         </div>
-        
+
         <div className="bg-[#0f172a] rounded-2xl p-6 border border-gray-700/30">
           <h3 className="text-white font-semibold mb-2">Win Rate</h3>
           <p className="text-3xl font-bold text-[#F5C451]">73%</p>
           <p className="text-gray-400 text-sm">Last 30 days</p>
         </div>
-        
+
         <div className="bg-[#0f172a] rounded-2xl p-6 border border-gray-700/30">
           <h3 className="text-white font-semibold mb-2">Leaderboard Rank</h3>
           <p className="text-3xl font-bold text-white">#47</p>
@@ -26,7 +29,7 @@ export default function DashboardPage() {
 
       {/* Competitions Joined Section */}
       <CompetitionsJoined />
-      
+
       <div className="bg-[#0f172a] rounded-2xl p-6 border border-gray-700/30">
         <h3 className="text-white font-semibold mb-4">Recent Activity</h3>
         <div className="space-y-3">
