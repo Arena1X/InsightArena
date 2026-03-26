@@ -37,6 +37,10 @@ class EnvironmentVariables {
   @IsNotEmpty()
   SOROBAN_CONTRACT_ID: string;
 
+  @IsString()
+  @IsNotEmpty()
+  SERVER_SECRET_KEY: string;
+
   @IsNumber()
   PORT: number = 3000;
 }
