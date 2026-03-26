@@ -31,23 +31,34 @@ export class NotificationsService {
     userId: string,
     page = 1,
     limit = 20,
+    unreadOnly = false,
   ): Promise<{
     data: Notification[];
     total: number;
     page: number;
     limit: number;
+    unreadCount: number;
   }> {
     const take = Math.min(limit, 100);
     const skip = (page - 1) * take;
 
+    const whereClause: any = { user_id: userId };
+    if (unreadOnly) {
+      whereClause.is_read = false;
+    }
+
     const [data, total] = await this.notificationsRepository.findAndCount({
-      where: { user_id: userId },
+      where: whereClause,
       order: { created_at: 'DESC' },
       skip,
       take,
     });
 
-    return { data, total, page, limit: take };
+    const unreadCount = await this.notificationsRepository.count({
+      where: { user_id: userId, is_read: false },
+    });
+
+    return { data, total, page, limit: take, unreadCount };
   }
 
   async markAsRead(id: string, userId: string): Promise<void> {

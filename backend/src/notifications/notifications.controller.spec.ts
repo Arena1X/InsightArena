@@ -48,30 +48,39 @@ describe('NotificationsController', () => {
   });
 
   describe('getMyNotifications', () => {
-    it('should return paginated notifications for the current user', async () => {
-      const paginated = {
+    it('should return paginated notifications and set unread count header', async () => {
+      const mockResult = {
         data: [mockNotification],
         total: 1,
         page: 1,
         limit: 20,
+        unreadCount: 5,
       };
+      
       const spy = jest.spyOn(service, 'findAllForUser').mockResolvedValue(
-        paginated as {
-          data: Notification[];
-          total: number;
-          page: number;
-          limit: number;
-        },
+        mockResult as any,
       );
+
+      const mockResponse = {
+        set: jest.fn(),
+      } as any;
 
       const result = await controller.getMyNotifications(
         mockUser as User,
+        mockResponse,
         1,
         20,
+        'true',
       );
 
-      expect(spy).toHaveBeenCalledWith('user-uuid-1', 1, 20);
-      expect(result).toEqual(paginated);
+      expect(spy).toHaveBeenCalledWith('user-uuid-1', 1, 20, true);
+      expect(mockResponse.set).toHaveBeenCalledWith('X-Unread-Count', '5');
+      expect(result).toEqual({
+        data: mockResult.data,
+        total: mockResult.total,
+        page: mockResult.page,
+        limit: mockResult.limit,
+      });
     });
   });
 

@@ -6,7 +6,9 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import {
   ApiTags,
   ApiOperation,
@@ -29,17 +31,32 @@ export class NotificationsController {
   @ApiOperation({ summary: 'Get notifications for authenticated user' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'unread_only', required: false, type: Boolean })
   @ApiResponse({ status: 200, description: 'Paginated notifications list' })
   async getMyNotifications(
     @CurrentUser() user: User,
+    @Res({ passthrough: true }) res: Response,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
+    @Query('unread_only') unreadOnly?: string,
   ) {
-    return this.notificationsService.findAllForUser(
+    const isUnreadOnly = unreadOnly === 'true' || unreadOnly === '1';
+
+    const result = await this.notificationsService.findAllForUser(
       user.id,
       Number(page),
       Number(limit),
+      isUnreadOnly,
     );
+
+    res.set('X-Unread-Count', result.unreadCount.toString());
+
+    return {
+      data: result.data,
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+    };
   }
 
   @Patch(':id/read')

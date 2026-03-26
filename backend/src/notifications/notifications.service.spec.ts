@@ -21,6 +21,7 @@ describe('NotificationsService', () => {
     save: jest.fn(),
     findAndCount: jest.fn(),
     update: jest.fn(),
+    count: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -86,6 +87,7 @@ describe('NotificationsService', () => {
   describe('findAllForUser', () => {
     it('should return paginated notifications for a user', async () => {
       mockRepository.findAndCount.mockResolvedValue([[mockNotification], 1]);
+      mockRepository.count.mockResolvedValue(5);
 
       const result = await service.findAllForUser('user-uuid-1', 1, 20);
 
@@ -93,10 +95,12 @@ describe('NotificationsService', () => {
       expect(result.total).toBe(1);
       expect(result.page).toBe(1);
       expect(result.limit).toBe(20);
+      expect(result.unreadCount).toBe(5);
     });
 
     it('should cap limit at 100', async () => {
       mockRepository.findAndCount.mockResolvedValue([[], 0]);
+      mockRepository.count.mockResolvedValue(0);
 
       const result = await service.findAllForUser('user-uuid-1', 1, 999);
 
@@ -104,6 +108,20 @@ describe('NotificationsService', () => {
       expect(mockRepository.findAndCount).toHaveBeenCalledWith(
         expect.objectContaining({ take: 100 }),
       );
+    });
+
+    it('should filter unread notifications when unreadOnly is true', async () => {
+      mockRepository.findAndCount.mockResolvedValue([[mockNotification], 1]);
+      mockRepository.count.mockResolvedValue(1);
+
+      const result = await service.findAllForUser('user-uuid-1', 1, 20, true);
+
+      expect(mockRepository.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { user_id: 'user-uuid-1', is_read: false },
+        }),
+      );
+      expect(result.unreadCount).toBe(1);
     });
   });
 
