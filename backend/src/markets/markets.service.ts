@@ -22,22 +22,36 @@ import {
 export class MarketsService {
   private readonly logger = new Logger(MarketsService.name);
 
-  async getPredictionStats(marketId: string): Promise<PredictionStatsDto[]> {
-    await this.findByIdOrOnChainId(marketId);
-
-    // TODO: Call contract to get predictions
-    // For now, return mock data
-    return [
-      { outcome: 'Yes', count: 10, total_staked_stroops: '1000000' },
-      { outcome: 'No', count: 5, total_staked_stroops: '500000' },
-    ];
-  }
-
   constructor(
     @InjectRepository(Market)
     private readonly marketsRepository: Repository<Market>,
     private readonly usersService: UsersService,
   ) {}
+
+  /**
+   * Get prediction statistics for a market - anonymous outcome counts only
+   * Does NOT expose individual user stakes or identities
+   */
+  async getPredictionStats(marketId: string): Promise<PredictionStatsDto[]> {
+    // First verify market exists
+    const market = await this.findByIdOrOnChainId(marketId);
+
+    // TODO: Call contract to get real prediction data
+    // For now, return mock data based on market outcomes
+    const mockStats: PredictionStatsDto[] = market.outcome_options.map(
+      (outcome, index) => ({
+        outcome,
+        count: index === 0 ? 15 : 8, // Mock: first option has more predictions
+        total_staked_stroops: index === 0 ? '1500000' : '800000', // Mock stakes in stroops
+      }),
+    );
+
+    this.logger.log(
+      `Retrieved prediction stats for market "${market.title}" (${market.id}) - ${mockStats.length} outcomes`,
+    );
+
+    return mockStats;
+  }
 
   /**
    * Create a new market: call Soroban contract, then persist to DB.

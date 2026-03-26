@@ -39,7 +39,7 @@ export class MarketsController {
   @ApiOperation({ summary: 'Get prediction statistics for a market' })
   @ApiResponse({
     status: 200,
-    description: 'Prediction statistics by outcome',
+    description: 'Prediction statistics by outcome (anonymous)',
     type: [PredictionStatsDto],
   })
   @ApiResponse({ status: 404, description: 'Market not found' })

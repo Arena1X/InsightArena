@@ -1,4 +1,4 @@
-use soroban_sdk::{token, Address, Env};
+﻿use soroban_sdk::{token, Address, Env};
 
 use crate::config;
 use crate::errors::InsightArenaError;
@@ -111,46 +111,11 @@ pub fn transfer_fee(env: &Env, to: &Address, amount: i128) -> Result<(), Insight
     Ok(())
 }
 
-/// Read the accumulated protocol treasury balance from storage.
 pub fn get_treasury_balance(env: &Env) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Treasury)
-        .unwrap_or(0)
-}
-
-/// Withdraw accumulated protocol fees from the treasury.
-///
-/// Only the configured admin may call this. The amount is capped
-/// by the internal `DataKey::Treasury` tracker, not the raw contract
-/// balance (which also holds user stakes).
-pub fn withdraw_treasury(env: Env, admin: Address, amount: i128) -> Result<(), InsightArenaError> {
-    admin.require_auth();
-
-    let cfg = config::get_config(&env)?;
-    if admin != cfg.admin {
-        return Err(InsightArenaError::Unauthorized);
-    }
-
-    if amount <= 0 {
-        return Err(InsightArenaError::InvalidInput);
-    }
-
-    let treasury_bal = get_treasury_balance(&env);
-    if amount > treasury_bal {
-        return Err(InsightArenaError::InsufficientFunds);
-    }
-
-    // Decrement internal tracker
-    env.storage()
-        .persistent()
-        .set(&DataKey::Treasury, &(treasury_bal - amount));
-
-    // Physical transfer
-    let client = token::Client::new(&env, &cfg.xlm_token);
-    client.transfer(&env.current_contract_address(), &admin, &amount);
-
-    Ok(())
+    let cfg = crate::config::get_config(env).expect("Config missing");
+    let client = token::Client::new(env, &cfg.xlm_token);
+    let contract = env.current_contract_address();
+    client.balance(&contract)
 }
 
 #[cfg(test)]
