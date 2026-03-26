@@ -213,6 +213,12 @@ impl InsightArenaContract {
         escrow::get_contract_balance(&env)
     }
 
+    /// Audit the contract's escrow solvency against all unclaimed prediction
+    /// stakes currently stored on-chain.
+    pub fn assert_escrow_solvent(env: Env) -> Result<(), InsightArenaError> {
+        escrow::assert_escrow_solvent(&env)
+    }
+
     /// Batch distribute payouts for all unclaimed winning predictions in a
     /// resolved market. Callable only by admin or oracle.
     ///

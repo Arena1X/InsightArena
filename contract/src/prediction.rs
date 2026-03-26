@@ -643,6 +643,8 @@ pub fn batch_distribute_payouts(
             .ok_or(InsightArenaError::Overflow)?;
     }
 
+    escrow::assert_escrow_solvent(env)?;
+
     emit_batch_payout_complete(env, market_id, &caller, processed);
 
     Ok(processed)
@@ -1821,5 +1823,44 @@ mod prediction_tests {
             .filter(|w| client.get_prediction(&market_id, w).payout_claimed)
             .count();
         assert_eq!(claimed_count, 30);
+    }
+
+    #[test]
+    fn batch_distribute_payouts_runs_escrow_solvency_check() {
+        use crate::storage_types::{DataKey, Prediction};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+        let other_market_predictor = Address::generate(&env);
+
+        let market_one = client.create_market(&creator, &default_params(&env));
+        let market_two = client.create_market(&creator, &default_params(&env));
+
+        fund(&env, &xlm_token, &winner, 10_000_000);
+        fund(&env, &xlm_token, &other_market_predictor, 25_000_000);
+
+        client.submit_prediction(&winner, &market_one, &symbol_short!("yes"), &10_000_000);
+        client.submit_prediction(
+            &other_market_predictor,
+            &market_two,
+            &symbol_short!("yes"),
+            &25_000_000,
+        );
+        mark_market_resolved(&env, &client, market_one);
+
+        let contract_id = client.address.clone();
+        env.as_contract(&contract_id, || {
+            let key = DataKey::Prediction(market_two, other_market_predictor.clone());
+            let mut prediction: Prediction = env.storage().persistent().get(&key).unwrap();
+            prediction.stake_amount = 30_000_000;
+            env.storage().persistent().set(&key, &prediction);
+        });
+
+        let cfg = client.get_config();
+        let result = client.try_batch_distribute_payouts(&cfg.admin, &market_one);
+        assert!(matches!(result, Err(Ok(InsightArenaError::EscrowEmpty))));
     }
 }
