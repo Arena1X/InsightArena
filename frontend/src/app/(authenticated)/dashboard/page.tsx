@@ -1,10 +1,18 @@
 import CompetitionsJoined from "@/component/CompetitionsJoined";
 import ReputationSnapshot from "@/component/ReputationSnapshot";
+import MetricCard from "@/component/MetricCard";
 
 export default function DashboardPage() {
   return (
     <div className="space-y-6">
       <ReputationSnapshot />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <MetricCard title="TOTAL PREDICTIONS" value="128" />
+        <MetricCard title="ACCURACY RATE" value="68.4%" />
+        <MetricCard title="CURRENT RANK" value="#24" trend="up" />
+        <MetricCard title="TOTAL REWARDS EARNED" value="$1,240" />
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {/* Dashboard content cards */}
