@@ -20,6 +20,8 @@ pub enum DataKey {
     InviteCode(Symbol),
     /// Singleton. Holds global configuration for the platform.
     Config,
+    /// Singleton. Tracks cumulative protocol fees accrued to treasury.
+    Treasury,
     /// Global counter. Tracks the total number of markets created.
     MarketCount,
     /// Global counter. Tracks the total number of seasons.

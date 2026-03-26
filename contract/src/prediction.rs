@@ -481,6 +481,7 @@ pub fn claim_payout(
     }
     if protocol_fee > 0 {
         escrow::refund(env, &cfg.admin, protocol_fee)?;
+        escrow::add_to_treasury_balance(env, protocol_fee);
     }
     if creator_fee > 0 {
         escrow::refund(env, &market.creator, creator_fee)?;
@@ -622,6 +623,7 @@ pub fn batch_distribute_payouts(
         }
         if protocol_fee > 0 {
             escrow::refund(env, &cfg.admin, protocol_fee)?;
+            escrow::add_to_treasury_balance(env, protocol_fee);
         }
         if creator_fee > 0 {
             escrow::refund(env, &market.creator, creator_fee)?;
