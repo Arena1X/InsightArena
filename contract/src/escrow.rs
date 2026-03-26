@@ -69,6 +69,17 @@ pub fn release_payout(env: &Env, to: &Address, amount: i128) -> Result<(), Insig
     Ok(())
 }
 
+/// Return the contract's live escrow balance in stroops.
+///
+/// This getter intentionally queries the configured XLM token contract rather
+/// than relying on mirrored storage counters. The token balance held by the
+/// contract address is the authoritative solvency source for both auditing and
+/// later invariant checks.
+pub fn get_contract_balance(env: &Env) -> i128 {
+    let cfg = config::get_config(env).expect("contract must be initialized");
+    token::Client::new(env, &cfg.xlm_token).balance(&env.current_contract_address())
+}
+
 #[cfg(test)]
 mod escrow_tests {
     use soroban_sdk::testutils::Address as _;
@@ -77,7 +88,7 @@ mod escrow_tests {
 
     use crate::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 
-    use super::{lock_stake, release_payout};
+    use super::{get_contract_balance, lock_stake, release_payout};
 
     fn register_token(env: &Env) -> Address {
         let token_admin = Address::generate(env);
@@ -208,5 +219,39 @@ mod escrow_tests {
 
         let result = env.as_contract(&client.address, || release_payout(&env, &recipient, 0));
         assert_eq!(result, Err(InsightArenaError::InvalidInput));
+    }
+
+    #[test]
+    fn test_get_balance_empty_contract() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let xlm_token = register_token(&env);
+        let client = deploy(&env, &xlm_token);
+
+        let balance = env.as_contract(&client.address, || get_contract_balance(&env));
+        assert_eq!(balance, 0);
+    }
+
+    #[test]
+    fn test_get_balance_after_locks() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let xlm_token = register_token(&env);
+        let client = deploy(&env, &xlm_token);
+        let predictor_a = Address::generate(&env);
+        let predictor_b = Address::generate(&env);
+        let stake_a = 20_000_000_i128;
+        let stake_b = 35_000_000_i128;
+
+        fund(&env, &xlm_token, &predictor_a, stake_a);
+        fund(&env, &xlm_token, &predictor_b, stake_b);
+
+        env.as_contract(&client.address, || {
+            lock_stake(&env, &predictor_a, stake_a).unwrap();
+            lock_stake(&env, &predictor_b, stake_b).unwrap();
+        });
+
+        let balance = env.as_contract(&client.address, || get_contract_balance(&env));
+        assert_eq!(balance, stake_a + stake_b);
     }
 }
