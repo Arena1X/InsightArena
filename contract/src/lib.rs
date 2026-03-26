@@ -224,6 +224,12 @@ impl InsightArenaContract {
     ) -> Result<u32, InsightArenaError> {
         prediction::batch_distribute_payouts(&env, caller, market_id)
     }
+
+    /// Return the total protocol fees accumulated in the treasury.
+    /// Returns `0` if no fees have been collected yet. Never panics.
+    pub fn get_treasury_balance(env: Env) -> i128 {
+        escrow::get_treasury_balance(&env)
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

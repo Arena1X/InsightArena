@@ -1,4 +1,4 @@
-use soroban_sdk::{token, Address, Env};
+﻿use soroban_sdk::{token, Address, Env};
 
 use crate::config;
 use crate::errors::InsightArenaError;
@@ -30,21 +30,38 @@ pub fn lock_stake(env: &Env, from: &Address, amount: i128) -> Result<(), Insight
     Ok(())
 }
 
-/// Transfer `amount` stroops from the contract's own escrow balance to `recipient`.
+/// Transfer `amount` stroops from contract escrow back to `to` as a refund.
 ///
-/// The contract address is the implicit custodian of all staked XLM; when a
-/// market is cancelled every predictor's stake is returned here.
+/// This entry point is intentionally separate from [`release_payout`] even
+/// though both operations move escrowed XLM from the contract to a user.
+/// Auditors can grep for `refund` and immediately isolate the cancellation
+/// workflow used by `cancel_market`, without mixing that logic with winner
+/// payout distribution.
 ///
 /// # Errors
-/// Propagates any error returned by [`config::get_config`].  Token transfer
-/// panics are handled by the Soroban runtime and surface as contract failures.
-pub fn refund(env: &Env, recipient: &Address, amount: i128) -> Result<(), InsightArenaError> {
+/// - `InvalidInput` when `amount <= 0`.
+/// - `EscrowEmpty` when the contract balance cannot cover the refund.
+/// - Propagates any error returned by [`config::get_config`].
+pub fn refund(env: &Env, to: &Address, amount: i128) -> Result<(), InsightArenaError> {
+    if amount <= 0 {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
     let cfg = config::get_config(env)?;
-    token::Client::new(env, &cfg.xlm_token).transfer(
-        &env.current_contract_address(),
-        recipient,
-        &amount,
-    );
+    let client = token::Client::new(env, &cfg.xlm_token);
+    let contract = env.current_contract_address();
+
+    // Refund transfers are only emitted by the cancellation path. Keeping the
+    // escrow balance check here makes the cancel_market loop fail fast if the
+    // contract is missing any participant principal.
+    if client.balance(&contract) < amount {
+        return Err(InsightArenaError::EscrowEmpty);
+    }
+
+    // The transfer path intentionally mirrors release_payout, but remains a
+    // distinct function so refund activity is auditable independent of winner
+    // payout logic.
+    client.transfer(&contract, to, &amount);
     Ok(())
 }
 
@@ -80,6 +97,37 @@ pub fn get_contract_balance(env: &Env) -> i128 {
     token::Client::new(env, &cfg.xlm_token).balance(&env.current_contract_address())
 }
 
+/// Transfer accumulated fee to a designated treasury or creator address.
+///
+/// This moves funds out of the shared prediction pool.
+///
+/// # Errors
+/// - `InvalidInput` when `amount <= 0`.
+/// - `EscrowEmpty` if the contract lacks sufficient balance.
+pub fn transfer_fee(env: &Env, to: &Address, amount: i128) -> Result<(), InsightArenaError> {
+    if amount <= 0 {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
+    let cfg = config::get_config(env)?;
+    let client = token::Client::new(env, &cfg.xlm_token);
+    let contract = env.current_contract_address();
+
+    if client.balance(&contract) < amount {
+        return Err(InsightArenaError::EscrowEmpty);
+    }
+
+    client.transfer(&contract, to, &amount);
+    Ok(())
+}
+
+pub fn get_treasury_balance(env: &Env) -> i128 {
+    let cfg = config::get_config(env).expect("Config missing");
+    let client = token::Client::new(env, &cfg.xlm_token);
+    let contract = env.current_contract_address();
+    client.balance(&contract)
+}
+
 #[cfg(test)]
 mod escrow_tests {
     use soroban_sdk::testutils::Address as _;
@@ -88,7 +136,7 @@ mod escrow_tests {
 
     use crate::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 
-    use super::{get_contract_balance, lock_stake, release_payout};
+    use super::{get_contract_balance, lock_stake, refund, release_payout};
 
     fn register_token(env: &Env) -> Address {
         let token_admin = Address::generate(env);
@@ -218,6 +266,52 @@ mod escrow_tests {
         let recipient = Address::generate(&env);
 
         let result = env.as_contract(&client.address, || release_payout(&env, &recipient, 0));
+        assert_eq!(result, Err(InsightArenaError::InvalidInput));
+    }
+
+    #[test]
+    fn test_refund_returns_exact_stake_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let xlm_token = register_token(&env);
+        let client = deploy(&env, &xlm_token);
+        let recipient = Address::generate(&env);
+        let amount = 20_000_000_i128;
+
+        fund(&env, &xlm_token, &client.address, amount);
+
+        let token = TokenClient::new(&env, &xlm_token);
+        assert_eq!(token.balance(&client.address), amount);
+        assert_eq!(token.balance(&recipient), 0);
+
+        let result = env.as_contract(&client.address, || refund(&env, &recipient, amount));
+        assert_eq!(result, Ok(()));
+
+        assert_eq!(token.balance(&client.address), 0);
+        assert_eq!(token.balance(&recipient), amount);
+    }
+
+    #[test]
+    fn test_refund_contract_insolvent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let xlm_token = register_token(&env);
+        let client = deploy(&env, &xlm_token);
+        let recipient = Address::generate(&env);
+
+        let result = env.as_contract(&client.address, || refund(&env, &recipient, 10_000_000));
+        assert_eq!(result, Err(InsightArenaError::EscrowEmpty));
+    }
+
+    #[test]
+    fn test_refund_zero_value() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let xlm_token = register_token(&env);
+        let client = deploy(&env, &xlm_token);
+        let recipient = Address::generate(&env);
+
+        let result = env.as_contract(&client.address, || refund(&env, &recipient, 0));
         assert_eq!(result, Err(InsightArenaError::InvalidInput));
     }
 
