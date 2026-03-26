@@ -71,10 +71,9 @@ export class NotificationsController {
   }
 
   @Patch('read-all')
-  @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Mark all notifications as read' })
-  @ApiResponse({ status: 204, description: 'All notifications marked as read' })
-  async markAllAsRead(@CurrentUser() user: User): Promise<void> {
+  @ApiResponse({ status: 200, description: 'All notifications marked as read', schema: { example: { updated: 3 } } })
+  async markAllAsRead(@CurrentUser() user: User): Promise<{ updated: number }> {
     return this.notificationsService.markAllAsRead(user.id);
   }
 }

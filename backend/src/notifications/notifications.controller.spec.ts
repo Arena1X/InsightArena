@@ -95,12 +95,13 @@ describe('NotificationsController', () => {
   });
 
   describe('markAllAsRead', () => {
-    it('should call service markAllAsRead with userId', async () => {
-      const spy = jest.spyOn(service, 'markAllAsRead').mockResolvedValue();
+    it('should call service markAllAsRead with userId and return count', async () => {
+      const spy = jest.spyOn(service, 'markAllAsRead').mockResolvedValue({ updated: 3 });
 
-      await controller.markAllAsRead(mockUser as User);
+      const result = await controller.markAllAsRead(mockUser as User);
 
       expect(spy).toHaveBeenCalledWith('user-uuid-1');
+      expect(result).toEqual({ updated: 3 });
     });
   });
 });

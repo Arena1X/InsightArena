@@ -139,15 +139,16 @@ describe('NotificationsService', () => {
   });
 
   describe('markAllAsRead', () => {
-    it('should mark all unread notifications as read', async () => {
+    it('should mark all unread notifications as read and return count', async () => {
       mockRepository.update.mockResolvedValue({ affected: 3 });
 
-      await service.markAllAsRead('user-uuid-1');
+      const result = await service.markAllAsRead('user-uuid-1');
 
       expect(mockRepository.update).toHaveBeenCalledWith(
         { user_id: 'user-uuid-1', is_read: false },
         { is_read: true },
       );
+      expect(result).toEqual({ updated: 3 });
     });
   });
 });

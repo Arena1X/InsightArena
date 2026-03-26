@@ -68,10 +68,11 @@ export class NotificationsService {
     );
   }
 
-  async markAllAsRead(userId: string): Promise<void> {
-    await this.notificationsRepository.update(
+  async markAllAsRead(userId: string): Promise<{ updated: number }> {
+    const result = await this.notificationsRepository.update(
       { user_id: userId, is_read: false },
       { is_read: true },
     );
+    return { updated: result.affected ?? 0 };
   }
 }
