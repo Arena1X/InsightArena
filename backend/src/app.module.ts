@@ -13,6 +13,7 @@ import { validate } from './config/env.validation';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { MarketsModule } from './markets/markets.module';
+import { PredictionsModule } from './predictions/predictions.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { MarketsModule } from './markets/markets.module';
     AuthModule,
     UsersModule,
     MarketsModule,
+    PredictionsModule,
     CommonModule,
   ],
 
