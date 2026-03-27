@@ -124,6 +124,7 @@ mod reputation_tests {
             outcomes: vec![env, symbol_short!("yes"), symbol_short!("no")],
             end_time: now + 1000,
             resolution_time: now + 2000,
+            dispute_window: 86_400,
             creator_fee_bps: 100,
             min_stake: 10_000_000,
             max_stake: 100_000_000,

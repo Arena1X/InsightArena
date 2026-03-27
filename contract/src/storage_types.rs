@@ -44,6 +44,8 @@ pub enum DataKey {
     EscrowLock,
     /// Keyed by market_id. Stores an active dispute (if any) for that market.
     Dispute(u64),
+    /// Keyed by creator address. Stores aggregated creator reputation stats.
+    CreatorStats(Address),
 }
 
 #[contracttype]
@@ -52,6 +54,16 @@ pub struct Dispute {
     pub disputer: Address,
     pub bond: i128,
     pub filed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreatorStats {
+    pub markets_created: u32,
+    pub markets_resolved: u32,
+    pub average_participant_count: u32,
+    pub dispute_count: u32,
+    pub reputation_score: u32,
 }
 
 impl Dispute {
