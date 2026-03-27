@@ -17,6 +17,8 @@ import {
   MarketStatus,
   PaginatedMarketsResponse,
 } from './dto/list-markets.dto';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/entities/notification.entity';
 
 @Injectable()
 export class MarketsService {
@@ -26,6 +28,7 @@ export class MarketsService {
     @InjectRepository(Market)
     private readonly marketsRepository: Repository<Market>,
     private readonly usersService: UsersService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -214,6 +217,63 @@ export class MarketsService {
       );
       throw new BadGatewayException(
         'Market cancelled on-chain but failed to update database',
+      );
+    }
+  }
+
+  /**
+   * Resolve a market: validate status, call Soroban contract, then update DB.
+   * Only unresolved, non-cancelled markets can be resolved.
+   */
+  async resolveMarket(id: string, outcome: string): Promise<Market> {
+    // Step 1: Find market and validate it can be resolved
+    const market = await this.findByIdOrOnChainId(id);
+
+    if (market.is_resolved) {
+      throw new ConflictException('Market is already resolved');
+    }
+
+    if (market.is_cancelled) {
+      throw new ConflictException('Cancelled markets cannot be resolved');
+    }
+
+    if (!market.outcome_options.includes(outcome)) {
+      throw new BadGatewayException(`Invalid outcome: ${outcome}`);
+    }
+
+    // Step 2: Call Soroban contract to resolve market on-chain
+    try {
+      // TODO: Replace with real SorobanService.resolveMarket() call
+      this.logger.log(
+        `Soroban resolveMarket called for market "${market.title}" (id: ${market.id}) with outcome: ${outcome}`,
+      );
+    } catch (err) {
+      this.logger.error('Soroban resolveMarket failed', err);
+      throw new BadGatewayException('Failed to resolve market on Soroban');
+    }
+
+    // Step 3: Update database
+    try {
+      market.is_resolved = true;
+      market.resolved_outcome = outcome;
+      const updatedMarket = await this.marketsRepository.save(market);
+
+      // Step 4: Notify all participants about market resolution
+      // TODO: Get list of participants who made predictions on this market
+      // For now, we'll skip individual notifications as we don't have prediction data yet
+
+      this.logger.log(
+        `Market "${market.title}" resolved with outcome: ${outcome}`,
+      );
+
+      return updatedMarket;
+    } catch (err) {
+      this.logger.error(
+        'Failed to update market in DB after Soroban success',
+        err,
+      );
+      throw new BadGatewayException(
+        'Market resolved on-chain but failed to update database',
       );
     }
   }

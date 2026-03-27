@@ -9,7 +9,7 @@ describe('NotificationsService', () => {
   const mockNotification: Partial<Notification> = {
     id: 'notif-uuid-1',
     user_id: 'user-uuid-1',
-    type: NotificationType.System,
+    type: NotificationType.MARKET_RESOLVED,
     title: 'Test',
     message: 'Test message',
     is_read: false,
@@ -49,14 +49,14 @@ describe('NotificationsService', () => {
 
       const result = await service.create(
         'user-uuid-1',
-        NotificationType.System,
+        NotificationType.MARKET_RESOLVED,
         'Test',
         'Test message',
       );
 
       expect(mockRepository.create).toHaveBeenCalledWith({
         user_id: 'user-uuid-1',
-        type: NotificationType.System,
+        type: NotificationType.MARKET_RESOLVED,
         title: 'Test',
         message: 'Test message',
         metadata: undefined,
@@ -71,7 +71,7 @@ describe('NotificationsService', () => {
 
       await service.create(
         'user-uuid-1',
-        NotificationType.System,
+        NotificationType.MARKET_RESOLVED,
         'T',
         'M',
         meta,

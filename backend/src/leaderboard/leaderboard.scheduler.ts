@@ -1,12 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { LeaderboardService } from './leaderboard.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/entities/notification.entity';
 
 @Injectable()
 export class LeaderboardScheduler {
   private readonly logger = new Logger(LeaderboardScheduler.name);
 
-  constructor(private readonly leaderboardService: LeaderboardService) {}
+  constructor(
+    private readonly leaderboardService: LeaderboardService,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   @Cron('0 */1 * * *')
   async handleHourlyRecalculation(): Promise<void> {

@@ -8,6 +8,8 @@ import {
   LeaderboardEntryResponse,
   PaginatedLeaderboardResponse,
 } from './dto/leaderboard-query.dto';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/entities/notification.entity';
 
 @Injectable()
 export class LeaderboardService {
@@ -18,6 +20,7 @@ export class LeaderboardService {
     private readonly leaderboardRepository: Repository<LeaderboardEntry>,
     private readonly usersService: UsersService,
     private readonly dataSource: DataSource,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async getLeaderboard(
@@ -82,10 +85,13 @@ export class LeaderboardService {
       (a, b) => b.reputation_score - a.reputation_score,
     );
 
+    // Track rank changes for notifications
+    const rankChanges: Array<{ userId: string; oldRank: number; newRank: number }> = [];
+
     await this.dataSource.transaction(async (manager) => {
       for (let i = 0; i < sorted.length; i++) {
         const user = sorted[i];
-        const rank = i + 1;
+        const newRank = i + 1;
 
         const existing = await manager
           .createQueryBuilder(LeaderboardEntry, 'entry')
@@ -94,12 +100,14 @@ export class LeaderboardService {
           })
           .getOne();
 
+        const oldRank = existing?.rank ?? null;
+
         if (existing) {
           await manager.update(
             LeaderboardEntry,
             { id: existing.id },
             {
-              rank,
+              rank: newRank,
               reputation_score: user.reputation_score,
               season_points: user.season_points,
               total_predictions: user.total_predictions,
@@ -110,7 +118,7 @@ export class LeaderboardService {
         } else {
           const entry = manager.create(LeaderboardEntry, {
             user_id: user.id,
-            rank,
+            rank: newRank,
             reputation_score: user.reputation_score,
             season_points: user.season_points,
             total_predictions: user.total_predictions,
@@ -119,12 +127,36 @@ export class LeaderboardService {
           });
           await manager.save(LeaderboardEntry, entry);
         }
+
+        // Track rank changes
+        if (oldRank !== null && oldRank !== newRank) {
+          rankChanges.push({ userId: user.id, oldRank, newRank });
+        }
       }
     });
 
+    // Send notifications for rank changes
+    for (const change of rankChanges) {
+      try {
+        const rankChange = change.oldRank - change.newRank;
+        const direction = rankChange > 0 ? 'up' : 'down';
+        const message = `Your leaderboard rank has changed from #${change.oldRank} to #${change.newRank}`;
+
+        await this.notificationsService.create(
+          change.userId,
+          NotificationType.RANK_CHANGED,
+          'Leaderboard Rank Updated',
+          message,
+          { old_rank: change.oldRank, new_rank: change.newRank, change: rankChange },
+        );
+      } catch (err) {
+        this.logger.error(`Failed to send rank change notification for user ${change.userId}`, err);
+      }
+    }
+
     const elapsed = Date.now() - start;
     this.logger.log(
-      `Leaderboard recalculation complete: ${sorted.length} users updated in ${elapsed}ms`,
+      `Leaderboard recalculation complete: ${sorted.length} users updated, ${rankChanges.length} rank changes notified in ${elapsed}ms`,
     );
   }
 }

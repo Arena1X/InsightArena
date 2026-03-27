@@ -18,6 +18,8 @@ import {
 import { User } from '../users/entities/user.entity';
 import { Market } from '../markets/entities/market.entity';
 import { SorobanService } from '../soroban/soroban.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/entities/notification.entity';
 
 @Injectable()
 export class PredictionsService {
@@ -32,6 +34,7 @@ export class PredictionsService {
     private readonly usersRepository: Repository<User>,
     private readonly sorobanService: SorobanService,
     private readonly dataSource: DataSource,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -188,5 +191,66 @@ export class PredictionsService {
       return PredictionStatus.Won;
     }
     return PredictionStatus.Lost;
+  }
+
+  /**
+   * Claim payout for a winning prediction.
+   * Validates that the prediction won and payout hasn't been claimed,
+   * calls Soroban to claim payout, then updates the prediction record.
+   */
+  async claimPayout(predictionId: string, user: User): Promise<Prediction> {
+    const prediction = await this.predictionsRepository.findOne({
+      where: { id: predictionId, user: { id: user.id } },
+      relations: ['market', 'user'],
+    });
+
+    if (!prediction) {
+      throw new NotFoundException(`Prediction "${predictionId}" not found`);
+    }
+
+    if (prediction.payout_claimed) {
+      throw new ConflictException('Payout has already been claimed');
+    }
+
+    const market = prediction.market;
+    if (!market.is_resolved) {
+      throw new BadRequestException('Market is not yet resolved');
+    }
+
+    if (market.resolved_outcome !== prediction.chosen_outcome) {
+      throw new BadRequestException('Prediction did not win - no payout available');
+    }
+
+    // Call Soroban to claim payout
+    try {
+      const { payout_amount_stroops } = await this.sorobanService.claimPayout(
+        user.stellar_address,
+        market.on_chain_market_id,
+        prediction.tx_hash,
+      );
+
+      // Update prediction with payout details
+      prediction.payout_claimed = true;
+      prediction.payout_amount_stroops = payout_amount_stroops;
+      const updated = await this.predictionsRepository.save(prediction);
+
+      // Send notification about payout
+      await this.notificationsService.create(
+        user.id,
+        NotificationType.PAYOUT_READY,
+        'Payout Claimed Successfully',
+        `Your payout of ${payout_amount_stroops} stroops has been claimed for the market "${market.title}"`,
+        { market_id: market.id, prediction_id: prediction.id, payout_amount: payout_amount_stroops },
+      );
+
+      this.logger.log(
+        `Payout claimed for prediction ${predictionId} by user ${user.id}: ${payout_amount_stroops} stroops`,
+      );
+
+      return updated;
+    } catch (err) {
+      this.logger.error('Failed to claim payout from Soroban', err);
+      throw new BadRequestException('Failed to claim payout from blockchain');
+    }
   }
 }
