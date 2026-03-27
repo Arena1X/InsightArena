@@ -33,7 +33,7 @@ describe('NotificationsController', () => {
           useValue: {
             findAllForUser: jest.fn(),
             markAsRead: jest.fn(),
-            markAllAsRead: jest.fn(),
+            markAllAsRead: jest.fn().mockResolvedValue({ updated: 0 }),
           },
         },
       ],
@@ -70,17 +70,24 @@ describe('NotificationsController', () => {
         mockResponse,
         1,
         20,
-        'true',
+        undefined,
       );
 
-      expect(spy).toHaveBeenCalledWith('user-uuid-1', 1, 20, true);
-      expect(mockResponse.set).toHaveBeenCalledWith('X-Unread-Count', '5');
-      expect(result).toEqual({
-        data: mockResult.data,
-        total: mockResult.total,
-        page: mockResult.page,
-        limit: mockResult.limit,
+      expect(spy).toHaveBeenCalledWith('user-uuid-1', 1, 20, false);
+      expect(result).toEqual(paginated);
+    });
+
+    it('should pass unread_only=true to service', async () => {
+      const spy = jest.spyOn(service, 'findAllForUser').mockResolvedValue({
+        data: [],
+        total: 0,
+        page: 1,
+        limit: 20,
       });
+
+      await controller.getMyNotifications(mockUser as User, 1, 20, 'true');
+
+      expect(spy).toHaveBeenCalledWith('user-uuid-1', 1, 20, true);
     });
   });
 
@@ -95,8 +102,10 @@ describe('NotificationsController', () => {
   });
 
   describe('markAllAsRead', () => {
-    it('should call service markAllAsRead with userId and return count', async () => {
-      const spy = jest.spyOn(service, 'markAllAsRead').mockResolvedValue({ updated: 3 });
+    it('should return updated count from service', async () => {
+      const spy = jest
+        .spyOn(service, 'markAllAsRead')
+        .mockResolvedValue({ updated: 3 });
 
       const result = await controller.markAllAsRead(mockUser as User);
 

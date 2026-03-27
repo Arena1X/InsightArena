@@ -46,7 +46,7 @@ export class NotificationsController {
       user.id,
       Number(page),
       Number(limit),
-      isUnreadOnly,
+      unreadOnly === 'true',
     );
 
     res.set('X-Unread-Count', result.unreadCount.toString());
@@ -71,8 +71,9 @@ export class NotificationsController {
   }
 
   @Patch('read-all')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mark all notifications as read' })
-  @ApiResponse({ status: 200, description: 'All notifications marked as read', schema: { example: { updated: 3 } } })
+  @ApiResponse({ status: 200, description: 'Count of notifications updated' })
   async markAllAsRead(@CurrentUser() user: User): Promise<{ updated: number }> {
     return this.notificationsService.markAllAsRead(user.id);
   }

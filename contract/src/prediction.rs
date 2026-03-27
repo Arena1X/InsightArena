@@ -3,7 +3,9 @@ use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
+use crate::season;
 use crate::storage_types::{DataKey, Market, Prediction, UserProfile};
+use crate::ttl;
 
 // ── TTL helpers ───────────────────────────────────────────────────────────────
 
@@ -16,11 +18,7 @@ fn bump_prediction(env: &Env, market_id: u64, predictor: &Address) {
 }
 
 fn bump_market(env: &Env, market_id: u64) {
-    env.storage().persistent().extend_ttl(
-        &DataKey::Market(market_id),
-        PERSISTENT_THRESHOLD,
-        PERSISTENT_BUMP,
-    );
+    ttl::extend_market_ttl(env, market_id);
 }
 
 fn bump_predictor_list(env: &Env, market_id: u64) {
@@ -32,11 +30,7 @@ fn bump_predictor_list(env: &Env, market_id: u64) {
 }
 
 fn bump_user(env: &Env, address: &Address) {
-    env.storage().persistent().extend_ttl(
-        &DataKey::User(address.clone()),
-        PERSISTENT_THRESHOLD,
-        PERSISTENT_BUMP,
-    );
+    ttl::extend_user_ttl(env, address);
 }
 
 // ── Event emission ────────────────────────────────────────────────────────────
@@ -152,6 +146,7 @@ fn update_winner_profile(
 
     env.storage().persistent().set(&user_key, &profile);
     bump_user(env, predictor);
+    season::track_user_profile(env, predictor);
     Ok(())
 }
 
@@ -202,6 +197,24 @@ pub fn submit_prediction(
     let outcome_valid = market.outcome_options.iter().any(|o| o == chosen_outcome);
     if !outcome_valid {
         return Err(InsightArenaError::InvalidOutcome);
+    }
+
+    if !market.is_public {
+        let allowlist: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MarketAllowlist(market_id))
+            .unwrap_or_else(|| Vec::new(env));
+
+        if !allowlist.iter().any(|entry| entry == predictor) {
+            return Err(InsightArenaError::Unauthorized);
+        }
+
+        env.storage().persistent().extend_ttl(
+            &DataKey::MarketAllowlist(market_id),
+            PERSISTENT_THRESHOLD,
+            PERSISTENT_BUMP,
+        );
     }
 
     // ── Guard 5 & 6: stake_amount must be within [min_stake, max_stake] ───────
@@ -276,6 +289,7 @@ pub fn submit_prediction(
 
     env.storage().persistent().set(&user_key, &profile);
     bump_user(env, &predictor);
+    season::track_user_profile(env, &predictor);
 
     // ── Emit PredictionSubmitted event ────────────────────────────────────────
     emit_prediction_submitted(env, market_id, &predictor, &chosen_outcome, stake_amount);
@@ -481,6 +495,7 @@ pub fn claim_payout(
     }
     if protocol_fee > 0 {
         escrow::refund(env, &cfg.admin, protocol_fee)?;
+        escrow::add_to_treasury_balance(env, protocol_fee);
     }
     if creator_fee > 0 {
         escrow::refund(env, &market.creator, creator_fee)?;
@@ -517,6 +532,7 @@ pub fn claim_payout(
 
     env.storage().persistent().set(&user_key, &profile);
     bump_user(env, &predictor);
+    season::track_user_profile(env, &predictor);
 
     emit_payout_claimed(
         env,
@@ -622,6 +638,7 @@ pub fn batch_distribute_payouts(
         }
         if protocol_fee > 0 {
             escrow::refund(env, &cfg.admin, protocol_fee)?;
+            escrow::add_to_treasury_balance(env, protocol_fee);
         }
         if creator_fee > 0 {
             escrow::refund(env, &market.creator, creator_fee)?;
@@ -640,6 +657,8 @@ pub fn batch_distribute_payouts(
             .checked_add(1)
             .ok_or(InsightArenaError::Overflow)?;
     }
+
+    escrow::assert_escrow_solvent(env)?;
 
     emit_batch_payout_complete(env, market_id, &caller, processed);
 
@@ -1819,5 +1838,44 @@ mod prediction_tests {
             .filter(|w| client.get_prediction(&market_id, w).payout_claimed)
             .count();
         assert_eq!(claimed_count, 30);
+    }
+
+    #[test]
+    fn batch_distribute_payouts_runs_escrow_solvency_check() {
+        use crate::storage_types::{DataKey, Prediction};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+        let other_market_predictor = Address::generate(&env);
+
+        let market_one = client.create_market(&creator, &default_params(&env));
+        let market_two = client.create_market(&creator, &default_params(&env));
+
+        fund(&env, &xlm_token, &winner, 10_000_000);
+        fund(&env, &xlm_token, &other_market_predictor, 25_000_000);
+
+        client.submit_prediction(&winner, &market_one, &symbol_short!("yes"), &10_000_000);
+        client.submit_prediction(
+            &other_market_predictor,
+            &market_two,
+            &symbol_short!("yes"),
+            &25_000_000,
+        );
+        mark_market_resolved(&env, &client, market_one);
+
+        let contract_id = client.address.clone();
+        env.as_contract(&contract_id, || {
+            let key = DataKey::Prediction(market_two, other_market_predictor.clone());
+            let mut prediction: Prediction = env.storage().persistent().get(&key).unwrap();
+            prediction.stake_amount = 30_000_000;
+            env.storage().persistent().set(&key, &prediction);
+        });
+
+        let cfg = client.get_config();
+        let result = client.try_batch_distribute_payouts(&cfg.admin, &market_one);
+        assert!(matches!(result, Err(Ok(InsightArenaError::EscrowEmpty))));
     }
 }

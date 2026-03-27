@@ -12,14 +12,24 @@ pub enum DataKey {
     Prediction(u64, Address),
     /// Keyed by user address. Represents an individual user's profile or state.
     User(Address),
+    /// Singleton list of all addresses that have a persisted user profile.
+    UserList,
     /// Keyed by season_id. Stores the leaderboard rankings per season.
-    Leaderboard(u64),
+    Leaderboard(u32),
+    /// Singleton. Stores the list of season IDs that have snapshots available.
+    SnapshotSeasonList,
     /// Keyed by season number. Represents a season's metadata and schedule.
     Season(u32),
+    /// Singleton. Stores the currently active season identifier.
+    ActiveSeason,
     /// Keyed by code symbol. Maps an invite code to its underlying metadata.
     InviteCode(Symbol),
+    /// Keyed by market_id. Stores the set-like list of addresses approved for private markets.
+    MarketAllowlist(u64),
     /// Singleton. Holds global configuration for the platform.
     Config,
+    /// Singleton. Tracks cumulative protocol fees accrued to treasury.
+    Treasury,
     /// Global counter. Tracks the total number of markets created.
     MarketCount,
     /// Global counter. Tracks the total number of seasons.
@@ -245,6 +255,32 @@ impl Season {
             top_winner: None,
         }
     }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeaderboardEntry {
+    pub rank: u32,
+    pub user: Address,
+    pub points: u32,
+    pub correct_predictions: u32,
+    pub total_predictions: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeaderboardSnapshot {
+    pub season_id: u32,
+    pub updated_at: u64,
+    pub entries: Vec<LeaderboardEntry>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewardPayout {
+    pub rank: u32,
+    pub user: Address,
+    pub amount: i128,
 }
 
 #[contracttype]

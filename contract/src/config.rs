@@ -2,6 +2,7 @@ use soroban_sdk::{contracttype, Address, Env};
 
 use crate::errors::InsightArenaError;
 use crate::storage_types::DataKey;
+use crate::ttl;
 
 // ── TTL constants ─────────────────────────────────────────────────────────────
 // Assuming ~5 s per ledger:
@@ -36,9 +37,7 @@ pub struct Config {
 /// Extend the persistent TTL for the Config entry whenever it drops below
 /// `PERSISTENT_THRESHOLD`. Must be called on every read *and* every write.
 fn bump_config(env: &Env) {
-    env.storage()
-        .persistent()
-        .extend_ttl(&DataKey::Config, PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
+    ttl::extend_config_ttl(env);
 }
 
 /// Load Config from persistent storage.
@@ -88,6 +87,14 @@ pub fn get_config(env: &Env) -> Result<Config, InsightArenaError> {
     let config = load_config(env)?;
     bump_config(env);
     Ok(config)
+}
+
+/// Return the current global [`Config`] without mutating storage.
+///
+/// This helper is intended for strict view functions that must avoid any state
+/// writes, including TTL extension side-effects.
+pub fn get_config_readonly(env: &Env) -> Result<Config, InsightArenaError> {
+    load_config(env)
 }
 
 /// Update the protocol fee rate. Caller must be the stored admin.

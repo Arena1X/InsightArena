@@ -48,7 +48,9 @@ export class NotificationsService {
     }
 
     const [data, total] = await this.notificationsRepository.findAndCount({
-      where: whereClause,
+      where: unreadOnly
+        ? { user_id: userId, is_read: false }
+        : { user_id: userId },
       order: { created_at: 'DESC' },
       skip,
       take,
@@ -73,6 +75,7 @@ export class NotificationsService {
       { user_id: userId, is_read: false },
       { is_read: true },
     );
+
     return { updated: result.affected ?? 0 };
   }
 }

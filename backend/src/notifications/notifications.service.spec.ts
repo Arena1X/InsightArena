@@ -98,6 +98,18 @@ describe('NotificationsService', () => {
       expect(result.unreadCount).toBe(5);
     });
 
+    it('should query unread only when unreadOnly=true', async () => {
+      mockRepository.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.findAllForUser('user-uuid-1', 1, 20, true);
+
+      expect(mockRepository.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { user_id: 'user-uuid-1', is_read: false },
+        }),
+      );
+    });
+
     it('should cap limit at 100', async () => {
       mockRepository.findAndCount.mockResolvedValue([[], 0]);
       mockRepository.count.mockResolvedValue(0);

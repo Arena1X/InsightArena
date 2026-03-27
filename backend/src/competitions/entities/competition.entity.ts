@@ -16,6 +16,10 @@ export enum CompetitionVisibility {
 }
 
 @Entity('competitions')
+@Index('IDX_competitions_invite_code_unique_when_set', ['invite_code'], {
+  unique: true,
+  where: '"invite_code" IS NOT NULL',
+})
 export class Competition {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -35,8 +39,14 @@ export class Competition {
   @Column({ type: 'bigint', default: 0 })
   prize_pool_stroops: string;
 
-  @Column({ nullable: true })
+  @Column({ default: 0 })
   max_participants: number;
+
+  @Column({ default: 0 })
+  participant_count: number;
+
+  @Column({ default: false })
+  is_finalized: boolean;
 
   @Index()
   @Column({
@@ -46,14 +56,14 @@ export class Competition {
   })
   visibility: CompetitionVisibility;
 
-  @Column({ nullable: true, unique: true })
+  @Column({ nullable: true })
   invite_code: string;
 
   @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'creator_id' })
   creator: User;
 
-  @Column({ nullable: true })
+  @Column({ type: 'uuid', nullable: true })
   creator_id: string;
 
   @CreateDateColumn()

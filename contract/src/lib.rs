@@ -3,15 +3,21 @@
 pub mod config;
 pub mod errors;
 pub mod escrow;
+pub mod invite;
 pub mod market;
 pub mod oracle;
 pub mod prediction;
+pub mod season;
 pub mod storage_types;
+pub mod ttl;
 
 pub use crate::config::Config;
 pub use crate::errors::InsightArenaError;
 pub use crate::market::CreateMarketParams;
-pub use crate::storage_types::{DataKey, InviteCode, Market, Prediction, Season, UserProfile};
+pub use crate::storage_types::{
+    DataKey, InviteCode, LeaderboardEntry, LeaderboardSnapshot, Market, Prediction, Season,
+    UserProfile,
+};
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
 
@@ -205,6 +211,20 @@ impl InsightArenaContract {
         prediction::claim_payout(&env, predictor, market_id)
     }
 
+    /// Return the current XLM balance held by the contract escrow in stroops.
+    ///
+    /// This is a pure view over the configured token contract and does not
+    /// mutate any internal state.
+    pub fn get_contract_balance(env: Env) -> i128 {
+        escrow::get_contract_balance(&env)
+    }
+
+    /// Audit the contract's escrow solvency against all unclaimed prediction
+    /// stakes currently stored on-chain.
+    pub fn assert_escrow_solvent(env: Env) -> Result<(), InsightArenaError> {
+        escrow::assert_escrow_solvent(&env)
+    }
+
     /// Batch distribute payouts for all unclaimed winning predictions in a
     /// resolved market. Callable only by admin or oracle.
     ///
@@ -221,6 +241,109 @@ impl InsightArenaContract {
     /// Returns `0` if no fees have been collected yet. Never panics.
     pub fn get_treasury_balance(env: Env) -> i128 {
         escrow::get_treasury_balance(&env)
+    }
+
+    // ── Invite ────────────────────────────────────────────────────────────────
+
+    /// Generate a unique 8-character invite code for a private market.
+    ///
+    /// Validation:
+    /// 1. `creator` must be the actual market creator.
+    /// 2. `max_uses` must be at least 1.
+    pub fn generate_invite_code(
+        env: Env,
+        creator: Address,
+        market_id: u64,
+        max_uses: u32,
+        expires_in_seconds: u64,
+    ) -> Result<Symbol, InsightArenaError> {
+        invite::generate_invite_code(env, creator, market_id, max_uses, expires_in_seconds)
+        // ── Season / Leaderboard ────────────────────────────────────────────────
+    }
+
+    /// Redeem a private-market invite code and return the associated market id.
+    pub fn redeem_invite_code(
+        env: Env,
+        invitee: Address,
+        code: Symbol,
+    ) -> Result<u64, InsightArenaError> {
+        invite::redeem_invite_code(env, invitee, code)
+    }
+
+    /// List all season IDs which have snapshots available.
+    pub fn list_snapshot_seasons(env: Env) -> Vec<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SnapshotSeasonList)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    // ── Season Management ─────────────────────────────────────────────────────
+
+    pub fn create_season(
+        env: Env,
+        admin: Address,
+        start_time: u64,
+        end_time: u64,
+        reward_pool: i128,
+    ) -> Result<u32, InsightArenaError> {
+        season::create_season(&env, admin, start_time, end_time, reward_pool)
+    }
+
+    pub fn get_season(env: Env, season_id: u32) -> Result<Season, InsightArenaError> {
+        season::get_season(&env, season_id)
+    }
+
+    pub fn get_active_season(env: Env) -> Option<Season> {
+        season::get_active_season(&env)
+    }
+
+    pub fn update_leaderboard(
+        env: Env,
+        admin: Address,
+        season_id: u32,
+        entries: Vec<LeaderboardEntry>,
+    ) -> Result<(), InsightArenaError> {
+        config::ensure_not_paused(&env)?;
+        season::update_leaderboard(&env, admin, season_id, entries)?;
+
+        // Update SnapshotSeasonList
+        let list_key = DataKey::SnapshotSeasonList;
+        let mut seasons: Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&list_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        if !seasons.contains(season_id) {
+            seasons.push_back(season_id);
+            env.storage().persistent().set(&list_key, &seasons);
+        }
+
+        Ok(())
+    }
+
+    pub fn get_leaderboard(
+        env: Env,
+        season_id: u32,
+    ) -> Result<LeaderboardSnapshot, InsightArenaError> {
+        season::get_leaderboard(&env, season_id)
+    }
+
+    pub fn finalize_season(
+        env: Env,
+        admin: Address,
+        season_id: u32,
+    ) -> Result<(), InsightArenaError> {
+        season::finalize_season(&env, admin, season_id)
+    }
+
+    pub fn reset_season_points(
+        env: Env,
+        admin: Address,
+        new_season_id: u32,
+    ) -> Result<u32, InsightArenaError> {
+        season::reset_season_points(&env, admin, new_season_id)
     }
 }
 
@@ -308,5 +431,152 @@ mod config_tests {
 
         // Must succeed after resuming
         client.get_config();
+    }
+}
+
+#[cfg(test)]
+mod leaderboard_tests {
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{vec, Address, Env};
+
+    use super::{
+        InsightArenaContract, InsightArenaContractClient, InsightArenaError, LeaderboardEntry,
+    };
+
+    fn deploy(env: &Env) -> (InsightArenaContractClient<'_>, Address, Address) {
+        let id = env.register(InsightArenaContract, ());
+        let client = InsightArenaContractClient::new(env, &id);
+        let admin = Address::generate(env);
+        let oracle = Address::generate(env);
+        let token_admin = Address::generate(env);
+        let xlm_token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        env.mock_all_auths();
+        client.initialize(&admin, &oracle, &200_u32, &xlm_token);
+        (client, admin, xlm_token)
+    }
+
+    #[test]
+    fn test_update_and_get_historical_leaderboard() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, xlm_token) = deploy(&env);
+
+        // Creator needs to fund and approve for season reward pool
+        let reward_pool = 10_000_000;
+        let token_client = soroban_sdk::token::Client::new(&env, &xlm_token);
+        Address::generate(&env); // dummy
+        soroban_sdk::token::StellarAssetClient::new(&env, &xlm_token).mint(&admin, &reward_pool);
+        token_client.approve(&admin, &client.address, &reward_pool, &9999);
+
+        let season_id = client.create_season(&admin, &100, &200, &reward_pool);
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        let entries = vec![
+            &env,
+            LeaderboardEntry {
+                rank: 1,
+                user: user1.clone(),
+                points: 100,
+                correct_predictions: 10,
+                total_predictions: 15,
+            },
+            LeaderboardEntry {
+                rank: 2,
+                user: user2.clone(),
+                points: 80,
+                correct_predictions: 8,
+                total_predictions: 12,
+            },
+        ];
+
+        client.update_leaderboard(&admin, &season_id, &entries);
+
+        let snapshot = client.get_leaderboard(&season_id);
+        assert_eq!(snapshot.season_id, season_id);
+        assert_eq!(snapshot.entries.len(), 2);
+        assert_eq!(snapshot.entries.get(0).unwrap().user, user1);
+        assert_eq!(snapshot.entries.get(0).unwrap().points, 100);
+        assert_eq!(snapshot.entries.get(1).unwrap().user, user2);
+        assert_eq!(snapshot.entries.get(1).unwrap().points, 80);
+    }
+
+    #[test]
+    fn test_list_snapshot_seasons_deduplication() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, xlm_token) = deploy(&env);
+
+        let reward_pool = 20_000_000;
+        soroban_sdk::token::StellarAssetClient::new(&env, &xlm_token).mint(&admin, &reward_pool);
+        soroban_sdk::token::Client::new(&env, &xlm_token).approve(
+            &admin,
+            &client.address,
+            &reward_pool,
+            &9999,
+        );
+
+        let s1 = client.create_season(&admin, &100, &200, &10_000_000);
+        let s2 = client.create_season(&admin, &201, &300, &10_000_000);
+
+        assert_eq!(client.list_snapshot_seasons().len(), 0);
+
+        let entries = vec![
+            &env,
+            LeaderboardEntry {
+                rank: 1,
+                user: Address::generate(&env),
+                points: 10,
+                correct_predictions: 1,
+                total_predictions: 1,
+            },
+        ];
+
+        // First snapshot for Season 1 (admin)
+        client.update_leaderboard(&admin, &s1, &entries);
+        assert_eq!(client.list_snapshot_seasons().len(), 1);
+        assert_eq!(client.list_snapshot_seasons().get(0).unwrap(), s1);
+
+        // Update Snapshot for Season 1 (admin) — should not duplicate in list
+        client.update_leaderboard(&admin, &s1, &entries);
+        assert_eq!(client.list_snapshot_seasons().len(), 1);
+
+        // Snapshot for Season 2
+        client.update_leaderboard(&admin, &s2, &entries);
+        assert_eq!(client.list_snapshot_seasons().len(), 2);
+        assert_eq!(client.list_snapshot_seasons().get(1).unwrap(), s2);
+    }
+
+    #[test]
+    fn test_get_leaderboard_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _) = deploy(&env);
+
+        let result = client.try_get_leaderboard(&99);
+        assert!(matches!(result, Err(Ok(InsightArenaError::SeasonNotFound))));
+    }
+
+    #[test]
+    fn test_update_leaderboard_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _) = deploy(&env);
+        let stranger = Address::generate(&env);
+
+        let result = client.try_update_leaderboard(&stranger, &1, &vec![&env]);
+        assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
+    }
+
+    #[test]
+    fn test_update_leaderboard_when_paused() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _) = deploy(&env);
+
+        client.set_paused(&true);
+        let result = client.try_update_leaderboard(&admin, &1, &vec![&env]);
+        assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
     }
 }

@@ -4,6 +4,7 @@ use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
 use crate::storage_types::{DataKey, Market, Prediction};
+use crate::ttl;
 
 // ── Params struct ─────────────────────────────────────────────────────────────
 // Soroban limits contract functions to 10 parameters. Bundling the market
@@ -28,11 +29,7 @@ pub struct CreateMarketParams {
 // ── TTL helpers ───────────────────────────────────────────────────────────────
 
 fn bump_market(env: &Env, market_id: u64) {
-    env.storage().persistent().extend_ttl(
-        &DataKey::Market(market_id),
-        PERSISTENT_THRESHOLD,
-        PERSISTENT_BUMP,
-    );
+    ttl::extend_market_ttl(env, market_id);
 }
 
 fn bump_counter(env: &Env) {
