@@ -3,6 +3,7 @@ use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol, Vec}
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
+use crate::reputation;
 use crate::storage_types::{DataKey, Market, Prediction};
 use crate::ttl;
 
@@ -250,6 +251,9 @@ pub fn create_market(
 
     // ── Emit MarketCreated event ──────────────────────────────────────────────
     emit_market_created(env, market_id, &creator, params.end_time);
+
+    // ── Update creator reputation stats ──────────────────────────────────────
+    reputation::on_market_created(env, &creator);
 
     Ok(market_id)
 }

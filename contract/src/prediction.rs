@@ -83,12 +83,10 @@ fn compute_payout_breakdown(
     protocol_fee_bps: u32,
     creator_fee_bps: u32,
 ) -> Result<(i128, i128, i128), InsightArenaError> {
-    let payout_ratio = stake_amount
-        .checked_div(winning_pool)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    let winner_share = payout_ratio
+    let winner_share = stake_amount
         .checked_mul(loser_pool)
+        .ok_or(InsightArenaError::Overflow)?
+        .checked_div(winning_pool)
         .ok_or(InsightArenaError::Overflow)?;
 
     let gross_payout = stake_amount
@@ -466,13 +464,11 @@ pub fn claim_payout(
         .checked_sub(winning_pool)
         .ok_or(InsightArenaError::Overflow)?;
 
-    let payout_ratio = prediction
+    let winner_share = prediction
         .stake_amount
-        .checked_div(winning_pool)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    let winner_share = payout_ratio
         .checked_mul(loser_pool)
+        .ok_or(InsightArenaError::Overflow)?
+        .checked_div(winning_pool)
         .ok_or(InsightArenaError::Overflow)?;
 
     let gross_payout = prediction
