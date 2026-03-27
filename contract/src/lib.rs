@@ -36,8 +36,10 @@ impl InsightArenaContract {
         oracle: Address,
         fee_bps: u32,
         xlm_token: Address,
+        multisig_admins: Vec<Address>,
+        multisig_threshold: u32,
     ) -> Result<(), InsightArenaError> {
-        config::initialize(&env, admin, oracle, fee_bps, xlm_token)
+        config::initialize(&env, admin, oracle, fee_bps, xlm_token, multisig_admins, multisig_threshold)
     }
 
     /// Transition a market into the "resolved" state by recording the winning outcome.
@@ -80,14 +82,22 @@ impl InsightArenaContract {
         config::update_protocol_fee(&env, new_fee_bps)
     }
 
-    /// Pause or resume the contract. Caller must be the stored admin.
-    pub fn set_paused(env: Env, paused: bool) -> Result<(), InsightArenaError> {
-        config::set_paused(&env, paused)
+    /// Pause or resume the contract. Caller must be the stored admin or authorized
+    /// signers in a multi-sig configuration.
+    pub fn set_paused(env: Env, paused: bool, signers: Vec<Address>) -> Result<(), InsightArenaError> {
+        config::set_paused(&env, paused, signers)
     }
 
-    /// Transfer admin rights to `new_admin`. Caller must be the current admin.
-    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), InsightArenaError> {
-        config::transfer_admin(&env, new_admin)
+    /// Transfer admin rights to `new_admin`. Caller must be the current admin or
+    /// authorized signers in a multi-sig configuration.
+    pub fn transfer_admin(env: Env, new_admin: Address, signers: Vec<Address>) -> Result<(), InsightArenaError> {
+        config::transfer_admin(&env, new_admin, signers)
+    }
+
+    /// Update the trusted oracle address. Caller must be the stored admin or
+    /// authorized signers in a multi-sig configuration.
+    pub fn update_oracle(env: Env, new_oracle: Address, signers: Vec<Address>) -> Result<(), InsightArenaError> {
+        config::update_oracle(&env, new_oracle, signers)
     }
 
     // ── Market ────────────────────────────────────────────────────────────────
