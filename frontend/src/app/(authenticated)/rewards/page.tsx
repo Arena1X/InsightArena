@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import RewardSources from "@/component/rewards/RewardSources";
 import RewardHistoryTable, {
   RewardHistoryEntry,
 } from "@/component/rewards/RewardHistoryTable";
@@ -71,6 +72,7 @@ export default function RewardsPage() {
 
   return (
     <div className="space-y-6">
+      <RewardSources />
       <RewardHistoryTable
         entries={entries}
         onLoadMore={handleLoadMore}
