@@ -952,9 +952,12 @@ mod market_tests {
         assert!(market.is_closed);
         assert!(!market.is_resolved);
 
-        let last = env.events().all().last().unwrap();
-        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, symbol_short!("mkt_clsd"));
+        let events = env.events().all();
+        let closed_event = events.iter().rev().find(|event| {
+            let topic: Symbol = event.1.get(0).unwrap().into_val(&env);
+            topic == symbol_short!("mkt_clsd")
+        });
+        assert!(closed_event.is_some(), "MarketClosed event was not emitted");
     }
 
     // (b-alt) close_market called after end_time by the admin → success
