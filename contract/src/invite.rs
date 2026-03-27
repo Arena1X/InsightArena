@@ -213,6 +213,7 @@ mod tests {
             outcomes: vec![env, Symbol::new(env, "TeamA"), Symbol::new(env, "TeamB")],
             end_time: 200,
             resolution_time: 300,
+            dispute_window: 86_400,
             is_public: false,
             creator_fee_bps: 100,
             min_stake: 10_000_000,
