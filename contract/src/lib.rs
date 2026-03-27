@@ -1,9 +1,11 @@
 #![no_std]
 
+pub mod analytics;
 pub mod config;
 pub mod dispute;
 pub mod errors;
 pub mod escrow;
+pub mod governance;
 pub mod invite;
 pub mod leaderboard;
 pub mod market;
@@ -16,10 +18,11 @@ pub mod storage_types;
 pub mod ttl;
 pub use crate::config::Config;
 pub use crate::errors::InsightArenaError;
+pub use crate::governance::{Proposal, ProposalType};
 pub use crate::market::CreateMarketParams;
 pub use crate::storage_types::{
-    CreatorStats, DataKey, InviteCode, LeaderboardEntry, LeaderboardSnapshot, Market, Prediction,
-    Season, UserProfile,
+    CreatorStats, DataKey, InviteCode, LeaderboardEntry, LeaderboardSnapshot, Market, MarketStats,
+    PlatformStats, Prediction, Season, UserProfile,
 };
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
@@ -298,6 +301,32 @@ impl InsightArenaContract {
         prediction::batch_distribute_payouts(&env, caller, market_id)
     }
 
+    pub fn create_proposal(
+        env: Env,
+        proposer: Address,
+        proposal_type: ProposalType,
+        voting_duration: u64,
+    ) -> Result<u32, InsightArenaError> {
+        governance::create_proposal(&env, proposer, proposal_type, voting_duration)
+    }
+
+    pub fn vote(
+        env: Env,
+        voter: Address,
+        proposal_id: u32,
+        vote_for: bool,
+    ) -> Result<(), InsightArenaError> {
+        governance::vote(&env, voter, proposal_id, vote_for)
+    }
+
+    pub fn execute_proposal(
+        env: Env,
+        executor: Address,
+        proposal_id: u32,
+    ) -> Result<(), InsightArenaError> {
+        governance::execute_proposal(&env, executor, proposal_id)
+    }
+
     /// Return the total protocol fees accumulated in the treasury.
     /// Returns `0` if no fees have been collected yet. Never panics.
     pub fn get_treasury_balance(env: Env) -> i128 {
@@ -422,6 +451,31 @@ impl InsightArenaContract {
         creator: Address,
     ) -> Result<CreatorStats, InsightArenaError> {
         reputation::get_creator_stats(env, creator)
+    }
+
+    // ── Analytics ─────────────────────────────────────────────────────────────
+
+    /// Return aggregated stats for a single market.
+    pub fn get_market_stats(env: Env, market_id: u64) -> Result<MarketStats, InsightArenaError> {
+        analytics::get_market_stats(env, market_id)
+    }
+
+    /// Return per-outcome stake totals sorted descending by stake.
+    pub fn get_outcome_distribution(
+        env: Env,
+        market_id: u64,
+    ) -> Result<Vec<(Symbol, i128)>, InsightArenaError> {
+        analytics::get_outcome_distribution(env, market_id)
+    }
+
+    /// Return the stored `UserProfile` for a given address.
+    pub fn get_user_stats(env: Env, user: Address) -> Result<UserProfile, InsightArenaError> {
+        analytics::get_user_stats(env, user)
+    }
+
+    /// Return platform-wide aggregated stats using cached counters.
+    pub fn get_platform_stats(env: Env) -> PlatformStats {
+        analytics::get_platform_stats(env)
     }
 }
 

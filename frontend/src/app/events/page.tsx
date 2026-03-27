@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Search, Filter, ChevronDown } from "lucide-react";
 import Header from "@/component/Header";
 import Footer from "@/component/Footer";
+import WhyJoinValueGrid from "@/component/events/WhyJoinValueGrid";
 
 export default function EventsPage() {
   const [activeTab, setActiveTab] = useState("all");
@@ -179,9 +180,10 @@ export default function EventsPage() {
             </div>
 
             {/* Events Grid */}
-           
           </div>
         </div>
+
+        <WhyJoinValueGrid />
 
         <Footer />
       </div>

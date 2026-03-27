@@ -65,14 +65,6 @@
                     },
                     {
                       "key": {
-                        "symbol": "dispute_window"
-                      },
-                      "val": {
-                        "u64": 86400
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "end_time"
                       },
                       "val": {
@@ -653,14 +645,6 @@
                     },
                     {
                       "key": {
-                        "symbol": "dispute_window"
-                      },
-                      "val": {
-                        "u64": 86400
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "end_time"
                       },
                       "val": {
@@ -758,14 +742,6 @@
                       },
                       "val": {
                         "u64": 2000
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "resolved_at"
-                      },
-                      "val": {
-                        "u64": 2001
                       }
                     },
                     {
@@ -868,7 +844,7 @@
                 }
               ]
             },
-            "durability": "persistent"
+            "durability": "temporary"
           }
         },
         [
@@ -891,7 +867,7 @@
                     }
                   ]
                 },
-                "durability": "persistent",
+                "durability": "temporary",
                 "val": {
                   "map": [
                     {
@@ -962,7 +938,7 @@
             },
             "ext": "v0"
           },
-          518400
+          100800
         ]
       ],
       [
@@ -1106,7 +1082,7 @@
                         "symbol": "correct_predictions"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
@@ -1122,7 +1098,7 @@
                         "symbol": "reputation_score"
                       },
                       "val": {
-                        "u32": 100
+                        "u32": 0
                       }
                     },
                     {
@@ -1130,7 +1106,7 @@
                         "symbol": "season_points"
                       },
                       "val": {
-                        "u32": 200
+                        "u32": 4
                       }
                     },
                     {

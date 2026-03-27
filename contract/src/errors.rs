@@ -112,6 +112,11 @@ pub enum InsightArenaError {
     /// Raised when a redemption attempt arrives after the usage cap is exhausted.
     InviteCodeMaxUsed = 52,
 
+    // ── User ──────────────────────────────────────────────────────────────────
+    /// No user profile exists for the given address.
+    /// Raised when a user stats lookup finds no stored profile.
+    UserNotFound = 60,
+
     // ── General ───────────────────────────────────────────────────────────────
     /// An arithmetic operation produced a value outside the valid i128/u32 range.
     /// Raised anywhere checked arithmetic (pool accumulation, payout calculation)

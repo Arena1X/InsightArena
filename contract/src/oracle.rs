@@ -80,6 +80,16 @@ pub fn resolve_market(
     Ok(())
 }
 
+pub fn update_oracle_from_governance(
+    env: &Env,
+    new_oracle: Address,
+) -> Result<(), InsightArenaError> {
+    let mut cfg = config::get_config(env)?;
+    cfg.oracle_address = new_oracle;
+    env.storage().persistent().set(&DataKey::Config, &cfg);
+    Ok(())
+}
+
 #[cfg(test)]
 mod resolve_tests {
     use soroban_sdk::testutils::{Address as _, Ledger as _};

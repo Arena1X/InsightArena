@@ -1,5 +1,6 @@
 use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 
+use crate::analytics;
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
@@ -11,11 +12,7 @@ use crate::ttl;
 // ── TTL helpers ───────────────────────────────────────────────────────────────
 
 fn bump_prediction(env: &Env, market_id: u64, predictor: &Address) {
-    env.storage().persistent().extend_ttl(
-        &DataKey::Prediction(market_id, predictor.clone()),
-        PERSISTENT_THRESHOLD,
-        PERSISTENT_BUMP,
-    );
+    ttl::extend_prediction_ttl(env, market_id, predictor);
 }
 
 fn bump_market(env: &Env, market_id: u64) {
@@ -245,6 +242,9 @@ pub fn submit_prediction(
     // ── Lock stake in escrow (transfer XLM from predictor to contract) ────────
     escrow::lock_stake(env, &predictor, stake_amount)?;
 
+    // ── Track cumulative platform volume ──────────────────────────────────────
+    analytics::add_volume(env, stake_amount);
+
     // ── Store Prediction record ───────────────────────────────────────────────
     let prediction = Prediction::new(
         market_id,
@@ -327,10 +327,16 @@ pub fn get_prediction(
         .storage()
         .persistent()
         .get(&key)
+        .or_else(|| env.storage().temporary().get(&key))
         .ok_or(InsightArenaError::PredictionNotFound)?;
 
-    // Extend TTL so an active read keeps the record alive.
-    bump_prediction(env, market_id, &predictor);
+    if env.storage().persistent().has(&key) {
+        // Before claim, keep full market-lifetime TTL.
+        bump_prediction(env, market_id, &predictor);
+    } else if env.storage().temporary().has(&key) {
+        // After claim, keep short-lived cleanup TTL.
+        ttl::shorten_prediction_ttl_after_claim(env, market_id, &predictor);
+    }
 
     Ok(prediction)
 }
@@ -351,7 +357,11 @@ pub fn get_prediction(
 pub fn has_predicted(env: &Env, market_id: u64, predictor: Address) -> bool {
     env.storage()
         .persistent()
-        .has(&DataKey::Prediction(market_id, predictor))
+        .has(&DataKey::Prediction(market_id, predictor.clone()))
+        || env
+            .storage()
+            .temporary()
+            .has(&DataKey::Prediction(market_id, predictor))
 }
 
 /// Return all [`Prediction`] records for a given market.
@@ -430,6 +440,7 @@ pub fn claim_payout(
         .storage()
         .persistent()
         .get(&prediction_key)
+        .or_else(|| env.storage().temporary().get(&prediction_key))
         .ok_or(InsightArenaError::PredictionNotFound)?;
 
     if prediction.payout_claimed {
@@ -449,7 +460,12 @@ pub fn claim_payout(
     let mut winning_pool: i128 = 0;
     for address in predictors.iter() {
         let key = DataKey::Prediction(market_id, address.clone());
-        if let Some(item) = env.storage().persistent().get::<DataKey, Prediction>(&key) {
+        if let Some(item) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Prediction>(&key)
+            .or_else(|| env.storage().temporary().get::<DataKey, Prediction>(&key))
+        {
             if item.chosen_outcome == resolved_outcome {
                 winning_pool = winning_pool
                     .checked_add(item.stake_amount)
@@ -512,8 +528,9 @@ pub fn claim_payout(
 
     prediction.payout_claimed = true;
     prediction.payout_amount = net_payout;
-    env.storage().persistent().set(&prediction_key, &prediction);
-    bump_prediction(env, market_id, &predictor);
+    env.storage().persistent().remove(&prediction_key);
+    env.storage().temporary().set(&prediction_key, &prediction);
+    ttl::shorten_prediction_ttl_after_claim(env, market_id, &predictor);
 
     update_winner_profile(env, &predictor, prediction.stake_amount, net_payout)?;
 
@@ -629,10 +646,11 @@ pub fn batch_distribute_payouts(
 
         stored_prediction.payout_claimed = true;
         stored_prediction.payout_amount = net_payout;
+        env.storage().persistent().remove(&prediction_key);
         env.storage()
-            .persistent()
+            .temporary()
             .set(&prediction_key, &stored_prediction);
-        bump_prediction(env, market_id, &stored_prediction.predictor);
+        ttl::shorten_prediction_ttl_after_claim(env, market_id, &stored_prediction.predictor);
 
         update_winner_profile(
             env,
