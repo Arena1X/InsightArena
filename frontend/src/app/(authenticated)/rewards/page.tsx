@@ -5,6 +5,7 @@ import RewardSources from "@/component/rewards/RewardSources";
 import RewardHistoryTable, {
   RewardHistoryEntry,
 } from "@/component/rewards/RewardHistoryTable";
+import UpcomingRewards from "@/component/rewards/UpcomingRewards";
 
 const MOCK_ENTRIES: RewardHistoryEntry[] = [
   {
@@ -79,6 +80,7 @@ export default function RewardsPage() {
         hasMore={hasMore}
         isLoading={isLoading}
       />
+      <UpcomingRewards />
     </div>
   );
 }
