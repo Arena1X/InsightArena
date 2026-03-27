@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod config;
+pub mod leaderboard;
 pub mod errors;
 pub mod escrow;
 pub mod dispute;
@@ -300,6 +301,12 @@ impl InsightArenaContract {
     /// Returns `0` if no fees have been collected yet. Never panics.
     pub fn get_treasury_balance(env: Env) -> i128 {
         escrow::get_treasury_balance(&env)
+    }
+
+    /// Return a user's season points for a given season id.
+    /// Returns 0 for unknown users or non-active seasons. Never panics.
+    pub fn get_user_season_points(env: Env, user: Address, season_id: u32) -> u32 {
+        leaderboard::get_user_season_points(env, user, season_id)
     }
 
     // ── Invite ────────────────────────────────────────────────────────────────

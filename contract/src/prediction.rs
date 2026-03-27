@@ -3,6 +3,7 @@ use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
+use crate::leaderboard;
 use crate::season;
 use crate::storage_types::{DataKey, Market, Prediction, UserProfile};
 use crate::ttl;
@@ -118,6 +119,7 @@ fn compute_payout_breakdown(
 fn update_winner_profile(
     env: &Env,
     predictor: &Address,
+    stake_amount: i128,
     net_payout: i128,
 ) -> Result<(), InsightArenaError> {
     let user_key = DataKey::User(predictor.clone());
@@ -132,16 +134,24 @@ fn update_winner_profile(
         .checked_add(net_payout)
         .ok_or(InsightArenaError::Overflow)?;
 
-    let points_i128 = net_payout
-        .checked_div(10_000_000)
+    profile.correct_predictions = profile
+        .correct_predictions
+        .checked_add(1)
         .ok_or(InsightArenaError::Overflow)?;
-    if points_i128 > u32::MAX as i128 {
-        return Err(InsightArenaError::Overflow);
-    }
 
+    profile.reputation_score = if profile.total_predictions == 0 {
+        0
+    } else {
+        ((profile.correct_predictions as u128)
+            .saturating_mul(100_u128)
+            .saturating_div(profile.total_predictions as u128)) as u32
+    };
+
+    let earned =
+        leaderboard::calculate_points(stake_amount, profile.correct_predictions, profile.total_predictions);
     profile.season_points = profile
         .season_points
-        .checked_add(points_i128 as u32)
+        .checked_add(earned)
         .ok_or(InsightArenaError::Overflow)?;
 
     env.storage().persistent().set(&user_key, &profile);
@@ -506,33 +516,7 @@ pub fn claim_payout(
     env.storage().persistent().set(&prediction_key, &prediction);
     bump_prediction(env, market_id, &predictor);
 
-    let user_key = DataKey::User(predictor.clone());
-    let mut profile: UserProfile = env
-        .storage()
-        .persistent()
-        .get(&user_key)
-        .unwrap_or_else(|| UserProfile::new(predictor.clone(), env.ledger().timestamp()));
-
-    profile.total_winnings = profile
-        .total_winnings
-        .checked_add(net_payout)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    let points_i128 = net_payout
-        .checked_div(10_000_000)
-        .ok_or(InsightArenaError::Overflow)?;
-    if points_i128 > u32::MAX as i128 {
-        return Err(InsightArenaError::Overflow);
-    }
-    let points: u32 = points_i128 as u32;
-    profile.season_points = profile
-        .season_points
-        .checked_add(points)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    env.storage().persistent().set(&user_key, &profile);
-    bump_user(env, &predictor);
-    season::track_user_profile(env, &predictor);
+    update_winner_profile(env, &predictor, prediction.stake_amount, net_payout)?;
 
     emit_payout_claimed(
         env,
@@ -651,7 +635,12 @@ pub fn batch_distribute_payouts(
             .set(&prediction_key, &stored_prediction);
         bump_prediction(env, market_id, &stored_prediction.predictor);
 
-        update_winner_profile(env, &stored_prediction.predictor, net_payout)?;
+        update_winner_profile(
+            env,
+            &stored_prediction.predictor,
+            stored_prediction.stake_amount,
+            net_payout,
+        )?;
 
         processed = processed
             .checked_add(1)
