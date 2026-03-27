@@ -2,6 +2,7 @@ use soroban_sdk::{Address, Env, Symbol};
 
 use crate::config;
 use crate::errors::InsightArenaError;
+use crate::events;
 use crate::market;
 use crate::storage_types::DataKey;
 
@@ -70,15 +71,15 @@ pub fn resolve_market(
     );
 
     // ── Emit MarketResolved event ─────────────────────────────────────────────
-    market::emit_market_resolved(&env, market_id, resolved_outcome);
+    events::emit_market_resolved(&env, market_id, resolved_outcome);
 
     Ok(())
 }
 
 #[cfg(test)]
 mod resolve_tests {
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
-    use soroban_sdk::{symbol_short, vec, Address, Env, String};
+    use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
+    use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, String, Symbol};
 
     use crate::market::CreateMarketParams;
     use crate::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
@@ -133,6 +134,10 @@ mod resolve_tests {
         let market = client.get_market(&id);
         assert!(market.is_resolved);
         assert_eq!(market.resolved_outcome, Some(symbol_short!("yes")));
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("mkt_rslvd"));
     }
 
     #[test]

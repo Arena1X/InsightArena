@@ -1,8 +1,9 @@
-use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Env, String, Symbol, Vec};
 
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
+use crate::events;
 use crate::storage_types::{DataKey, Market, Prediction};
 use crate::ttl;
 
@@ -55,36 +56,6 @@ fn next_market_id(env: &Env) -> Result<u64, InsightArenaError> {
     env.storage().persistent().set(&DataKey::MarketCount, &next);
     bump_counter(env);
     Ok(next)
-}
-
-// ── Event emission ────────────────────────────────────────────────────────────
-
-fn emit_market_created(env: &Env, market_id: u64, creator: &Address, end_time: u64) {
-    env.events().publish(
-        (symbol_short!("mkt"), symbol_short!("created")),
-        (market_id, creator.clone(), end_time),
-    );
-}
-
-fn emit_market_closed(env: &Env, market_id: u64, caller: &Address) {
-    env.events().publish(
-        (symbol_short!("mkt"), symbol_short!("closed")),
-        (market_id, caller.clone()),
-    );
-}
-
-fn emit_market_cancelled(env: &Env, market_id: u64, caller: &Address) {
-    env.events().publish(
-        (symbol_short!("mkt"), symbol_short!("canceld")),
-        (market_id, caller.clone()),
-    );
-}
-
-pub fn emit_market_resolved(env: &Env, market_id: u64, resolved_outcome: Symbol) {
-    env.events().publish(
-        (symbol_short!("mkt"), symbol_short!("reslvd")),
-        (market_id, resolved_outcome),
-    );
 }
 
 // ── Entry-point logic ─────────────────────────────────────────────────────────
@@ -168,7 +139,7 @@ pub fn create_market(
     bump_market(env, market_id);
 
     // ── Emit MarketCreated event ──────────────────────────────────────────────
-    emit_market_created(env, market_id, &creator, params.end_time);
+    events::emit_market_created(env, market_id, &creator, params.end_time);
 
     Ok(market_id)
 }
@@ -271,7 +242,7 @@ pub fn close_market(env: &Env, caller: Address, market_id: u64) -> Result<(), In
     bump_market(env, market_id);
 
     // ── Emit MarketClosed event ───────────────────────────────────────────────
-    emit_market_closed(env, market_id, &caller);
+    events::emit_market_closed(env, market_id);
 
     Ok(())
 }
@@ -335,7 +306,7 @@ pub fn cancel_market(env: &Env, caller: Address, market_id: u64) -> Result<(), I
     }
 
     // ── Emit MarketCancelled event ────────────────────────────────────────────
-    emit_market_cancelled(env, market_id, &caller);
+    events::emit_market_cancelled(env, market_id);
 
     Ok(())
 }
@@ -344,8 +315,8 @@ pub fn cancel_market(env: &Env, caller: Address, market_id: u64) -> Result<(), I
 
 #[cfg(test)]
 mod market_tests {
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
-    use soroban_sdk::{symbol_short, vec, Address, Env, String};
+    use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
+    use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, String, Symbol};
 
     use crate::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 
@@ -397,6 +368,10 @@ mod market_tests {
 
         let id2 = client.create_market(&creator, &default_params(&env));
         assert_eq!(id2, 2);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("mkt_crtd"));
     }
 
     #[test]
@@ -675,6 +650,10 @@ mod market_tests {
         let market = client.get_market(&id);
         assert!(market.is_closed);
         assert!(!market.is_resolved);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("mkt_clsd"));
     }
 
     // (b-alt) close_market called after end_time by the admin → success
@@ -842,6 +821,10 @@ mod market_tests {
         let market = client.get_market(&id);
         assert!(market.is_cancelled);
         assert!(!market.is_resolved);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("mkt_cncl"));
     }
 
     // (f) Cancel with multiple predictors → all stakes refunded, balances restored.

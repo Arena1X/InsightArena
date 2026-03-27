@@ -1,9 +1,10 @@
 use crate::errors::InsightArenaError;
+use crate::events;
 use crate::market;
 use crate::storage_types::{DataKey, InviteCode};
 use crate::ttl;
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{symbol_short, Address, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{Address, Env, IntoVal, Symbol, Val, Vec};
 
 /// Generate a unique 8-character invite code for a private market.
 ///
@@ -77,10 +78,7 @@ pub fn generate_invite_code(
     ttl::extend_invite_ttl(&env, &code);
 
     // 5. Emit Event
-    env.events().publish(
-        (symbol_short!("invite"), symbol_short!("gen")),
-        (market_id, code.clone()),
-    );
+    events::emit_invite_generated(&env, market_id, code.clone());
 
     Ok(code)
 }
@@ -132,12 +130,42 @@ pub fn redeem_invite_code(
     ttl::extend_invite_ttl(&env, &code);
     ttl::extend_market_ttl(&env, invite.market_id);
 
-    env.events().publish(
-        (symbol_short!("invite"), symbol_short!("redeemd")),
-        (code.clone(), invite.market_id, invitee),
-    );
+    events::emit_invite_redeemed(&env, invite.market_id, &invitee);
 
     Ok(invite.market_id)
+}
+
+/// Revoke an invite code so it can no longer be redeemed.
+///
+/// Validation:
+/// 1. `creator` must authenticate.
+/// 2. Invite code must exist.
+/// 3. `creator` must match the invite code owner.
+pub fn revoke_invite_code(
+    env: Env,
+    creator: Address,
+    code: Symbol,
+) -> Result<(), InsightArenaError> {
+    creator.require_auth();
+
+    let invite_key = DataKey::InviteCode(code.clone());
+    let mut invite: InviteCode = env
+        .storage()
+        .persistent()
+        .get(&invite_key)
+        .ok_or(InsightArenaError::InvalidInviteCode)?;
+
+    if invite.creator != creator {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    invite.is_active = false;
+    env.storage().persistent().set(&invite_key, &invite);
+    ttl::extend_invite_ttl(&env, &code);
+
+    events::emit_invite_revoked(&env, code);
+
+    Ok(())
 }
 
 fn byte_to_char(b: u8) -> u8 {
@@ -154,8 +182,8 @@ mod tests {
     use crate::market::CreateMarketParams;
     use crate::InsightArenaContract;
     use crate::InsightArenaContractClient;
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
-    use soroban_sdk::{vec, String};
+    use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
+    use soroban_sdk::{symbol_short, vec, IntoVal, String, Symbol};
 
     fn setup_test(env: &Env) -> (Address, Address, u64, InsightArenaContractClient<'_>) {
         env.mock_all_auths();
@@ -209,6 +237,10 @@ mod tests {
         assert_eq!(stored.max_uses, 10);
         assert_eq!(stored.current_uses, 0);
         assert!(stored.is_active);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("inv_gen"));
     }
 
     #[test]
@@ -272,6 +304,43 @@ mod tests {
                 .unwrap()
         });
         assert!(allowlist.iter().any(|address| address == invitee));
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("inv_redm"));
+    }
+
+    #[test]
+    fn test_revoke_invite_code_success() {
+        let env = Env::default();
+        let (creator, _, market_id, client) = setup_test(&env);
+
+        let code = client.generate_invite_code(&creator, &market_id, &2, &3600);
+        client.revoke_invite_code(&creator, &code);
+
+        let stored_invite: InviteCode = env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::InviteCode(code.clone()))
+                .unwrap()
+        });
+        assert!(!stored_invite.is_active);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("inv_rvok"));
+    }
+
+    #[test]
+    fn test_revoke_invite_code_unauthorized() {
+        let env = Env::default();
+        let (creator, _, market_id, client) = setup_test(&env);
+        let stranger = Address::generate(&env);
+
+        let code = client.generate_invite_code(&creator, &market_id, &2, &3600);
+        let result = client.try_revoke_invite_code(&stranger, &code);
+
+        assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
     }
 
     #[test]

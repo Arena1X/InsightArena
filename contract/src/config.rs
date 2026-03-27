@@ -1,6 +1,7 @@
 use soroban_sdk::{contracttype, Address, Env};
 
 use crate::errors::InsightArenaError;
+use crate::events;
 use crate::storage_types::DataKey;
 use crate::ttl;
 
@@ -139,6 +140,23 @@ pub fn transfer_admin(env: &Env, new_admin: Address) -> Result<(), InsightArenaE
     config.admin = new_admin;
     env.storage().persistent().set(&DataKey::Config, &config);
     bump_config(env);
+
+    Ok(())
+}
+
+/// Update the trusted oracle address. Caller must be the current admin.
+pub fn update_oracle(env: &Env, new_oracle: Address) -> Result<(), InsightArenaError> {
+    let mut config = load_config(env)?;
+
+    config.admin.require_auth();
+
+    let old_oracle = config.oracle_address.clone();
+    config.oracle_address = new_oracle.clone();
+
+    env.storage().persistent().set(&DataKey::Config, &config);
+    bump_config(env);
+
+    events::emit_oracle_updated(env, &old_oracle, &new_oracle);
 
     Ok(())
 }

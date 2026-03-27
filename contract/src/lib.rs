@@ -3,6 +3,7 @@
 pub mod config;
 pub mod errors;
 pub mod escrow;
+mod events;
 pub mod invite;
 pub mod market;
 pub mod oracle;
@@ -88,6 +89,11 @@ impl InsightArenaContract {
     /// Transfer admin rights to `new_admin`. Caller must be the current admin.
     pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), InsightArenaError> {
         config::transfer_admin(&env, new_admin)
+    }
+
+    /// Update the trusted oracle address. Caller must be the current admin.
+    pub fn update_oracle(env: Env, new_oracle: Address) -> Result<(), InsightArenaError> {
+        config::update_oracle(&env, new_oracle)
     }
 
     // ── Market ────────────────────────────────────────────────────────────────
@@ -270,6 +276,15 @@ impl InsightArenaContract {
         invite::redeem_invite_code(env, invitee, code)
     }
 
+    /// Revoke an invite code so it can no longer be redeemed.
+    pub fn revoke_invite_code(
+        env: Env,
+        creator: Address,
+        code: Symbol,
+    ) -> Result<(), InsightArenaError> {
+        invite::revoke_invite_code(env, creator, code)
+    }
+
     /// List all season IDs which have snapshots available.
     pub fn list_snapshot_seasons(env: Env) -> Vec<u32> {
         env.storage()
@@ -356,8 +371,8 @@ impl InsightArenaContract {
 
 #[cfg(test)]
 mod config_tests {
-    use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::{Address, Env};
+    use soroban_sdk::testutils::{Address as _, Events};
+    use soroban_sdk::{symbol_short, Address, Env, IntoVal, Symbol};
 
     use super::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 
@@ -432,6 +447,27 @@ mod config_tests {
         // Must succeed after resuming
         client.get_config();
     }
+
+    #[test]
+    fn update_oracle_updates_config_and_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let new_oracle = Address::generate(&env);
+
+        client.initialize(&admin, &oracle, &200_u32, &register_token(&env));
+        client.update_oracle(&new_oracle);
+
+        let cfg = client.get_config();
+        assert_eq!(cfg.oracle_address, new_oracle);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("orc_upd"));
+    }
+
 }
 
 #[cfg(test)]

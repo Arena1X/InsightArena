@@ -1,8 +1,9 @@
-use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
+use soroban_sdk::{Address, Env, Symbol, Vec};
 
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
+use crate::events;
 use crate::season;
 use crate::storage_types::{DataKey, Market, Prediction, UserProfile};
 use crate::ttl;
@@ -31,48 +32,6 @@ fn bump_predictor_list(env: &Env, market_id: u64) {
 
 fn bump_user(env: &Env, address: &Address) {
     ttl::extend_user_ttl(env, address);
-}
-
-// ── Event emission ────────────────────────────────────────────────────────────
-
-fn emit_prediction_submitted(
-    env: &Env,
-    market_id: u64,
-    predictor: &Address,
-    outcome: &Symbol,
-    amount: i128,
-) {
-    env.events().publish(
-        (symbol_short!("pred"), symbol_short!("submitd")),
-        (market_id, predictor.clone(), outcome.clone(), amount),
-    );
-}
-
-fn emit_payout_claimed(
-    env: &Env,
-    market_id: u64,
-    predictor: &Address,
-    net_payout: i128,
-    protocol_fee: i128,
-    creator_fee: i128,
-) {
-    env.events().publish(
-        (symbol_short!("pred"), symbol_short!("payclmd")),
-        (
-            market_id,
-            predictor.clone(),
-            net_payout,
-            protocol_fee,
-            creator_fee,
-        ),
-    );
-}
-
-fn emit_batch_payout_complete(env: &Env, market_id: u64, caller: &Address, processed: u32) {
-    env.events().publish(
-        (symbol_short!("pred"), symbol_short!("batchpay")),
-        (market_id, caller.clone(), processed),
-    );
 }
 
 fn compute_payout_breakdown(
@@ -292,7 +251,7 @@ pub fn submit_prediction(
     season::track_user_profile(env, &predictor);
 
     // ── Emit PredictionSubmitted event ────────────────────────────────────────
-    emit_prediction_submitted(env, market_id, &predictor, &chosen_outcome, stake_amount);
+    events::emit_prediction_submitted(env, market_id, &predictor, &chosen_outcome, stake_amount);
 
     Ok(())
 }
@@ -534,14 +493,7 @@ pub fn claim_payout(
     bump_user(env, &predictor);
     season::track_user_profile(env, &predictor);
 
-    emit_payout_claimed(
-        env,
-        market_id,
-        &predictor,
-        net_payout,
-        protocol_fee,
-        creator_fee,
-    );
+    events::emit_payout_claimed(env, market_id, &predictor, net_payout);
 
     Ok(net_payout)
 }
@@ -580,7 +532,7 @@ pub fn batch_distribute_payouts(
 
     let predictions = list_market_predictions(env, market_id);
     if predictions.is_empty() {
-        emit_batch_payout_complete(env, market_id, &caller, 0);
+        events::emit_batch_payout(env, market_id, 0);
         return Ok(0);
     }
 
@@ -660,7 +612,7 @@ pub fn batch_distribute_payouts(
 
     escrow::assert_escrow_solvent(env)?;
 
-    emit_batch_payout_complete(env, market_id, &caller, processed);
+    events::emit_batch_payout(env, market_id, processed);
 
     Ok(processed)
 }
@@ -669,9 +621,9 @@ pub fn batch_distribute_payouts(
 
 #[cfg(test)]
 mod prediction_tests {
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
+    use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
     use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-    use soroban_sdk::{symbol_short, vec, Address, Env, String};
+    use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, String, Symbol};
 
     use crate::market::CreateMarketParams;
     use crate::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
@@ -752,6 +704,10 @@ mod prediction_tests {
         assert_eq!(pred.stake_amount, 20_000_000);
         assert!(!pred.payout_claimed);
         assert_eq!(pred.payout_amount, 0);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("pred_sub"));
     }
 
     // ── Validation: MarketNotFound ────────────────────────────────────────────
@@ -1516,6 +1472,10 @@ mod prediction_tests {
         });
         assert_eq!(profile.total_winnings, 48_500_000);
         assert_eq!(profile.season_points, 4);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("pay_clmd"));
     }
 
     #[test]
@@ -1715,6 +1675,10 @@ mod prediction_tests {
         let loser_prediction = client.get_prediction(&market_id, &loser);
         assert!(winner_prediction.payout_claimed);
         assert!(!loser_prediction.payout_claimed);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("btch_pay"));
     }
 
     #[test]
