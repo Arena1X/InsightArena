@@ -61,7 +61,9 @@ pub fn raise_dispute(
     }
 
     let now = env.ledger().timestamp();
-    let resolved_at = market.resolved_at.ok_or(InsightArenaError::MarketNotResolved)?;
+    let resolved_at = market
+        .resolved_at
+        .ok_or(InsightArenaError::MarketNotResolved)?;
     let deadline = resolved_at
         .checked_add(market.dispute_window)
         .ok_or(InsightArenaError::Overflow)?;
@@ -226,7 +228,6 @@ mod dispute_tests {
                 .get::<DataKey, crate::storage_types::Dispute>(&DataKey::Dispute(id))
         });
         assert!(stored.is_some());
-
     }
 
     #[test]
@@ -257,7 +258,6 @@ mod dispute_tests {
         assert!(!market.is_resolved);
         assert_eq!(market.resolved_outcome, None);
         assert_eq!(market.resolved_at, None);
-
     }
 
     #[test]
@@ -281,7 +281,5 @@ mod dispute_tests {
         client.resolve_dispute(&admin, &id, &false);
         let treasury_after = client.get_treasury_balance();
         assert_eq!(treasury_after, treasury_before + bond);
-
     }
 }
-

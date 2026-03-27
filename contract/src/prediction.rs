@@ -145,8 +145,11 @@ fn update_winner_profile(
             .saturating_div(profile.total_predictions as u128)) as u32
     };
 
-    let earned =
-        leaderboard::calculate_points(stake_amount, profile.correct_predictions, profile.total_predictions);
+    let earned = leaderboard::calculate_points(
+        stake_amount,
+        profile.correct_predictions,
+        profile.total_predictions,
+    );
     profile.season_points = profile
         .season_points
         .checked_add(earned)

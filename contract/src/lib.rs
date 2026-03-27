@@ -1,11 +1,11 @@
 #![no_std]
 
 pub mod config;
-pub mod leaderboard;
+pub mod dispute;
 pub mod errors;
 pub mod escrow;
-pub mod dispute;
 pub mod invite;
+pub mod leaderboard;
 pub mod market;
 pub mod oracle;
 pub mod prediction;

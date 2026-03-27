@@ -91,4 +91,3 @@ mod tests {
         assert_eq!(calculate_points(-1, 1, 1), 0);
     }
 }
-
