@@ -50,6 +50,26 @@ pub enum DataKey {
     EscrowLock,
     /// Keyed by creator address. Tracks market creation/resolution stats for reputation.
     CreatorStats(Address),
+    /// Singleton. Tracks cumulative XLM volume staked across all predictions.
+    PlatformVolume,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MarketStats {
+    pub total_pool: i128,
+    pub participant_count: u32,
+    pub leading_outcome: Symbol,
+    pub leading_outcome_pool: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformStats {
+    pub total_markets: u64,
+    pub total_volume_xlm: i128,
+    pub active_users: u32,
+    pub treasury_balance: i128,
 }
 
 #[contracttype]

@@ -1,5 +1,6 @@
 use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 
+use crate::analytics;
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
@@ -227,6 +228,9 @@ pub fn submit_prediction(
 
     // ── Lock stake in escrow (transfer XLM from predictor to contract) ────────
     escrow::lock_stake(env, &predictor, stake_amount)?;
+
+    // ── Track cumulative platform volume ──────────────────────────────────────
+    analytics::add_volume(env, stake_amount);
 
     // ── Store Prediction record ───────────────────────────────────────────────
     let prediction = Prediction::new(
