@@ -4,6 +4,8 @@ use crate::storage_types::DataKey;
 
 // ~30 days at ~6s/ledger for frequently accessed market state.
 pub const LEDGER_BUMP_MARKET: u32 = 432_000;
+// ~7 days for prediction records after payout is claimed.
+pub const LEDGER_BUMP_PREDICTION_CLAIMED: u32 = 100_800;
 // ~90 days for long-lived user profiles.
 pub const LEDGER_BUMP_USER: u32 = 1_296_000;
 // ~7 days for short-lived invite code records.
@@ -20,6 +22,22 @@ pub fn extend_market_ttl(env: &Env, market_id: u64) {
         &DataKey::Market(market_id),
         threshold(LEDGER_BUMP_MARKET),
         LEDGER_BUMP_MARKET,
+    );
+}
+
+pub fn extend_prediction_ttl(env: &Env, market_id: u64, predictor: &Address) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::Prediction(market_id, predictor.clone()),
+        threshold(LEDGER_BUMP_MARKET),
+        LEDGER_BUMP_MARKET,
+    );
+}
+
+pub fn shorten_prediction_ttl_after_claim(env: &Env, market_id: u64, predictor: &Address) {
+    env.storage().temporary().extend_ttl(
+        &DataKey::Prediction(market_id, predictor.clone()),
+        threshold(LEDGER_BUMP_PREDICTION_CLAIMED),
+        LEDGER_BUMP_PREDICTION_CLAIMED,
     );
 }
 
@@ -69,7 +87,11 @@ pub fn extend_season_ttl(env: &Env, season_id: u32) {
 
 #[cfg(test)]
 mod tests {
-    use soroban_sdk::testutils::{storage::Persistent as _, Address as _};
+    use soroban_sdk::testutils::{
+        storage::{Persistent as _, Temporary as _},
+        Address as _, Ledger as _,
+    };
+    use soroban_sdk::token::StellarAssetClient;
     use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
 
     use crate::market::CreateMarketParams;
@@ -90,6 +112,10 @@ mod tests {
         env.mock_all_auths();
         client.initialize(&admin, &oracle, &200_u32, &register_token(env));
         client
+    }
+
+    fn fund(env: &Env, token: &Address, recipient: &Address, amount: i128) {
+        StellarAssetClient::new(env, token).mint(recipient, &amount);
     }
 
     #[test]
@@ -124,5 +150,56 @@ mod tests {
         });
 
         assert!(ttl >= super::LEDGER_BUMP_MARKET - 14_400);
+    }
+
+    #[test]
+    fn prediction_ttl_extends_before_claim_and_shortens_after_claim() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+        let loser = Address::generate(&env);
+        let token = client.get_config().xlm_token;
+
+        let params = CreateMarketParams {
+            title: String::from_str(&env, "TTL Pred Test"),
+            description: String::from_str(&env, "Prediction TTL lifecycle"),
+            category: Symbol::new(&env, "Sports"),
+            outcomes: vec![&env, symbol_short!("yes"), symbol_short!("no")],
+            end_time: env.ledger().timestamp() + 1000,
+            resolution_time: env.ledger().timestamp() + 2000,
+            creator_fee_bps: 100,
+            min_stake: 10_000_000,
+            max_stake: 100_000_000,
+            is_public: true,
+        };
+
+        let market_id = client.create_market(&creator, &params);
+        fund(&env, &token, &winner, 30_000_000);
+        fund(&env, &token, &loser, 30_000_000);
+        client.submit_prediction(&winner, &market_id, &symbol_short!("yes"), &20_000_000);
+        client.submit_prediction(&loser, &market_id, &symbol_short!("no"), &20_000_000);
+
+        client.get_prediction(&market_id, &winner);
+        let full_ttl = env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Prediction(market_id, winner.clone()))
+        });
+        assert!(full_ttl >= super::LEDGER_BUMP_MARKET - 14_400);
+
+        env.ledger().set_timestamp(env.ledger().timestamp() + 2_000);
+        let oracle = client.get_config().oracle_address;
+        client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+        client.claim_payout(&winner, &market_id);
+
+        let claimed_ttl = env.as_contract(&client.address, || {
+            env.storage()
+                .temporary()
+                .get_ttl(&DataKey::Prediction(market_id, winner.clone()))
+        });
+        assert!(claimed_ttl >= super::LEDGER_BUMP_PREDICTION_CLAIMED - 14_400);
+        assert!(claimed_ttl < super::LEDGER_BUMP_MARKET - 14_400);
     }
 }

@@ -40,6 +40,12 @@ pub enum DataKey {
     Categories,
     /// Keyed by category symbol. Stores market IDs in creation order for that category.
     CategoryIndex(Symbol),
+    /// Keyed by proposal_id. Stores governance proposal metadata/state.
+    Proposal(u32),
+    /// Singleton counter. Tracks the total number of governance proposals.
+    ProposalCount,
+    /// Keyed by (proposal_id, voter). Tracks whether a voter has voted on a proposal.
+    ProposalVote(u32, Address),
     /// Temporary storage lock for escrow operations (prevents reentrancy)
     EscrowLock,
     /// Keyed by market_id. Stores an active dispute (if any) for that market.
