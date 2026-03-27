@@ -2,6 +2,7 @@ use soroban_sdk::{token, Address, Env, Vec};
 
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
+use crate::security;
 use crate::storage_types::{DataKey, Market, Prediction};
 
 fn bump_treasury(env: &Env) {
@@ -24,7 +25,10 @@ fn bump_treasury(env: &Env) {
 /// Token transfer panics are handled by the Soroban runtime and surface as
 /// contract failures.
 pub fn lock_stake(env: &Env, from: &Address, amount: i128) -> Result<(), InsightArenaError> {
+    security::acquire_escrow_lock(env)?;
+
     if amount <= 0 {
+        security::release_escrow_lock(env);
         return Err(InsightArenaError::InvalidInput);
     }
 
@@ -36,6 +40,8 @@ pub fn lock_stake(env: &Env, from: &Address, amount: i128) -> Result<(), Insight
         &env.current_contract_address(),
         &amount,
     );
+
+    security::release_escrow_lock(env);
     Ok(())
 }
 
@@ -52,7 +58,10 @@ pub fn lock_stake(env: &Env, from: &Address, amount: i128) -> Result<(), Insight
 /// - `EscrowEmpty` when the contract balance cannot cover the refund.
 /// - Propagates any error returned by [`config::get_config`].
 pub fn refund(env: &Env, to: &Address, amount: i128) -> Result<(), InsightArenaError> {
+    security::acquire_escrow_lock(env)?;
+
     if amount <= 0 {
+        security::release_escrow_lock(env);
         return Err(InsightArenaError::InvalidInput);
     }
 
@@ -60,17 +69,14 @@ pub fn refund(env: &Env, to: &Address, amount: i128) -> Result<(), InsightArenaE
     let client = token::Client::new(env, &cfg.xlm_token);
     let contract = env.current_contract_address();
 
-    // Refund transfers are only emitted by the cancellation path. Keeping the
-    // escrow balance check here makes the cancel_market loop fail fast if the
-    // contract is missing any participant principal.
     if client.balance(&contract) < amount {
+        security::release_escrow_lock(env);
         return Err(InsightArenaError::EscrowEmpty);
     }
 
-    // The transfer path intentionally mirrors release_payout, but remains a
-    // distinct function so refund activity is auditable independent of winner
-    // payout logic.
     client.transfer(&contract, to, &amount);
+
+    security::release_escrow_lock(env);
     Ok(())
 }
 
@@ -79,7 +85,10 @@ pub fn refund(env: &Env, to: &Address, amount: i128) -> Result<(), InsightArenaE
 /// This is semantically distinct from `refund` (used for market cancellation),
 /// but uses the same escrow transfer path from contract balance to recipient.
 pub fn release_payout(env: &Env, to: &Address, amount: i128) -> Result<(), InsightArenaError> {
+    security::acquire_escrow_lock(env)?;
+
     if amount <= 0 {
+        security::release_escrow_lock(env);
         return Err(InsightArenaError::InvalidInput);
     }
 
@@ -88,10 +97,13 @@ pub fn release_payout(env: &Env, to: &Address, amount: i128) -> Result<(), Insig
     let contract = env.current_contract_address();
 
     if client.balance(&contract) < amount {
+        security::release_escrow_lock(env);
         return Err(InsightArenaError::EscrowEmpty);
     }
 
     client.transfer(&contract, to, &amount);
+
+    security::release_escrow_lock(env);
     Ok(())
 }
 
@@ -222,6 +234,7 @@ pub fn get_treasury_balance(env: &Env) -> i128 {
         .get(&DataKey::Treasury)
         .unwrap_or(0)
 }
+
 #[cfg(test)]
 mod escrow_tests {
     use soroban_sdk::testutils::Address as _;
@@ -257,14 +270,14 @@ mod escrow_tests {
 
     fn seed_unresolved_market(env: &Env, client: &InsightArenaContractClient<'_>, market_id: u64) {
         use crate::storage_types::Market;
-        use soroban_sdk::{symbol_short, vec, String};
+        use soroban_sdk::{symbol_short, vec, String, Symbol};
 
         let market = Market::new(
             market_id,
             Address::generate(env),
             String::from_str(env, "seeded market"),
             String::from_str(env, "seeded for escrow tests"),
-            symbol_short!("audit"),
+            Symbol::new(env, "Sports"),
             vec![env, symbol_short!("yes"), symbol_short!("no")],
             env.ledger().timestamp(),
             env.ledger().timestamp() + 100,

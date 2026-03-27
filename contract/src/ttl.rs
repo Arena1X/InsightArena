@@ -70,7 +70,7 @@ pub fn extend_season_ttl(env: &Env, season_id: u32) {
 #[cfg(test)]
 mod tests {
     use soroban_sdk::testutils::{storage::Persistent as _, Address as _};
-    use soroban_sdk::{symbol_short, vec, Address, Env, String};
+    use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
 
     use crate::market::CreateMarketParams;
     use crate::storage_types::DataKey;
@@ -102,7 +102,7 @@ mod tests {
         let params = CreateMarketParams {
             title: String::from_str(&env, "TTL Test"),
             description: String::from_str(&env, "TTL Test Description"),
-            category: symbol_short!("test"),
+            category: Symbol::new(&env, "Sports"),
             outcomes: vec![&env, symbol_short!("yes"), symbol_short!("no")],
             end_time: env.ledger().timestamp() + 1_000,
             resolution_time: env.ledger().timestamp() + 2_000,

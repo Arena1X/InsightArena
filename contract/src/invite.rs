@@ -176,6 +176,7 @@ fn byte_to_char(b: u8) -> u8 {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;

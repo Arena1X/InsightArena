@@ -9,9 +9,9 @@ pub mod market;
 pub mod oracle;
 pub mod prediction;
 pub mod season;
+pub mod security;
 pub mod storage_types;
 pub mod ttl;
-
 pub use crate::config::Config;
 pub use crate::errors::InsightArenaError;
 pub use crate::market::CreateMarketParams;
@@ -109,6 +109,39 @@ impl InsightArenaContract {
         params: CreateMarketParams,
     ) -> Result<u64, InsightArenaError> {
         market::create_market(&env, creator, params)
+    }
+
+    /// Add a category to the admin-managed whitelist used during market creation.
+    pub fn add_category(
+        env: Env,
+        admin: Address,
+        category: Symbol,
+    ) -> Result<(), InsightArenaError> {
+        market::add_category(&env, admin, category)
+    }
+
+    /// Remove a category from the whitelist for future market creation.
+    pub fn remove_category(
+        env: Env,
+        admin: Address,
+        category: Symbol,
+    ) -> Result<(), InsightArenaError> {
+        market::remove_category(&env, admin, category)
+    }
+
+    /// Return the current category whitelist.
+    pub fn list_categories(env: Env) -> Vec<Symbol> {
+        market::list_categories(&env)
+    }
+
+    /// Return markets for a category using a zero-based offset in that category's index.
+    pub fn get_markets_by_category(
+        env: Env,
+        category: Symbol,
+        start: u64,
+        limit: u32,
+    ) -> Vec<Market> {
+        market::get_markets_by_category(&env, category, start, limit)
     }
 
     /// Fetch a market by ID. Returns `MarketNotFound` if it does not exist.

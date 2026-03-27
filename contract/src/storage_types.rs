@@ -36,6 +36,12 @@ pub enum DataKey {
     SeasonCount,
     /// Emergency pause flag. Used to halt sensitive operations across the platform.
     Paused,
+    /// Singleton category whitelist stored in instance storage.
+    Categories,
+    /// Keyed by category symbol. Stores market IDs in creation order for that category.
+    CategoryIndex(Symbol),
+    /// Temporary storage lock for escrow operations (prevents reentrancy)
+    EscrowLock,
 }
 
 #[contracttype]

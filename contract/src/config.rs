@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, Address, Env, Symbol, Vec};
 
 use crate::errors::InsightArenaError;
 use crate::events;
@@ -79,8 +79,25 @@ pub fn initialize(
 
     env.storage().persistent().set(&DataKey::Config, &config);
     bump_config(env);
+    env.storage()
+        .instance()
+        .set(&DataKey::Categories, &default_categories(env));
+    env.storage()
+        .instance()
+        .extend_ttl(PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
 
     Ok(())
+}
+
+pub(crate) fn default_categories(env: &Env) -> Vec<Symbol> {
+    let mut categories = Vec::new(env);
+    categories.push_back(Symbol::new(env, "Sports"));
+    categories.push_back(Symbol::new(env, "Crypto"));
+    categories.push_back(Symbol::new(env, "Politics"));
+    categories.push_back(Symbol::new(env, "Entertainment"));
+    categories.push_back(Symbol::new(env, "Science"));
+    categories.push_back(Symbol::new(env, "Other"));
+    categories
 }
 
 /// Return the current global [`Config`] and extend its TTL.

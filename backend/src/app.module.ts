@@ -19,6 +19,7 @@ import { CompetitionsModule } from './competitions/competitions.module';
 import { LeaderboardModule } from './leaderboard/leaderboard.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { SorobanModule } from './soroban/soroban.module';
+import { SeasonsModule } from './seasons/seasons.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { SorobanModule } from './soroban/soroban.module';
     MarketsModule,
     PredictionsModule,
     CompetitionsModule,
+    SeasonsModule,
     LeaderboardModule,
     NotificationsModule,
     SorobanModule,

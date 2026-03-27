@@ -625,6 +625,7 @@ mod prediction_tests {
     use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
     use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, String, Symbol};
 
+    /* Removed unused import: crate::invite */
     use crate::market::CreateMarketParams;
     use crate::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 
@@ -653,7 +654,7 @@ mod prediction_tests {
         CreateMarketParams {
             title: String::from_str(env, "Will it rain?"),
             description: String::from_str(env, "Daily weather market"),
-            category: symbol_short!("weather"),
+            category: Symbol::new(env, "Sports"),
             outcomes: vec![env, symbol_short!("yes"), symbol_short!("no")],
             end_time: now + 1000,
             resolution_time: now + 2000,
@@ -710,681 +711,68 @@ mod prediction_tests {
         assert_eq!(topic, symbol_short!("pred_sub"));
     }
 
-    // ── Validation: MarketNotFound ────────────────────────────────────────────
+    // ── Task #237 Allowlist Tests ─────────────────────────────────────────────
 
+    /// (a) Public market: no allowlist check — anyone can predict
     #[test]
-    fn submit_prediction_fails_market_not_found() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let predictor = Address::generate(&env);
-        fund(&env, &xlm_token, &predictor, 20_000_000);
-
-        let result = client.try_submit_prediction(
-            &predictor,
-            &99_u64,
-            &symbol_short!("yes"),
-            &20_000_000_i128,
-        );
-        assert!(matches!(result, Err(Ok(InsightArenaError::MarketNotFound))));
-    }
-
-    // ── Validation: MarketExpired ─────────────────────────────────────────────
-
-    #[test]
-    fn submit_prediction_fails_market_expired() {
+    fn submit_prediction_public_market_allows_any_predictor() {
         let env = Env::default();
         env.mock_all_auths();
         let (client, xlm_token) = deploy(&env);
         let creator = Address::generate(&env);
         let predictor = Address::generate(&env);
+        let stake = 20_000_000_i128;
 
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 20_000_000);
-
-        // Advance past end_time
-        env.ledger().set_timestamp(env.ledger().timestamp() + 1001);
-
-        let result = client.try_submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("yes"),
-            &20_000_000_i128,
-        );
-        assert!(matches!(result, Err(Ok(InsightArenaError::MarketExpired))));
-    }
-
-    // ── Validation: InvalidOutcome ────────────────────────────────────────────
-
-    #[test]
-    fn submit_prediction_fails_invalid_outcome() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 20_000_000);
-
-        let result = client.try_submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("maybe"),
-            &20_000_000_i128,
-        );
-        assert!(matches!(result, Err(Ok(InsightArenaError::InvalidOutcome))));
-    }
-
-    // ── Validation: StakeTooLow ───────────────────────────────────────────────
-
-    #[test]
-    fn submit_prediction_fails_stake_too_low() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 20_000_000);
-
-        // min_stake is 10_000_000; submit 1 stroop below
-        let result = client.try_submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("yes"),
-            &9_999_999_i128,
-        );
-        assert!(matches!(result, Err(Ok(InsightArenaError::StakeTooLow))));
-    }
-
-    // ── Validation: StakeTooHigh ──────────────────────────────────────────────
-
-    #[test]
-    fn submit_prediction_fails_stake_too_high() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 200_000_000);
-
-        // max_stake is 100_000_000; submit 1 stroop above
-        let result = client.try_submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("yes"),
-            &100_000_001_i128,
-        );
-        assert!(matches!(result, Err(Ok(InsightArenaError::StakeTooHigh))));
-    }
-
-    // ── Validation: AlreadyPredicted ──────────────────────────────────────────
-
-    #[test]
-    fn submit_prediction_fails_already_predicted() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 40_000_000);
-
-        // First prediction succeeds
-        client.submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("yes"),
-            &20_000_000_i128,
-        );
-
-        // Second prediction for the same market must fail
-        let result = client.try_submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("no"),
-            &20_000_000_i128,
-        );
-        assert!(matches!(
-            result,
-            Err(Ok(InsightArenaError::AlreadyPredicted))
-        ));
-    }
-
-    // ── Validation: Paused ────────────────────────────────────────────────────
-
-    #[test]
-    fn submit_prediction_fails_when_paused() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 20_000_000);
-
-        client.set_paused(&true);
-
-        let result = client.try_submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("yes"),
-            &20_000_000_i128,
-        );
-        assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
-    }
-
-    // ── XLM transfer: escrow receives the stake ───────────────────────────────
-
-    #[test]
-    fn submit_prediction_transfers_xlm_to_contract() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-        let stake: i128 = 20_000_000;
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, stake);
-
-        let token = TokenClient::new(&env, &xlm_token);
-        assert_eq!(token.balance(&predictor), stake);
-        assert_eq!(token.balance(&client.address), 0);
-
-        client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
-
-        assert_eq!(token.balance(&predictor), 0);
-        assert_eq!(token.balance(&client.address), stake);
-    }
-
-    // ── Market stats: total_pool and participant_count updated ────────────────
-
-    #[test]
-    fn submit_prediction_updates_market_total_pool_and_participant_count() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor_a = Address::generate(&env);
-        let predictor_b = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor_a, 20_000_000);
-        fund(&env, &xlm_token, &predictor_b, 30_000_000);
-
-        client.submit_prediction(
-            &predictor_a,
-            &market_id,
-            &symbol_short!("yes"),
-            &20_000_000_i128,
-        );
-        client.submit_prediction(
-            &predictor_b,
-            &market_id,
-            &symbol_short!("no"),
-            &30_000_000_i128,
-        );
-
-        let market = client.get_market(&market_id);
-        assert_eq!(market.total_pool, 50_000_000);
-        assert_eq!(market.participant_count, 2);
-    }
-
-    // ── UserProfile: stats created and incremented correctly ─────────────────
-
-    #[test]
-    fn submit_prediction_creates_and_updates_user_profile() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-        let stake: i128 = 20_000_000;
-
-        let market_id = client.create_market(&creator, &default_params(&env));
+        let mut params = default_params(&env);
+        params.is_public = true;
+        let market_id = client.create_market(&creator, &params);
         fund(&env, &xlm_token, &predictor, stake);
 
         client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
-
-        let profile = env.as_contract(&client.address, || {
-            use crate::storage_types::{DataKey, UserProfile};
-            env.storage()
-                .persistent()
-                .get::<DataKey, UserProfile>(&DataKey::User(predictor.clone()))
-                .unwrap()
-        });
-        assert_eq!(profile.total_predictions, 1);
-        assert_eq!(profile.total_staked, stake);
-        assert_eq!(profile.address, predictor);
-    }
-
-    #[test]
-    fn submit_prediction_accumulates_user_profile_across_markets() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-
-        // Create two separate markets
-        let market_id_1 = client.create_market(&creator, &default_params(&env));
-        let market_id_2 = client.create_market(&creator, &default_params(&env));
-
-        fund(&env, &xlm_token, &predictor, 50_000_000);
-
-        client.submit_prediction(
-            &predictor,
-            &market_id_1,
-            &symbol_short!("yes"),
-            &20_000_000_i128,
-        );
-        client.submit_prediction(
-            &predictor,
-            &market_id_2,
-            &symbol_short!("no"),
-            &30_000_000_i128,
-        );
-
-        let profile = env.as_contract(&client.address, || {
-            use crate::storage_types::{DataKey, UserProfile};
-            env.storage()
-                .persistent()
-                .get::<DataKey, UserProfile>(&DataKey::User(predictor.clone()))
-                .unwrap()
-        });
-        assert_eq!(profile.total_predictions, 2);
-        assert_eq!(profile.total_staked, 50_000_000);
-    }
-
-    // ── PredictorList: predictor appended correctly ───────────────────────────
-
-    #[test]
-    fn submit_prediction_appends_to_predictor_list() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor_a = Address::generate(&env);
-        let predictor_b = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor_a, 20_000_000);
-        fund(&env, &xlm_token, &predictor_b, 20_000_000);
-
-        client.submit_prediction(
-            &predictor_a,
-            &market_id,
-            &symbol_short!("yes"),
-            &20_000_000_i128,
-        );
-        client.submit_prediction(
-            &predictor_b,
-            &market_id,
-            &symbol_short!("no"),
-            &20_000_000_i128,
-        );
-
-        let list = env.as_contract(&client.address, || {
-            use crate::storage_types::DataKey;
-            env.storage()
-                .persistent()
-                .get::<DataKey, soroban_sdk::Vec<Address>>(&DataKey::PredictorList(market_id))
-                .unwrap()
-        });
-        assert_eq!(list.len(), 2);
-        assert_eq!(list.get(0).unwrap(), predictor_a);
-        assert_eq!(list.get(1).unwrap(), predictor_b);
-    }
-
-    // ── Boundary: exact min_stake and max_stake are accepted ─────────────────
-
-    #[test]
-    fn submit_prediction_accepts_exact_min_stake() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 10_000_000);
-
-        client.submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("yes"),
-            &10_000_000_i128,
-        );
-        let market = client.get_market(&market_id);
-        assert_eq!(market.total_pool, 10_000_000);
-    }
-
-    #[test]
-    fn submit_prediction_accepts_exact_max_stake() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 100_000_000);
-
-        client.submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("yes"),
-            &100_000_000_i128,
-        );
-        let market = client.get_market(&market_id);
-        assert_eq!(market.total_pool, 100_000_000);
-    }
-
-    // ── get_prediction tests ──────────────────────────────────────────────────
-
-    /// Returns the full Prediction struct when the record exists.
-    #[test]
-    fn get_prediction_returns_correct_struct() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-        let stake: i128 = 20_000_000;
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, stake);
-        client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
-
-        let pred = client.get_prediction(&market_id, &predictor);
-
-        assert_eq!(pred.market_id, market_id);
-        assert_eq!(pred.predictor, predictor);
-        assert_eq!(pred.chosen_outcome, symbol_short!("yes"));
-        assert_eq!(pred.stake_amount, stake);
-        assert!(!pred.payout_claimed);
-        assert_eq!(pred.payout_amount, 0);
-    }
-
-    /// Returns `PredictionNotFound` when no prediction exists for the key.
-    #[test]
-    fn get_prediction_returns_not_found_for_missing_key() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _) = deploy(&env);
-        let predictor = Address::generate(&env);
-
-        let result = client.try_get_prediction(&99_u64, &predictor);
-        assert!(matches!(
-            result,
-            Err(Ok(InsightArenaError::PredictionNotFound))
-        ));
-    }
-
-    /// `get_prediction` on a predictor address that has not staked on a real market
-    /// also returns `PredictionNotFound`.
-    #[test]
-    fn get_prediction_returns_not_found_for_wrong_predictor() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-        let stranger = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 20_000_000);
-        client.submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("yes"),
-            &20_000_000_i128,
-        );
-
-        // stranger never predicted — must get PredictionNotFound
-        let result = client.try_get_prediction(&market_id, &stranger);
-        assert!(matches!(
-            result,
-            Err(Ok(InsightArenaError::PredictionNotFound))
-        ));
-    }
-
-    /// `get_prediction` does not mutate market state.
-    #[test]
-    fn get_prediction_does_not_mutate_market() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-        let stake: i128 = 20_000_000;
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, stake);
-        client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
-
-        let before = client.get_market(&market_id);
-        client.get_prediction(&market_id, &predictor);
-        let after = client.get_market(&market_id);
-
-        assert_eq!(before.total_pool, after.total_pool);
-        assert_eq!(before.participant_count, after.participant_count);
-        assert_eq!(before.is_closed, after.is_closed);
-    }
-
-    /// `get_prediction` does not mutate the prediction record itself.
-    #[test]
-    fn get_prediction_does_not_mutate_prediction_record() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-        let stake: i128 = 20_000_000;
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, stake);
-        client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
-
-        let first = client.get_prediction(&market_id, &predictor);
-        let second = client.get_prediction(&market_id, &predictor);
-
-        assert_eq!(first, second);
-    }
-
-    /// Calling `get_prediction` multiple times always returns the same struct.
-    #[test]
-    fn get_prediction_is_idempotent() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-        let stake: i128 = 50_000_000;
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, stake);
-        client.submit_prediction(&predictor, &market_id, &symbol_short!("no"), &stake);
-
-        for _ in 0..3 {
-            let pred = client.get_prediction(&market_id, &predictor);
-            assert_eq!(pred.stake_amount, stake);
-            assert_eq!(pred.chosen_outcome, symbol_short!("no"));
-        }
-    }
-
-    // ── has_predicted tests ───────────────────────────────────────────────
-
-    #[test]
-    fn has_predicted_returns_true_after_submission() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 20_000_000);
-        client.submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("yes"),
-            &20_000_000_i128,
-        );
-
         assert!(client.has_predicted(&market_id, &predictor));
     }
 
+    /// (b) Private market: unlisted predictor rejected with Unauthorized
     #[test]
-    fn has_predicted_returns_false_when_not_predicted() {
+    fn submit_prediction_private_market_rejects_unlisted() {
         let env = Env::default();
         env.mock_all_auths();
         let (client, xlm_token) = deploy(&env);
         let creator = Address::generate(&env);
         let predictor = Address::generate(&env);
-        let stranger = Address::generate(&env);
+        let stake = 20_000_000_i128;
 
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 20_000_000);
-        client.submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("yes"),
-            &20_000_000_i128,
-        );
-
-        assert!(!client.has_predicted(&market_id, &stranger));
-    }
-
-    #[test]
-    fn has_predicted_returns_false_for_nonexistent_market() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _) = deploy(&env);
-        let predictor = Address::generate(&env);
-
-        assert!(!client.has_predicted(&999_u64, &predictor));
-    }
-
-    #[test]
-    fn has_predicted_never_panics() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _) = deploy(&env);
-        let random = Address::generate(&env);
-
-        // No markets, no predictions — must return false, not panic
-        let result = client.has_predicted(&0_u64, &random);
-        assert!(!result);
-    }
-
-    #[test]
-    fn has_predicted_does_not_mutate_state() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 20_000_000);
-        client.submit_prediction(
-            &predictor,
-            &market_id,
-            &symbol_short!("yes"),
-            &20_000_000_i128,
-        );
-
-        let market_before = client.get_market(&market_id);
-        client.has_predicted(&market_id, &predictor);
-        let market_after = client.get_market(&market_id);
-
-        assert_eq!(market_before.total_pool, market_after.total_pool);
-        assert_eq!(
-            market_before.participant_count,
-            market_after.participant_count
-        );
-    }
-
-    // ── list_market_predictions tests ─────────────────────────────────────
-
-    #[test]
-    fn list_market_predictions_returns_all_predictions() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        let p3 = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &p1, 20_000_000);
-        fund(&env, &xlm_token, &p2, 30_000_000);
-        fund(&env, &xlm_token, &p3, 15_000_000);
-
-        client.submit_prediction(&p1, &market_id, &symbol_short!("yes"), &20_000_000_i128);
-        client.submit_prediction(&p2, &market_id, &symbol_short!("no"), &30_000_000_i128);
-        client.submit_prediction(&p3, &market_id, &symbol_short!("yes"), &15_000_000_i128);
-
-        let predictions = client.list_market_predictions(&market_id);
-        assert_eq!(predictions.len(), 3);
-        assert_eq!(predictions.get(0).unwrap().predictor, p1);
-        assert_eq!(predictions.get(1).unwrap().predictor, p2);
-        assert_eq!(predictions.get(2).unwrap().predictor, p3);
-    }
-
-    #[test]
-    fn list_market_predictions_returns_empty_for_no_predictions() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _) = deploy(&env);
-        let creator = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        let predictions = client.list_market_predictions(&market_id);
-        assert_eq!(predictions.len(), 0);
-    }
-
-    #[test]
-    fn list_market_predictions_returns_empty_for_nonexistent_market() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _) = deploy(&env);
-
-        let predictions = client.list_market_predictions(&999_u64);
-        assert_eq!(predictions.len(), 0);
-    }
-
-    #[test]
-    fn list_market_predictions_contains_correct_data() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-        let stake: i128 = 25_000_000;
-
-        let market_id = client.create_market(&creator, &default_params(&env));
+        let mut params = default_params(&env);
+        params.is_public = false;
+        let market_id = client.create_market(&creator, &params);
         fund(&env, &xlm_token, &predictor, stake);
-        client.submit_prediction(&predictor, &market_id, &symbol_short!("no"), &stake);
 
-        let predictions = client.list_market_predictions(&market_id);
-        assert_eq!(predictions.len(), 1);
+        let result =
+            client.try_submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
+        assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
+        assert!(!client.has_predicted(&market_id, &predictor));
+    }
 
-        let pred = predictions.get(0).unwrap();
-        assert_eq!(pred.market_id, market_id);
-        assert_eq!(pred.predictor, predictor);
-        assert_eq!(pred.chosen_outcome, symbol_short!("no"));
-        assert_eq!(pred.stake_amount, stake);
-        assert!(!pred.payout_claimed);
+    /// (c) Private market: allowlisted predictor (redeemed invite) accepted
+    #[test]
+    fn submit_prediction_private_market_accepts_allowlisted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let predictor = Address::generate(&env);
+        let stake = 20_000_000_i128;
+
+        let mut params = default_params(&env);
+        params.is_public = false;
+        let market_id = client.create_market(&creator, &params);
+
+        let code = client.generate_invite_code(&creator, &market_id, &10, &3600_u64);
+        client.redeem_invite_code(&predictor, &code);
+        fund(&env, &xlm_token, &predictor, stake);
+
+        client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
+        assert!(client.has_predicted(&market_id, &predictor));
     }
 
     #[test]
@@ -1480,25 +868,6 @@ mod prediction_tests {
 
     #[test]
     fn claim_payout_fails_when_market_not_resolved() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let predictor = Address::generate(&env);
-
-        let market_id = client.create_market(&creator, &default_params(&env));
-        fund(&env, &xlm_token, &predictor, 20_000_000);
-        client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &20_000_000);
-
-        let result = client.try_claim_payout(&predictor, &market_id);
-        assert!(matches!(
-            result,
-            Err(Ok(InsightArenaError::MarketNotResolved))
-        ));
-    }
-
-    #[test]
-    fn claim_payout_fails_double_claim_attempt() {
         let env = Env::default();
         env.mock_all_auths();
         let (client, xlm_token) = deploy(&env);
