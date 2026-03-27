@@ -348,8 +348,13 @@ pub fn list_market_predictions(env: &Env, market_id: u64) -> Vec<Prediction> {
             .storage()
             .persistent()
             .get::<DataKey, Prediction>(&pred_key)
+            .or_else(|| env.storage().temporary().get::<DataKey, Prediction>(&pred_key))
         {
-            bump_prediction(env, market_id, &predictor);
+            if env.storage().persistent().has(&pred_key) {
+                bump_prediction(env, market_id, &predictor);
+            } else {
+                ttl::shorten_prediction_ttl_after_claim(env, market_id, &predictor);
+            }
             results.push_back(prediction);
         }
     }
@@ -467,7 +472,7 @@ pub fn claim_payout(
         escrow::release_payout(env, &predictor, net_payout)?;
     }
     if protocol_fee > 0 {
-        escrow::add_to_treasury_balance(env, protocol_fee);
+        escrow::release_payout(env, &cfg.admin, protocol_fee)?;
     }
     if creator_fee > 0 {
         escrow::refund(env, &market.creator, creator_fee)?;
@@ -607,7 +612,7 @@ pub fn batch_distribute_payouts(
             escrow::release_payout(env, &stored_prediction.predictor, net_payout)?;
         }
         if protocol_fee > 0 {
-            escrow::add_to_treasury_balance(env, protocol_fee);
+            escrow::release_payout(env, &cfg.admin, protocol_fee)?;
         }
         if creator_fee > 0 {
             escrow::refund(env, &market.creator, creator_fee)?;
