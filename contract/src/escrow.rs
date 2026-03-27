@@ -210,13 +210,29 @@ pub(crate) fn add_to_treasury_balance(env: &Env, amount: i128) {
 ///
 /// # Errors
 /// - `InvalidInput` when `amount <= 0`.
+/// - `Unauthorized` when caller is not the configured admin.
 /// - `EscrowEmpty` if the contract lacks sufficient balance.
-pub fn transfer_fee(env: &Env, to: &Address, amount: i128) -> Result<(), InsightArenaError> {
+pub fn transfer_fee(
+    env: &Env,
+    admin: &Address,
+    to: &Address,
+    amount: i128,
+) -> Result<(), InsightArenaError> {
     if amount <= 0 {
         return Err(InsightArenaError::InvalidInput);
     }
 
     let cfg = config::get_config(env)?;
+    admin.require_auth();
+    if admin != &cfg.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    let treasury_balance = get_treasury_balance(env);
+    if treasury_balance < amount {
+        return Err(InsightArenaError::EscrowEmpty);
+    }
+
     let client = token::Client::new(env, &cfg.xlm_token);
     let contract = env.current_contract_address();
 
@@ -225,6 +241,15 @@ pub fn transfer_fee(env: &Env, to: &Address, amount: i128) -> Result<(), Insight
     }
 
     client.transfer(&contract, to, &amount);
+
+    let next_treasury_balance = treasury_balance
+        .checked_sub(amount)
+        .ok_or(InsightArenaError::Overflow)?;
+    env.storage()
+        .persistent()
+        .set(&DataKey::Treasury, &next_treasury_balance);
+    bump_treasury(env);
+
     Ok(())
 }
 
@@ -286,6 +311,7 @@ mod escrow_tests {
             100,
             10_000_000,
             100_000_000,
+            86_400,
         );
 
         env.as_contract(&client.address, || {

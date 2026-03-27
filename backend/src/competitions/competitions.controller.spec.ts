@@ -82,9 +82,7 @@ describe('CompetitionsController', () => {
         page: 1,
         limit: 20,
       };
-      const spy = jest
-        .spyOn(service, 'list')
-        .mockResolvedValue(mockResponse);
+      const spy = jest.spyOn(service, 'list').mockResolvedValue(mockResponse);
 
       const result = await controller.listCompetitions({ page: 1, limit: 20 });
 

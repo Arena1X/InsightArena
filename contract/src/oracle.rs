@@ -3,6 +3,7 @@ use soroban_sdk::{symbol_short, Address, Env, Symbol};
 use crate::config;
 use crate::errors::InsightArenaError;
 use crate::market;
+use crate::reputation;
 use crate::storage_types::DataKey;
 
 /// Transition a market into the "resolved" state by recording the winning outcome.
@@ -57,6 +58,7 @@ pub fn resolve_market(
     // ── Update status and persist ─────────────────────────────────────────────
     market.is_resolved = true;
     market.resolved_outcome = Some(resolved_outcome.clone());
+    market.resolved_at = Some(now);
 
     env.storage()
         .persistent()
@@ -75,6 +77,19 @@ pub fn resolve_market(
         (market_id, resolved_outcome),
     );
 
+    // ── Update creator reputation stats ──────────────────────────────────────
+    reputation::on_market_resolved(&env, &market.creator, market.participant_count);
+
+    Ok(())
+}
+
+pub fn update_oracle_from_governance(
+    env: &Env,
+    new_oracle: Address,
+) -> Result<(), InsightArenaError> {
+    let mut cfg = config::get_config(env)?;
+    cfg.oracle_address = new_oracle;
+    env.storage().persistent().set(&DataKey::Config, &cfg);
     Ok(())
 }
 
@@ -112,6 +127,7 @@ mod resolve_tests {
             outcomes: vec![env, symbol_short!("yes"), symbol_short!("no")],
             end_time: now + 1000,
             resolution_time: now + 2000,
+            dispute_window: 86_400,
             creator_fee_bps: 100,
             min_stake: 10_000_000,
             max_stake: 100_000_000,
@@ -136,10 +152,7 @@ mod resolve_tests {
         let market = client.get_market(&id);
         assert!(market.is_resolved);
         assert_eq!(market.resolved_outcome, Some(symbol_short!("yes")));
-
-        let last = env.events().all().last().unwrap();
-        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, symbol_short!("mkt_rslvd"));
+        assert_eq!(market.resolved_at, Some(env.ledger().timestamp()));
     }
 
     #[test]

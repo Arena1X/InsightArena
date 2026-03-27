@@ -54,6 +54,14 @@ pub enum InsightArenaError {
     /// Raised during market creation when the requested fee is out of bounds.
     InvalidFee = 18,
 
+    // ── Dispute ───────────────────────────────────────────────────────────────
+    /// Dispute window has closed for this market.
+    DisputeWindowClosed = 60,
+    /// A dispute has already been filed for this market.
+    DisputeAlreadyFiled = 61,
+    /// No active dispute exists for this market.
+    DisputeNotFound = 62,
+
     // ── Prediction ────────────────────────────────────────────────────────────
     /// No prediction exists for the given `(market_id, predictor)` pair.
     /// Raised on lookup when the user has not yet staked in this market.
@@ -103,6 +111,11 @@ pub enum InsightArenaError {
     /// The invite code has reached its `max_uses` limit (`current_uses >= max_uses`).
     /// Raised when a redemption attempt arrives after the usage cap is exhausted.
     InviteCodeMaxUsed = 52,
+
+    // ── User ──────────────────────────────────────────────────────────────────
+    /// No user profile exists for the given address.
+    /// Raised when a user stats lookup finds no stored profile.
+    UserNotFound = 63,
 
     // ── General ───────────────────────────────────────────────────────────────
     /// An arithmetic operation produced a value outside the valid i128/u32 range.

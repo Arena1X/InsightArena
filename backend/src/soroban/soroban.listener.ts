@@ -30,7 +30,9 @@ export class SorobanListener {
   @Cron(CronExpression.EVERY_30_SECONDS)
   async pollEvents(): Promise<void> {
     if (this.isPolling) {
-      this.logger.warn('Soroban listener skipped because previous poll is still running');
+      this.logger.warn(
+        'Soroban listener skipped because previous poll is still running',
+      );
       return;
     }
 
@@ -40,7 +42,8 @@ export class SorobanListener {
       const lastProcessedLedger = await this.getLastProcessedLedger();
       const fromLedger = Math.max(lastProcessedLedger + 1, 1);
 
-      const { events, latestLedger } = await this.sorobanService.getEvents(fromLedger);
+      const { events, latestLedger } =
+        await this.sorobanService.getEvents(fromLedger);
       if (events.length === 0) {
         if (latestLedger > lastProcessedLedger) {
           await this.persistLastProcessedLedger(latestLedger);
@@ -58,7 +61,9 @@ export class SorobanListener {
         }
       }
 
-      await this.persistLastProcessedLedger(Math.max(maxProcessedLedger, latestLedger));
+      await this.persistLastProcessedLedger(
+        Math.max(maxProcessedLedger, latestLedger),
+      );
     } catch (error) {
       this.logger.error('Failed to poll Soroban events', error);
     } finally {
@@ -83,11 +88,15 @@ export class SorobanListener {
         await this.handlePayoutClaimed(event.value);
         break;
       default:
-        this.logger.debug(`Skipping unknown Soroban event: ${event.topic.join('.')}`);
+        this.logger.debug(
+          `Skipping unknown Soroban event: ${event.topic.join('.')}`,
+        );
     }
   }
 
-  private detectEventType(event: SorobanRpcEvent):
+  private detectEventType(
+    event: SorobanRpcEvent,
+  ):
     | 'MarketCreated'
     | 'MarketResolved'
     | 'PredictionSubmitted'
@@ -117,7 +126,9 @@ export class SorobanListener {
     return null;
   }
 
-  private async handleMarketCreated(payload: Record<string, unknown>): Promise<void> {
+  private async handleMarketCreated(
+    payload: Record<string, unknown>,
+  ): Promise<void> {
     const onChainMarketId =
       this.readString(payload, 'market_id') ??
       this.readString(payload, 'on_chain_market_id') ??
@@ -137,9 +148,12 @@ export class SorobanListener {
     }
 
     const creatorAddress =
-      this.readString(payload, 'creator') ?? this.readString(payload, 'creator_address');
+      this.readString(payload, 'creator') ??
+      this.readString(payload, 'creator_address');
     const creator = creatorAddress
-      ? await this.usersRepository.findOne({ where: { stellar_address: creatorAddress } })
+      ? await this.usersRepository.findOne({
+          where: { stellar_address: creatorAddress },
+        })
       : null;
 
     const market = this.marketsRepository.create({
@@ -148,22 +162,30 @@ export class SorobanListener {
       title: this.readString(payload, 'title') ?? `Market ${onChainMarketId}`,
       description: this.readString(payload, 'description') ?? 'On-chain market',
       category: this.readString(payload, 'category') ?? 'OnChain',
-      outcome_options: this.readStringArray(payload, 'outcome_options') ?? ['YES', 'NO'],
-      end_time: this.readDate(payload, 'end_time') ?? new Date(Date.now() + 24 * 60 * 60 * 1000),
+      outcome_options: this.readStringArray(payload, 'outcome_options') ?? [
+        'YES',
+        'NO',
+      ],
+      end_time:
+        this.readDate(payload, 'end_time') ??
+        new Date(Date.now() + 24 * 60 * 60 * 1000),
       resolution_time:
         this.readDate(payload, 'resolution_time') ??
         new Date(Date.now() + 48 * 60 * 60 * 1000),
       is_public: this.readBoolean(payload, 'is_public') ?? true,
       is_resolved: false,
       is_cancelled: false,
-      total_pool_stroops: this.readBigIntString(payload, 'total_pool_stroops') ?? '0',
+      total_pool_stroops:
+        this.readBigIntString(payload, 'total_pool_stroops') ?? '0',
       participant_count: this.readNumber(payload, 'participant_count') ?? 0,
     });
 
     await this.marketsRepository.save(market);
   }
 
-  private async handleMarketResolved(payload: Record<string, unknown>): Promise<void> {
+  private async handleMarketResolved(
+    payload: Record<string, unknown>,
+  ): Promise<void> {
     const market = await this.findMarketFromPayload(payload);
     if (!market) {
       this.logger.warn('MarketResolved event skipped: market not found');
@@ -189,7 +211,8 @@ export class SorobanListener {
     }
 
     const predictorAddress =
-      this.readString(payload, 'predictor') ?? this.readString(payload, 'user_address');
+      this.readString(payload, 'predictor') ??
+      this.readString(payload, 'user_address');
     if (!predictorAddress) {
       this.logger.warn('PredictionSubmitted event skipped: missing predictor');
       return;
@@ -199,7 +222,9 @@ export class SorobanListener {
       where: { stellar_address: predictorAddress },
     });
     if (!user) {
-      this.logger.warn(`PredictionSubmitted event skipped: unknown user ${predictorAddress}`);
+      this.logger.warn(
+        `PredictionSubmitted event skipped: unknown user ${predictorAddress}`,
+      );
       return;
     }
 
@@ -238,7 +263,9 @@ export class SorobanListener {
     await this.marketsRepository.save(market);
   }
 
-  private async handlePayoutClaimed(payload: Record<string, unknown>): Promise<void> {
+  private async handlePayoutClaimed(
+    payload: Record<string, unknown>,
+  ): Promise<void> {
     const market = await this.findMarketFromPayload(payload);
     if (!market) {
       this.logger.warn('PayoutClaimed event skipped: market not found');
@@ -246,7 +273,8 @@ export class SorobanListener {
     }
 
     const predictorAddress =
-      this.readString(payload, 'predictor') ?? this.readString(payload, 'user_address');
+      this.readString(payload, 'predictor') ??
+      this.readString(payload, 'user_address');
     if (!predictorAddress) {
       this.logger.warn('PayoutClaimed event skipped: missing predictor');
       return;
@@ -256,7 +284,9 @@ export class SorobanListener {
       where: { stellar_address: predictorAddress },
     });
     if (!user) {
-      this.logger.warn(`PayoutClaimed event skipped: unknown user ${predictorAddress}`);
+      this.logger.warn(
+        `PayoutClaimed event skipped: unknown user ${predictorAddress}`,
+      );
       return;
     }
 
@@ -313,18 +343,23 @@ export class SorobanListener {
 
   private async persistLastProcessedLedger(ledger: number): Promise<void> {
     const value = String(ledger);
-    await this.systemStateRepository.upsert(
-      { key: LAST_LEDGER_KEY, value },
-      ['key'],
-    );
+    await this.systemStateRepository.upsert({ key: LAST_LEDGER_KEY, value }, [
+      'key',
+    ]);
   }
 
-  private readString(payload: Record<string, unknown>, key: string): string | null {
+  private readString(
+    payload: Record<string, unknown>,
+    key: string,
+  ): string | null {
     const value = payload[key];
     return typeof value === 'string' ? value : null;
   }
 
-  private readNumber(payload: Record<string, unknown>, key: string): number | null {
+  private readNumber(
+    payload: Record<string, unknown>,
+    key: string,
+  ): number | null {
     const value = payload[key];
     if (typeof value === 'number' && Number.isFinite(value)) {
       return value;
@@ -346,7 +381,10 @@ export class SorobanListener {
     return new Date(seconds * 1000);
   }
 
-  private readBoolean(payload: Record<string, unknown>, key: string): boolean | null {
+  private readBoolean(
+    payload: Record<string, unknown>,
+    key: string,
+  ): boolean | null {
     const value = payload[key];
     if (typeof value === 'boolean') {
       return value;
@@ -358,7 +396,10 @@ export class SorobanListener {
     return null;
   }
 
-  private readBigIntString(payload: Record<string, unknown>, key: string): string | null {
+  private readBigIntString(
+    payload: Record<string, unknown>,
+    key: string,
+  ): string | null {
     const value = payload[key];
     if (typeof value === 'string') {
       try {
@@ -373,13 +414,18 @@ export class SorobanListener {
     return null;
   }
 
-  private readStringArray(payload: Record<string, unknown>, key: string): string[] | null {
+  private readStringArray(
+    payload: Record<string, unknown>,
+    key: string,
+  ): string[] | null {
     const value = payload[key];
     if (!Array.isArray(value)) {
       return null;
     }
 
-    const items = value.filter((item): item is string => typeof item === 'string');
+    const items = value.filter(
+      (item): item is string => typeof item === 'string',
+    );
     return items.length > 0 ? items : null;
   }
 }

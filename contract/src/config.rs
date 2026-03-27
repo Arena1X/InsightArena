@@ -128,6 +128,17 @@ pub fn update_protocol_fee(env: &Env, new_fee_bps: u32) -> Result<(), InsightAre
     Ok(())
 }
 
+pub fn update_protocol_fee_from_governance(
+    env: &Env,
+    new_fee_bps: u32,
+) -> Result<(), InsightArenaError> {
+    let mut config = load_config(env)?;
+    config.protocol_fee_bps = new_fee_bps;
+    env.storage().persistent().set(&DataKey::Config, &config);
+    bump_config(env);
+    Ok(())
+}
+
 /// Pause or resume the contract. Caller must be the stored admin.
 ///
 /// When `paused` is `true`, all non-admin entry points should call

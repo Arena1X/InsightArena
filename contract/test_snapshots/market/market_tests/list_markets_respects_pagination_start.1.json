@@ -44,7 +44,7 @@
                         "symbol": "category"
                       },
                       "val": {
-                        "symbol": "weather"
+                        "symbol": "Sports"
                       }
                     },
                     {
@@ -61,6 +61,14 @@
                       },
                       "val": {
                         "string": "Daily weather market"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_window"
+                      },
+                      "val": {
+                        "u64": 86400
                       }
                     },
                     {
@@ -160,7 +168,7 @@
                         "symbol": "category"
                       },
                       "val": {
-                        "symbol": "weather"
+                        "symbol": "Sports"
                       }
                     },
                     {
@@ -177,6 +185,14 @@
                       },
                       "val": {
                         "string": "Daily weather market"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_window"
+                      },
+                      "val": {
+                        "u64": 86400
                       }
                     },
                     {
@@ -276,7 +292,7 @@
                         "symbol": "category"
                       },
                       "val": {
-                        "symbol": "weather"
+                        "symbol": "Sports"
                       }
                     },
                     {
@@ -293,6 +309,14 @@
                       },
                       "val": {
                         "string": "Daily weather market"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_window"
+                      },
+                      "val": {
+                        "u64": 86400
                       }
                     },
                     {
@@ -392,7 +416,7 @@
                         "symbol": "category"
                       },
                       "val": {
-                        "symbol": "weather"
+                        "symbol": "Sports"
                       }
                     },
                     {
@@ -409,6 +433,14 @@
                       },
                       "val": {
                         "string": "Daily weather market"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_window"
+                      },
+                      "val": {
+                        "u64": 86400
                       }
                     },
                     {
@@ -508,7 +540,7 @@
                         "symbol": "category"
                       },
                       "val": {
-                        "symbol": "weather"
+                        "symbol": "Sports"
                       }
                     },
                     {
@@ -525,6 +557,14 @@
                       },
                       "val": {
                         "string": "Daily weather market"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_window"
+                      },
+                      "val": {
+                        "u64": 86400
                       }
                     },
                     {
@@ -685,6 +725,67 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "CategoryIndex"
+                },
+                {
+                  "symbol": "Sports"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "CategoryIndex"
+                    },
+                    {
+                      "symbol": "Sports"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": [
+                    {
+                      "u64": 1
+                    },
+                    {
+                      "u64": 2
+                    },
+                    {
+                      "u64": 3
+                    },
+                    {
+                      "u64": 4
+                    },
+                    {
+                      "u64": 5
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          518400
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
                   "symbol": "Config"
                 }
               ]
@@ -784,6 +885,92 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "CreatorStats"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "CreatorStats"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "average_participant_count"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_count"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "markets_created"
+                      },
+                      "val": {
+                        "u32": 5
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "markets_resolved"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "reputation_score"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          518400
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
                   "symbol": "Market"
                 },
                 {
@@ -819,7 +1006,7 @@
                         "symbol": "category"
                       },
                       "val": {
-                        "symbol": "weather"
+                        "symbol": "Sports"
                       }
                     },
                     {
@@ -844,6 +1031,14 @@
                       },
                       "val": {
                         "string": "Daily weather market"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_window"
+                      },
+                      "val": {
+                        "u64": 86400
                       }
                     },
                     {
@@ -949,6 +1144,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "resolved_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "resolved_outcome"
                       },
                       "val": "void"
@@ -1031,7 +1232,7 @@
                         "symbol": "category"
                       },
                       "val": {
-                        "symbol": "weather"
+                        "symbol": "Sports"
                       }
                     },
                     {
@@ -1056,6 +1257,14 @@
                       },
                       "val": {
                         "string": "Daily weather market"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_window"
+                      },
+                      "val": {
+                        "u64": 86400
                       }
                     },
                     {
@@ -1161,6 +1370,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "resolved_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "resolved_outcome"
                       },
                       "val": "void"
@@ -1243,7 +1458,7 @@
                         "symbol": "category"
                       },
                       "val": {
-                        "symbol": "weather"
+                        "symbol": "Sports"
                       }
                     },
                     {
@@ -1268,6 +1483,14 @@
                       },
                       "val": {
                         "string": "Daily weather market"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_window"
+                      },
+                      "val": {
+                        "u64": 86400
                       }
                     },
                     {
@@ -1373,6 +1596,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "resolved_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "resolved_outcome"
                       },
                       "val": "void"
@@ -1455,7 +1684,7 @@
                         "symbol": "category"
                       },
                       "val": {
-                        "symbol": "weather"
+                        "symbol": "Sports"
                       }
                     },
                     {
@@ -1480,6 +1709,14 @@
                       },
                       "val": {
                         "string": "Daily weather market"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_window"
+                      },
+                      "val": {
+                        "u64": 86400
                       }
                     },
                     {
@@ -1585,6 +1822,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "resolved_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "resolved_outcome"
                       },
                       "val": "void"
@@ -1667,7 +1910,7 @@
                         "symbol": "category"
                       },
                       "val": {
-                        "symbol": "weather"
+                        "symbol": "Sports"
                       }
                     },
                     {
@@ -1692,6 +1935,14 @@
                       },
                       "val": {
                         "string": "Daily weather market"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_window"
+                      },
+                      "val": {
+                        "u64": 86400
                       }
                     },
                     {
@@ -1797,6 +2048,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "resolved_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "resolved_outcome"
                       },
                       "val": "void"
@@ -1898,14 +2155,46 @@
                     "executable": {
                       "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     },
-                    "storage": null
+                    "storage": [
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Categories"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": [
+                            {
+                              "symbol": "Sports"
+                            },
+                            {
+                              "symbol": "Crypto"
+                            },
+                            {
+                              "symbol": "Politics"
+                            },
+                            {
+                              "symbol": "Entertainment"
+                            },
+                            {
+                              "symbol": "Science"
+                            },
+                            {
+                              "symbol": "Other"
+                            }
+                          ]
+                        }
+                      }
+                    ]
                   }
                 }
               }
             },
             "ext": "v0"
           },
-          4095
+          518400
         ]
       ],
       [
@@ -2203,7 +2492,7 @@
             },
             "ext": "v0"
           },
-          4095
+          518400
         ]
       ]
     ]

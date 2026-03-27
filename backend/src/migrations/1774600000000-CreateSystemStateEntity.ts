@@ -1,8 +1,6 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class CreateSystemStateEntity1774600000000
-  implements MigrationInterface
-{
+export class CreateSystemStateEntity1774600000000 implements MigrationInterface {
   name = 'CreateSystemStateEntity1774600000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

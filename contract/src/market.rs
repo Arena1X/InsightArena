@@ -3,6 +3,7 @@ use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol, Vec}
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
+use crate::reputation;
 use crate::storage_types::{DataKey, Market, Prediction};
 use crate::ttl;
 
@@ -20,6 +21,7 @@ pub struct CreateMarketParams {
     pub outcomes: Vec<Symbol>,
     pub end_time: u64,
     pub resolution_time: u64,
+    pub dispute_window: u64,
     pub creator_fee_bps: u32,
     pub min_stake: i128,
     pub max_stake: i128,
@@ -208,6 +210,7 @@ pub fn create_market(
         params.creator_fee_bps,
         params.min_stake,
         params.max_stake,
+        params.dispute_window,
     );
 
     env.storage()
@@ -221,6 +224,9 @@ pub fn create_market(
         (symbol_short!("mkt_crtd"),),
         (market_id, creator.clone(), params.end_time),
     );
+
+    // ── Update creator reputation stats ──────────────────────────────────────
+    reputation::on_market_created(env, &creator);
 
     Ok(market_id)
 }
@@ -503,6 +509,7 @@ mod market_tests {
             outcomes: vec![env, symbol_short!("yes"), symbol_short!("no")],
             end_time: now + 1000,
             resolution_time: now + 2000,
+            dispute_window: 86_400,
             creator_fee_bps: 100,
             min_stake: 10_000_000,
             max_stake: 100_000_000,

@@ -2,6 +2,7 @@
 
 import CompetitionsJoined from "@/component/CompetitionsJoined";
 import EventsCompetitionsHero from "@/component/events/EventsCompetitionsHero";
+import WhyJoinValueGrid from "@/component/events/WhyJoinValueGrid";
 
 export default function CompetitionsDemoPage() {
   return (
@@ -9,6 +10,7 @@ export default function CompetitionsDemoPage() {
       <div className="mx-auto flex max-w-7xl flex-col gap-8">
         <EventsCompetitionsHero />
         <CompetitionsJoined />
+        <WhyJoinValueGrid />
       </div>
     </div>
   );

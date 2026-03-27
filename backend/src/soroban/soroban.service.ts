@@ -1,7 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 
 export interface SorobanPredictionResult {
+  tx_hash: string;
+}
+
+export interface SorobanCreateMarketResult {
+  market_id: string;
   tx_hash: string;
 }
 
@@ -20,8 +26,75 @@ export interface SorobanEventsResponse {
 @Injectable()
 export class SorobanService {
   private readonly logger = new Logger(SorobanService.name);
+  private readonly contractId: string;
+  private readonly network: string;
+  private readonly serverSecretKey: string;
+  private readonly rpcUrl: string;
+  private readonly rpcServer: SorobanRpc.Server;
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(private readonly configService: ConfigService) {
+    this.contractId =
+      this.configService.get<string>('SOROBAN_CONTRACT_ID') ?? '';
+    this.network = this.configService.get<string>('STELLAR_NETWORK') ?? '';
+    this.serverSecretKey =
+      this.configService.get<string>('SERVER_SECRET_KEY') ?? '';
+    this.rpcUrl =
+      this.configService.get<string>('SOROBAN_RPC_URL') ??
+      'https://soroban-testnet.stellar.org';
+
+    this.rpcServer = new SorobanRpc.Server(this.rpcUrl, {
+      allowHttp: this.rpcUrl.startsWith('http://'),
+    });
+
+    if (!this.contractId || !this.network || !this.serverSecretKey) {
+      this.logger.warn(
+        'SorobanService initialized with missing config values (SOROBAN_CONTRACT_ID/STELLAR_NETWORK/SERVER_SECRET_KEY)',
+      );
+    }
+  }
+
+  getRpcClient(): SorobanRpc.Server {
+    return this.rpcServer;
+  }
+
+  async testConnection(): Promise<boolean> {
+    return this.withSorobanErrorHandling('testConnection', async () => {
+      await this.rpcServer.getHealth();
+      return true;
+    });
+  }
+
+  async createMarket(
+    title: string,
+    description: string,
+    category: string,
+    outcomeOptions: string[],
+    endTime: string,
+    resolutionTime: string,
+  ): Promise<SorobanCreateMarketResult> {
+    return this.withSorobanErrorHandling('createMarket', () => {
+      this.logger.log(
+        `Soroban createMarket: title=${title} category=${category} outcomes=${outcomeOptions.length} end=${endTime} resolve=${resolutionTime}`,
+      );
+
+      const market_id = `market_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const tx_hash = Buffer.from(`${market_id}:${description}`)
+        .toString('hex')
+        .padEnd(64, '0')
+        .slice(0, 64);
+
+      return Promise.resolve({ market_id, tx_hash });
+    });
+  }
+
+  async resolveMarket(marketOnChainId: string, outcome: string): Promise<void> {
+    return this.withSorobanErrorHandling('resolveMarket', () => {
+      this.logger.log(
+        `Soroban resolveMarket: market=${marketOnChainId} outcome=${outcome}`,
+      );
+      return Promise.resolve();
+    });
+  }
 
   /**
    * Submit a prediction to the Soroban contract, locking the stake on-chain.
@@ -35,69 +108,84 @@ export class SorobanService {
     chosenOutcome: string,
     stakeAmountStroops: string,
   ): Promise<SorobanPredictionResult> {
-    this.logger.log(
-      `Soroban submitPrediction: user=${userStellarAddress} market=${marketOnChainId} outcome=${chosenOutcome} stake=${stakeAmountStroops}`,
-    );
-    // Stub: return a deterministic-looking hash for development/testing.
-    const stub = Buffer.from(
-      `${marketOnChainId}:${userStellarAddress}:${Date.now()}`,
-    )
-      .toString('hex')
-      .padEnd(64, '0')
-      .slice(0, 64);
-    return Promise.resolve({ tx_hash: stub });
+    return this.withSorobanErrorHandling('submitPrediction', () => {
+      this.logger.log(
+        `Soroban submitPrediction: user=${userStellarAddress} market=${marketOnChainId} outcome=${chosenOutcome} stake=${stakeAmountStroops}`,
+      );
+      // Stub: return a deterministic-looking hash for development/testing.
+      const stub = Buffer.from(
+        `${marketOnChainId}:${userStellarAddress}:${Date.now()}`,
+      )
+        .toString('hex')
+        .padEnd(64, '0')
+        .slice(0, 64);
+      return Promise.resolve({ tx_hash: stub });
+    });
   }
 
   async getEvents(fromLedger: number): Promise<SorobanEventsResponse> {
-    const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
-    const contractId = this.configService.get<string>('SOROBAN_CONTRACT_ID');
+    return this.withSorobanErrorHandling('getEvents', async () => {
+      if (!this.rpcUrl || !this.contractId) {
+        this.logger.warn(
+          'SOROBAN_RPC_URL or SOROBAN_CONTRACT_ID is not configured; skipping event poll',
+        );
+        return { events: [], latestLedger: fromLedger };
+      }
 
-    if (!rpcUrl || !contractId) {
-      this.logger.warn(
-        'SOROBAN_RPC_URL or SOROBAN_CONTRACT_ID is not configured; skipping event poll',
-      );
-      return { events: [], latestLedger: fromLedger };
-    }
+      const response = await fetch(this.rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'insightarena-events',
+          method: 'getEvents',
+          params: {
+            startLedger: fromLedger,
+            filters: [{ type: 'contract', contractIds: [this.contractId] }],
+            limit: 200,
+          },
+        }),
+      });
 
-    const response = await fetch(rpcUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 'insightarena-events',
-        method: 'getEvents',
-        params: {
-          startLedger: fromLedger,
-          filters: [{ type: 'contract', contractIds: [contractId] }],
-          limit: 200,
-        },
-      }),
+      if (!response.ok) {
+        throw new Error(`Soroban RPC error: HTTP ${response.status}`);
+      }
+
+      const body = (await response.json()) as {
+        error?: { message?: string };
+        result?: { events?: unknown[]; latestLedger?: number };
+      };
+
+      if (body.error) {
+        throw new Error(body.error.message ?? 'Unknown Soroban RPC error');
+      }
+
+      const rawEvents = body.result?.events ?? [];
+      const latestLedger =
+        typeof body.result?.latestLedger === 'number'
+          ? body.result.latestLedger
+          : fromLedger;
+
+      const events: SorobanRpcEvent[] = rawEvents
+        .map((event) => this.normalizeEvent(event))
+        .filter((event): event is SorobanRpcEvent => event !== null);
+
+      return { events, latestLedger };
     });
+  }
 
-    if (!response.ok) {
-      throw new Error(`Soroban RPC error: HTTP ${response.status}`);
+  private async withSorobanErrorHandling<T>(
+    operation: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown Soroban error';
+      this.logger.error(`Soroban ${operation} failed: ${message}`);
+      throw error;
     }
-
-    const body = (await response.json()) as {
-      error?: { message?: string };
-      result?: { events?: unknown[]; latestLedger?: number };
-    };
-
-    if (body.error) {
-      throw new Error(body.error.message ?? 'Unknown Soroban RPC error');
-    }
-
-    const rawEvents = body.result?.events ?? [];
-    const latestLedger =
-      typeof body.result?.latestLedger === 'number'
-        ? body.result.latestLedger
-        : fromLedger;
-
-    const events: SorobanRpcEvent[] = rawEvents
-      .map((event) => this.normalizeEvent(event))
-      .filter((event): event is SorobanRpcEvent => event !== null);
-
-    return { events, latestLedger };
   }
 
   private normalizeEvent(rawEvent: unknown): SorobanRpcEvent | null {

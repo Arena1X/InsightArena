@@ -4,6 +4,7 @@ import {
   BadGatewayException,
   Logger,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PredictionStatsDto } from './dto/prediction-stats.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -17,6 +18,7 @@ import {
   MarketStatus,
   PaginatedMarketsResponse,
 } from './dto/list-markets.dto';
+import { SorobanService } from '../soroban/soroban.service';
 
 @Injectable()
 export class MarketsService {
@@ -26,6 +28,7 @@ export class MarketsService {
     @InjectRepository(Market)
     private readonly marketsRepository: Repository<Market>,
     private readonly usersService: UsersService,
+    private readonly sorobanService: SorobanService,
   ) {}
 
   /**
@@ -58,11 +61,27 @@ export class MarketsService {
    * Rolls back the DB write if the Soroban call fails.
    */
   async create(dto: CreateMarketDto, user: User): Promise<Market> {
+    return this.createMarket(dto, user);
+  }
+
+  async createMarket(dto: CreateMarketDto, user: User): Promise<Market> {
+    const endTime = new Date(dto.end_time);
+    if (endTime <= new Date()) {
+      throw new BadRequestException('end_time must be in the future');
+    }
+
     // Step 1: Call Soroban contract to create market on-chain
     let onChainMarketId: string;
     try {
-      // TODO: Replace with real SorobanService.createMarket() call
-      onChainMarketId = `market_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const result = await this.sorobanService.createMarket(
+        dto.title,
+        dto.description,
+        dto.category,
+        dto.outcome_options,
+        dto.end_time,
+        dto.resolution_time,
+      );
+      onChainMarketId = result.market_id;
       this.logger.log(
         `Soroban createMarket called for "${dto.title}" — on_chain_id: ${onChainMarketId}`,
       );
@@ -99,6 +118,34 @@ export class MarketsService {
         'Market created on-chain but failed to save to database',
       );
     }
+  }
+
+  async resolveMarket(id: string, outcome: string): Promise<Market> {
+    const market = await this.findByIdOrOnChainId(id);
+
+    if (market.is_resolved) {
+      throw new ConflictException('Market is already resolved');
+    }
+
+    if (!market.outcome_options.includes(outcome)) {
+      throw new BadRequestException(
+        `Invalid outcome "${outcome}". Valid options: ${market.outcome_options.join(', ')}`,
+      );
+    }
+
+    try {
+      await this.sorobanService.resolveMarket(
+        market.on_chain_market_id,
+        outcome,
+      );
+    } catch (err) {
+      this.logger.error('Soroban resolveMarket failed', err);
+      throw new BadGatewayException('Failed to resolve market on Soroban');
+    }
+
+    market.is_resolved = true;
+    market.resolved_outcome = outcome;
+    return this.marketsRepository.save(market);
   }
 
   /**

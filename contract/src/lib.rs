@@ -1,22 +1,27 @@
 #![no_std]
 
+pub mod analytics;
 pub mod config;
+pub mod dispute;
 pub mod errors;
 pub mod escrow;
+pub mod governance;
 pub mod invite;
 pub mod market;
 pub mod oracle;
 pub mod prediction;
+pub mod reputation;
 pub mod season;
 pub mod security;
 pub mod storage_types;
 pub mod ttl;
 pub use crate::config::Config;
 pub use crate::errors::InsightArenaError;
+pub use crate::governance::{Proposal, ProposalType};
 pub use crate::market::CreateMarketParams;
 pub use crate::storage_types::{
-    DataKey, InviteCode, LeaderboardEntry, LeaderboardSnapshot, Market, Prediction, Season,
-    UserProfile,
+    CreatorStats, DataKey, InviteCode, LeaderboardEntry, LeaderboardSnapshot, Market, MarketStats,
+    PlatformStats, Prediction, Season, UserProfile,
 };
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
@@ -182,6 +187,31 @@ impl InsightArenaContract {
         market::cancel_market(&env, caller, market_id)
     }
 
+    // ── Dispute ───────────────────────────────────────────────────────────────
+
+    /// File a dispute within the market's post-resolution dispute window.
+    /// Locks `bond` in escrow and stores a `Dispute(market_id)` record.
+    pub fn raise_dispute(
+        env: Env,
+        disputer: Address,
+        market_id: u64,
+        bond: i128,
+    ) -> Result<(), InsightArenaError> {
+        dispute::raise_dispute(env, disputer, market_id, bond)
+    }
+
+    /// Resolve an active dispute (admin-only).
+    /// - `uphold=true`: return bond to disputer and reopen market for re-resolution.
+    /// - `uphold=false`: forfeit bond to treasury accounting.
+    pub fn resolve_dispute(
+        env: Env,
+        admin: Address,
+        market_id: u64,
+        uphold: bool,
+    ) -> Result<(), InsightArenaError> {
+        dispute::resolve_dispute(env, admin, market_id, uphold)
+    }
+
     // ── Prediction ────────────────────────────────────────────────────────────
 
     /// Submit a prediction for an open market by staking XLM on a chosen outcome.
@@ -270,10 +300,48 @@ impl InsightArenaContract {
         prediction::batch_distribute_payouts(&env, caller, market_id)
     }
 
+    pub fn create_proposal(
+        env: Env,
+        proposer: Address,
+        proposal_type: ProposalType,
+        voting_duration: u64,
+    ) -> Result<u32, InsightArenaError> {
+        governance::create_proposal(&env, proposer, proposal_type, voting_duration)
+    }
+
+    pub fn vote(
+        env: Env,
+        voter: Address,
+        proposal_id: u32,
+        vote_for: bool,
+    ) -> Result<(), InsightArenaError> {
+        governance::vote(&env, voter, proposal_id, vote_for)
+    }
+
+    pub fn execute_proposal(
+        env: Env,
+        executor: Address,
+        proposal_id: u32,
+    ) -> Result<(), InsightArenaError> {
+        governance::execute_proposal(&env, executor, proposal_id)
+    }
+
     /// Return the total protocol fees accumulated in the treasury.
     /// Returns `0` if no fees have been collected yet. Never panics.
     pub fn get_treasury_balance(env: Env) -> i128 {
         escrow::get_treasury_balance(&env)
+    }
+
+    /// Withdraw an amount from the accumulated protocol treasury.
+    ///
+    /// Caller must be the configured admin.
+    pub fn withdraw_treasury(
+        env: Env,
+        admin: Address,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), InsightArenaError> {
+        escrow::transfer_fee(&env, &admin, &to, amount)
     }
 
     // ── Invite ────────────────────────────────────────────────────────────────
@@ -301,6 +369,15 @@ impl InsightArenaContract {
         code: Symbol,
     ) -> Result<u64, InsightArenaError> {
         invite::redeem_invite_code(env, invitee, code)
+    }
+
+    /// Revoke an invite code so it can no longer be redeemed.
+    pub fn revoke_invite_code(
+        env: Env,
+        creator: Address,
+        code: Symbol,
+    ) -> Result<(), InsightArenaError> {
+        invite::revoke_invite_code(env, creator, code)
     }
 
     /// List all season IDs which have snapshots available.
@@ -377,6 +454,42 @@ impl InsightArenaContract {
         new_season_id: u32,
     ) -> Result<u32, InsightArenaError> {
         season::reset_season_points(&env, admin, new_season_id)
+    }
+
+    // ── Reputation ────────────────────────────────────────────────────────────
+
+    /// Return the [`CreatorStats`] for a given creator address.
+    /// Returns zeroed stats if the creator has never created a market.
+    pub fn get_creator_stats(
+        env: Env,
+        creator: Address,
+    ) -> Result<CreatorStats, InsightArenaError> {
+        reputation::get_creator_stats(env, creator)
+    }
+
+    // ── Analytics ─────────────────────────────────────────────────────────────
+
+    /// Return aggregated stats for a single market.
+    pub fn get_market_stats(env: Env, market_id: u64) -> Result<MarketStats, InsightArenaError> {
+        analytics::get_market_stats(env, market_id)
+    }
+
+    /// Return per-outcome stake totals sorted descending by stake.
+    pub fn get_outcome_distribution(
+        env: Env,
+        market_id: u64,
+    ) -> Result<Vec<(Symbol, i128)>, InsightArenaError> {
+        analytics::get_outcome_distribution(env, market_id)
+    }
+
+    /// Return the stored `UserProfile` for a given address.
+    pub fn get_user_stats(env: Env, user: Address) -> Result<UserProfile, InsightArenaError> {
+        analytics::get_user_stats(env, user)
+    }
+
+    /// Return platform-wide aggregated stats using cached counters.
+    pub fn get_platform_stats(env: Env) -> PlatformStats {
+        analytics::get_platform_stats(env)
     }
 }
 
@@ -613,3 +726,9 @@ mod leaderboard_tests {
         assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
     }
 }
+
+#[cfg(test)]
+mod invite_tests;
+
+#[cfg(test)]
+mod prediction_tests;

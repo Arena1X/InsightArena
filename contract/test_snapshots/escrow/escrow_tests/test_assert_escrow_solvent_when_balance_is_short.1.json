@@ -299,7 +299,7 @@
                         "symbol": "category"
                       },
                       "val": {
-                        "symbol": "audit"
+                        "symbol": "Sports"
                       }
                     },
                     {
@@ -324,6 +324,14 @@
                       },
                       "val": {
                         "string": "seeded for escrow tests"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_window"
+                      },
+                      "val": {
+                        "u64": 86400
                       }
                     },
                     {
@@ -426,6 +434,12 @@
                       "val": {
                         "u64": 200
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "resolved_at"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -693,14 +707,46 @@
                     "executable": {
                       "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     },
-                    "storage": null
+                    "storage": [
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Categories"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": [
+                            {
+                              "symbol": "Sports"
+                            },
+                            {
+                              "symbol": "Crypto"
+                            },
+                            {
+                              "symbol": "Politics"
+                            },
+                            {
+                              "symbol": "Entertainment"
+                            },
+                            {
+                              "symbol": "Science"
+                            },
+                            {
+                              "symbol": "Other"
+                            }
+                          ]
+                        }
+                      }
+                    ]
                   }
                 }
               }
             },
             "ext": "v0"
           },
-          4095
+          518400
         ]
       ],
       [
@@ -906,7 +952,7 @@
             },
             "ext": "v0"
           },
-          4095
+          518400
         ]
       ]
     ]
