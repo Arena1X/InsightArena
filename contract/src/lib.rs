@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod analytics;
 pub mod config;
 pub mod dispute;
 pub mod errors;
@@ -20,8 +21,8 @@ pub use crate::errors::InsightArenaError;
 pub use crate::governance::{Proposal, ProposalType};
 pub use crate::market::CreateMarketParams;
 pub use crate::storage_types::{
-    CreatorStats, DataKey, InviteCode, LeaderboardEntry, LeaderboardSnapshot, Market, Prediction,
-    Season, UserProfile,
+    CreatorStats, DataKey, InviteCode, LeaderboardEntry, LeaderboardSnapshot, Market, MarketStats,
+    PlatformStats, Prediction, Season, UserProfile,
 };
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
@@ -450,6 +451,31 @@ impl InsightArenaContract {
         creator: Address,
     ) -> Result<CreatorStats, InsightArenaError> {
         reputation::get_creator_stats(env, creator)
+    }
+
+    // ── Analytics ─────────────────────────────────────────────────────────────
+
+    /// Return aggregated stats for a single market.
+    pub fn get_market_stats(env: Env, market_id: u64) -> Result<MarketStats, InsightArenaError> {
+        analytics::get_market_stats(env, market_id)
+    }
+
+    /// Return per-outcome stake totals sorted descending by stake.
+    pub fn get_outcome_distribution(
+        env: Env,
+        market_id: u64,
+    ) -> Result<Vec<(Symbol, i128)>, InsightArenaError> {
+        analytics::get_outcome_distribution(env, market_id)
+    }
+
+    /// Return the stored `UserProfile` for a given address.
+    pub fn get_user_stats(env: Env, user: Address) -> Result<UserProfile, InsightArenaError> {
+        analytics::get_user_stats(env, user)
+    }
+
+    /// Return platform-wide aggregated stats using cached counters.
+    pub fn get_platform_stats(env: Env) -> PlatformStats {
+        analytics::get_platform_stats(env)
     }
 }
 

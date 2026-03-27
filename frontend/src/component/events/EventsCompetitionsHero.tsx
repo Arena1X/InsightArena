@@ -14,7 +14,7 @@ export default function EventsCompetitionsHero() {
   const [sortBy, setSortBy] = useState(sortOptions[0]);
 
   return (
-    <section className="relative overflow-hidden rounded-[32px] border border-white/6 bg-[radial-gradient(circle_at_top,_rgba(81,88,255,0.16),_transparent_32%),linear-gradient(180deg,_#16152F_0%,_#0E1228_100%)] px-5 py-12 text-white shadow-[0_24px_80px_rgba(7,10,24,0.55)] sm:px-8 md:px-10 md:py-16">
+    <section className="relative overflow-hidden border border-white/6 bg-[radial-gradient(circle_at_top,_rgba(81,88,255,0.16),_transparent_32%),linear-gradient(180deg,_#16152F_0%,_#0E1228_100%)] px-5 py-12 text-white shadow-[0_24px_80px_rgba(7,10,24,0.55)] sm:px-8 md:px-10 md:py-24">
       <div className="absolute inset-x-0 top-0 h-48 bg-[radial-gradient(circle_at_top,_rgba(0,201,255,0.12),_transparent_60%)]" />
 
       <div className="relative mx-auto flex max-w-6xl flex-col items-center text-center">
