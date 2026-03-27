@@ -467,7 +467,6 @@ mod config_tests {
         let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
         assert_eq!(topic, symbol_short!("orc_upd"));
     }
-
 }
 
 #[cfg(test)]

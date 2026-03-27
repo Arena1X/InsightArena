@@ -88,13 +88,7 @@ pub(crate) fn emit_batch_payout(env: &Env, market_id: u64, count: u32) {
 /// Emit when a new season is created.
 ///
 /// Payload: `(season_id, start, end, pool)`
-pub(crate) fn emit_season_created(
-    env: &Env,
-    season_id: u32,
-    start: u64,
-    end: u64,
-    pool: i128,
-) {
+pub(crate) fn emit_season_created(env: &Env, season_id: u32, start: u64, end: u64, pool: i128) {
     env.events().publish(
         (Symbol::new(env, TOPIC_SEASON_CREATED),),
         (season_id, start, end, pool),
