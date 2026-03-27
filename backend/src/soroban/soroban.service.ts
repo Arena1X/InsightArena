@@ -123,6 +123,29 @@ export class SorobanService {
     });
   }
 
+  /**
+   * Claim winnings from the Soroban contract.
+   * Returns the transaction hash of the confirmed operation.
+   *
+   * TODO: Replace stub with real Soroban contract invocation.
+   */
+  claimPayout(
+    userStellarAddress: string,
+    marketOnChainId: string,
+  ): Promise<SorobanPredictionResult> {
+    this.logger.log(
+      `Soroban claimPayout: user=${userStellarAddress} market=${marketOnChainId}`,
+    );
+    // Stub: return a deterministic-looking hash.
+    const stub = Buffer.from(
+      `claim:${marketOnChainId}:${userStellarAddress}:${Date.now()}`,
+    )
+      .toString('hex')
+      .padEnd(64, '0')
+      .slice(0, 64);
+    return Promise.resolve({ tx_hash: stub });
+  }
+
   async getEvents(fromLedger: number): Promise<SorobanEventsResponse> {
     return this.withSorobanErrorHandling('getEvents', async () => {
       if (!this.rpcUrl || !this.contractId) {

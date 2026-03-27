@@ -11,3 +11,8 @@ target/
 
 # OS
 .DS_Store
+
+# Temp/scratch files
+issues.md
+pr.md
+checks.md

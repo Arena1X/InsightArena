@@ -189,4 +189,42 @@ export class PredictionsService {
     }
     return PredictionStatus.Lost;
   }
+
+  /**
+   * Claim the payout for a winning prediction.
+   * Validates that the market is resolved, the user won, and hasn't already claimed.
+   */
+  async claim(predictionId: string, user: User): Promise<Prediction> {
+    const prediction = await this.predictionsRepository.findOne({
+      where: { id: predictionId, user: { id: user.id } },
+      relations: ['market'],
+    });
+
+    if (!prediction) {
+      throw new NotFoundException(`Prediction "${predictionId}" not found`);
+    }
+
+    if (prediction.payout_claimed) {
+      throw new ConflictException('Payout has already been claimed');
+    }
+
+    const market = prediction.market;
+    if (!market.is_resolved) {
+      throw new BadRequestException('Market is not yet resolved');
+    }
+
+    if (market.resolved_outcome !== prediction.chosen_outcome) {
+      throw new BadRequestException('You did not win this prediction');
+    }
+
+    const { tx_hash } = await this.sorobanService.claimPayout(
+      user.stellar_address,
+      market.on_chain_market_id,
+    );
+
+    prediction.payout_claimed = true;
+    prediction.tx_hash = tx_hash;
+
+    return this.predictionsRepository.save(prediction);
+  }
 }
