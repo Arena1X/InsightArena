@@ -1,8 +1,7 @@
-use soroban_sdk::{Address, Env, Symbol};
+use soroban_sdk::{symbol_short, Address, Env, Symbol};
 
 use crate::config;
 use crate::errors::InsightArenaError;
-use crate::events;
 use crate::market;
 use crate::storage_types::DataKey;
 
@@ -71,7 +70,10 @@ pub fn resolve_market(
     );
 
     // ── Emit MarketResolved event ─────────────────────────────────────────────
-    events::emit_market_resolved(&env, market_id, resolved_outcome);
+    env.events().publish(
+        (symbol_short!("mkt_rslvd"),),
+        (market_id, resolved_outcome),
+    );
 
     Ok(())
 }

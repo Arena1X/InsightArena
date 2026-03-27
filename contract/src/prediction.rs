@@ -1,9 +1,8 @@
-use soroban_sdk::{Address, Env, Symbol, Vec};
+use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
-use crate::events;
 use crate::season;
 use crate::storage_types::{DataKey, Market, Prediction, UserProfile};
 use crate::ttl;
@@ -251,7 +250,10 @@ pub fn submit_prediction(
     season::track_user_profile(env, &predictor);
 
     // ── Emit PredictionSubmitted event ────────────────────────────────────────
-    events::emit_prediction_submitted(env, market_id, &predictor, &chosen_outcome, stake_amount);
+    env.events().publish(
+        (symbol_short!("pred_sub"),),
+        (market_id, predictor.clone(), chosen_outcome, stake_amount),
+    );
 
     Ok(())
 }
@@ -493,7 +495,10 @@ pub fn claim_payout(
     bump_user(env, &predictor);
     season::track_user_profile(env, &predictor);
 
-    events::emit_payout_claimed(env, market_id, &predictor, net_payout);
+    env.events().publish(
+        (symbol_short!("pay_clmd"),),
+        (market_id, predictor.clone(), net_payout),
+    );
 
     Ok(net_payout)
 }
@@ -532,7 +537,8 @@ pub fn batch_distribute_payouts(
 
     let predictions = list_market_predictions(env, market_id);
     if predictions.is_empty() {
-        events::emit_batch_payout(env, market_id, 0);
+        env.events()
+            .publish((symbol_short!("btch_pay"),), (market_id, 0_u32));
         return Ok(0);
     }
 
@@ -612,7 +618,8 @@ pub fn batch_distribute_payouts(
 
     escrow::assert_escrow_solvent(env)?;
 
-    events::emit_batch_payout(env, market_id, processed);
+    env.events()
+        .publish((symbol_short!("btch_pay"),), (market_id, processed));
 
     Ok(processed)
 }

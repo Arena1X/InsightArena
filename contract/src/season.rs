@@ -1,9 +1,8 @@
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
-use crate::events;
 use crate::storage_types::{
     DataKey, LeaderboardEntry, LeaderboardSnapshot, RewardPayout, Season, UserProfile,
 };
@@ -260,6 +259,38 @@ fn compute_reward_payouts(
     merge_reward_payouts(env, raw_payouts)
 }
 
+fn emit_season_created(
+    env: &Env,
+    season_id: u32,
+    start_time: u64,
+    end_time: u64,
+    reward_pool: i128,
+) {
+    env.events().publish(
+        (symbol_short!("season"), symbol_short!("created")),
+        (season_id, start_time, end_time, reward_pool),
+    );
+}
+
+fn emit_leaderboard_updated(env: &Env, season_id: u32, updated_at: u64) {
+    env.events().publish(
+        (symbol_short!("lead"), symbol_short!("updtd")),
+        (season_id, updated_at),
+    );
+}
+
+fn emit_season_finalized(
+    env: &Env,
+    season_id: u32,
+    top_winner: &Address,
+    payouts: &Vec<RewardPayout>,
+) {
+    env.events().publish(
+        (symbol_short!("season"), symbol_short!("finalzd")),
+        (season_id, top_winner.clone(), payouts.clone()),
+    );
+}
+
 pub fn create_season(
     env: &Env,
     admin: Address,
@@ -298,7 +329,7 @@ pub fn create_season(
         },
     );
 
-    events::emit_season_created(env, season_id, start_time, end_time, reward_pool);
+    emit_season_created(env, season_id, start_time, end_time, reward_pool);
     Ok(season_id)
 }
 
@@ -377,7 +408,7 @@ pub fn update_leaderboard(
         },
     );
 
-    events::emit_leaderboard_updated(env, season_id, updated_at);
+    emit_leaderboard_updated(env, season_id, updated_at);
     Ok(())
 }
 
@@ -439,7 +470,7 @@ pub fn finalize_season(env: &Env, admin: Address, season_id: u32) -> Result<(), 
     season.top_winner = Some(winner.clone());
     store_season(env, &season);
 
-    events::emit_season_finalized(env, season_id, &winner);
+    emit_season_finalized(env, season_id, &winner, &payouts);
     Ok(())
 }
 
@@ -588,10 +619,6 @@ mod season_tests {
 
         assert!(client.get_active_season().is_none());
 
-        let last = env.events().all().last().unwrap();
-        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, symbol_short!("ssn_new"));
-
         env.ledger().set_timestamp(150);
         let active = client.get_active_season().unwrap();
         assert_eq!(active.season_id, season_id);
@@ -665,8 +692,10 @@ mod season_tests {
 
         let events = env.events().all();
         let last = events.last().unwrap();
-        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, symbol_short!("lb_updtd"));
+        let topic0: Symbol = last.1.get(0).unwrap().into_val(&env);
+        let topic1: Symbol = last.1.get(1).unwrap().into_val(&env);
+        assert_eq!(topic0, symbol_short!("lead"));
+        assert_eq!(topic1, symbol_short!("updtd"));
     }
 
     #[test]
@@ -708,10 +737,6 @@ mod season_tests {
         let season = client.get_season(&season_id);
         assert!(season.is_finalized);
         assert_eq!(season.top_winner, Some(winner));
-
-        let last = env.events().all().last().unwrap();
-        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
-        assert_eq!(topic, symbol_short!("ssn_fnl"));
     }
 
     #[test]

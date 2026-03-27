@@ -1,9 +1,8 @@
-use soroban_sdk::{contracttype, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol, Vec};
 
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
-use crate::events;
 use crate::storage_types::{DataKey, Market, Prediction};
 use crate::ttl;
 
@@ -218,7 +217,10 @@ pub fn create_market(
     append_market_to_category_index(env, &market.category, market_id);
 
     // ── Emit MarketCreated event ──────────────────────────────────────────────
-    events::emit_market_created(env, market_id, &creator, params.end_time);
+    env.events().publish(
+        (symbol_short!("mkt_crtd"),),
+        (market_id, creator.clone(), params.end_time),
+    );
 
     Ok(market_id)
 }
@@ -391,7 +393,8 @@ pub fn close_market(env: &Env, caller: Address, market_id: u64) -> Result<(), In
     bump_market(env, market_id);
 
     // ── Emit MarketClosed event ───────────────────────────────────────────────
-    events::emit_market_closed(env, market_id);
+    env.events()
+        .publish((symbol_short!("mkt_clsd"),), (market_id,));
 
     Ok(())
 }
@@ -455,7 +458,8 @@ pub fn cancel_market(env: &Env, caller: Address, market_id: u64) -> Result<(), I
     }
 
     // ── Emit MarketCancelled event ────────────────────────────────────────────
-    events::emit_market_cancelled(env, market_id);
+    env.events()
+        .publish((symbol_short!("mkt_cncl"),), (market_id,));
 
     Ok(())
 }

@@ -1,10 +1,9 @@
 use crate::errors::InsightArenaError;
-use crate::events;
 use crate::market;
 use crate::storage_types::{DataKey, InviteCode};
 use crate::ttl;
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{Address, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{symbol_short, Address, Env, IntoVal, Symbol, Val, Vec};
 
 /// Generate a unique 8-character invite code for a private market.
 ///
@@ -78,7 +77,10 @@ pub fn generate_invite_code(
     ttl::extend_invite_ttl(&env, &code);
 
     // 5. Emit Event
-    events::emit_invite_generated(&env, market_id, code.clone());
+    env.events().publish(
+        (symbol_short!("inv_gen"),),
+        (market_id, code.clone()),
+    );
 
     Ok(code)
 }
@@ -130,7 +132,10 @@ pub fn redeem_invite_code(
     ttl::extend_invite_ttl(&env, &code);
     ttl::extend_market_ttl(&env, invite.market_id);
 
-    events::emit_invite_redeemed(&env, invite.market_id, &invitee);
+    env.events().publish(
+        (symbol_short!("inv_redm"),),
+        (invite.market_id, invitee.clone()),
+    );
 
     Ok(invite.market_id)
 }
@@ -163,7 +168,8 @@ pub fn revoke_invite_code(
     env.storage().persistent().set(&invite_key, &invite);
     ttl::extend_invite_ttl(&env, &code);
 
-    events::emit_invite_revoked(&env, code);
+    env.events()
+        .publish((symbol_short!("inv_rvok"),), (code,));
 
     Ok(())
 }
