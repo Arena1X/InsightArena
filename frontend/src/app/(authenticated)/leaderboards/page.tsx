@@ -1,5 +1,9 @@
-import { notFound } from "next/navigation";
+import LeaderboardOverview from "@/component/leaderboard/LeaderboardOverview";
 
 export default function LeaderboardsPage() {
-  notFound();
+  return (
+    <div className="space-y-6">
+      <LeaderboardOverview />
+    </div>
+  );
 }
