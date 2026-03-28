@@ -11,11 +11,18 @@ export default function Header() {
     { name: "Dashboard", link: "/dashboard" },
   ];
   return (
-    <header className="fixed top-0 left-0 right-0 z-50 bg-black/80 backdrop-blur-sm border-b border-gray-800">
+    <header className="fixed top-0 left-0 right-0 z-50 border-b border-gray-800 bg-black/80 backdrop-blur-sm">
       <div className="max-w-7xl mx-auto px-6 py-4">
-        <nav className="flex items-center justify-between">
+        <nav
+          className="flex items-center justify-between"
+          aria-label="Primary navigation"
+        >
           <div>
-            <Link href="/" className="text-white font-bold text-xl">
+            <Link
+              href="/"
+              className="text-xl font-bold text-white hover:text-[#4FD1C5] transition-colors"
+              aria-label="Go to InsightArena homepage"
+            >
               InsightArena
             </Link>
           </div>
@@ -25,7 +32,7 @@ export default function Header() {
                 <Link
                   key={link.name}
                   href={link.link}
-                  className="text-gray-300 hover:text-white transition-colors"
+                  className="text-gray-200 transition-colors hover:text-white"
                 >
                   {link.name}
                 </Link>
@@ -33,7 +40,11 @@ export default function Header() {
             </div>
           </div>
 
-          <button className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-2 rounded-lg font-semibold transition-colors">
+          <button
+            type="button"
+            aria-label="Connect wallet"
+            className="rounded-lg bg-orange-500 px-6 py-2 font-semibold text-white transition-colors hover:bg-orange-600"
+          >
             Connect Wallet
           </button>
         </nav>

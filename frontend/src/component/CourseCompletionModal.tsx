@@ -34,14 +34,23 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-      <div className=" backdrop-blur-3xl  border-2  border-gray-400 bg-white/5 z-50 rounded-xl shadow-2xl w-full max-w-md mx-auto">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="presentation"
+    >
+      <div
+        className="backdrop-blur-3xl border-2 border-gray-400 bg-white/5 z-50 mx-auto w-full max-w-md rounded-xl shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="course-completion-title"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-6 pt-6">
-              <h2 className="text-white text-2xl font-bold">
+              <h2 id="course-completion-title" className="text-white text-2xl font-bold">
                 Stark Academy
               </h2>
               <button
+                type="button"
                 onClick={onClose}
                 className="text-gray-400 hover:text-white w-8 h-8 rounded-full border border-gray-600 hover:border-gray-400 flex items-center justify-center transition-colors"
                 aria-label="Close modal"
@@ -54,7 +63,11 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
         {/* Content */}
         <div className="p-6">
           <div className="text-gray-300 mb-6">
-            <img src='/assets/modal_img.png' className='w-40 h- mx-auto' />
+            <img
+              src="/assets/modal_img.png"
+              alt="Celebration illustration for course completion"
+              className="w-40 h-auto mx-auto"
+            />
             <p className="mb-4 text-center pt-2">
             CONGRATULATION ON FINISHING YOUR COURSE  TIME TO CLAIM YOUR BADGE.
             </p>
@@ -70,6 +83,7 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
           {/* Action Buttons */}
           <div className="flex flex-col gap-3 sm:flex-row">
             <button
+              type="button"
               onClick={handleClaimBadge}
               disabled={isClaimLoading || badgeClaimed}
               className={`flex-1 py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 ${
@@ -89,6 +103,7 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
             </button>
 
             <button
+              type="button"
               onClick={handleJoinCommunity}
               disabled={isJoinLoading}
               className="flex-1 py-3 px-4 rounded-lg font-medium bg-purple-600 hover:bg-purple-700 text-white flex items-center justify-center gap-2"

@@ -61,6 +61,7 @@ export default function LeaderboardFilters({ onChange }: LeaderboardFiltersProps
           <button
             key={value}
             type="button"
+            aria-pressed={filters.timeRange === value}
             onClick={() => update("timeRange", value)}
             className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
               filters.timeRange === value
@@ -75,7 +76,12 @@ export default function LeaderboardFilters({ onChange }: LeaderboardFiltersProps
 
       {/* Category select */}
       <div className="relative">
+        <label htmlFor="leaderboard-category" className="sr-only">
+          Filter leaderboard by category
+        </label>
         <select
+          id="leaderboard-category"
+          aria-label="Filter leaderboard by category"
           value={filters.category}
           onChange={(e) => update("category", e.target.value as Category)}
           className="appearance-none rounded-xl border border-white/10 bg-[#0f172a] px-4 py-2 pr-8 text-xs font-medium text-gray-300 transition hover:border-white/20 focus:outline-none focus:ring-1 focus:ring-[#4FD1C5]/50 cursor-pointer"
@@ -99,7 +105,12 @@ export default function LeaderboardFilters({ onChange }: LeaderboardFiltersProps
 
       {/* Sort by select */}
       <div className="relative sm:ml-auto">
+        <label htmlFor="leaderboard-sort" className="sr-only">
+          Sort leaderboard results
+        </label>
         <select
+          id="leaderboard-sort"
+          aria-label="Sort leaderboard results"
           value={filters.sortBy}
           onChange={(e) => update("sortBy", e.target.value as SortBy)}
           className="appearance-none rounded-xl border border-white/10 bg-[#0f172a] px-4 py-2 pr-8 text-xs font-medium text-gray-300 transition hover:border-white/20 focus:outline-none focus:ring-1 focus:ring-[#4FD1C5]/50 cursor-pointer"

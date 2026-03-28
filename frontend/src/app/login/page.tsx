@@ -31,7 +31,7 @@ const Login: NextPage = () => {
         <title>Login</title>
         <meta name="description" content="Login to your account" />
       </Head>
-      <div className="flex items-center justify-center min-h-screen bg-black">
+      <main className="flex min-h-screen items-center justify-center bg-black px-4">
         <div className="w-full max-w-md p-6 space-y-8">
           {/* Progress Indicators */}
           <div className="flex justify-center space-x-4">
@@ -51,7 +51,11 @@ const Login: NextPage = () => {
           <div className="mt-8 space-y-6">
             {/* OAuth Buttons */}
             <div className="grid grid-cols-2 gap-4">
-              <button className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition">
+              <button
+                type="button"
+                aria-label="Continue with Google"
+                className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition"
+              >
                 <img
                   src="/google-logo.svg"
                   alt="Google"
@@ -59,7 +63,11 @@ const Login: NextPage = () => {
                 />
                 Google
               </button>
-              <button className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition">
+              <button
+                type="button"
+                aria-label="Continue with GitHub"
+                className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition"
+              >
                 <Github className="w-5 h-5 mr-2" />
                 Git Hub
               </button>
@@ -90,7 +98,8 @@ const Login: NextPage = () => {
                   type="email"
                   required
                   placeholder="john@example.com"
-                  className="w-full p-2 bg-gray-700 border border-gray-600 rounded text-white"
+                  autoComplete="email"
+                  className="w-full rounded border border-gray-600 bg-gray-700 p-2 text-white placeholder:text-gray-300"
                   value={formData.email}
                   onChange={handleChange}
                 />
@@ -109,7 +118,8 @@ const Login: NextPage = () => {
                   type="password"
                   required
                   placeholder="••••••••"
-                  className="w-full p-2 bg-gray-700 border border-gray-600 rounded text-white"
+                  autoComplete="current-password"
+                  className="w-full rounded border border-gray-600 bg-gray-700 p-2 text-white placeholder:text-gray-300"
                   value={formData.password}
                   onChange={handleChange}
                 />
@@ -139,7 +149,7 @@ const Login: NextPage = () => {
             </div>
           </div>
         </div>
-      </div>
+      </main>
     </>
   );
 };
