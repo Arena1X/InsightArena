@@ -31,48 +31,6 @@ fn bump_user(env: &Env, address: &Address) {
     ttl::extend_user_ttl(env, address);
 }
 
-// ── Event emission ────────────────────────────────────────────────────────────
-
-fn emit_prediction_submitted(
-    env: &Env,
-    market_id: u64,
-    predictor: &Address,
-    outcome: &Symbol,
-    amount: i128,
-) {
-    env.events().publish(
-        (symbol_short!("pred"), symbol_short!("submitd")),
-        (market_id, predictor.clone(), outcome.clone(), amount),
-    );
-}
-
-fn emit_payout_claimed(
-    env: &Env,
-    market_id: u64,
-    predictor: &Address,
-    net_payout: i128,
-    protocol_fee: i128,
-    creator_fee: i128,
-) {
-    env.events().publish(
-        (symbol_short!("pred"), symbol_short!("payclmd")),
-        (
-            market_id,
-            predictor.clone(),
-            net_payout,
-            protocol_fee,
-            creator_fee,
-        ),
-    );
-}
-
-fn emit_batch_payout_complete(env: &Env, market_id: u64, caller: &Address, processed: u32) {
-    env.events().publish(
-        (symbol_short!("pred"), symbol_short!("batchpay")),
-        (market_id, caller.clone(), processed),
-    );
-}
-
 fn compute_payout_breakdown(
     stake_amount: i128,
     winning_pool: i128,
@@ -295,7 +253,10 @@ pub fn submit_prediction(
     season::track_user_profile(env, &predictor);
 
     // ── Emit PredictionSubmitted event ────────────────────────────────────────
-    emit_prediction_submitted(env, market_id, &predictor, &chosen_outcome, stake_amount);
+    env.events().publish(
+        (symbol_short!("pred_sub"),),
+        (market_id, predictor.clone(), chosen_outcome, stake_amount),
+    );
 
     Ok(())
 }
@@ -392,8 +353,13 @@ pub fn list_market_predictions(env: &Env, market_id: u64) -> Vec<Prediction> {
             .storage()
             .persistent()
             .get::<DataKey, Prediction>(&pred_key)
+            .or_else(|| env.storage().temporary().get::<DataKey, Prediction>(&pred_key))
         {
-            bump_prediction(env, market_id, &predictor);
+            if env.storage().persistent().has(&pred_key) {
+                bump_prediction(env, market_id, &predictor);
+            } else {
+                ttl::shorten_prediction_ttl_after_claim(env, market_id, &predictor);
+            }
             results.push_back(prediction);
         }
     }
@@ -511,7 +477,7 @@ pub fn claim_payout(
         escrow::release_payout(env, &predictor, net_payout)?;
     }
     if protocol_fee > 0 {
-        escrow::add_to_treasury_balance(env, protocol_fee);
+        escrow::release_payout(env, &cfg.admin, protocol_fee)?;
     }
     if creator_fee > 0 {
         escrow::refund(env, &market.creator, creator_fee)?;
@@ -554,13 +520,9 @@ pub fn claim_payout(
     bump_user(env, &predictor);
     season::track_user_profile(env, &predictor);
 
-    emit_payout_claimed(
-        env,
-        market_id,
-        &predictor,
-        net_payout,
-        protocol_fee,
-        creator_fee,
+    env.events().publish(
+        (symbol_short!("pay_clmd"),),
+        (market_id, predictor.clone(), net_payout),
     );
 
     Ok(net_payout)
@@ -600,7 +562,8 @@ pub fn batch_distribute_payouts(
 
     let predictions = list_market_predictions(env, market_id);
     if predictions.is_empty() {
-        emit_batch_payout_complete(env, market_id, &caller, 0);
+        env.events()
+            .publish((symbol_short!("btch_pay"),), (market_id, 0_u32));
         return Ok(0);
     }
 
@@ -657,7 +620,7 @@ pub fn batch_distribute_payouts(
             escrow::release_payout(env, &stored_prediction.predictor, net_payout)?;
         }
         if protocol_fee > 0 {
-            escrow::add_to_treasury_balance(env, protocol_fee);
+            escrow::release_payout(env, &cfg.admin, protocol_fee)?;
         }
         if creator_fee > 0 {
             escrow::refund(env, &market.creator, creator_fee)?;
@@ -685,7 +648,8 @@ pub fn batch_distribute_payouts(
 
     escrow::assert_escrow_solvent(env)?;
 
-    emit_batch_payout_complete(env, market_id, &caller, processed);
+    env.events()
+        .publish((symbol_short!("btch_pay"),), (market_id, processed));
 
     Ok(processed)
 }
@@ -694,9 +658,9 @@ pub fn batch_distribute_payouts(
 
 #[cfg(test)]
 mod prediction_tests {
-    use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::token::StellarAssetClient;
-    use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
+    use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
+    use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+    use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, String, Symbol};
 
     /* Removed unused import: crate::invite */
     use crate::market::CreateMarketParams;
@@ -779,6 +743,10 @@ mod prediction_tests {
         assert_eq!(pred.stake_amount, 20_000_000);
         assert!(!pred.payout_claimed);
         assert_eq!(pred.payout_amount, 0);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("pred_sub"));
     }
 
     // ── Task #237 Allowlist Tests ─────────────────────────────────────────────
@@ -843,5 +811,442 @@ mod prediction_tests {
 
         client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
         assert!(client.has_predicted(&market_id, &predictor));
+    }
+
+    #[test]
+    fn list_market_predictions_isolated_per_market() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let p1 = Address::generate(&env);
+        let p2 = Address::generate(&env);
+
+        let m1 = client.create_market(&creator, &default_params(&env));
+        let m2 = client.create_market(&creator, &default_params(&env));
+        fund(&env, &xlm_token, &p1, 40_000_000);
+        fund(&env, &xlm_token, &p2, 20_000_000);
+
+        client.submit_prediction(&p1, &m1, &symbol_short!("yes"), &20_000_000_i128);
+        client.submit_prediction(&p1, &m2, &symbol_short!("no"), &20_000_000_i128);
+        client.submit_prediction(&p2, &m1, &symbol_short!("no"), &20_000_000_i128);
+
+        let m1_preds = client.list_market_predictions(&m1);
+        let m2_preds = client.list_market_predictions(&m2);
+
+        assert_eq!(m1_preds.len(), 2);
+        assert_eq!(m2_preds.len(), 1);
+    }
+
+    fn mark_market_resolved(env: &Env, client: &InsightArenaContractClient<'_>, market_id: u64) {
+        use crate::storage_types::{DataKey, Market};
+
+        let contract_id = client.address.clone();
+        let mut market: Market = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Market(market_id))
+                .unwrap()
+        });
+
+        market.is_resolved = true;
+        market.resolved_outcome = Some(symbol_short!("yes"));
+
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Market(market_id), &market);
+        });
+    }
+
+    #[test]
+    fn claim_payout_successful_for_winner() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+        let loser = Address::generate(&env);
+
+        let market_id = client.create_market(&creator, &default_params(&env));
+        fund(&env, &xlm_token, &winner, 20_000_000);
+        fund(&env, &xlm_token, &loser, 30_000_000);
+
+        client.submit_prediction(&winner, &market_id, &symbol_short!("yes"), &20_000_000);
+        client.submit_prediction(&loser, &market_id, &symbol_short!("no"), &30_000_000);
+        mark_market_resolved(&env, &client, market_id);
+
+        let cfg = client.get_config();
+        let token = TokenClient::new(&env, &xlm_token);
+
+        let payout = client.claim_payout(&winner, &market_id);
+        assert_eq!(payout, 48_500_000);
+        assert_eq!(token.balance(&winner), 48_500_000);
+        assert_eq!(token.balance(&cfg.admin), 1_000_000);
+        assert_eq!(token.balance(&creator), 500_000);
+
+        let pred = client.get_prediction(&market_id, &winner);
+        assert!(pred.payout_claimed);
+        assert_eq!(pred.payout_amount, 48_500_000);
+
+        let profile = env.as_contract(&client.address, || {
+            use crate::storage_types::{DataKey, UserProfile};
+            env.storage()
+                .persistent()
+                .get::<DataKey, UserProfile>(&DataKey::User(winner.clone()))
+                .unwrap()
+        });
+        assert_eq!(profile.total_winnings, 48_500_000);
+        assert_eq!(profile.season_points, 4);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("pay_clmd"));
+    }
+
+    #[test]
+    fn claim_payout_fails_when_market_not_resolved() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+        let loser = Address::generate(&env);
+
+        let market_id = client.create_market(&creator, &default_params(&env));
+        fund(&env, &xlm_token, &winner, 20_000_000);
+        fund(&env, &xlm_token, &loser, 30_000_000);
+
+        client.submit_prediction(&winner, &market_id, &symbol_short!("yes"), &20_000_000);
+        client.submit_prediction(&loser, &market_id, &symbol_short!("no"), &30_000_000);
+        mark_market_resolved(&env, &client, market_id);
+
+        client.claim_payout(&winner, &market_id);
+        let result = client.try_claim_payout(&winner, &market_id);
+        assert!(matches!(
+            result,
+            Err(Ok(InsightArenaError::PayoutAlreadyClaimed))
+        ));
+    }
+
+    #[test]
+    fn claim_payout_fails_for_losing_predictor() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+        let loser = Address::generate(&env);
+
+        let market_id = client.create_market(&creator, &default_params(&env));
+        fund(&env, &xlm_token, &winner, 20_000_000);
+        fund(&env, &xlm_token, &loser, 30_000_000);
+
+        client.submit_prediction(&winner, &market_id, &symbol_short!("yes"), &20_000_000);
+        client.submit_prediction(&loser, &market_id, &symbol_short!("no"), &30_000_000);
+        mark_market_resolved(&env, &client, market_id);
+
+        let result = client.try_claim_payout(&loser, &market_id);
+        assert!(matches!(result, Err(Ok(InsightArenaError::InvalidOutcome))));
+    }
+
+    #[test]
+    fn claim_payout_applies_fee_deductions_correctly() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+        let loser = Address::generate(&env);
+
+        let market_id = client.create_market(&creator, &default_params(&env));
+        fund(&env, &xlm_token, &winner, 40_000_000);
+        fund(&env, &xlm_token, &loser, 60_000_000);
+
+        client.submit_prediction(&winner, &market_id, &symbol_short!("yes"), &40_000_000);
+        client.submit_prediction(&loser, &market_id, &symbol_short!("no"), &60_000_000);
+        mark_market_resolved(&env, &client, market_id);
+
+        // gross = 40_000_000 + (40_000_000 / 40_000_000) * 60_000_000 = 100_000_000
+        // protocol_fee (2%) = 2_000_000, creator_fee (1%) = 1_000_000, net = 97_000_000
+        let payout = client.claim_payout(&winner, &market_id);
+        assert_eq!(payout, 97_000_000);
+
+        let token = TokenClient::new(&env, &xlm_token);
+        let cfg = client.get_config();
+        assert_eq!(token.balance(&winner), 97_000_000);
+        assert_eq!(token.balance(&cfg.admin), 2_000_000);
+        assert_eq!(token.balance(&creator), 1_000_000);
+    }
+
+    #[test]
+    fn claim_payout_overflow_is_rejected() {
+        use crate::storage_types::{DataKey, Market, Prediction};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+
+        let market_id = client.create_market(&creator, &default_params(&env));
+        let huge_stake = (i128::MAX / 2) + 1;
+
+        let contract_id = client.address.clone();
+        env.as_contract(&contract_id, || {
+            let mut market: Market = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Market(market_id))
+                .unwrap();
+
+            market.is_resolved = true;
+            market.resolved_outcome = Some(symbol_short!("yes"));
+            market.total_pool = i128::MAX;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Market(market_id), &market);
+
+            let mut list: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+            list.push_back(winner.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::PredictorList(market_id), &list);
+
+            let mut prediction = Prediction::new(
+                market_id,
+                winner.clone(),
+                symbol_short!("yes"),
+                huge_stake,
+                env.ledger().timestamp(),
+            );
+            prediction.payout_claimed = false;
+            prediction.payout_amount = 0;
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::Prediction(market_id, winner.clone()), &prediction);
+        });
+
+        let result = client.try_claim_payout(&winner, &market_id);
+        assert!(matches!(result, Err(Ok(InsightArenaError::Overflow))));
+    }
+
+    #[test]
+    fn batch_distribute_payouts_access_control_admin_or_oracle_only() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let predictor = Address::generate(&env);
+        let random = Address::generate(&env);
+
+        let market_id = client.create_market(&creator, &default_params(&env));
+        fund(&env, &xlm_token, &predictor, 20_000_000);
+        client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &20_000_000);
+        mark_market_resolved(&env, &client, market_id);
+
+        let unauthorized = client.try_batch_distribute_payouts(&random, &market_id);
+        assert!(matches!(
+            unauthorized,
+            Err(Ok(InsightArenaError::Unauthorized))
+        ));
+
+        let cfg = client.get_config();
+        let admin_ok = client.batch_distribute_payouts(&cfg.admin, &market_id);
+        assert_eq!(admin_ok, 1);
+    }
+
+    #[test]
+    fn batch_distribute_payouts_successful_execution_and_count() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+        let loser = Address::generate(&env);
+
+        let market_id = client.create_market(&creator, &default_params(&env));
+        fund(&env, &xlm_token, &winner, 20_000_000);
+        fund(&env, &xlm_token, &loser, 30_000_000);
+
+        client.submit_prediction(&winner, &market_id, &symbol_short!("yes"), &20_000_000);
+        client.submit_prediction(&loser, &market_id, &symbol_short!("no"), &30_000_000);
+        mark_market_resolved(&env, &client, market_id);
+
+        let cfg = client.get_config();
+        let processed = client.batch_distribute_payouts(&cfg.oracle_address, &market_id);
+        assert_eq!(processed, 1);
+
+        let winner_prediction = client.get_prediction(&market_id, &winner);
+        let loser_prediction = client.get_prediction(&market_id, &loser);
+        assert!(winner_prediction.payout_claimed);
+        assert!(!loser_prediction.payout_claimed);
+
+        let last = env.events().all().last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, symbol_short!("btch_pay"));
+    }
+
+    #[test]
+    fn batch_distribute_payouts_no_double_payouts() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+        let loser = Address::generate(&env);
+
+        let market_id = client.create_market(&creator, &default_params(&env));
+        fund(&env, &xlm_token, &winner, 20_000_000);
+        fund(&env, &xlm_token, &loser, 30_000_000);
+
+        client.submit_prediction(&winner, &market_id, &symbol_short!("yes"), &20_000_000);
+        client.submit_prediction(&loser, &market_id, &symbol_short!("no"), &30_000_000);
+        mark_market_resolved(&env, &client, market_id);
+
+        let cfg = client.get_config();
+        let token = TokenClient::new(&env, &xlm_token);
+
+        let first = client.batch_distribute_payouts(&cfg.admin, &market_id);
+        let balance_after_first = token.balance(&winner);
+        let second = client.batch_distribute_payouts(&cfg.admin, &market_id);
+        let balance_after_second = token.balance(&winner);
+
+        assert_eq!(first, 1);
+        assert_eq!(second, 0);
+        assert_eq!(balance_after_first, balance_after_second);
+    }
+
+    #[test]
+    fn batch_distribute_payouts_handles_empty_and_already_claimed() {
+        use crate::storage_types::{DataKey, Prediction};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+
+        let empty_market = client.create_market(&creator, &default_params(&env));
+        mark_market_resolved(&env, &client, empty_market);
+        let cfg = client.get_config();
+        let empty_processed = client.batch_distribute_payouts(&cfg.oracle_address, &empty_market);
+        assert_eq!(empty_processed, 0);
+
+        let market_id = client.create_market(&creator, &default_params(&env));
+        fund(&env, &xlm_token, &winner, 20_000_000);
+        client.submit_prediction(&winner, &market_id, &symbol_short!("yes"), &20_000_000);
+        mark_market_resolved(&env, &client, market_id);
+
+        let contract_id = client.address.clone();
+        env.as_contract(&contract_id, || {
+            let key = DataKey::Prediction(market_id, winner.clone());
+            let mut pred: Prediction = env.storage().persistent().get(&key).unwrap();
+            pred.payout_claimed = true;
+            env.storage().persistent().set(&key, &pred);
+        });
+
+        let already_claimed_processed =
+            client.batch_distribute_payouts(&cfg.oracle_address, &market_id);
+        assert_eq!(already_claimed_processed, 0);
+    }
+
+    #[test]
+    fn batch_distribute_payouts_fee_correctness() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+        let loser = Address::generate(&env);
+
+        let market_id = client.create_market(&creator, &default_params(&env));
+        fund(&env, &xlm_token, &winner, 40_000_000);
+        fund(&env, &xlm_token, &loser, 60_000_000);
+
+        client.submit_prediction(&winner, &market_id, &symbol_short!("yes"), &40_000_000);
+        client.submit_prediction(&loser, &market_id, &symbol_short!("no"), &60_000_000);
+        mark_market_resolved(&env, &client, market_id);
+
+        let cfg = client.get_config();
+        let processed = client.batch_distribute_payouts(&cfg.admin, &market_id);
+        assert_eq!(processed, 1);
+
+        let token = TokenClient::new(&env, &xlm_token);
+        assert_eq!(token.balance(&winner), 97_000_000);
+        assert_eq!(token.balance(&cfg.admin), 2_000_000);
+        assert_eq!(token.balance(&creator), 1_000_000);
+    }
+
+    #[test]
+    fn batch_distribute_payouts_respects_batch_size_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let market_id = client.create_market(&creator, &default_params(&env));
+
+        let mut winners: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        for _ in 0..30 {
+            let predictor = Address::generate(&env);
+            winners.push_back(predictor.clone());
+            fund(&env, &xlm_token, &predictor, 10_000_000);
+            client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &10_000_000);
+        }
+
+        mark_market_resolved(&env, &client, market_id);
+        let cfg = client.get_config();
+
+        let first_batch = client.batch_distribute_payouts(&cfg.oracle_address, &market_id);
+        let second_batch = client.batch_distribute_payouts(&cfg.oracle_address, &market_id);
+
+        assert_eq!(first_batch, 25);
+        assert_eq!(second_batch, 5);
+
+        let claimed_count = winners
+            .iter()
+            .filter(|w| client.get_prediction(&market_id, w).payout_claimed)
+            .count();
+        assert_eq!(claimed_count, 30);
+    }
+
+    #[test]
+    fn batch_distribute_payouts_runs_escrow_solvency_check() {
+        use crate::storage_types::{DataKey, Prediction};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, xlm_token) = deploy(&env);
+        let creator = Address::generate(&env);
+        let winner = Address::generate(&env);
+        let other_market_predictor = Address::generate(&env);
+
+        let market_one = client.create_market(&creator, &default_params(&env));
+        let market_two = client.create_market(&creator, &default_params(&env));
+
+        fund(&env, &xlm_token, &winner, 10_000_000);
+        fund(&env, &xlm_token, &other_market_predictor, 25_000_000);
+
+        client.submit_prediction(&winner, &market_one, &symbol_short!("yes"), &10_000_000);
+        client.submit_prediction(
+            &other_market_predictor,
+            &market_two,
+            &symbol_short!("yes"),
+            &25_000_000,
+        );
+        mark_market_resolved(&env, &client, market_one);
+
+        let contract_id = client.address.clone();
+        env.as_contract(&contract_id, || {
+            let key = DataKey::Prediction(market_two, other_market_predictor.clone());
+            let mut prediction: Prediction = env.storage().persistent().get(&key).unwrap();
+            prediction.stake_amount = 30_000_000;
+            env.storage().persistent().set(&key, &prediction);
+        });
+
+        let cfg = client.get_config();
+        let result = client.try_batch_distribute_payouts(&cfg.admin, &market_one);
+        assert!(matches!(result, Err(Ok(InsightArenaError::EscrowEmpty))));
     }
 }

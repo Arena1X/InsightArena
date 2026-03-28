@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, Symbol};
+use soroban_sdk::{symbol_short, Address, Env, Symbol};
 
 use crate::config;
 use crate::errors::InsightArenaError;
@@ -72,7 +72,10 @@ pub fn resolve_market(
     );
 
     // ── Emit MarketResolved event ─────────────────────────────────────────────
-    market::emit_market_resolved(&env, market_id, resolved_outcome);
+    env.events().publish(
+        (symbol_short!("mkt_rslvd"),),
+        (market_id, resolved_outcome),
+    );
 
     // ── Update creator reputation stats ──────────────────────────────────────
     reputation::on_market_resolved(&env, &market.creator, market.participant_count);
@@ -92,8 +95,8 @@ pub fn update_oracle_from_governance(
 
 #[cfg(test)]
 mod resolve_tests {
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
-    use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
+    use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
+    use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, String, Symbol};
 
     use crate::market::CreateMarketParams;
     use crate::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};

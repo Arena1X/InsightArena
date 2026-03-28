@@ -1,3 +1,18 @@
+# Dependencies
+node_modules/
+
+# Rust build output
+target/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+
+# Temp/scratch files
 issues.md
 pr.md
 checks.md
