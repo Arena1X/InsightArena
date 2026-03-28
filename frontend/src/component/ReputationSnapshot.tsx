@@ -1,6 +1,6 @@
 import React from "react";
 import { Trophy, Zap, TrendingUp } from "lucide-react";
-import { Progress } from "@/components/ui/progress"; // wait, usually if there's no progress component I can just build a div progress. 
+
 
 export default function ReputationSnapshot() {
   const score = 840;
