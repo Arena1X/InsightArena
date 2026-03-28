@@ -1,3 +1,4 @@
+import { VersioningType } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -13,6 +14,15 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   app.useLogger(app.get(Logger));
 
+  // Enable URI-based versioning
+  app.enableVersioning({
+    type: VersioningType.URI,
+    defaultVersion: '1',
+  });
+
+  // Set global API prefix
+  app.setGlobalPrefix('api');
+
   const config = new DocumentBuilder()
     .setTitle('InsightArena API')
     .setDescription('The InsightArena Platform API description')
@@ -20,7 +30,7 @@ async function bootstrap() {
     .addBearerAuth()
     .build();
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/docs', app, document);
+  SwaggerModule.setup('api/v1/docs', app, document);
 
   // If the SWAGGER_EXPORT env var is set, or in development mode, write current Swagger JSON
   if (process.env.SWAGGER_EXPORT === 'true') {

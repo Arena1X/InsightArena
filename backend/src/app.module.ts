@@ -1,27 +1,28 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
+import { TypeOrmModule } from '@nestjs/typeorm';
 
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { LoggerModule } from 'nestjs-pino';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { HealthModule } from './health/health.module';
+import { AuthModule } from './auth/auth.module';
 import { CommonModule } from './common/common.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
-import { validate } from './config/env.validation';
-import { AuthModule } from './auth/auth.module';
-import { UsersModule } from './users/users.module';
-import { MarketsModule } from './markets/markets.module';
-import { PredictionsModule } from './predictions/predictions.module';
 import { CompetitionsModule } from './competitions/competitions.module';
+import { validate } from './config/env.validation';
+import { HealthModule } from './health/health.module';
 import { LeaderboardModule } from './leaderboard/leaderboard.module';
+import { MarketsModule } from './markets/markets.module';
 import { NotificationsModule } from './notifications/notifications.module';
-import { SorobanModule } from './soroban/soroban.module';
+import { PredictionsModule } from './predictions/predictions.module';
 import { SeasonsModule } from './seasons/seasons.module';
-import { LoggerModule } from 'nestjs-pino';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { SorobanModule } from './soroban/soroban.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -73,6 +74,7 @@ import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
     LeaderboardModule,
     NotificationsModule,
     SorobanModule,
+    AnalyticsModule,
     CommonModule,
   ],
 

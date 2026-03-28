@@ -268,7 +268,7 @@ describe('PredictionsService', () => {
 
       expect(result.payout_claimed).toBe(true);
       expect(result.tx_hash).toBe('claim-tx');
-      // eslint-disable-next-line @typescript-eslint/unbound-method
+
       expect(mockSoroban.claimPayout).toHaveBeenCalledWith(
         user.stellar_address,
         market.on_chain_market_id,

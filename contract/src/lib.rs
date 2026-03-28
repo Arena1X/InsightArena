@@ -735,4 +735,7 @@ mod leaderboard_tests {
 }
 
 #[cfg(test)]
+mod season_tests;
+
+#[cfg(test)]
 mod prediction_tests;
