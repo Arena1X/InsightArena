@@ -29,16 +29,19 @@ export class NotificationsController {
   @ApiOperation({ summary: 'Get notifications for authenticated user' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'unread_only', required: false, type: Boolean })
   @ApiResponse({ status: 200, description: 'Paginated notifications list' })
   async getMyNotifications(
     @CurrentUser() user: User,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
+    @Query('unread_only') unreadOnly?: string,
   ) {
     return this.notificationsService.findAllForUser(
       user.id,
       Number(page),
       Number(limit),
+      unreadOnly === 'true',
     );
   }
 
@@ -54,10 +57,10 @@ export class NotificationsController {
   }
 
   @Patch('read-all')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mark all notifications as read' })
-  @ApiResponse({ status: 204, description: 'All notifications marked as read' })
-  async markAllAsRead(@CurrentUser() user: User): Promise<void> {
+  @ApiResponse({ status: 200, description: 'Count of notifications updated' })
+  async markAllAsRead(@CurrentUser() user: User): Promise<{ updated: number }> {
     return this.notificationsService.markAllAsRead(user.id);
   }
 }

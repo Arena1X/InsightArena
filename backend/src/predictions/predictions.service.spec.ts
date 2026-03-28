@@ -5,14 +5,16 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
-import { Repository } from 'typeorm';
+import { Repository, ObjectLiteral } from 'typeorm';
 import { PredictionsService } from './predictions.service';
 import { Prediction } from './entities/prediction.entity';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
 import { SorobanService } from '../soroban/soroban.service';
 
-type MockRepo<T> = jest.Mocked<Pick<Repository<T>, 'findOne' | 'create'>>;
+type MockRepo<T extends ObjectLiteral> = jest.Mocked<
+  Pick<Repository<T>, 'findOne' | 'create' | 'save'>
+>;
 
 const makeUser = (overrides: Partial<User> = {}): User =>
   ({
@@ -70,16 +72,20 @@ describe('PredictionsService', () => {
     mockPredictionsRepo = {
       findOne: jest.fn(),
       create: jest.fn(),
+      save: jest.fn(),
     };
 
     mockMarketsRepo = {
       findOne: jest.fn(),
       create: jest.fn(),
+      save: jest.fn(),
     };
 
     mockSoroban = {
       submitPrediction: jest.fn().mockResolvedValue({ tx_hash: 'abc123' }),
-    } as jest.Mocked<SorobanService>;
+      claimPayout: jest.fn(),
+      getEvents: jest.fn(),
+    } as unknown as jest.Mocked<SorobanService>;
 
     const mockDataSource = {
       transaction: jest.fn((cb: (manager: unknown) => Promise<Prediction>) => {
@@ -232,6 +238,102 @@ describe('PredictionsService', () => {
           makeUser(),
         ),
       ).rejects.toThrow(ConflictException);
+    });
+  });
+
+  describe('claim', () => {
+    it('successfully claims payout for a winning prediction', async () => {
+      const user = makeUser();
+      const market = makeMarket({
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+      const prediction = {
+        id: 'pred-1',
+        user,
+        market,
+        chosen_outcome: 'Yes',
+        payout_claimed: false,
+      } as Prediction;
+
+      mockPredictionsRepo.findOne.mockResolvedValue(prediction);
+      mockPredictionsRepo.save = jest.fn().mockResolvedValue({
+        ...prediction,
+        payout_claimed: true,
+        tx_hash: 'claim-tx',
+      });
+      mockSoroban.claimPayout.mockResolvedValue({ tx_hash: 'claim-tx' });
+
+      const result = await service.claim('pred-1', user);
+
+      expect(result.payout_claimed).toBe(true);
+      expect(result.tx_hash).toBe('claim-tx');
+
+      expect(mockSoroban.claimPayout).toHaveBeenCalledWith(
+        user.stellar_address,
+        market.on_chain_market_id,
+      );
+    });
+
+    it('throws ConflictException if already claimed', async () => {
+      const user = makeUser();
+      const prediction = {
+        id: 'pred-1',
+        user,
+        payout_claimed: true,
+      } as Prediction;
+
+      mockPredictionsRepo.findOne.mockResolvedValue(prediction);
+
+      await expect(service.claim('pred-1', user)).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    it('throws BadRequestException if market not resolved', async () => {
+      const user = makeUser();
+      const market = makeMarket({ is_resolved: false });
+      const prediction = {
+        id: 'pred-1',
+        user,
+        market,
+        chosen_outcome: 'Yes',
+        payout_claimed: false,
+      } as Prediction;
+
+      mockPredictionsRepo.findOne.mockResolvedValue(prediction);
+
+      await expect(service.claim('pred-1', user)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('throws BadRequestException if not a winner', async () => {
+      const user = makeUser();
+      const market = makeMarket({
+        is_resolved: true,
+        resolved_outcome: 'No',
+      });
+      const prediction = {
+        id: 'pred-1',
+        user,
+        market,
+        chosen_outcome: 'Yes',
+        payout_claimed: false,
+      } as Prediction;
+
+      mockPredictionsRepo.findOne.mockResolvedValue(prediction);
+
+      await expect(service.claim('pred-1', user)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('throws NotFoundException if prediction not found', async () => {
+      mockPredictionsRepo.findOne.mockResolvedValue(null);
+      await expect(service.claim('non-existent', makeUser())).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });

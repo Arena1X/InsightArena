@@ -17,12 +17,12 @@ export enum NotificationType {
   System = 'system',
 }
 
+@Index(['user_id', 'is_read'])
 @Entity('notifications')
 export class Notification {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Index()
   @ManyToOne(() => User, { onDelete: 'CASCADE', nullable: false })
   @JoinColumn({ name: 'user_id' })
   user: User;

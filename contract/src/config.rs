@@ -1,7 +1,8 @@
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol, Vec};
 
 use crate::errors::InsightArenaError;
 use crate::storage_types::DataKey;
+use crate::ttl;
 
 // ── TTL constants ─────────────────────────────────────────────────────────────
 // Assuming ~5 s per ledger:
@@ -36,9 +37,7 @@ pub struct Config {
 /// Extend the persistent TTL for the Config entry whenever it drops below
 /// `PERSISTENT_THRESHOLD`. Must be called on every read *and* every write.
 fn bump_config(env: &Env) {
-    env.storage()
-        .persistent()
-        .extend_ttl(&DataKey::Config, PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
+    ttl::extend_config_ttl(env);
 }
 
 /// Load Config from persistent storage.
@@ -79,8 +78,25 @@ pub fn initialize(
 
     env.storage().persistent().set(&DataKey::Config, &config);
     bump_config(env);
+    env.storage()
+        .instance()
+        .set(&DataKey::Categories, &default_categories(env));
+    env.storage()
+        .instance()
+        .extend_ttl(PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
 
     Ok(())
+}
+
+pub(crate) fn default_categories(env: &Env) -> Vec<Symbol> {
+    let mut categories = Vec::new(env);
+    categories.push_back(Symbol::new(env, "Sports"));
+    categories.push_back(Symbol::new(env, "Crypto"));
+    categories.push_back(Symbol::new(env, "Politics"));
+    categories.push_back(Symbol::new(env, "Entertainment"));
+    categories.push_back(Symbol::new(env, "Science"));
+    categories.push_back(Symbol::new(env, "Other"));
+    categories
 }
 
 /// Return the current global [`Config`] and extend its TTL.
@@ -88,6 +104,14 @@ pub fn get_config(env: &Env) -> Result<Config, InsightArenaError> {
     let config = load_config(env)?;
     bump_config(env);
     Ok(config)
+}
+
+/// Return the current global [`Config`] without mutating storage.
+///
+/// This helper is intended for strict view functions that must avoid any state
+/// writes, including TTL extension side-effects.
+pub fn get_config_readonly(env: &Env) -> Result<Config, InsightArenaError> {
+    load_config(env)
 }
 
 /// Update the protocol fee rate. Caller must be the stored admin.
@@ -101,6 +125,17 @@ pub fn update_protocol_fee(env: &Env, new_fee_bps: u32) -> Result<(), InsightAre
     env.storage().persistent().set(&DataKey::Config, &config);
     bump_config(env);
 
+    Ok(())
+}
+
+pub fn update_protocol_fee_from_governance(
+    env: &Env,
+    new_fee_bps: u32,
+) -> Result<(), InsightArenaError> {
+    let mut config = load_config(env)?;
+    config.protocol_fee_bps = new_fee_bps;
+    env.storage().persistent().set(&DataKey::Config, &config);
+    bump_config(env);
     Ok(())
 }
 
@@ -120,9 +155,6 @@ pub fn set_paused(env: &Env, paused: bool) -> Result<(), InsightArenaError> {
     Ok(())
 }
 
-/// Atomically replace the admin address. Caller must be the current admin.
-///
-/// After this call the old admin address loses all privileges immediately.
 pub fn transfer_admin(env: &Env, new_admin: Address) -> Result<(), InsightArenaError> {
     let mut config = load_config(env)?;
 
@@ -134,6 +166,40 @@ pub fn transfer_admin(env: &Env, new_admin: Address) -> Result<(), InsightArenaE
     bump_config(env);
 
     Ok(())
+}
+
+/// Update the trusted oracle address. Caller must be the current admin.
+///
+/// After this call the old oracle address can no longer resolve markets.
+pub fn update_oracle(
+    env: &Env,
+    admin: Address,
+    new_oracle: Address,
+) -> Result<(), InsightArenaError> {
+    let mut config = load_config(env)?;
+
+    // Auth against the *current* admin.
+    admin.require_auth();
+
+    if admin != config.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    let old_oracle = config.oracle_address;
+    config.oracle_address = new_oracle.clone();
+    env.storage().persistent().set(&DataKey::Config, &config);
+    bump_config(env);
+
+    emit_oracle_updated(env, &old_oracle, &new_oracle);
+
+    Ok(())
+}
+
+fn emit_oracle_updated(env: &Env, old_oracle: &Address, new_oracle: &Address) {
+    env.events().publish(
+        (symbol_short!("cfg"), symbol_short!("ora_upd")),
+        (old_oracle.clone(), new_oracle.clone()),
+    );
 }
 
 /// Guard used at the top of every user-facing entry point.

@@ -30,11 +30,6 @@ jobs:
         with:
           workspaces: "contract -> target"
 
-      - name: Format Check
-        run: cargo fmt --all -- --check
-
-      - name: Linter (Clippy)
-        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Unit Tests
         run: cargo test

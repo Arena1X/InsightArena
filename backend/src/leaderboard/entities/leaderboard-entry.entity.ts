@@ -7,11 +7,13 @@ import {
   ManyToOne,
   JoinColumn,
   Index,
+  Unique,
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 
 @Entity('leaderboard_entries')
 @Index(['season_id', 'rank'])
+@Unique('UQ_leaderboard_entries_user_season', ['user_id', 'season_id'])
 export class LeaderboardEntry {
   @PrimaryGeneratedColumn('uuid')
   id: string;

@@ -39,6 +39,7 @@ describe('CompetitionsController', () => {
             create: jest.fn(),
             findAll: jest.fn(),
             findById: jest.fn(),
+            list: jest.fn(),
           },
         },
       ],
@@ -74,15 +75,22 @@ describe('CompetitionsController', () => {
   });
 
   describe('listCompetitions', () => {
-    it('should return all public competitions', async () => {
+    it('should return paginated competitions', async () => {
+      const mockResponse = {
+        data: [mockCompetition],
+        total: 1,
+        page: 1,
+        limit: 20,
+      };
+
       const spy = jest
-        .spyOn(service, 'findAll')
-        .mockResolvedValue([mockCompetition as Competition]);
+        .spyOn(service, 'list')
+        .mockResolvedValue(mockResponse as never);
 
-      const result = await controller.listCompetitions();
+      const result = await controller.listCompetitions({ page: 1, limit: 20 });
 
-      expect(spy).toHaveBeenCalled();
-      expect(result).toHaveLength(1);
+      expect(spy).toHaveBeenCalledWith({ page: 1, limit: 20 });
+      expect(result).toEqual(mockResponse);
     });
   });
 

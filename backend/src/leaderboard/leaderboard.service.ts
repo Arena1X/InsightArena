@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { LeaderboardEntry } from './entities/leaderboard-entry.entity';
-import { User } from '../users/entities/user.entity';
+import { UsersService } from '../users/users.service';
 import {
   LeaderboardQueryDto,
   LeaderboardEntryResponse,
@@ -16,8 +16,7 @@ export class LeaderboardService {
   constructor(
     @InjectRepository(LeaderboardEntry)
     private readonly leaderboardRepository: Repository<LeaderboardEntry>,
-    @InjectRepository(User)
-    private readonly usersRepository: Repository<User>,
+    private readonly usersService: UsersService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -76,7 +75,7 @@ export class LeaderboardService {
     const start = Date.now();
     this.logger.log('Starting leaderboard rank recalculation...');
 
-    const users = await this.usersRepository.find();
+    const users = await this.usersService.findAll();
 
     // Sort users by reputation_score descending for global ranking
     const sorted = [...users].sort(

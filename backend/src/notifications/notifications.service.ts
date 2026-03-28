@@ -31,6 +31,7 @@ export class NotificationsService {
     userId: string,
     page = 1,
     limit = 20,
+    unreadOnly = false,
   ): Promise<{
     data: Notification[];
     total: number;
@@ -41,7 +42,9 @@ export class NotificationsService {
     const skip = (page - 1) * take;
 
     const [data, total] = await this.notificationsRepository.findAndCount({
-      where: { user_id: userId },
+      where: unreadOnly
+        ? { user_id: userId, is_read: false }
+        : { user_id: userId },
       order: { created_at: 'DESC' },
       skip,
       take,
@@ -57,10 +60,12 @@ export class NotificationsService {
     );
   }
 
-  async markAllAsRead(userId: string): Promise<void> {
-    await this.notificationsRepository.update(
+  async markAllAsRead(userId: string): Promise<{ updated: number }> {
+    const result = await this.notificationsRepository.update(
       { user_id: userId, is_read: false },
       { is_read: true },
     );
+
+    return { updated: result.affected ?? 0 };
   }
 }

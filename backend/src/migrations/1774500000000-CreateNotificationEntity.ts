@@ -33,6 +33,10 @@ export class CreateNotificationEntity1774500000000 implements MigrationInterface
     `);
 
     await queryRunner.query(`
+      CREATE INDEX "IDX_notifications_user_id_is_read" ON "notifications" ("user_id", "is_read")
+    `);
+
+    await queryRunner.query(`
       ALTER TABLE "notifications"
         ADD CONSTRAINT "FK_notifications_user"
         FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE
@@ -43,6 +47,7 @@ export class CreateNotificationEntity1774500000000 implements MigrationInterface
     await queryRunner.query(
       `ALTER TABLE "notifications" DROP CONSTRAINT "FK_notifications_user"`,
     );
+    await queryRunner.query(`DROP INDEX "IDX_notifications_user_id_is_read"`);
     await queryRunner.query(`DROP INDEX "IDX_notifications_user_id"`);
     await queryRunner.query(`DROP TABLE "notifications"`);
     await queryRunner.query(`DROP TYPE "public"."notifications_type_enum"`);

@@ -21,12 +21,12 @@ export class User {
   @Column({ nullable: true })
   @IsOptional()
   @IsString()
-  username: string;
+  username: string | null;
 
   @Column({ nullable: true })
   @IsOptional()
   @IsString()
-  avatar_url: string;
+  avatar_url: string | null;
 
   @Column({ default: 0 })
   @IsNumber()

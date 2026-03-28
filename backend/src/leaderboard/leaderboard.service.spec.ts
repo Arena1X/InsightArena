@@ -4,6 +4,7 @@ import { getDataSourceToken } from '@nestjs/typeorm';
 import { LeaderboardService } from './leaderboard.service';
 import { LeaderboardEntry } from './entities/leaderboard-entry.entity';
 import { User } from '../users/entities/user.entity';
+import { UsersService } from '../users/users.service';
 import { LeaderboardQueryDto } from './dto/leaderboard-query.dto';
 
 describe('LeaderboardService', () => {
@@ -48,8 +49,8 @@ describe('LeaderboardService', () => {
     createQueryBuilder: jest.fn(() => mockQb),
   };
 
-  const mockUserRepository = {
-    find: jest.fn(),
+  const mockUsersService = {
+    findAll: jest.fn(),
   };
 
   const mockDataSource = {
@@ -65,8 +66,8 @@ describe('LeaderboardService', () => {
           useValue: mockEntryRepository,
         },
         {
-          provide: getRepositoryToken(User),
-          useValue: mockUserRepository,
+          provide: UsersService,
+          useValue: mockUsersService,
         },
         {
           provide: getDataSourceToken(),
@@ -167,12 +168,12 @@ describe('LeaderboardService', () => {
         { ...mockUser, id: 'u1', reputation_score: 50 },
         { ...mockUser, id: 'u2', reputation_score: 100 },
       ];
-      mockUserRepository.find.mockResolvedValue(users);
+      mockUsersService.findAll.mockResolvedValue(users);
       mockDataSource.transaction.mockResolvedValue(undefined);
 
       await service.recalculateRanks();
 
-      expect(mockUserRepository.find).toHaveBeenCalled();
+      expect(mockUsersService.findAll).toHaveBeenCalled();
       expect(mockDataSource.transaction).toHaveBeenCalled();
     });
   });
