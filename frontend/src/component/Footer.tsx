@@ -16,9 +16,9 @@ export default function Footer() {
       title: "RESOURCES",
       links: [
         { name: "Documentation", href: "/docs" },
-        { name: "API", href: "/api" },
-        { name: "GitHub", href: "/https://github.com/Arena1X" },
-        { name: "Smart Contracts", href: "/contracts" },
+        { name: "API Docs", href: "/docs#api-docs" },
+        { name: "GitHub", href: "https://github.com/Arena1X/InsightArena" },
+        { name: "Smart Contracts", href: "https://github.com/Arena1X/InsightArena/tree/main/contract" },
       ],
     },
     {
