@@ -1350,7 +1350,7 @@
                         "symbol": "correct_predictions"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
@@ -1374,7 +1374,7 @@
                         "symbol": "season_points"
                       },
                       "val": {
-                        "u32": 200
+                        "u32": 3
                       }
                     },
                     {

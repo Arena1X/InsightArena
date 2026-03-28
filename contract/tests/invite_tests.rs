@@ -1,7 +1,7 @@
-use crate::errors::InsightArenaError;
-use crate::market::CreateMarketParams;
-use crate::storage_types::{DataKey, InviteCode};
-use crate::{InsightArenaContract, InsightArenaContractClient};
+use insightarena_contract::errors::InsightArenaError;
+use insightarena_contract::market::CreateMarketParams;
+use insightarena_contract::storage_types::{DataKey, InviteCode};
+use insightarena_contract::{InsightArenaContract, InsightArenaContractClient};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{vec, Address, Env, String, Symbol, Vec};
 
@@ -14,7 +14,6 @@ fn setup_test(env: &Env) -> (Address, Address, u64, InsightArenaContractClient<'
         .register_stellar_asset_contract_v2(admin.clone())
         .address();
 
-    // Initialize contract
     let contract_id = env.register(InsightArenaContract, ());
     let client = InsightArenaContractClient::new(env, &contract_id);
     client.initialize(&admin, &oracle, &200, &xlm_token);
@@ -44,7 +43,6 @@ fn test_generate_invite_code_success() {
 
     let code = client.generate_invite_code(&creator, &market_id, &10, &3600);
 
-    // Verify the code is not empty.
     assert!(code.to_val().get_payload() != 0);
 
     let stored: InviteCode = env.as_contract(&client.address, || {
@@ -87,7 +85,6 @@ fn test_generate_invite_code_uniqueness() {
 
     let code1 = client.generate_invite_code(&creator, &market_id, &10, &3600);
 
-    // Change ledger timestamp to ensure a different hash
     env.ledger().set_timestamp(env.ledger().timestamp() + 1);
 
     let code2 = client.generate_invite_code(&creator, &market_id, &10, &3600);
@@ -193,4 +190,30 @@ fn test_redeem_invite_code_max_used() {
         result,
         Err(Ok(InsightArenaError::InviteCodeMaxUsed))
     ));
+}
+
+#[test]
+fn test_redeem_invite_code_duplicate_redemption() {
+    // Test that the same user cannot redeem the same code twice (already in allowlist)
+    let env = Env::default();
+    let (creator, _, market_id, client) = setup_test(&env);
+    let invitee = Address::generate(&env);
+
+    let code = client.generate_invite_code(&creator, &market_id, &5, &3600);
+    client.redeem_invite_code(&invitee, &code);
+
+    // Second redemption by the same user — use count increments but allowlist stays unchanged
+    let result = client.try_redeem_invite_code(&invitee, &code);
+    // Should succeed (not an error) since the code is still valid and has uses remaining
+    assert!(result.is_ok());
+
+    // Verify the invitee appears exactly once in the allowlist
+    let allowlist: Vec<Address> = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MarketAllowlist(market_id))
+            .unwrap()
+    });
+    let count = allowlist.iter().filter(|a| *a == invitee).count();
+    assert_eq!(count, 1, "invitee should appear exactly once in allowlist");
 }

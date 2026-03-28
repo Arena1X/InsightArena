@@ -4,6 +4,7 @@ use crate::analytics;
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
+use crate::leaderboard;
 use crate::season;
 use crate::storage_types::{DataKey, Market, Prediction, UserProfile};
 use crate::ttl;
@@ -110,10 +111,11 @@ fn compute_payout_breakdown(
     Ok((net_payout, protocol_fee, creator_fee))
 }
 
-fn update_winner_profile(
+fn apply_winner_payout(
     env: &Env,
     predictor: &Address,
     net_payout: i128,
+    stake_amount: i128,
 ) -> Result<(), InsightArenaError> {
     let user_key = DataKey::User(predictor.clone());
     let mut profile: UserProfile = env
@@ -127,16 +129,19 @@ fn update_winner_profile(
         .checked_add(net_payout)
         .ok_or(InsightArenaError::Overflow)?;
 
-    let points_i128 = net_payout
-        .checked_div(10_000_000)
+    profile.correct_predictions = profile
+        .correct_predictions
+        .checked_add(1)
         .ok_or(InsightArenaError::Overflow)?;
-    if points_i128 > u32::MAX as i128 {
-        return Err(InsightArenaError::Overflow);
-    }
 
+    let points = leaderboard::calculate_points(
+        stake_amount,
+        profile.correct_predictions,
+        profile.total_predictions,
+    );
     profile.season_points = profile
         .season_points
-        .checked_add(points_i128 as u32)
+        .checked_add(points)
         .ok_or(InsightArenaError::Overflow)?;
 
     env.storage().persistent().set(&user_key, &profile);
@@ -530,13 +535,16 @@ pub fn claim_payout(
         .checked_add(net_payout)
         .ok_or(InsightArenaError::Overflow)?;
 
-    let points_i128 = net_payout
-        .checked_div(10_000_000)
+    profile.correct_predictions = profile
+        .correct_predictions
+        .checked_add(1)
         .ok_or(InsightArenaError::Overflow)?;
-    if points_i128 > u32::MAX as i128 {
-        return Err(InsightArenaError::Overflow);
-    }
-    let points: u32 = points_i128 as u32;
+
+    let points = leaderboard::calculate_points(
+        prediction.stake_amount,
+        profile.correct_predictions,
+        profile.total_predictions,
+    );
     profile.season_points = profile
         .season_points
         .checked_add(points)
@@ -663,7 +671,12 @@ pub fn batch_distribute_payouts(
             .set(&prediction_key, &stored_prediction);
         ttl::shorten_prediction_ttl_after_claim(env, market_id, &stored_prediction.predictor);
 
-        update_winner_profile(env, &stored_prediction.predictor, net_payout)?;
+        apply_winner_payout(
+            env,
+            &stored_prediction.predictor,
+            net_payout,
+            stored_prediction.stake_amount,
+        )?;
 
         processed = processed
             .checked_add(1)
