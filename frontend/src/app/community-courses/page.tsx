@@ -172,7 +172,11 @@ export default function CommunityCoursesPage() {
               Explore Courses Created By The Community Or Share Your Own
             </p>
           </div>
-          <button className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded">
+          <button
+            type="button"
+            aria-label="Create a new course"
+            className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded"
+          >
             Create Course
           </button>
         </div>
@@ -180,14 +184,22 @@ export default function CommunityCoursesPage() {
         {/* Search and Create Course */}
         <div className="flex mb-6">
           <div className="flex-grow mr-4">
+            <label htmlFor="community-course-search" className="sr-only">
+              Search community courses
+            </label>
             <input
+              id="community-course-search"
               type="text"
               placeholder="Create Course"
+              aria-label="Search community courses"
               className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded text-white"
             />
           </div>
           <div className="flex space-x-2">
-            <select  className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white" aria-label="Sort by">
+            <label htmlFor="community-course-sort" className="sr-only">
+              Sort community courses
+            </label>
+            <select id="community-course-sort" className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white" aria-label="Sort community courses">
               <option>Newest</option>
               <option>Most Popular</option>
               <option>Top Rated</option>
@@ -206,6 +218,8 @@ export default function CommunityCoursesPage() {
       ].map((filter) => (
         <button
           key={filter.id}
+          type="button"
+          aria-pressed={selectedTag === filter.id}
           onClick={() => setSelectedTag(filter.id)}
           className={`px-4 py-2 rounded-full ${
             selectedTag === filter.id

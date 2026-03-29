@@ -5,29 +5,41 @@ export default function Footer() {
     {
       title: "PLATFORM",
       links: [
-        { name: "Market", href: "/markets" },
+        { name: "Markets", href: "/markets" },
         { name: "Leaderboard", href: "/leaderboard" },
-        { name: "Create Market", href: "/create-market" },
+        { name: "Events", href: "/events" },
+        { name: "Dashboard", href: "/dashboard" },
         { name: "Profile", href: "/profile" },
-       
       ],
     },
     {
       title: "RESOURCES",
       links: [
         { name: "Documentation", href: "/docs" },
-        { name: "API", href: "/api" },
-        { name: "GitHub", href: "/https://github.com/Arena1X" },
+        { name: "API Docs", href: "/api" },
         { name: "Smart Contracts", href: "/contracts" },
+        { name: "GitHub", href: "https://github.com/Arena1X" },
+        { name: "FAQ", href: "/Faq" },
       ],
     },
     {
       title: "COMPANY",
       links: [
+        { name: "About Us", href: "/about" },
+        { name: "Contact Support", href: "/contact" },
+        { name: "Privacy Policy", href: "/privacy" },
+        { name: "Terms of Service", href: "/terms" },
+      ],
+    },
+    {
+      title: "COMMUNITY",
+      links: [
         { name: "Telegram", href: "https://t.me/+hR9dZKau8f84YTk0" },
         { name: "Twitter", href: "https://twitter.com/InsightArena" },
         { name: "Discord", href: "https://discord.gg/InsightArena" },
+        { name: "Contact Support", href: "/contact" },
         { name: "Terms of Service", href: "/terms" },
+        { name: "Privacy Policy", href: "/privacy" },
       ],
     },
   ];
@@ -35,7 +47,7 @@ export default function Footer() {
   return (
     <footer className="relative border-t border-gray-800">
       <div className="relative z-10 max-w-7xl mx-auto px-6 py-12">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-8">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-8">
           <div className="col-span-2 lg:col-span-1 space-y-4 text-center lg:text-left">
             <h3 className="text-white font-bold text-xl">InsightArena</h3>
             <p className="text-gray-400 text-sm max-w-xs mx-auto lg:mx-0">

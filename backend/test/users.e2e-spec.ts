@@ -1,14 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { User } from '../src/users/entities/user.entity';
 import { Repository } from 'typeorm';
 
 describe('Users (e2e)', () => {
-  let app: INestApplication<App>;
+  let app: INestApplication;
   let usersRepository: Repository<User>;
 
   const mockUser: User = {

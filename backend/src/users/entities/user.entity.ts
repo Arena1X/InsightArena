@@ -21,12 +21,12 @@ export class User {
   @Column({ nullable: true })
   @IsOptional()
   @IsString()
-  username: string;
+  username: string | null;
 
   @Column({ nullable: true })
   @IsOptional()
   @IsString()
-  avatar_url: string;
+  avatar_url: string | null;
 
   @Column({ default: 0 })
   @IsNumber()
@@ -58,6 +58,23 @@ export class User {
   @IsString()
   @IsIn(['user', 'admin'])
   role: string;
+
+  @Column({ default: false })
+  is_banned: boolean;
+
+  @Column({ nullable: true })
+  @IsOptional()
+  @IsString()
+  ban_reason: string | null;
+
+  @Column({ nullable: true })
+  @IsOptional()
+  banned_at: Date | null;
+
+  @Column({ nullable: true })
+  @IsOptional()
+  @IsString()
+  banned_by: string | null;
 
   @CreateDateColumn()
   created_at: Date;

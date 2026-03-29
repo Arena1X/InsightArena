@@ -60,6 +60,19 @@ export class AuthService {
     stellar_address: string,
     signed_challenge: string,
   ): Promise<{ access_token: string; user: User }> {
+    const user = await this.verifySignature(stellar_address, signed_challenge);
+
+    // Sign JWT with sub: user.id
+    const payload = { sub: user.id, stellar_address: user.stellar_address };
+    const access_token = await this.jwtService.signAsync(payload);
+
+    return { access_token, user };
+  }
+
+  async verifySignature(
+    stellar_address: string,
+    signed_challenge: string,
+  ): Promise<User> {
     this.logger.debug(`Verifying challenge for ${stellar_address}`);
 
     // Find a valid, unused challenge for this address
@@ -104,12 +117,7 @@ export class AuthService {
       user = this.usersRepository.create({ stellar_address });
     }
     user = await this.usersRepository.save(user);
-
-    // Sign JWT with sub: user.id
-    const payload = { sub: user.id, stellar_address: user.stellar_address };
-    const access_token = await this.jwtService.signAsync(payload);
-
-    return { access_token, user };
+    return user;
   }
 
   /** Finds the most recent valid (non-expired, non-used) challenge for a given address. */

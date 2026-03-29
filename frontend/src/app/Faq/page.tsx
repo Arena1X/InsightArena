@@ -1,6 +1,12 @@
-"use client"
-import { useState } from 'react';
-import { ChevronLeft, Plus, Minus } from 'lucide-react';
+"use client";
+
+import Link from "next/link";
+import { useState } from "react";
+import { ChevronLeft, Plus, Minus } from "lucide-react";
+
+import Footer from "@/component/Footer";
+import Header from "@/component/Header";
+import PageBackground from "@/component/PageBackground";
 
 interface FAQItem {
   id: number;
@@ -38,58 +44,87 @@ export default function CryptoFAQ() {
   ]);
 
   const toggleFAQ = (id: number) => {
-    setFaqItems(faqItems.map(item => 
-      item.id === id ? { ...item, isOpen: !item.isOpen } : item
-    ));
+    setFaqItems(
+      faqItems.map((item) =>
+        item.id === id ? { ...item, isOpen: !item.isOpen } : item
+      )
+    );
   };
 
   return (
-    <div className="min-h-screen bg-black text-white flex justify-center items-center">
-      <div className="w-full max-w-3xl mx-auto p-6 rounded-lg bg-gradient-to-b from-gray-800 to-gray-900 border border-purple-700">
-        <div className="mb-8 text-center">
-          <h1 className="text-4xl font-bold mb-2">Frequently Ask Questions</h1>
-        </div>
-        
-        <div className="mb-4">
-          <button className="flex items-center text-gray-300 hover:text-white">
-            <ChevronLeft size={20} />
-            <span className="ml-1">Back to home</span>
-          </button>
-        </div>
-        
-        <div className="space-y-4">
-          {faqItems.map(item => (
-            <div 
-              key={item.id} 
-              className="bg-white rounded-lg overflow-hidden mb-4"
-            >
-              <div 
-                className="flex justify-between items-center p-4 cursor-pointer text-black"
-                onClick={() => toggleFAQ(item.id)}
-              >
-                <h3 className="font-semibold text-lg">{item.id}. {item.question}</h3>
-                <button className="p-1 rounded-full bg-black">
-                  {item.isOpen ? 
-                    <Minus size={16} className="text-white" /> : 
-                    <Plus size={16} className="text-white" />
-                  }
-                </button>
+    <div className="relative min-h-screen overflow-x-hidden text-white">
+      <PageBackground />
+
+      <div className="relative z-10">
+        <Header />
+
+        <main className="max-w-5xl mx-auto px-6 pt-32 pb-20">
+          <section className="rounded-[2rem] border border-white/10 bg-[#111726]/85 p-6 shadow-[0_25px_80px_rgba(2,6,23,0.45)] backdrop-blur sm:p-10">
+            <div className="flex flex-col gap-5 border-b border-white/10 pb-8 sm:flex-row sm:items-end sm:justify-between">
+              <div className="space-y-3">
+                <p className="text-sm font-medium uppercase tracking-[0.28em] text-[#4FD1C5]">
+                  Support
+                </p>
+                <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
+                  Frequently Asked Questions
+                </h1>
+                <p className="max-w-2xl text-base text-[#94a3b8]">
+                  Find quick answers about crypto basics, tournaments, and how
+                  to get started on InsightArena.
+                </p>
               </div>
-              
-              {item.isOpen && (
-                <div className="p-4 bg-white text-black border-t border-gray-200">
-                  <p>{item.answer}</p>
-                </div>
-              )}
+
+              <Link
+                href="/"
+                className="inline-flex items-center gap-2 self-start rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-[#d8dee9] transition hover:bg-white/10 hover:text-white"
+              >
+                <ChevronLeft size={18} />
+                <span>Back to home</span>
+              </Link>
             </div>
-          ))}
-        </div>
-        
-        <div className="mt-6">
-          <button className="w-full py-3 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg">
-            Get Started
-          </button>
-        </div>
+
+            <div className="mt-8 space-y-4">
+              {faqItems.map((item) => (
+                <div
+                  key={item.id}
+                  className="overflow-hidden rounded-2xl border border-white/10 bg-[#0f172a]/90"
+                >
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left transition hover:bg-white/5"
+                    onClick={() => toggleFAQ(item.id)}
+                  >
+                    <h2 className="text-lg font-semibold text-white sm:text-xl">
+                      {item.id}. {item.question}
+                    </h2>
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#4FD1C5] text-[#0f172a]">
+                      {item.isOpen ? (
+                        <Minus size={18} />
+                      ) : (
+                        <Plus size={18} />
+                      )}
+                    </span>
+                  </button>
+
+                  {item.isOpen && (
+                    <div className="border-t border-white/10 px-5 py-5 text-[15px] leading-7 text-[#cbd5e1]">
+                      <p>{item.answer}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-8 rounded-2xl border border-[#4FD1C5]/20 bg-[#0b1220] px-6 py-5">
+              <p className="text-sm leading-6 text-[#94a3b8]">
+                Still need help? Explore the platform from the homepage and
+                keep an eye on upcoming guides and community resources.
+              </p>
+            </div>
+          </section>
+        </main>
+
+        <Footer />
       </div>
     </div>
   );

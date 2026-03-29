@@ -2,6 +2,46 @@
 
 NestJS backend for InsightArena prediction market platform.
 
+## API Documentation
+
+- **Base URL**: `http://localhost:3000/api/v1`
+- **Swagger UI**: `http://localhost:3000/api/v1/docs`
+- **OpenAPI Schema**: `http://localhost:3000/api/v1/docs-json`
+
+The API uses URI-based versioning. All endpoints are prefixed with `/api/v1/`.
+
+## Health Check
+
+The health check endpoint provides comprehensive service status monitoring:
+
+**Endpoint**: `GET /api/v1/health`  
+**Authentication**: None (public)  
+**Response**: 200 OK or 503 Service Unavailable
+
+The health check verifies:
+- **HTTP**: Service is responding to requests
+- **Database**: PostgreSQL connection is active
+- **Storage**: Disk space is available (alerts at 90% usage)
+
+### Using Health Check in CI/CD
+
+Before deploying, verify the service is healthy:
+
+```bash
+# Development
+curl -f http://localhost:3000/api/v1/health || exit 1
+
+# Docker/Container
+curl -f http://backend:3000/api/v1/health || exit 1
+
+# Example in GitHub Actions
+- name: Check service health
+  run: |
+    npm run start:prod &
+    sleep 5
+    curl -f http://localhost:3000/api/v1/health || exit 1
+```
+
 ## Prerequisites
 
 - Node.js 18+ and pnpm

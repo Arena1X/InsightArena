@@ -65,7 +65,10 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
         <Brand />
       </div>
 
-      <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-5">
+      <nav
+        className="flex-1 space-y-1 overflow-y-auto px-3 py-5"
+        aria-label="Dashboard navigation"
+      >
         {navigation.map(({ href, label, icon: Icon }) => {
           const isActive = pathname === href;
 
@@ -74,6 +77,7 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
               key={href}
               href={href}
               onClick={onNavigate}
+              aria-current={isActive ? "page" : undefined}
               className={`group relative flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition ${
                 isActive
                   ? "bg-[#232b3f] text-white shadow-[inset_3px_0_0_0_#39bdb8]"
@@ -103,6 +107,7 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
           </p>
           <button
             type="button"
+            aria-label="Disconnect wallet"
             className="mt-3 text-sm font-medium text-[#4fd1c5] transition hover:text-[#72ddd3]"
           >
             Disconnect
@@ -129,12 +134,14 @@ function TopNavigation() {
         <div className="flex flex-col gap-3 sm:flex-row">
           <button
             type="button"
+            aria-label="Make a prediction"
             className="rounded-xl bg-[#2f9e9d] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#38adaa]"
           >
             Make Prediction
           </button>
           <button
             type="button"
+            aria-label="Create a competition"
             className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-transparent px-6 py-3 text-sm font-medium text-[#d6daea] transition hover:bg-white/5"
           >
             Create Competition
@@ -185,7 +192,9 @@ export function DashboardShell({ children }: DashboardShellProps) {
           </div>
 
           <div className="flex gap-6 p-6">
-            <main className="flex-1">{children}</main>
+            <main id="dashboard-main-content" className="flex-1">
+              {children}
+            </main>
 
             {pathname === "/dashboard" && (
               <aside className="xl:block w-[300px] space-y-6">
