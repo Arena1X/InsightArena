@@ -1,155 +1,164 @@
 "use client";
-import { useState } from "react";
+
 import type { NextPage } from "next";
 import Head from "next/head";
 import Link from "next/link";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { Github } from "lucide-react";
+
 import PageBackground from "@/component/PageBackground";
+import {
+  FormInput,
+  SubmitButton,
+  FormSuccessBanner,
+  FormErrorBanner,
+} from "@/component/FormField";
+import { loginSchema, type LoginFormData } from "@/lib/validations";
 
 const Login: NextPage = () => {
-  const [formData, setFormData] = useState({
-    email: "",
-    password: "",
+  const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+    reset,
+  } = useForm<LoginFormData>({
+    resolver: zodResolver(loginSchema),
+    mode: "onTouched",
   });
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    // Handle login submission logic here
-    console.log("Login submitted:", formData);
+  const onSubmit = async (data: LoginFormData) => {
+    try {
+      // Simulate API call — replace with real auth logic
+      await new Promise((r) => setTimeout(r, 1200));
+      console.log("Login submitted:", data);
+      setStatus("success");
+      reset();
+    } catch {
+      setStatus("error");
+    }
   };
 
   return (
     <>
       <Head>
-        <title>Login</title>
-        <meta name="description" content="Login to your account" />
+        <title>Login | InsightArena</title>
+        <meta name="description" content="Login to your InsightArena account" />
       </Head>
       <PageBackground>
         <main className="flex min-h-screen items-center justify-center px-4">
           <div className="w-full max-w-md p-6 space-y-8">
             {/* Progress Indicators */}
             <div className="flex justify-center space-x-4">
-              <div className="w-16 h-1 bg-purple-600 rounded"></div>
-              <div className="w-16 h-1 bg-purple-600 rounded"></div>
-              <div className="w-16 h-1 bg-gray-600 rounded"></div>
-              <div className="w-16 h-1 bg-gray-600 rounded"></div>
+              <div className="w-16 h-1 bg-purple-600 rounded" />
+              <div className="w-16 h-1 bg-purple-600 rounded" />
+              <div className="w-16 h-1 bg-gray-600 rounded" />
+              <div className="w-16 h-1 bg-gray-600 rounded" />
             </div>
 
             <div className="text-center">
               <h1 className="text-2xl font-bold text-white">Login Account</h1>
               <p className="mt-1 text-gray-400">
-                Entre you date to create your account
+                Enter your details to access your account
               </p>
             </div>
 
-            <div className="mt-8 space-y-6">
-              {/* OAuth Buttons */}
-              <div className="grid grid-cols-2 gap-4">
-                <button
-                  type="button"
-                  aria-label="Continue with Google"
-                  className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition"
-                >
-                  <img
-                    src="/google-logo.svg"
-                    alt="Google"
-                    className="w-5 h-5 mr-2"
-                  />
-                  Google
-                </button>
-                <button
-                  type="button"
-                  aria-label="Continue with GitHub"
-                  className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition"
-                >
-                  <Github className="w-5 h-5 mr-2" />
-                  Git Hub
-                </button>
-              </div>
-
-              {/* Divider */}
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-gray-700"></div>
-                </div>
-                <div className="relative flex justify-center text-sm">
-                  <span className="px-2 bg-transparent text-gray-400">or</span>
-                </div>
-              </div>
-
-              {/* Login Form */}
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                  <label
-                    htmlFor="email"
-                    className="block text-sm font-medium text-white mb-1"
+            {status === "success" ? (
+              <FormSuccessBanner
+                title="Welcome back!"
+                message="You have successfully logged in to InsightArena."
+                onReset={() => setStatus("idle")}
+                resetLabel="Login again"
+              />
+            ) : status === "error" ? (
+              <FormErrorBanner
+                message="Login failed. Please check your credentials and try again."
+                onRetry={() => setStatus("idle")}
+              />
+            ) : (
+              <div className="space-y-6">
+                {/* OAuth Buttons */}
+                <div className="grid grid-cols-2 gap-4">
+                  <button
+                    type="button"
+                    aria-label="Continue with Google"
+                    className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition"
                   >
-                    Email <span className="text-red-500">*</span>
-                  </label>
-                  <input
+                    <img
+                      src="/google-logo.svg"
+                      alt="Google"
+                      className="w-5 h-5 mr-2"
+                    />
+                    Google
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Continue with GitHub"
+                    className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition"
+                  >
+                    <Github className="w-5 h-5 mr-2" />
+                    GitHub
+                  </button>
+                </div>
+
+                {/* Divider */}
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-gray-700" />
+                  </div>
+                  <div className="relative flex justify-center text-sm">
+                    <span className="px-2 bg-transparent text-gray-400">or</span>
+                  </div>
+                </div>
+
+                {/* Login Form */}
+                <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-4">
+                  <FormInput
                     id="email"
-                    name="email"
+                    label="Email"
                     type="email"
-                    required
                     placeholder="john@example.com"
                     autoComplete="email"
-                    className="w-full rounded border border-gray-600 bg-gray-700/60 p-2 text-white placeholder:text-gray-300"
-                    value={formData.email}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="password"
-                    className="block text-sm font-medium text-white mb-1"
-                  >
-                    Password <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    id="password"
-                    name="password"
-                    type="password"
                     required
+                    error={errors.email?.message}
+                    {...register("email")}
+                  />
+
+                  <FormInput
+                    id="password"
+                    label="Password"
+                    type="password"
                     placeholder="••••••••"
                     autoComplete="current-password"
-                    className="w-full rounded border border-gray-600 bg-gray-700/60 p-2 text-white placeholder:text-gray-300"
-                    value={formData.password}
-                    onChange={handleChange}
+                    required
+                    error={errors.password?.message}
+                    {...register("password")}
                   />
-                  <p className="mt-1 text-xs text-gray-400">
-                    Must be at least 8 character Long
+
+                  <SubmitButton
+                    loading={isSubmitting}
+                    label="Login"
+                    loadingLabel="Logging in…"
+                    className="mt-6 bg-purple-700 hover:bg-purple-600 focus:ring-purple-500 text-white"
+                  />
+                </form>
+
+                <div className="text-center">
+                  <p className="text-sm text-gray-400">
+                    Don&apos;t have an account?{" "}
+                    <Link
+                      href="/signin"
+                      className="text-purple-500 hover:text-purple-400 font-medium"
+                    >
+                      Sign Up
+                    </Link>
                   </p>
                 </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-3 px-4 bg-purple-700 hover:bg-purple-600 text-white font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-gray-900 mt-6"
-                >
-                  Login
-                </button>
-              </form>
-
-              <div className="text-center mt-4">
-                <p className="text-sm text-gray-400">
-                  Already have an Account?{" "}
-                  <Link
-                    href="/signup"
-                    className="text-purple-500 hover:text-purple-400"
-                  >
-                    Sign Up
-                  </Link>
-                </p>
               </div>
-            </div>
+            )}
           </div>
         </main>
       </PageBackground>
