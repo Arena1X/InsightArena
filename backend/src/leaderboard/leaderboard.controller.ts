@@ -5,6 +5,10 @@ import {
   LeaderboardQueryDto,
   PaginatedLeaderboardResponse,
 } from './dto/leaderboard-query.dto';
+import {
+  LeaderboardHistoryQueryDto,
+  PaginatedLeaderboardHistoryResponse,
+} from './dto/leaderboard-history.dto';
 import { Public } from '../common/decorators/public.decorator';
 
 @ApiTags('Leaderboard')
@@ -32,5 +36,23 @@ export class LeaderboardController {
     @Query() query: LeaderboardQueryDto,
   ): Promise<PaginatedLeaderboardResponse> {
     return this.leaderboardService.getLeaderboard(query);
+  }
+
+  @Get('history')
+  @Public()
+  @ApiOperation({ summary: 'Get historical leaderboard rankings' })
+  @ApiQuery({ name: 'date', required: false, type: String })
+  @ApiQuery({ name: 'season_id', required: false, type: String })
+  @ApiQuery({ name: 'user_id', required: false, type: String })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiResponse({
+    status: 200,
+    description: 'Historical leaderboard with rank changes',
+  })
+  async getHistory(
+    @Query() query: LeaderboardHistoryQueryDto,
+  ): Promise<PaginatedLeaderboardHistoryResponse> {
+    return this.leaderboardService.getHistory(query);
   }
 }

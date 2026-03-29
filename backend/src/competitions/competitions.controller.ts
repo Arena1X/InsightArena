@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Delete,
   Param,
   Body,
   Query,
@@ -28,6 +29,8 @@ import {
   PaginatedParticipantsResponse,
 } from './dto/list-participants.dto';
 import { UserRankResponseDto } from './dto/user-rank-response.dto';
+import { JoinCompetitionResponseDto } from './dto/join-competition.dto';
+import { LeaveCompetitionResponseDto } from './dto/leave-competition.dto';
 import { Competition } from './entities/competition.entity';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
@@ -114,5 +117,65 @@ export class CompetitionsController {
     @CurrentUser() user: User,
   ): Promise<UserRankResponseDto> {
     return this.competitionsService.getMyRank(id, user.id);
+  }
+
+  @Post(':id/join')
+  @UseGuards(BanGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Join a competition' })
+  @ApiResponse({
+    status: 200,
+    description: 'Successfully joined competition',
+    type: JoinCompetitionResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'Competition not found' })
+  @ApiResponse({
+    status: 400,
+    description: 'Competition ended or full',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Already joined',
+  })
+  async joinCompetition(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<JoinCompetitionResponseDto> {
+    const participant = await this.competitionsService.joinCompetition(
+      id,
+      user,
+    );
+    return {
+      message: 'Successfully joined competition',
+      competition_id: id,
+      participant_id: participant.id,
+    };
+  }
+
+  @Delete(':id/leave')
+  @UseGuards(BanGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Leave a competition before it starts' })
+  @ApiResponse({
+    status: 200,
+    description: 'Successfully left competition',
+    type: LeaveCompetitionResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'Competition not found' })
+  @ApiResponse({
+    status: 400,
+    description: 'Competition already started',
+  })
+  async leaveCompetition(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<LeaveCompetitionResponseDto> {
+    await this.competitionsService.leaveCompetition(id, user);
+    return {
+      message: 'Successfully left competition',
+      competition_id: id,
+    };
   }
 }

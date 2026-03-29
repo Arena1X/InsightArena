@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ConflictException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, SelectQueryBuilder } from 'typeorm';
 import {
@@ -265,5 +270,111 @@ export class CompetitionsService {
 
     this.rankCache.set(cacheKey, { data: result, timestamp: Date.now() });
     return result;
+  }
+
+  async joinCompetition(
+    competitionId: string,
+    user: User,
+  ): Promise<CompetitionParticipant> {
+    const competition = await this.competitionsRepository.findOne({
+      where: { id: competitionId },
+    });
+
+    if (!competition) {
+      throw new NotFoundException(
+        `Competition with ID "${competitionId}" not found`,
+      );
+    }
+
+    // Check if competition is active
+    const now = new Date();
+    if (now >= competition.end_time) {
+      throw new BadRequestException('Competition has already ended');
+    }
+
+    // Check if user already joined
+    const existing = await this.participantsRepository.findOne({
+      where: {
+        user_id: user.id,
+        competition_id: competitionId,
+      },
+    });
+
+    if (existing) {
+      throw new ConflictException('You have already joined this competition');
+    }
+
+    // Check max participants
+    if (competition.max_participants > 0) {
+      const currentCount = await this.participantsRepository.count({
+        where: { competition_id: competitionId },
+      });
+
+      if (currentCount >= competition.max_participants) {
+        throw new BadRequestException('Competition is full');
+      }
+    }
+
+    // Create participant
+    const participant = this.participantsRepository.create({
+      user_id: user.id,
+      competition_id: competitionId,
+      score: 0,
+    });
+
+    const saved = await this.participantsRepository.save(participant);
+
+    // Update participant count
+    await this.competitionsRepository.increment(
+      { id: competitionId },
+      'participant_count',
+      1,
+    );
+
+    return saved;
+  }
+
+  async leaveCompetition(competitionId: string, user: User): Promise<void> {
+    const competition = await this.competitionsRepository.findOne({
+      where: { id: competitionId },
+    });
+
+    if (!competition) {
+      throw new NotFoundException(
+        `Competition with ID "${competitionId}" not found`,
+      );
+    }
+
+    // Check if competition has started
+    const now = new Date();
+    if (now >= competition.start_time) {
+      throw new BadRequestException(
+        'Cannot leave competition after it has started',
+      );
+    }
+
+    // Find participant
+    const participant = await this.participantsRepository.findOne({
+      where: {
+        user_id: user.id,
+        competition_id: competitionId,
+      },
+    });
+
+    if (!participant) {
+      throw new NotFoundException(
+        'You are not a participant in this competition',
+      );
+    }
+
+    // Remove participant
+    await this.participantsRepository.remove(participant);
+
+    // Update participant count
+    await this.competitionsRepository.decrement(
+      { id: competitionId },
+      'participant_count',
+      1,
+    );
   }
 }
