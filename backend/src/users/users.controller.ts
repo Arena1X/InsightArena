@@ -1,4 +1,12 @@
-import { Controller, Get, Patch, Param, Body, UsePipes, ValidationPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Patch,
+  Param,
+  Body,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
 import { ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { plainToInstance } from 'class-transformer';
 import { Public } from '../common/decorators/public.decorator';
@@ -28,7 +36,9 @@ export class UsersController {
   }
 
   @Patch('me')
-  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }))
+  @UsePipes(
+    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }),
+  )
   @ApiOperation({ summary: 'Update own profile (username, avatar_url)' })
   @ApiResponse({
     status: 200,

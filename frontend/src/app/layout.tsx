@@ -1,4 +1,8 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
+
+import { StandardPageLoadingSkeleton } from "@/component/loading-route-skeletons";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,7 +18,12 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="font-sans antialiased bg-[#141824] text-white">
-        {children}
+        <a href="#main-content" className="skip-link">
+          Skip to main content
+        </a>
+        <div id="main-content" tabIndex={-1}>
+          <Suspense fallback={<StandardPageLoadingSkeleton />}>{children}</Suspense>
+        </div>
       </body>
     </html>
   );

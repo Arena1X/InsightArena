@@ -3,6 +3,7 @@ import { useState } from 'react';
 import type { NextPage } from 'next';
 import Head from 'next/head';
 import Link from 'next/link';
+import Image from 'next/image';
 import { Github } from 'lucide-react';
 
 const SignUp: NextPage = () => {
@@ -33,7 +34,7 @@ const SignUp: NextPage = () => {
         <title>Sign Up</title>
         <meta name="description" content="Create your account" />
       </Head>
-      <div className="flex items-center justify-center min-h-screen bg-black">
+      <main className="flex min-h-screen items-center justify-center bg-black px-4">
         <div className="w-full max-w-md p-6 space-y-8">
           <div className="text-center">
             <h1 className="text-2xl font-bold text-white">Sign Up Account</h1>
@@ -44,12 +45,16 @@ const SignUp: NextPage = () => {
             {/* OAuth Buttons */}
             <div className="grid grid-cols-2 gap-4">
               <button
+                type="button"
+                aria-label="Continue with Google"
                 className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition"
               >
-                <img src="/google-logo.svg" alt="Google" className="w-5 h-5 mr-2" />
+                <Image src="/google-logo.svg" alt="Google" width={20} height={20} className="mr-2" />
                 Google
               </button>
               <button
+                type="button"
+                aria-label="Continue with GitHub"
                 className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition"
               >
                 <Github className="w-5 h-5 mr-2" />
@@ -80,7 +85,8 @@ const SignUp: NextPage = () => {
                     type="text"
                     required
                     placeholder="Ex: John"
-                    className="w-full p-2 bg-gray-700 border border-gray-600 rounded text-white"
+                    autoComplete="given-name"
+                    className="w-full rounded border border-gray-600 bg-gray-700 p-2 text-white placeholder:text-gray-300"
                     value={formData.firstName}
                     onChange={handleChange}
                   />
@@ -95,7 +101,8 @@ const SignUp: NextPage = () => {
                     type="text"
                     required
                     placeholder="Ex: John"
-                    className="w-full p-2 bg-gray-700 border border-gray-600 rounded text-white"
+                    autoComplete="family-name"
+                    className="w-full rounded border border-gray-600 bg-gray-700 p-2 text-white placeholder:text-gray-300"
                     value={formData.lastName}
                     onChange={handleChange}
                   />
@@ -112,7 +119,8 @@ const SignUp: NextPage = () => {
                   type="email"
                   required
                   placeholder="john@example.com"
-                  className="w-full p-2 bg-gray-700 border border-gray-600 rounded text-white"
+                  autoComplete="email"
+                  className="w-full rounded border border-gray-600 bg-gray-700 p-2 text-white placeholder:text-gray-300"
                   value={formData.email}
                   onChange={handleChange}
                 />
@@ -128,7 +136,8 @@ const SignUp: NextPage = () => {
                   type="password"
                   required
                   placeholder="••••••••"
-                  className="w-full p-2 bg-gray-700 border border-gray-600 rounded text-white"
+                  autoComplete="new-password"
+                  className="w-full rounded border border-gray-600 bg-gray-700 p-2 text-white placeholder:text-gray-300"
                   value={formData.password}
                   onChange={handleChange}
                 />
@@ -153,7 +162,7 @@ const SignUp: NextPage = () => {
             </div>
           </div>
         </div>
-      </div>
+      </main>
     </>
   );
 };

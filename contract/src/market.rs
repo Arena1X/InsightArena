@@ -3,7 +3,9 @@ use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol, Vec}
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
+use crate::reputation;
 use crate::storage_types::{DataKey, Market, Prediction};
+use crate::ttl;
 
 // ── Params struct ─────────────────────────────────────────────────────────────
 // Soroban limits contract functions to 10 parameters. Bundling the market
@@ -19,6 +21,7 @@ pub struct CreateMarketParams {
     pub outcomes: Vec<Symbol>,
     pub end_time: u64,
     pub resolution_time: u64,
+    pub dispute_window: u64,
     pub creator_fee_bps: u32,
     pub min_stake: i128,
     pub max_stake: i128,
@@ -28,11 +31,7 @@ pub struct CreateMarketParams {
 // ── TTL helpers ───────────────────────────────────────────────────────────────
 
 fn bump_market(env: &Env, market_id: u64) {
-    env.storage().persistent().extend_ttl(
-        &DataKey::Market(market_id),
-        PERSISTENT_THRESHOLD,
-        PERSISTENT_BUMP,
-    );
+    ttl::extend_market_ttl(env, market_id);
 }
 
 fn bump_counter(env: &Env) {
@@ -41,6 +40,80 @@ fn bump_counter(env: &Env) {
         PERSISTENT_THRESHOLD,
         PERSISTENT_BUMP,
     );
+}
+
+fn bump_categories(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
+}
+
+fn bump_category_index(env: &Env, category: &Symbol) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::CategoryIndex(category.clone()),
+        PERSISTENT_THRESHOLD,
+        PERSISTENT_BUMP,
+    );
+}
+
+fn load_categories(env: &Env) -> Vec<Symbol> {
+    let categories = env
+        .storage()
+        .instance()
+        .get(&DataKey::Categories)
+        .unwrap_or_else(|| config::default_categories(env));
+
+    if env.storage().instance().has(&DataKey::Categories) {
+        bump_categories(env);
+    }
+
+    categories
+}
+
+fn save_categories(env: &Env, categories: &Vec<Symbol>) {
+    env.storage()
+        .instance()
+        .set(&DataKey::Categories, categories);
+    bump_categories(env);
+}
+
+fn load_category_index(env: &Env, category: &Symbol) -> Vec<u64> {
+    let key = DataKey::CategoryIndex(category.clone());
+    let market_ids = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    if env.storage().persistent().has(&key) {
+        bump_category_index(env, category);
+    }
+
+    market_ids
+}
+
+fn save_category_index(env: &Env, category: &Symbol, market_ids: &Vec<u64>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::CategoryIndex(category.clone()), market_ids);
+    bump_category_index(env, category);
+}
+
+fn append_market_to_category_index(env: &Env, category: &Symbol, market_id: u64) {
+    let mut market_ids = load_category_index(env, category);
+    market_ids.push_back(market_id);
+    save_category_index(env, category, &market_ids);
+}
+
+fn require_admin(env: &Env, admin: &Address) -> Result<(), InsightArenaError> {
+    admin.require_auth();
+
+    let cfg = config::get_config(env)?;
+    if admin != &cfg.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    Ok(())
 }
 
 // ── Counter helpers ───────────────────────────────────────────────────────────
@@ -83,6 +156,30 @@ fn emit_market_cancelled(env: &Env, market_id: u64, caller: &Address) {
     );
 }
 
+pub fn emit_market_resolved(env: &Env, market_id: u64, resolved_outcome: Symbol) {
+    env.events().publish(
+        (symbol_short!("mkt"), symbol_short!("reslvd")),
+        (market_id, resolved_outcome),
+    );
+}
+
+/// Calculate price of outcome A in terms of outcome B.
+/// Returns price with 6 decimal precision (multiplied by 1_000_000).
+#[allow(dead_code)]
+fn calculate_price(reserve_a: i128, reserve_b: i128) -> Result<i128, InsightArenaError> {
+    if reserve_a <= 0 || reserve_b <= 0 {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
+    let price = reserve_b
+        .checked_mul(1_000_000)
+        .ok_or(InsightArenaError::Overflow)?
+        .checked_div(reserve_a)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    Ok(price)
+}
+
 // ── Entry-point logic ─────────────────────────────────────────────────────────
 
 /// Create a new prediction market and return its auto-assigned `market_id`.
@@ -93,8 +190,9 @@ fn emit_market_cancelled(env: &Env, market_id: u64, caller: &Address) {
 /// 3. `end_time` must be strictly after the current ledger timestamp
 /// 4. `resolution_time` must be >= `end_time`
 /// 5. At least two distinct outcomes required
-/// 6. `creator_fee_bps` must not exceed the platform cap
-/// 7. `min_stake` >= platform minimum; `max_stake` >= `min_stake`
+/// 6. `category` must be in the admin-managed whitelist
+/// 7. `creator_fee_bps` must not exceed the platform cap
+/// 8. `min_stake` >= platform minimum; `max_stake` >= `min_stake`
 pub fn create_market(
     env: &Env,
     creator: Address,
@@ -124,6 +222,9 @@ pub fn create_market(
 
     // ── Load config for fee and stake floor checks ────────────────────────────
     let cfg = config::get_config(env)?;
+    if !load_categories(env).contains(params.category.clone()) {
+        return Err(InsightArenaError::InvalidInput);
+    }
 
     // ── Guard 6: creator fee must not exceed the platform cap ─────────────────
     if params.creator_fee_bps > cfg.max_creator_fee_bps {
@@ -156,15 +257,20 @@ pub fn create_market(
         params.creator_fee_bps,
         params.min_stake,
         params.max_stake,
+        params.dispute_window,
     );
 
     env.storage()
         .persistent()
         .set(&DataKey::Market(market_id), &market);
     bump_market(env, market_id);
+    append_market_to_category_index(env, &market.category, market_id);
 
     // ── Emit MarketCreated event ──────────────────────────────────────────────
     emit_market_created(env, market_id, &creator, params.end_time);
+
+    // ── Update creator reputation stats ──────────────────────────────────────
+    reputation::on_market_created(env, &creator);
 
     Ok(market_id)
 }
@@ -222,6 +328,76 @@ pub fn list_markets(env: &Env, start: u64, limit: u32) -> Vec<Market> {
             collected += 1;
         }
         id += 1;
+    }
+
+    result
+}
+
+pub fn add_category(env: &Env, admin: Address, category: Symbol) -> Result<(), InsightArenaError> {
+    require_admin(env, &admin)?;
+
+    let mut categories = load_categories(env);
+    if !categories.contains(category.clone()) {
+        categories.push_back(category);
+        save_categories(env, &categories);
+    }
+
+    Ok(())
+}
+
+pub fn remove_category(
+    env: &Env,
+    admin: Address,
+    category: Symbol,
+) -> Result<(), InsightArenaError> {
+    require_admin(env, &admin)?;
+
+    let mut categories = load_categories(env);
+    let mut index: u32 = 0;
+
+    while index < categories.len() {
+        if categories.get(index) == Some(category.clone()) {
+            categories.remove(index);
+            save_categories(env, &categories);
+            break;
+        }
+        index += 1;
+    }
+
+    Ok(())
+}
+
+pub fn list_categories(env: &Env) -> Vec<Symbol> {
+    load_categories(env)
+}
+
+pub fn get_markets_by_category(env: &Env, category: Symbol, start: u64, limit: u32) -> Vec<Market> {
+    const MAX_LIMIT: u32 = 50;
+    let effective_limit = if limit > MAX_LIMIT { MAX_LIMIT } else { limit };
+    let market_ids = load_category_index(env, &category);
+    let mut result = Vec::new(env);
+    let total = u64::from(market_ids.len());
+
+    if effective_limit == 0 || start >= total {
+        return result;
+    }
+
+    let mut collected: u32 = 0;
+    let mut offset = start as u32;
+
+    while u64::from(offset) < total && collected < effective_limit {
+        if let Some(market_id) = market_ids.get(offset) {
+            if let Some(market) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Market>(&DataKey::Market(market_id))
+            {
+                bump_market(env, market_id);
+                result.push_back(market);
+                collected += 1;
+            }
+        }
+        offset += 1;
     }
 
     result
@@ -341,11 +517,40 @@ pub fn cancel_market(env: &Env, caller: Address, market_id: u64) -> Result<(), I
 #[cfg(test)]
 mod market_tests {
     use soroban_sdk::testutils::{Address as _, Ledger as _};
-    use soroban_sdk::{symbol_short, vec, Address, Env, String};
+    use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol, Vec};
 
+    use crate::storage_types::DataKey;
     use crate::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 
     use super::CreateMarketParams;
+
+    #[test]
+    fn test_calculate_price_equal_reserves() {
+        // Reserves: 1000/1000 -> Expected: 1_000_000
+        let price = super::calculate_price(1000, 1000).unwrap();
+        assert_eq!(price, 1_000_000);
+    }
+
+    #[test]
+    fn test_calculate_price_double() {
+        // Reserves: 1000/2000 -> Expected: 2_000_000
+        let price = super::calculate_price(1000, 2000).unwrap();
+        assert_eq!(price, 2_000_000);
+    }
+
+    #[test]
+    fn test_calculate_price_half() {
+        // Reserves: 2000/1000 -> Expected: 500_000
+        let price = super::calculate_price(2000, 1000).unwrap();
+        assert_eq!(price, 500_000);
+    }
+
+    #[test]
+    fn test_calculate_price_precision() {
+        // Reserves: 3000/1000 -> Expected: 333_333
+        let price = super::calculate_price(3000, 1000).unwrap();
+        assert_eq!(price, 333_333);
+    }
 
     /// Register a mock XLM token (Stellar Asset Contract) and return its address.
     fn register_token(env: &Env) -> Address {
@@ -370,10 +575,11 @@ mod market_tests {
         CreateMarketParams {
             title: String::from_str(env, "Will it rain?"),
             description: String::from_str(env, "Daily weather market"),
-            category: symbol_short!("weather"),
+            category: Symbol::new(env, "Sports"),
             outcomes: vec![env, symbol_short!("yes"), symbol_short!("no")],
             end_time: now + 1000,
             resolution_time: now + 2000,
+            dispute_window: 86_400,
             creator_fee_bps: 100,
             min_stake: 10_000_000,
             max_stake: 100_000_000,
@@ -483,6 +689,89 @@ mod market_tests {
         assert!(matches!(result, Err(Ok(InsightArenaError::StakeTooLow))));
     }
 
+    #[test]
+    fn create_market_fails_when_category_not_whitelisted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = deploy(&env);
+        let creator = Address::generate(&env);
+
+        let mut p = default_params(&env);
+        p.category = Symbol::new(&env, "Weather");
+
+        let result = client.try_create_market(&creator, &p);
+        assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+    }
+
+    #[test]
+    fn list_categories_returns_seeded_defaults() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = deploy(&env);
+        let categories = client.list_categories();
+
+        assert!(categories.contains(Symbol::new(&env, "Sports")));
+        assert!(categories.contains(Symbol::new(&env, "Crypto")));
+        assert!(categories.contains(Symbol::new(&env, "Politics")));
+        assert!(categories.contains(Symbol::new(&env, "Entertainment")));
+        assert!(categories.contains(Symbol::new(&env, "Science")));
+        assert!(categories.contains(Symbol::new(&env, "Other")));
+    }
+
+    #[test]
+    fn add_category_allows_admin_to_extend_whitelist() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _oracle) = deploy_with_actors(&env);
+        let weather = Symbol::new(&env, "Weather");
+
+        client.add_category(&admin, &weather);
+
+        let categories = client.list_categories();
+        assert!(categories.contains(weather));
+    }
+
+    #[test]
+    fn remove_category_blocks_future_market_creation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _oracle) = deploy_with_actors(&env);
+        let creator = Address::generate(&env);
+        let science = Symbol::new(&env, "Science");
+
+        client.remove_category(&admin, &science);
+
+        let categories = client.list_categories();
+        assert!(!categories.contains(science.clone()));
+
+        let mut p = default_params(&env);
+        p.category = science;
+        let result = client.try_create_market(&creator, &p);
+        assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+    }
+
+    #[test]
+    fn non_admin_cannot_mutate_categories() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _admin, _oracle) = deploy_with_actors(&env);
+        let random = Address::generate(&env);
+        let weather = Symbol::new(&env, "Weather");
+        let sports = Symbol::new(&env, "Sports");
+
+        let add_result = client.try_add_category(&random, &weather);
+        assert!(matches!(
+            add_result,
+            Err(Ok(InsightArenaError::Unauthorized))
+        ));
+
+        let remove_result = client.try_remove_category(&random, &sports);
+        assert!(matches!(
+            remove_result,
+            Err(Ok(InsightArenaError::Unauthorized))
+        ));
+    }
+
     // ── get_market ────────────────────────────────────────────────────────────
 
     #[test]
@@ -543,6 +832,63 @@ mod market_tests {
 
         let list = client.list_markets(&1_u64, &10_u32);
         assert_eq!(list.len(), 0);
+    }
+
+    #[test]
+    fn get_markets_by_category_returns_paginated_results() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = deploy(&env);
+        let creator = Address::generate(&env);
+
+        let sports_category = Symbol::new(&env, "Sports");
+        let crypto_category = Symbol::new(&env, "Crypto");
+
+        let first_sports = client.create_market(&creator, &default_params(&env));
+
+        let mut crypto = default_params(&env);
+        crypto.category = crypto_category;
+        client.create_market(&creator, &crypto);
+
+        let second_sports_id = client.create_market(&creator, &default_params(&env));
+        let third_sports_id = client.create_market(&creator, &default_params(&env));
+
+        let first_page = client.get_markets_by_category(&sports_category, &0_u64, &2_u32);
+        assert_eq!(first_page.len(), 2);
+        assert_eq!(first_page.get(0).unwrap().market_id, first_sports);
+        assert_eq!(first_page.get(1).unwrap().market_id, second_sports_id);
+
+        let second_page = client.get_markets_by_category(&sports_category, &2_u64, &2_u32);
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page.get(0).unwrap().market_id, third_sports_id);
+    }
+
+    #[test]
+    fn category_index_is_kept_in_sync_on_market_creation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = deploy(&env);
+        let creator = Address::generate(&env);
+        let sports = Symbol::new(&env, "Sports");
+
+        let first_id = client.create_market(&creator, &default_params(&env));
+
+        let mut crypto = default_params(&env);
+        crypto.category = Symbol::new(&env, "Crypto");
+        client.create_market(&creator, &crypto);
+
+        let second_id = client.create_market(&creator, &default_params(&env));
+
+        let stored_index = env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get::<DataKey, Vec<u64>>(&DataKey::CategoryIndex(sports.clone()))
+                .unwrap()
+        });
+
+        assert_eq!(stored_index.len(), 2);
+        assert_eq!(stored_index.get(0), Some(first_id));
+        assert_eq!(stored_index.get(1), Some(second_id));
     }
 
     #[test]
