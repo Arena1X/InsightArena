@@ -23,6 +23,7 @@ import {
 } from './dto/list-user-predictions.dto';
 
 import { ListUserCompetitionsDto } from './dto/list-user-competitions.dto';
+import { UserStatsDto } from './dto/user-stats.dto';
 
 @Controller('users')
 export class UsersController {
@@ -90,6 +91,15 @@ export class UsersController {
     @Query() query: ListUserPredictionsDto,
   ): Promise<PaginatedPublicUserPredictionsResponse> {
     return this.usersService.findPublicPredictionsByAddress(address, query);
+  }
+
+  @Get(':address/stats')
+  @Public()
+  @ApiOperation({ summary: 'Detailed public statistics for a user profile' })
+  @ApiResponse({ status: 200, description: 'User statistics', type: UserStatsDto })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  async getUserStats(@Param('address') address: string): Promise<UserStatsDto> {
+    return this.usersService.getPublicStatsByAddress(address);
   }
 
   @Get(':address/competitions')

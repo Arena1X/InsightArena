@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import {
   ListUserPredictionsDto,
@@ -16,9 +16,19 @@ import {
   ListUserCompetitionsDto,
   UserCompetitionFilterStatus,
 } from './dto/list-user-competitions.dto';
+import { Market } from '../markets/entities/market.entity';
+import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.entity';
+import { UserStatsDto } from './dto/user-stats.dto';
+
+const USER_STATS_CACHE_TTL_MS = 60_000;
+const PREDICTION_HISTORY_DAYS = 365;
+
+type StatsCacheEntry = { expiresAt: number; stats: UserStatsDto };
 
 @Injectable()
 export class UsersService {
+  private readonly statsCache = new Map<string, StatsCacheEntry>();
+
   constructor(
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
@@ -27,6 +37,10 @@ export class UsersService {
 
     @InjectRepository(CompetitionParticipant)
     private readonly participantsRepository: Repository<CompetitionParticipant>,
+    @InjectRepository(Market)
+    private readonly marketsRepository: Repository<Market>,
+    @InjectRepository(LeaderboardEntry)
+    private readonly leaderboardRepository: Repository<LeaderboardEntry>,
   ) {}
 
   async findAll(): Promise<User[]> {
@@ -123,6 +137,7 @@ export class UsersService {
 
   async updateProfile(userId: string, dto: UpdateUserDto): Promise<User> {
     const user = await this.findById(userId);
+    const cacheKey = user.stellar_address;
 
     if (dto.username !== undefined) {
       user.username = dto.username;
@@ -131,7 +146,9 @@ export class UsersService {
       user.avatar_url = dto.avatar_url;
     }
 
-    return this.usersRepository.save(user);
+    const saved = await this.usersRepository.save(user);
+    this.statsCache.delete(cacheKey);
+    return saved;
   }
 
   async findUserCompetitions(address: string, dto: ListUserCompetitionsDto) {
@@ -167,5 +184,100 @@ export class UsersService {
     }));
 
     return { data, total, page, limit };
+  }
+
+  async getPublicStatsByAddress(stellar_address: string): Promise<UserStatsDto> {
+    const cached = this.statsCache.get(stellar_address);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.stats;
+    }
+
+    const user = await this.findByAddress(stellar_address);
+
+    const now = new Date();
+    const historySince = new Date(now);
+    historySince.setUTCDate(historySince.getUTCDate() - PREDICTION_HISTORY_DAYS);
+
+    const [
+      leaderboardEntry,
+      marketsCreated,
+      competitionsJoined,
+      competitionsWon,
+      favoriteCategoryRows,
+      predictionHistoryRows,
+    ] = await Promise.all([
+      this.leaderboardRepository.findOne({
+        where: { user_id: user.id, season_id: IsNull() },
+      }),
+      this.marketsRepository.count({ where: { creator: { id: user.id } } }),
+      this.participantsRepository.count({
+        where: { user_id: user.id },
+      }),
+      this.participantsRepository
+        .createQueryBuilder('participant')
+        .innerJoin('participant.competition', 'competition')
+        .where('participant.user_id = :userId', { userId: user.id })
+        .andWhere('participant.rank = :rank', { rank: 1 })
+        .andWhere('competition.end_time < :now', { now })
+        .getCount(),
+      this.predictionsRepository
+        .createQueryBuilder('prediction')
+        .innerJoin('prediction.market', 'market')
+        .select('market.category', 'category')
+        .addSelect('COUNT(*)', 'cnt')
+        .where('prediction.userId = :userId', { userId: user.id })
+        .groupBy('market.category')
+        .orderBy('cnt', 'DESC')
+        .limit(5)
+        .getRawMany<{ category: string }>(),
+      this.predictionsRepository
+        .createQueryBuilder('prediction')
+        .select("to_char(prediction.submitted_at, 'YYYY-MM-DD')", 'date')
+        .addSelect('COUNT(*)', 'count')
+        .where('prediction.userId = :userId', { userId: user.id })
+        .andWhere('prediction.submitted_at >= :since', { since: historySince })
+        .groupBy("to_char(prediction.submitted_at, 'YYYY-MM-DD')")
+        .orderBy('date', 'DESC')
+        .limit(PREDICTION_HISTORY_DAYS)
+        .getRawMany<{ date: string; count: string }>(),
+    ]);
+
+    const totalPredictions = user.total_predictions;
+    const correctPredictions = user.correct_predictions;
+    const accuracyRate =
+      totalPredictions === 0
+        ? 0
+        : Math.round((correctPredictions / totalPredictions) * 10000) / 100;
+
+    const staked = BigInt(user.total_staked_stroops || '0');
+    const winnings = BigInt(user.total_winnings_stroops || '0');
+    const netProfit = (winnings - staked).toString();
+
+    const stats: UserStatsDto = {
+      total_predictions: totalPredictions,
+      correct_predictions: correctPredictions,
+      accuracy_rate: accuracyRate,
+      total_staked_stroops: user.total_staked_stroops,
+      total_winnings_stroops: user.total_winnings_stroops,
+      net_profit_stroops: netProfit,
+      reputation_score: user.reputation_score,
+      season_points: user.season_points,
+      rank: leaderboardEntry?.rank ?? 0,
+      markets_created: marketsCreated,
+      competitions_joined: competitionsJoined,
+      competitions_won: competitionsWon,
+      favorite_categories: favoriteCategoryRows.map((r) => r.category),
+      prediction_history: predictionHistoryRows.map((r) => ({
+        date: r.date,
+        count: parseInt(r.count, 10),
+      })),
+    };
+
+    this.statsCache.set(stellar_address, {
+      expiresAt: Date.now() + USER_STATS_CACHE_TTL_MS,
+      stats,
+    });
+
+    return stats;
   }
 }

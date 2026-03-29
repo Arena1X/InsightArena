@@ -8,12 +8,16 @@ import { Prediction } from '../predictions/entities/prediction.entity';
 import { ListUserPredictionsDto } from './dto/list-user-predictions.dto';
 import { CompetitionParticipant } from '../competitions/entities/competition-participant.entity';
 import { UserCompetitionFilterStatus } from './dto/list-user-competitions.dto';
+import { Market } from '../markets/entities/market.entity';
+import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.entity';
 
 describe('UsersService', () => {
   let service: UsersService;
   let repository: Repository<User>;
   let predictionsRepository: Repository<Prediction>;
   let participantsRepository: Repository<CompetitionParticipant>;
+  let marketsRepository: Repository<Market>;
+  let leaderboardRepository: Repository<LeaderboardEntry>;
 
   const mockUser: User = {
     id: '123e4567-e89b-12d3-a456-426614174000',
@@ -57,6 +61,19 @@ describe('UsersService', () => {
           provide: getRepositoryToken(CompetitionParticipant),
           useValue: {
             createQueryBuilder: jest.fn(),
+            count: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(Market),
+          useValue: {
+            count: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(LeaderboardEntry),
+          useValue: {
+            findOne: jest.fn(),
           },
         },
       ],
@@ -69,6 +86,12 @@ describe('UsersService', () => {
     );
     participantsRepository = module.get<Repository<CompetitionParticipant>>(
       getRepositoryToken(CompetitionParticipant),
+    );
+    marketsRepository = module.get<Repository<Market>>(
+      getRepositoryToken(Market),
+    );
+    leaderboardRepository = module.get<Repository<LeaderboardEntry>>(
+      getRepositoryToken(LeaderboardEntry),
     );
   });
 
@@ -213,6 +236,93 @@ describe('UsersService', () => {
 
       expect(result.data[0].outcome).toBe('correct');
       expect(result.data[1].outcome).toBe('incorrect');
+    });
+  });
+
+  describe('getPublicStatsByAddress', () => {
+    afterEach(() => {
+      (service as unknown as { statsCache: Map<string, unknown> }).statsCache?.clear();
+    });
+
+    beforeEach(() => {
+      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(leaderboardRepository, 'findOne').mockResolvedValue({
+        rank: 12,
+      } as LeaderboardEntry);
+      jest.spyOn(marketsRepository, 'count').mockResolvedValue(4);
+      jest
+        .spyOn(participantsRepository, 'count')
+        .mockResolvedValue(8);
+      jest.spyOn(participantsRepository, 'createQueryBuilder').mockImplementation(
+        () =>
+          ({
+            innerJoin: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            andWhere: jest.fn().mockReturnThis(),
+            getCount: jest.fn().mockResolvedValue(2),
+          }) as any,
+      );
+
+      const rawMany = jest
+        .fn()
+        .mockResolvedValueOnce([{ category: 'sports' }, { category: 'politics' }])
+        .mockResolvedValueOnce([{ date: '2025-02-01', count: '3' }]);
+
+      jest.spyOn(predictionsRepository, 'createQueryBuilder').mockImplementation(
+        () =>
+          ({
+            innerJoin: jest.fn().mockReturnThis(),
+            select: jest.fn().mockReturnThis(),
+            addSelect: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            andWhere: jest.fn().mockReturnThis(),
+            groupBy: jest.fn().mockReturnThis(),
+            orderBy: jest.fn().mockReturnThis(),
+            limit: jest.fn().mockReturnThis(),
+            getRawMany: rawMany,
+          }) as any,
+      );
+    });
+
+    it('should aggregate user stats', async () => {
+      const stats = await service.getPublicStatsByAddress(
+        mockUser.stellar_address,
+      );
+
+      expect(stats.total_predictions).toBe(10);
+      expect(stats.correct_predictions).toBe(7);
+      expect(stats.accuracy_rate).toBe(70);
+      expect(stats.net_profit_stroops).toBe('-500000');
+      expect(stats.rank).toBe(12);
+      expect(stats.markets_created).toBe(4);
+      expect(stats.competitions_joined).toBe(8);
+      expect(stats.competitions_won).toBe(2);
+      expect(stats.favorite_categories).toEqual(['sports', 'politics']);
+      expect(stats.prediction_history).toEqual([
+        { date: '2025-02-01', count: 3 },
+      ]);
+    });
+
+    it('should serve cached stats on subsequent calls', async () => {
+      const countSpy = jest.spyOn(marketsRepository, 'count');
+
+      await service.getPublicStatsByAddress(mockUser.stellar_address);
+      await service.getPublicStatsByAddress(mockUser.stellar_address);
+
+      expect(countSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('should use zero profit when staked equals winnings', async () => {
+      jest.spyOn(repository, 'findOneBy').mockResolvedValue({
+        ...mockUser,
+        total_staked_stroops: '100',
+        total_winnings_stroops: '100',
+      });
+
+      const stats = await service.getPublicStatsByAddress(
+        mockUser.stellar_address,
+      );
+      expect(stats.net_profit_stroops).toBe('0');
     });
   });
 });
