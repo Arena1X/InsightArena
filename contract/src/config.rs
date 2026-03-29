@@ -49,6 +49,14 @@ fn load_config(env: &Env) -> Result<Config, InsightArenaError> {
         .ok_or(InsightArenaError::NotInitialized)
 }
 
+fn validate_protocol_fee(fee_bps: u32) -> Result<(), InsightArenaError> {
+    if fee_bps > 10_000 {
+        return Err(InsightArenaError::InvalidFee);
+    }
+
+    Ok(())
+}
+
 // ── Entry-point logic (called from contractimpl in lib.rs) ────────────────────
 
 /// One-time contract setup.
@@ -65,6 +73,8 @@ pub fn initialize(
     if env.storage().persistent().has(&DataKey::Config) {
         return Err(InsightArenaError::AlreadyInitialized);
     }
+
+    validate_protocol_fee(fee_bps)?;
 
     let config = Config {
         admin,
@@ -121,6 +131,8 @@ pub fn update_protocol_fee(env: &Env, new_fee_bps: u32) -> Result<(), InsightAre
     // Authorisation check — reverts the entire transaction if auth is absent.
     config.admin.require_auth();
 
+    validate_protocol_fee(new_fee_bps)?;
+
     config.protocol_fee_bps = new_fee_bps;
     env.storage().persistent().set(&DataKey::Config, &config);
     bump_config(env);
@@ -133,6 +145,7 @@ pub fn update_protocol_fee_from_governance(
     new_fee_bps: u32,
 ) -> Result<(), InsightArenaError> {
     let mut config = load_config(env)?;
+    validate_protocol_fee(new_fee_bps)?;
     config.protocol_fee_bps = new_fee_bps;
     env.storage().persistent().set(&DataKey::Config, &config);
     bump_config(env);
