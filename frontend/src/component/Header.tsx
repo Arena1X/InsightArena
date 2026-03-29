@@ -2,8 +2,11 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 
 export default function Header() {
+  const pathname = usePathname();
+
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const mobileMenuRef = useRef<HTMLDivElement | null>(null);
@@ -16,15 +19,16 @@ export default function Header() {
     { name: "Dashboard", link: "/dashboard" },
   ];
 
+  const isActive = (path: string) => {
+    if (path === "/") return pathname === "/";
+    return pathname === path || pathname.startsWith(`${path}/`);
+  };
+
   useEffect(() => {
-    if (!isMobileMenuOpen) {
-      return;
-    }
+    if (!isMobileMenuOpen) return;
 
     const getFocusableElements = () => {
-      if (!mobileMenuRef.current) {
-        return [] as HTMLElement[];
-      }
+      if (!mobileMenuRef.current) return [] as HTMLElement[];
 
       return Array.from(
         mobileMenuRef.current.querySelectorAll<HTMLElement>(
@@ -45,14 +49,10 @@ export default function Header() {
         return;
       }
 
-      if (event.key !== "Tab") {
-        return;
-      }
+      if (event.key !== "Tab") return;
 
       const updatedFocusableElements = getFocusableElements();
-      if (updatedFocusableElements.length === 0) {
-        return;
-      }
+      if (updatedFocusableElements.length === 0) return;
 
       const updatedFirst = updatedFocusableElements[0];
       const updatedLast =
@@ -86,28 +86,43 @@ export default function Header() {
             className="flex items-center justify-between"
             aria-label="Primary navigation"
           >
-            <div>
-              <Link
-                href="/"
-                className="text-xl font-bold text-white hover:text-[#4FD1C5] transition-colors"
-                aria-label="Go to InsightArena homepage"
-              >
-                InsightArena
-              </Link>
-            </div>
+            <Link
+              href="/"
+              className="text-xl font-bold text-white hover:text-[#4FD1C5]"
+            >
+              InsightArena
+            </Link>
 
+            {/* DESKTOP NAV */}
             <div className="hidden md:flex items-center space-x-6">
-              {navLinks.map((link) => (
-                <Link
-                  key={link.name}
-                  href={link.link}
-                  className="text-gray-200 transition-colors hover:text-white"
-                >
-                  {link.name}
-                </Link>
-              ))}
+              {navLinks.map((link) => {
+                const active = isActive(link.link);
+
+                return (
+                  <Link
+                    key={link.name}
+                    href={link.link}
+                    aria-current={active ? "page" : undefined}
+                    className={`relative transition-colors ${
+                      active
+                        ? "text-white font-semibold"
+                        : "text-gray-200 hover:text-white"
+                    }`}
+                  >
+                    {link.name}
+
+                    {/* underline indicator */}
+                    <span
+                      className={`absolute left-0 right-0 -bottom-1 h-0.5 bg-orange-500 transition-opacity ${
+                        active ? "opacity-100" : "opacity-0"
+                      }`}
+                    />
+                  </Link>
+                );
+              })}
             </div>
 
+            {/* RIGHT SIDE */}
             <div className="flex items-center gap-3">
               <button
                 ref={menuButtonRef}
@@ -116,31 +131,13 @@ export default function Header() {
                 aria-haspopup="dialog"
                 aria-expanded={isMobileMenuOpen}
                 aria-controls="mobile-navigation-menu"
-                className="inline-flex md:hidden items-center justify-center rounded-lg border border-gray-700 p-2 text-white transition-colors hover:border-gray-500 hover:bg-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4FD1C5]"
+                className="inline-flex md:hidden rounded-lg border border-gray-700 p-2 text-white hover:bg-gray-900"
                 onClick={() => setIsMobileMenuOpen(true)}
               >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  className="h-6 w-6"
-                  aria-hidden="true"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M4 6h16M4 12h16M4 18h16"
-                  />
-                </svg>
+                ☰
               </button>
 
-              <button
-                type="button"
-                aria-label="Connect wallet"
-                className="hidden md:inline-flex rounded-lg bg-orange-500 px-6 py-2 font-semibold text-white transition-colors hover:bg-orange-600"
-              >
+              <button className="hidden md:inline-flex rounded-lg bg-orange-500 px-6 py-2 font-semibold text-white hover:bg-orange-600">
                 Connect Wallet
               </button>
             </div>
@@ -148,72 +145,43 @@ export default function Header() {
         </div>
       </header>
 
+      {/* OVERLAY */}
       <div
-        className={`fixed inset-0 z-40 bg-black/60 transition-opacity duration-300 md:hidden ${
+        className={`fixed inset-0 z-40 bg-black/60 transition-opacity md:hidden ${
           isMobileMenuOpen
-            ? "pointer-events-auto opacity-100"
-            : "pointer-events-none opacity-0"
+            ? "opacity-100 pointer-events-auto"
+            : "opacity-0 pointer-events-none"
         }`}
-        aria-hidden="true"
         onClick={() => setIsMobileMenuOpen(false)}
       />
 
+      {/* MOBILE MENU */}
       <div
-        id="mobile-navigation-menu"
         ref={mobileMenuRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Mobile navigation menu"
-        className={`fixed top-0 right-0 z-50 h-full w-80 max-w-[85vw] bg-zinc-950/95 border-l border-zinc-800 p-6 shadow-2xl transition-transform duration-300 ease-out md:hidden ${
+        className={`fixed top-0 right-0 z-50 h-full w-80 bg-zinc-950 p-6 transition-transform md:hidden ${
           isMobileMenuOpen ? "translate-x-0" : "translate-x-full"
         }`}
       >
-        <div className="mb-8 flex items-center justify-between">
-          <span className="text-lg font-semibold text-white">Menu</span>
-          <button
-            type="button"
-            aria-label="Close mobile menu"
-            className="rounded-lg border border-gray-700 p-2 text-white transition-colors hover:border-gray-500 hover:bg-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4FD1C5]"
-            onClick={() => setIsMobileMenuOpen(false)}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              className="h-6 w-6"
-              aria-hidden="true"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6 6l12 12M18 6L6 18"
-              />
-            </svg>
-          </button>
-        </div>
-
         <div className="flex flex-col gap-4">
-          {navLinks.map((link) => (
-            <Link
-              key={link.name}
-              href={link.link}
-              className="rounded-md px-2 py-2 text-lg text-gray-200 transition-colors hover:bg-zinc-900 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4FD1C5]"
-              onClick={() => setIsMobileMenuOpen(false)}
-            >
-              {link.name}
-            </Link>
-          ))}
+          {navLinks.map((link) => {
+            const active = isActive(link.link);
 
-          <button
-            type="button"
-            aria-label="Connect wallet"
-            className="mt-2 rounded-lg bg-orange-500 px-6 py-3 font-semibold text-white transition-colors hover:bg-orange-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-300"
-            onClick={() => setIsMobileMenuOpen(false)}
-          >
-            Connect Wallet
-          </button>
+            return (
+              <Link
+                key={link.name}
+                href={link.link}
+                aria-current={active ? "page" : undefined}
+                className={`rounded-md px-2 py-2 text-lg ${
+                  active
+                    ? "bg-orange-500 text-white"
+                    : "text-gray-200 hover:bg-zinc-900"
+                }`}
+                onClick={() => setIsMobileMenuOpen(false)}
+              >
+                {link.name}
+              </Link>
+            );
+          })}
         </div>
       </div>
     </>
