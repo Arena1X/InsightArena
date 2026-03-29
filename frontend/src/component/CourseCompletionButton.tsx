@@ -6,7 +6,7 @@ const CourseCompletionButton = () => {
 
   return (
     <>
-      <button
+      <Button
         onClick={() => setIsModalOpen(true)}
         className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-medium transition-colors"
       >

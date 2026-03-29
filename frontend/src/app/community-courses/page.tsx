@@ -1,4 +1,5 @@
 "use client";
+import Button from '@/components/Button';
 import { useState, useEffect } from "react";
 import Coursenav from "@/component/coursenav";
 import CommunityCard from "@/component/CommunityCard";
@@ -172,13 +173,7 @@ export default function CommunityCoursesPage() {
               Explore Courses Created By The Community Or Share Your Own
             </p>
           </div>
-          <button
-            type="button"
-            aria-label="Create a new course"
-            className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded"
-          >
-            Create Course
-          </button>
+          
         </div>
 
         {/* Search and Create Course */}
@@ -216,19 +211,15 @@ export default function CommunityCoursesPage() {
         { id: "top rated", label: "Top Rated" },
         { id: "new", label: "New" },
       ].map((filter) => (
-        <button
-          key={filter.id}
-          type="button"
-          aria-pressed={selectedTag === filter.id}
-          onClick={() => setSelectedTag(filter.id)}
-          className={`px-4 py-2 rounded-full ${
-            selectedTag === filter.id
-              ? "bg-black text-white shadow-lg"
-              : "bg-gray-400 bg-opacity-50 text-gray-200 hover:bg-opacity-70 hover:shadow"
-          }`}
-        >
-          {filter.label}
-        </button>
+        <Button
+  key={filter.id}
+  variant={selectedTag === filter.id ? "primary" : "secondary"}
+  onClick={() => setSelectedTag(filter.id)}
+  className="rounded-full px-4 py-2"
+  aria-pressed={selectedTag === filter.id}
+>
+  {filter.label}
+</Button>
       ))}
       </div>
 

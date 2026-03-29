@@ -72,7 +72,7 @@ const MarketRow: React.FC<MarketRowProps> = ({
         <span className="font-bold text-base text-white">{volume}</span>
       </div>
       <div className="flex items-center gap-2">
-        <button
+        <Button
           type="button"
           className="focus:outline-none"
           onClick={onFavorite}
@@ -80,7 +80,7 @@ const MarketRow: React.FC<MarketRowProps> = ({
         >
           <StarIcon filled={isFavorite} />
         </button>
-        <button
+        <Button
           type="button"
           className="px-4 py-1.5 bg-[#7C3AED] text-white font-bold rounded-lg hover:bg-[#6D28D9] focus:outline-none text-sm"
           onClick={onTrade}

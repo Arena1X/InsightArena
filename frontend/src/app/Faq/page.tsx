@@ -86,7 +86,7 @@ export default function CryptoFAQ() {
                 key={item.id}
                 className="overflow-hidden rounded-2xl border border-white/10 bg-[#0f172a]/90"
               >
-                <button
+                <Button
                   type="button"
                   className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left transition hover:bg-white/5"
                   onClick={() => toggleFAQ(item.id)}

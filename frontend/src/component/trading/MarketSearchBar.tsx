@@ -41,7 +41,7 @@ const MarketSearchBar: React.FC<MarketSearchBarProps> = ({ searchValue, onSearch
         />
       </div>
       <div className="flex gap-2">
-        <button
+        <Button
           type="button"
           aria-label="Filter market tokens"
           onClick={onFilterClick}
@@ -51,7 +51,7 @@ const MarketSearchBar: React.FC<MarketSearchBarProps> = ({ searchValue, onSearch
           <FilterIcon />
           All tokens
         </button>
-        <button
+        <Button
           type="button"
           aria-label="Start trading"
           className="font-bold text-white rounded-xl px-4 h-[42px]"

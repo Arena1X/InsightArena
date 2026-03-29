@@ -88,7 +88,7 @@ export default function RewardsOverview({
             Track your earnings, claim rewards, and review payout history.
           </p>
         </div>
-        <button
+        <Button
           onClick={onClaim}
           disabled={claimDisabled || claimLoading}
           className="flex-shrink-0 px-5 py-2 rounded-lg bg-[#4FD1C5] text-black text-sm font-semibold

@@ -1,3 +1,4 @@
+import Button from '@/components/Button';
 import Image from "next/image";
 import UnifiedBackground from "./UnifiedBackground";
 
@@ -35,14 +36,15 @@ export default function HeroSection() {
                             </p>
                         </div>
 
-                        <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
-                            <button className="bg-orange-500 hover:bg-orange-600 text-white px-8 py-3 rounded-lg font-semibold transition-colors">
-                                Explore Markets
-                            </button>
-                            <button className="border border-gray-600 hover:border-gray-500 text-white px-8 py-3 rounded-lg font-semibold transition-colors">
-                                Read the Docs
-                            </button>
-                        </div>
+                        <div className="mt-10 flex flex-wrap justify-center gap-4">
+  <Button variant="primary" isLoading={true}>
+    Explore Markets
+  </Button>
+  
+  <Button variant="ghost">
+    Read the Docs
+  </Button>
+</div>
                     </div>
 
                     <div className="relative">

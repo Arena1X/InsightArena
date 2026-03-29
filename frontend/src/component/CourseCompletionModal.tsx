@@ -49,7 +49,7 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
               <h2 id="course-completion-title" className="text-white text-2xl font-bold">
                 Stark Academy
               </h2>
-              <button
+              <Button
                 type="button"
                 onClick={onClose}
                 className="text-gray-400 hover:text-white w-8 h-8 rounded-full border border-gray-600 hover:border-gray-400 flex items-center justify-center transition-colors"
@@ -82,7 +82,7 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
 
           {/* Action Buttons */}
           <div className="flex flex-col gap-3 sm:flex-row">
-            <button
+            <Button
               type="button"
               onClick={handleClaimBadge}
               disabled={isClaimLoading || badgeClaimed}
@@ -102,7 +102,7 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
               )}
             </button>
 
-            <button
+            <Button
               type="button"
               onClick={handleJoinCommunity}
               disabled={isJoinLoading}

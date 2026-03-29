@@ -41,7 +41,7 @@ const Header = () => {
         <div className="flex items-center gap-6 sm:gap-10">
           <BellDot className="cursor-pointer" />
           <Moon className="cursor-pointer" />
-          <button className="bg-purple-600 text-white rounded-full p-2 border">
+          <Button className="bg-purple-600 text-white rounded-full p-2 border">
             PH
           </button>
         </div>

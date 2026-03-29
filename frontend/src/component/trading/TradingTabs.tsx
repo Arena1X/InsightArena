@@ -35,7 +35,7 @@ const TradingTabs: React.FC<TradingTabsProps> = ({ activeTab, onTabChange }) => 
   return (
     <div className="flex w-full bg-[#444444] p-2 gap-2 rounded-xl">
       {tabs.map((tab) => (
-        <button
+        <Button
           key={tab}
           className={`flex-1 font-semibold text-center transition-colors duration-150
             ${activeTab === tab

@@ -31,7 +31,7 @@ const Navbar = () => {
       <div className="hidden md:flex items-center gap-6">
         {/* Course section */}
         <div className="relative">
-          <button
+          <Button
             type="button"
             aria-haspopup="dialog"
             aria-expanded={isCoursesOpen}
@@ -59,7 +59,7 @@ const Navbar = () => {
         </div>
 
         {/* Trading section */}
-        <button
+        <Button
           type="button"
           aria-label="Open trading section"
           className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
@@ -75,7 +75,7 @@ const Navbar = () => {
         </button>
 
         {/* Airdrops */}
-        <button
+        <Button
           type="button"
           aria-label="Open airdrops section"
           className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
@@ -92,7 +92,7 @@ const Navbar = () => {
 
         {/* Resources Section */}
         <div className="relative">
-          <button
+          <Button
             type="button"
             aria-haspopup="dialog"
             aria-expanded={isResourcesOpen}
@@ -118,13 +118,13 @@ const Navbar = () => {
             />
           )}
         </div>
-        <button type="button" aria-label="View notifications">
+        <Button type="button" aria-label="View notifications">
           <Bell className="cursor-pointer text-gray-400 hover:text-white" />
         </button>
-        <button type="button" aria-label="Toggle theme">
+        <Button type="button" aria-label="Toggle theme">
           <Moon className="cursor-pointer" />
         </button>
-        <button
+        <Button
           type="button"
           aria-label="Open profile"
           className="bg-purple-500 text-white rounded-full w-8 h-8 flex items-center justify-center cursor-pointer"
@@ -136,7 +136,7 @@ const Navbar = () => {
 
       {/* Mobile Hamburger */}
       <div className="md:hidden">
-        <button
+        <Button
           type="button"
           aria-label="Open mobile menu"
           onClick={() => setMobileMenuOpen(true)}
@@ -156,13 +156,13 @@ const Navbar = () => {
         <div className="fixed top-0 right-0 w-2/3 h-full bg-black p-6 space-y-6 cursor-pointer">
           <div className="flex justify-between items-center">
             <h2 className="text-xl font-bold">Menu</h2>
-            <button type="button" aria-label="Close mobile menu" onClick={() => setMobileMenuOpen(false)}>
+            <Button type="button" aria-label="Close mobile menu" onClick={() => setMobileMenuOpen(false)}>
               <X />
             </button>
           </div>
           
           {/* Mobile menu items with consistent styling */}
-          <button 
+          <Button 
             type="button"
             aria-label="Open courses menu"
             onClick={() => {
@@ -181,7 +181,7 @@ const Navbar = () => {
             <span className="text-lg font-medium">Courses</span>
           </button>
           
-          <button
+          <Button
             type="button"
             aria-label="Open trading section"
             className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
@@ -196,7 +196,7 @@ const Navbar = () => {
             <span className="text-lg font-medium">Trading</span>
           </button>
           
-          <button
+          <Button
             type="button"
             aria-label="Open airdrops section"
             className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
@@ -211,7 +211,7 @@ const Navbar = () => {
             <span className="text-lg font-medium">Airdrops</span>
           </button>
           
-          <button 
+          <Button 
             type="button"
             aria-label="Open resources menu"
             onClick={() => {
@@ -231,13 +231,13 @@ const Navbar = () => {
           </button>
           
           <div className="flex items-center gap-4">
-            <button type="button" aria-label="View notifications">
+            <Button type="button" aria-label="View notifications">
               <Bell className="cursor-pointer text-gray-400 hover:text-white" />
             </button>
-            <button type="button" aria-label="Toggle theme">
+            <Button type="button" aria-label="Toggle theme">
               <Moon />
             </button>
-            <button
+            <Button
               type="button"
               aria-label="Open profile"
               className="bg-purple-500 text-white rounded-full w-8 h-8 flex items-center justify-center cursor-pointer"

@@ -292,7 +292,7 @@ export default function MarketsPage() {
 
                 <div className="grid gap-4">
                   {filteredMarkets.map((market) => (
-                    <button
+                    <Button
                       key={market.id}
                       type="button"
                       onClick={() => setSelectedId(market.id)}
@@ -402,7 +402,7 @@ export default function MarketsPage() {
                       </div>
                     </div>
 
-                    <button
+                    <Button
                       type="button"
                       className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[#2f9e9d] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#38adaa]"
                     >

@@ -103,7 +103,7 @@ const Resources = () => {
                         {item.description}
                       </div>
                       <div className="py-6 px-2">
-                        <button className="cursor-pointer border w-full rounded-lg py-1">
+                        <Button className="cursor-pointer border w-full rounded-lg py-1">
                           <a
                             href={item.link}
                             target="_blank"
@@ -126,7 +126,7 @@ const Resources = () => {
                     </p>
                   </div>
                   <div className="flex items-center justify-center pb-4">
-                    <button className="underline border w-[30%] rounded-lg py-1 text-[14px]">
+                    <Button className="underline border w-[30%] rounded-lg py-1 text-[14px]">
                       Learn More In Our Courses
                     </button>
                   </div>

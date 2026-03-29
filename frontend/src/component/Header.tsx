@@ -1,5 +1,5 @@
 "use client";
-
+import Button from '@/components/Button';
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
@@ -137,9 +137,9 @@ export default function Header() {
                 ☰
               </button>
 
-              <button className="hidden md:inline-flex rounded-lg bg-orange-500 px-6 py-2 font-semibold text-white hover:bg-orange-600">
+              <Button className="hidden md:inline-flex rounded-lg bg-orange-500 px-6 py-2 font-semibold text-white hover:bg-orange-600">
                 Connect Wallet
-              </button>
+              </Button>
             </div>
           </nav>
         </div>

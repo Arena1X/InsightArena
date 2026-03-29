@@ -1,5 +1,5 @@
 "use client";
-
+import Button from '@/components/Button';
 import RewardsWalletCard from "@/component/RewardsWalletCard";
 import NotificationsCard from "@/component/NotificationsCard";
 
@@ -105,13 +105,13 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
           <p className="mt-2 truncate text-sm font-semibold text-white">
             0x71A4...9cF2
           </p>
-          <button
+          <Button
             type="button"
             aria-label="Disconnect wallet"
             className="mt-3 text-sm font-medium text-[#4fd1c5] transition hover:text-[#72ddd3]"
           >
             Disconnect
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -132,21 +132,21 @@ function TopNavigation() {
           </p>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row">
-          <button
+          <Button
             type="button"
             aria-label="Make a prediction"
             className="rounded-xl bg-[#2f9e9d] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#38adaa]"
           >
             Make Prediction
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             aria-label="Create a competition"
             className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-transparent px-6 py-3 text-sm font-medium text-[#d6daea] transition hover:bg-white/5"
           >
             Create Competition
             <ChevronDown className="h-4 w-4" />
-          </button>
+          </Button>
         </div>
       </div>
     </section>
@@ -177,14 +177,14 @@ export function DashboardShell({ children }: DashboardShellProps) {
         <div className="flex min-h-screen w-full flex-col lg:pl-[280px]">
           <header className="sticky top-0 z-30 flex items-center justify-between border-b border-white/8 bg-[#141824]/90 px-4 py-4 backdrop-blur lg:hidden">
             <Brand />
-            <button
+            <Button
               type="button"
               aria-label="Open navigation menu"
               className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-white"
               onClick={() => setMobileOpen(true)}
             >
               <Menu className="h-5 w-5" />
-            </button>
+            </Button>
           </header>
 
           <div className="sticky top-[72px] z-20 bg-[#141824]/95 backdrop-blur lg:top-0">
@@ -212,7 +212,7 @@ export function DashboardShell({ children }: DashboardShellProps) {
         }`}
         aria-hidden={!mobileOpen}
       >
-        <button
+        <Button
           type="button"
           aria-label="Close navigation overlay"
           className={`absolute inset-0 bg-[#020617]/70 backdrop-blur-sm transition-opacity duration-300 ease-out ${
@@ -225,14 +225,14 @@ export function DashboardShell({ children }: DashboardShellProps) {
             mobileOpen ? "translate-x-0" : "-translate-x-full"
           }`}
         >
-          <button
+          <Button
             type="button"
             aria-label="Close navigation menu"
             className="absolute top-4 right-4 z-10 inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-white transition hover:bg-white/10"
             onClick={() => setMobileOpen(false)}
           >
             <X className="h-5 w-5" />
-          </button>
+          </Button>
           <SidebarContent onNavigate={() => setMobileOpen(false)} />
         </div>
       </div>

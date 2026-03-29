@@ -311,10 +311,10 @@ export default function HowItWorks() {
             </p>
           </div>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <button className="mt-8 px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 rounded-2xl text-white font-bold hover:from-purple-700 hover:to-pink-700 transition-all transform hover:scale-105 cursor-pointer">
+            <Button className="mt-8 px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 rounded-2xl text-white font-bold hover:from-purple-700 hover:to-pink-700 transition-all transform hover:scale-105 cursor-pointer">
               Begin Your Journey
             </button>
-            <button className="mt-8 px-8 py-2 border border-purple-500 text-purple-400 hover:bg-purple-500/10 bg-transparent rounded-2xl font-bold hover:scale-105 transition-all cursor-pointer">
+            <Button className="mt-8 px-8 py-2 border border-purple-500 text-purple-400 hover:bg-purple-500/10 bg-transparent rounded-2xl font-bold hover:scale-105 transition-all cursor-pointer">
               Watch Demo
             </button>
           </div>

@@ -19,7 +19,7 @@ const Footer = () => {
               </h1>
               <div className="pt-2 pb-8">
                 <a href="https://t.me/+wG8gxRxwrzQxNTk0" target="_blank">
-                  <button className="border-2 bg-gradient-to-r from-purple-500 to-blue-400 w-[90%] py-2 rounded-2xl cursor-pointer">
+                  <Button className="border-2 bg-gradient-to-r from-purple-500 to-blue-400 w-[90%] py-2 rounded-2xl cursor-pointer">
                     Join Telegram Group
                   </button>
                 </a>

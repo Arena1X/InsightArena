@@ -1,5 +1,5 @@
 "use client";
-
+import Button from '@/components/Button';
 import { useState } from "react";
 import { Search, Filter, ChevronDown } from "lucide-react";
 import Header from "@/component/Header";
@@ -125,12 +125,12 @@ export default function EventsPage() {
                 </p>
 
                 <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                  <button className="px-8 py-3 bg-[#4FD1C5] text-white font-semibold rounded-xl hover:bg-[#3dbdb3] transition">
+                  <Button className="px-8 py-3 bg-[#4FD1C5] text-white font-semibold rounded-xl hover:bg-[#3dbdb3] transition">
                     Browse Events
-                  </button>
-                  <button className="px-8 py-3 bg-transparent border border-gray-600 text-white font-semibold rounded-xl hover:bg-white/5 transition">
+                  </Button>
+                  <Button className="px-8 py-3 bg-transparent border border-gray-600 text-white font-semibold rounded-xl hover:bg-white/5 transition">
                     View Competitions
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>
@@ -151,7 +151,7 @@ export default function EventsPage() {
                 {/* Tabs */}
                 <div className="flex gap-2 bg-[#1e293b] p-1 rounded-xl">
                   {tabs.map((tab) => (
-                    <button
+                    <Button
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id)}
                       className={`px-6 py-2 rounded-lg font-medium transition ${
@@ -161,20 +161,20 @@ export default function EventsPage() {
                       }`}
                     >
                       {tab.label}
-                    </button>
+                    </Button>
                   ))}
                 </div>
 
                 {/* Filter and Sort */}
                 <div className="flex gap-3">
-                  <button className="flex items-center gap-2 px-4 py-3 bg-[#1e293b] text-gray-300 rounded-xl border border-gray-700/50 hover:bg-[#2d3b52] transition">
+                  <Button className="flex items-center gap-2 px-4 py-3 bg-[#1e293b] text-gray-300 rounded-xl border border-gray-700/50 hover:bg-[#2d3b52] transition">
                     <Filter className="h-4 w-4" />
                     Filter
-                  </button>
-                  <button className="flex items-center gap-2 px-4 py-3 bg-[#1e293b] text-gray-300 rounded-xl border border-gray-700/50 hover:bg-[#2d3b52] transition">
+                  </Button>
+                  <Button className="flex items-center gap-2 px-4 py-3 bg-[#1e293b] text-gray-300 rounded-xl border border-gray-700/50 hover:bg-[#2d3b52] transition">
                     Most Popular
                     <ChevronDown className="h-4 w-4" />
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>
