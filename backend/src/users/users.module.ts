@@ -6,6 +6,7 @@ import { UsersController } from './users.controller';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { CompetitionParticipant } from '../competitions/entities/competition-participant.entity';
 import { Market } from '../markets/entities/market.entity';
+import { Notification } from '../notifications/entities/notification.entity';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { Market } from '../markets/entities/market.entity';
       Prediction,
       CompetitionParticipant,
       Market,
+      Notification,
     ]),
   ],
   controllers: [UsersController],

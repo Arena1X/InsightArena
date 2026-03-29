@@ -13,7 +13,10 @@ export enum ReportFormat {
 }
 
 export class ReportQueryDto {
-  @ApiProperty({ enum: ReportTimeframe, description: 'Timeframe for the report' })
+  @ApiProperty({
+    enum: ReportTimeframe,
+    description: 'Timeframe for the report',
+  })
   @IsEnum(ReportTimeframe)
   timeframe: ReportTimeframe;
 

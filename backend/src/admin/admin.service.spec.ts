@@ -47,7 +47,9 @@ describe('AdminService.adminResolveMarket', () => {
       ...overrides,
     }) as Market;
 
-  const makeDto = (overrides: Partial<ResolveMarketDto> = {}): ResolveMarketDto => ({
+  const makeDto = (
+    overrides: Partial<ResolveMarketDto> = {},
+  ): ResolveMarketDto => ({
     resolved_outcome: 'YES',
     ...overrides,
   });
@@ -80,32 +82,36 @@ describe('AdminService.adminResolveMarket', () => {
   it('throws NotFoundException when market does not exist', async () => {
     marketsRepo.findOne.mockResolvedValue(null);
 
-    await expect(service.adminResolveMarket('bad-id', makeDto(), adminId)).rejects.toThrow(
-      NotFoundException,
-    );
+    await expect(
+      service.adminResolveMarket('bad-id', makeDto(), adminId),
+    ).rejects.toThrow(NotFoundException);
   });
 
   it('throws ConflictException when market is already resolved', async () => {
     marketsRepo.findOne.mockResolvedValue(makeMarket({ is_resolved: true }));
 
-    await expect(service.adminResolveMarket('market-1', makeDto(), adminId)).rejects.toThrow(
-      ConflictException,
-    );
+    await expect(
+      service.adminResolveMarket('market-1', makeDto(), adminId),
+    ).rejects.toThrow(ConflictException);
   });
 
   it('throws BadRequestException when market is cancelled', async () => {
     marketsRepo.findOne.mockResolvedValue(makeMarket({ is_cancelled: true }));
 
-    await expect(service.adminResolveMarket('market-1', makeDto(), adminId)).rejects.toThrow(
-      BadRequestException,
-    );
+    await expect(
+      service.adminResolveMarket('market-1', makeDto(), adminId),
+    ).rejects.toThrow(BadRequestException);
   });
 
   it('throws BadRequestException for invalid outcome', async () => {
     marketsRepo.findOne.mockResolvedValue(makeMarket());
 
     await expect(
-      service.adminResolveMarket('market-1', makeDto({ resolved_outcome: 'MAYBE' }), adminId),
+      service.adminResolveMarket(
+        'market-1',
+        makeDto({ resolved_outcome: 'MAYBE' }),
+        adminId,
+      ),
     ).rejects.toThrow(BadRequestException);
   });
 
@@ -113,23 +119,38 @@ describe('AdminService.adminResolveMarket', () => {
     marketsRepo.findOne.mockResolvedValue(makeMarket());
     sorobanService.resolveMarket.mockRejectedValue(new Error('Soroban down'));
 
-    await expect(service.adminResolveMarket('market-1', makeDto(), adminId)).rejects.toThrow(
-      BadGatewayException,
-    );
+    await expect(
+      service.adminResolveMarket('market-1', makeDto(), adminId),
+    ).rejects.toThrow(BadGatewayException);
   });
 
   it('resolves market, notifies participants, and logs admin action', async () => {
     const market = makeMarket();
     const participant = { id: 'user-2' } as User;
-    const prediction = { user: participant, chosen_outcome: 'YES', market } as Prediction;
+    const prediction = {
+      user: participant,
+      chosen_outcome: 'YES',
+      market,
+    } as Prediction;
 
     marketsRepo.findOne.mockResolvedValue(market);
-    marketsRepo.save.mockResolvedValue({ ...market, is_resolved: true, resolved_outcome: 'YES' });
+    marketsRepo.save.mockResolvedValue({
+      ...market,
+      is_resolved: true,
+      resolved_outcome: 'YES',
+    });
     predictionsRepo.find.mockResolvedValue([prediction]);
 
-    const result = await service.adminResolveMarket('market-1', makeDto(), adminId);
+    const result = await service.adminResolveMarket(
+      'market-1',
+      makeDto(),
+      adminId,
+    );
 
-    expect(sorobanService.resolveMarket).toHaveBeenCalledWith('on-chain-1', 'YES');
+    expect(sorobanService.resolveMarket).toHaveBeenCalledWith(
+      'on-chain-1',
+      'YES',
+    );
     expect(marketsRepo.save).toHaveBeenCalledWith(
       expect.objectContaining({ is_resolved: true, resolved_outcome: 'YES' }),
     );
@@ -143,17 +164,28 @@ describe('AdminService.adminResolveMarket', () => {
     expect(analyticsService.logActivity).toHaveBeenCalledWith(
       adminId,
       'MARKET_RESOLVED_BY_ADMIN',
-      expect.objectContaining({ market_id: 'market-1', resolved_outcome: 'YES' }),
+      expect.objectContaining({
+        market_id: 'market-1',
+        resolved_outcome: 'YES',
+      }),
     );
     expect(result.is_resolved).toBe(true);
   });
 
   it('includes resolution_note in notification metadata when provided', async () => {
     const market = makeMarket();
-    const prediction = { user: { id: 'user-2' } as User, chosen_outcome: 'NO', market } as Prediction;
+    const prediction = {
+      user: { id: 'user-2' } as User,
+      chosen_outcome: 'NO',
+      market,
+    } as Prediction;
 
     marketsRepo.findOne.mockResolvedValue(market);
-    marketsRepo.save.mockResolvedValue({ ...market, is_resolved: true, resolved_outcome: 'YES' });
+    marketsRepo.save.mockResolvedValue({
+      ...market,
+      is_resolved: true,
+      resolved_outcome: 'YES',
+    });
     predictionsRepo.find.mockResolvedValue([prediction]);
 
     await service.adminResolveMarket(
@@ -167,7 +199,10 @@ describe('AdminService.adminResolveMarket', () => {
       expect.any(String),
       'Market Resolved',
       expect.any(String),
-      expect.objectContaining({ resolution_note: 'Dispute resolved by admin', won: false }),
+      expect.objectContaining({
+        resolution_note: 'Dispute resolved by admin',
+        won: false,
+      }),
     );
   });
 });

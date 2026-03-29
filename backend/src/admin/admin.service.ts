@@ -247,7 +247,10 @@ export class AdminService {
         dto.resolved_outcome,
       );
     } catch (err) {
-      this.logger.error('Soroban resolveMarket failed during admin resolution', err);
+      this.logger.error(
+        'Soroban resolveMarket failed during admin resolution',
+        err,
+      );
       throw new BadGatewayException('Failed to resolve market on Soroban');
     }
 
@@ -273,18 +276,24 @@ export class AdminService {
             resolved_outcome: dto.resolved_outcome,
             your_prediction: p.chosen_outcome,
             won: p.chosen_outcome === dto.resolved_outcome,
-            ...(dto.resolution_note ? { resolution_note: dto.resolution_note } : {}),
+            ...(dto.resolution_note
+              ? { resolution_note: dto.resolution_note }
+              : {}),
           },
         ),
       ),
     );
 
     // Log admin action
-    await this.analyticsService.logActivity(adminId, 'MARKET_RESOLVED_BY_ADMIN', {
-      market_id: market.id,
-      resolved_outcome: dto.resolved_outcome,
-      resolution_note: dto.resolution_note ?? null,
-    });
+    await this.analyticsService.logActivity(
+      adminId,
+      'MARKET_RESOLVED_BY_ADMIN',
+      {
+        market_id: market.id,
+        resolved_outcome: dto.resolved_outcome,
+        resolution_note: dto.resolution_note ?? null,
+      },
+    );
 
     this.logger.log(
       `Admin ${adminId} resolved market "${market.title}" (${market.id}) with outcome "${dto.resolved_outcome}"`,

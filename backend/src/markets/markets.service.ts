@@ -288,7 +288,9 @@ export class MarketsService {
         where: { id: dto.parentId },
       });
       if (!parent) {
-        throw new NotFoundException(`Parent comment with ID "${dto.parentId}" not found`);
+        throw new NotFoundException(
+          `Parent comment with ID "${dto.parentId}" not found`,
+        );
       }
     }
 

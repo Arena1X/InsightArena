@@ -78,7 +78,13 @@ export class CreateMarketTemplatesTable1774900000000 implements MigrationInterfa
     for (const t of templates) {
       await queryRunner.query(
         `INSERT INTO market_templates (title, description, category, outcome_options, suggested_duration_days) VALUES ($1, $2, $3, $4, $5)`,
-        [t.title, t.description, t.category, t.outcome_options, t.suggested_duration_days],
+        [
+          t.title,
+          t.description,
+          t.category,
+          t.outcome_options,
+          t.suggested_duration_days,
+        ],
       );
     }
   }

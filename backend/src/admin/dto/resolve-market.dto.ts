@@ -7,7 +7,9 @@ export class ResolveMarketDto {
   @IsNotEmpty()
   resolved_outcome: string;
 
-  @ApiPropertyOptional({ description: 'Optional note explaining the resolution' })
+  @ApiPropertyOptional({
+    description: 'Optional note explaining the resolution',
+  })
   @IsString()
   @IsOptional()
   @MaxLength(1000)

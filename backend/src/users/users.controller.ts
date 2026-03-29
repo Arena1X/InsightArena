@@ -101,7 +101,7 @@ export class UsersController {
   @UsePipes(
     new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }),
   )
-  @ApiOperation({ summary: "List markets created by a user (public)" })
+  @ApiOperation({ summary: 'List markets created by a user (public)' })
   @ApiResponse({ status: 200, description: 'Paginated markets list' })
   @ApiResponse({ status: 404, description: 'User not found' })
   async getUserMarkets(
@@ -126,6 +126,6 @@ export class UsersController {
   @ApiOperation({ summary: 'Export all user data (GDPR)' })
   @ApiResponse({ status: 200, description: 'User data exported as JSON' })
   async exportData(@CurrentUser() user: User) {
-    return this.usersService.exportUserData(user.id);
+    return await this.usersService.exportUserData(user.id);
   }
 }

@@ -10,7 +10,6 @@ import { Notification } from '../notifications/entities/notification.entity';
 import { ListUserPredictionsDto } from './dto/list-user-predictions.dto';
 import { CompetitionParticipant } from '../competitions/entities/competition-participant.entity';
 import { UserCompetitionFilterStatus } from './dto/list-user-competitions.dto';
-import { Market } from '../markets/entities/market.entity';
 import {
   ListUserMarketsDto,
   UserMarketFilterStatus,
@@ -68,6 +67,7 @@ describe('UsersService', () => {
           provide: getRepositoryToken(Market),
           useValue: {
             find: jest.fn(),
+            createQueryBuilder: jest.fn(),
           },
         },
         {
@@ -81,12 +81,6 @@ describe('UsersService', () => {
           useValue: {
             createQueryBuilder: jest.fn(),
             find: jest.fn(),
-          },
-        },
-        {
-          provide: getRepositoryToken(Market),
-          useValue: {
-            createQueryBuilder: jest.fn(),
           },
         },
       ],

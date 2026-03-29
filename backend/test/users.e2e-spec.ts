@@ -243,14 +243,16 @@ describe('Users (e2e)', () => {
       return request(app.getHttpServer())
         .get(`/users/${mockUser.stellar_address}/markets`)
         .expect(200)
-        .expect((res: { body: { data: { data: unknown[]; total: number } } }) => {
-          expect(queryBuilder.where).toHaveBeenCalledWith(
-            'market.creatorId = :userId',
-            { userId: mockUser.id },
-          );
-          expect(res.body.data.data).toEqual([]);
-          expect(res.body.data.total).toBe(0);
-        });
+        .expect(
+          (res: { body: { data: { data: unknown[]; total: number } } }) => {
+            expect(queryBuilder.where).toHaveBeenCalledWith(
+              'market.creatorId = :userId',
+              { userId: mockUser.id },
+            );
+            expect(res.body.data.data).toEqual([]);
+            expect(res.body.data.total).toBe(0);
+          },
+        );
     });
 
     it('should apply status=active filter query', () => {
