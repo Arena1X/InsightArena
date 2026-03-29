@@ -1,5 +1,5 @@
 import { Wallet } from "lucide-react";
-
+import Button from '@/components/Button';
 export default function RewardsWalletCard() {
   return (
     <div className="relative bg-[#0f172a] rounded-2xl p-5 w-full shadow-lg overflow-hidden">
@@ -42,9 +42,9 @@ export default function RewardsWalletCard() {
       </div>
 
       {/* Button */}
-      <button className="mt-6 w-full py-2 rounded-lg bg-[#F5C451] text-black font-semibold hover:opacity-90 transition">
+      <Button className="mt-6 w-full py-2 rounded-lg bg-[#F5C451] text-black font-semibold hover:opacity-90 transition">
         Claim Rewards
-      </button>
+      </Button>
     </div>
   );
 }

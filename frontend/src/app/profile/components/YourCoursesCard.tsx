@@ -1,3 +1,4 @@
+import Button from '@/components/Button';
 import { useState } from "react";
 import { Progress } from "@/component/ui/progress";
 import { BookOpen } from "lucide-react";
@@ -28,13 +29,13 @@ export default function YourCoursesCard({ courses }: { courses: Course[] }) {
       {/* Tabs fuera del card principal */}
       <div className="flex gap-2 bg-[#D1D5DB] rounded-xl px-3 py-2 w-fit mb-6">
         {tabs.map((tab) => (
-          <button
+          <Button
             key={tab.value}
             className={`px-6 py-2 rounded-lg font-bold text-base transition-all duration-200 ${activeTab === tab.value ? "bg-[#232228] text-white" : "bg-[#D1D5DB] text-[#232228]"} cursor-pointer`}
             onClick={() => setActiveTab(tab.value)}
           >
             {tab.label}
-          </button>
+          </Button>
         ))}
       </div>
       {/* Card principal */}

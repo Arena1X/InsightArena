@@ -1,5 +1,5 @@
 "use client";
-
+import Button from '@/components/Button';
 import { useState } from "react";
 import { Dialog } from "@headlessui/react";
 import { Moon, Menu, X, Bell } from "lucide-react";
@@ -31,7 +31,7 @@ const Navbar = () => {
       <div className="hidden md:flex items-center gap-6">
         {/* Course section */}
         <div className="relative">
-          <button
+          <Button
             type="button"
             aria-haspopup="dialog"
             aria-expanded={isCoursesOpen}
@@ -48,7 +48,7 @@ const Navbar = () => {
             />
             <span className="text-lg font-medium">Courses</span>
             <ChevronDown className="w-4 h-4" />
-          </button>
+          </Button>
           {/* Modal positioned directly under the button */}
           {isCoursesOpen && (
             <CoursesModal
@@ -59,7 +59,7 @@ const Navbar = () => {
         </div>
 
         {/* Trading section */}
-        <button
+        <Button
           type="button"
           aria-label="Open trading section"
           className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
@@ -72,10 +72,10 @@ const Navbar = () => {
             className="w-6 h-6"
           />
           <span className="text-lg font-medium">Trading</span>
-        </button>
+        </Button>
 
         {/* Airdrops */}
-        <button
+        <Button
           type="button"
           aria-label="Open airdrops section"
           className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
@@ -88,11 +88,11 @@ const Navbar = () => {
             className="w-6 h-6"
           />
           <span className="text-lg font-medium">Airdrops</span>
-        </button>
+        </Button>
 
         {/* Resources Section */}
         <div className="relative">
-          <button
+          <Button
             type="button"
             aria-haspopup="dialog"
             aria-expanded={isResourcesOpen}
@@ -109,7 +109,7 @@ const Navbar = () => {
             />
             <span className="text-lg font-medium">Resources</span>
             <ChevronDown className="w-4 h-4" />
-          </button>
+          </Button>
           {/* Modal positioned directly under the button */}
           {isResourcesOpen && (
             <ResourcesModal
@@ -118,32 +118,32 @@ const Navbar = () => {
             />
           )}
         </div>
-        <button type="button" aria-label="View notifications">
+        <Button type="button" aria-label="View notifications">
           <Bell className="cursor-pointer text-gray-400 hover:text-white" />
-        </button>
-        <button type="button" aria-label="Toggle theme">
+        </Button>
+        <Button type="button" aria-label="Toggle theme">
           <Moon className="cursor-pointer" />
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
           aria-label="Open profile"
           className="bg-purple-500 text-white rounded-full w-8 h-8 flex items-center justify-center cursor-pointer"
           onClick={() => router.push("/profile")}
         >
           PH
-        </button>
+        </Button>
       </div>
 
       {/* Mobile Hamburger */}
       <div className="md:hidden">
-        <button
+        <Button
           type="button"
           aria-label="Open mobile menu"
           onClick={() => setMobileMenuOpen(true)}
           className="cursor-pointer"
         >
           <Menu />
-        </button>
+        </Button>
       </div>
 
       {/* Mobile Menu Dialog */}
@@ -156,13 +156,13 @@ const Navbar = () => {
         <div className="fixed top-0 right-0 w-2/3 h-full bg-black p-6 space-y-6 cursor-pointer">
           <div className="flex justify-between items-center">
             <h2 className="text-xl font-bold">Menu</h2>
-            <button type="button" aria-label="Close mobile menu" onClick={() => setMobileMenuOpen(false)}>
+            <Button type="button" aria-label="Close mobile menu" onClick={() => setMobileMenuOpen(false)}>
               <X />
-            </button>
+            </Button>
           </div>
           
           {/* Mobile menu items with consistent styling */}
-          <button 
+          <Button 
             type="button"
             aria-label="Open courses menu"
             onClick={() => {
@@ -179,9 +179,9 @@ const Navbar = () => {
               className="w-6 h-6"
             />
             <span className="text-lg font-medium">Courses</span>
-          </button>
+          </Button>
           
-          <button
+          <Button
             type="button"
             aria-label="Open trading section"
             className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
@@ -194,9 +194,9 @@ const Navbar = () => {
               className="w-6 h-6"
             />
             <span className="text-lg font-medium">Trading</span>
-          </button>
+          </Button>
           
-          <button
+          <Button
             type="button"
             aria-label="Open airdrops section"
             className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
@@ -209,9 +209,9 @@ const Navbar = () => {
               className="w-6 h-6"
             />
             <span className="text-lg font-medium">Airdrops</span>
-          </button>
+          </Button>
           
-          <button 
+          <Button 
             type="button"
             aria-label="Open resources menu"
             onClick={() => {
@@ -228,23 +228,23 @@ const Navbar = () => {
               className="w-6 h-6"
             />
             <span className="text-lg font-medium">Resources</span>
-          </button>
+          </Button>
           
           <div className="flex items-center gap-4">
-            <button type="button" aria-label="View notifications">
+            <Button type="button" aria-label="View notifications">
               <Bell className="cursor-pointer text-gray-400 hover:text-white" />
-            </button>
-            <button type="button" aria-label="Toggle theme">
+            </Button>
+            <Button type="button" aria-label="Toggle theme">
               <Moon />
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               aria-label="Open profile"
               className="bg-purple-500 text-white rounded-full w-8 h-8 flex items-center justify-center cursor-pointer"
               onClick={() => router.push("/profile")}
             >
               PH
-            </button>
+            </Button>
           </div>
         </div>
       </Dialog>

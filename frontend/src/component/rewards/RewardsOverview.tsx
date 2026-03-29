@@ -1,5 +1,5 @@
 import StatCard, { StatCardProps } from "./StatCard";
-
+import Button from '@/components/Button';
 // Icons
 function DollarIcon() {
   return (
@@ -88,14 +88,14 @@ export default function RewardsOverview({
             Track your earnings, claim rewards, and review payout history.
           </p>
         </div>
-        <button
+        <Button
           onClick={onClaim}
           disabled={claimDisabled || claimLoading}
           className="flex-shrink-0 px-5 py-2 rounded-lg bg-[#4FD1C5] text-black text-sm font-semibold
             hover:bg-[#38b2ac] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {claimLoading ? "Claiming..." : "Claim Rewards"}
-        </button>
+        </Button>
       </div>
 
       {/* Stat cards grid */}

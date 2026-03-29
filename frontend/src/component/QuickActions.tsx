@@ -1,3 +1,4 @@
+import Button from '@/components/Button';
 import React from 'react';
 // These icons are common in React projects. 
 // If they aren't installed, we can switch to simple emojis for now!
@@ -20,7 +21,7 @@ const QuickActions = () => {
       {/* Requirement: Responsive Grid. 2 columns on mobile, 4 on tablet/desktop */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-5xl mx-auto">
         {actions.map((item, index) => (
-          <button
+          <Button
             key={index}
             className={`${item.color} aspect-square rounded-2xl flex flex-col items-center justify-center p-4 shadow-lg hover:scale-105 transition-transform`}
           >
@@ -29,7 +30,7 @@ const QuickActions = () => {
             <span className="text-white text-sm font-semibold text-center leading-tight">
               {item.label}
             </span>
-          </button>
+          </Button>
         ))}
       </div>
     </section>

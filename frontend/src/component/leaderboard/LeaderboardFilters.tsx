@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-
+import Button from '@/components/Button';
 export type TimeRange = "daily" | "weekly" | "monthly" | "all-time";
 export type Category = "all" | "crypto" | "sports" | "politics" | "custom";
 export type SortBy = "points" | "win-rate" | "predictions";
@@ -58,7 +58,7 @@ export default function LeaderboardFilters({ onChange }: LeaderboardFiltersProps
       {/* Time range pill group */}
       <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-[#0f172a] p-1">
         {TIME_RANGES.map(({ label, value }) => (
-          <button
+          <Button
             key={value}
             type="button"
             aria-pressed={filters.timeRange === value}
@@ -70,7 +70,7 @@ export default function LeaderboardFilters({ onChange }: LeaderboardFiltersProps
             }`}
           >
             {label}
-          </button>
+          </Button>
         ))}
       </div>
 

@@ -1,4 +1,5 @@
 "use client";
+import Button from '@/components/Button';
 import { useState } from "react";
 import type { NextPage } from "next";
 import Head from "next/head";
@@ -46,22 +47,22 @@ const SignUp: NextPage = () => {
             <div className="mt-8 space-y-6">
               {/* OAuth Buttons */}
               <div className="grid grid-cols-2 gap-4">
-                <button
+                <Button
                   type="button"
                   aria-label="Continue with Google"
                   className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition"
                 >
                   <Image src="/google-logo.svg" alt="Google" width={20} height={20} className="mr-2" />
                   Google
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
                   aria-label="Continue with GitHub"
                   className="flex items-center justify-center w-full py-2 px-4 bg-purple-800 text-white rounded-md hover:bg-purple-700 transition"
                 >
                   <Github className="w-5 h-5 mr-2" />
                   GitHub
-                </button>
+                </Button>
               </div>
 
               {/* Divider */}
@@ -146,12 +147,12 @@ const SignUp: NextPage = () => {
                   <p className="mt-1 text-xs text-gray-400">Must be at least 8 character Long</p>
                 </div>
 
-                <button
+                <Button
                   type="submit"
                   className="w-full py-3 px-4 bg-purple-700 hover:bg-purple-600 text-white font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-gray-900 mt-6"
                 >
                   Sign Up
-                </button>
+                </Button>
               </form>
 
               <div className="text-center mt-4">

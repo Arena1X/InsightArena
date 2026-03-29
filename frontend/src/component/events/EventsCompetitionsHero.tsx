@@ -57,7 +57,7 @@ export default function EventsCompetitionsHero() {
 
             <div className="flex flex-wrap items-center justify-center gap-6">
               {tabs.map((tab) => (
-                <button
+                <Button
                   key={tab}
                   type="button"
                   onClick={() => setActiveTab(tab)}
@@ -73,7 +73,7 @@ export default function EventsCompetitionsHero() {
                       activeTab === tab ? "opacity-100" : "opacity-0",
                     )}
                   />
-                </button>
+                </Button>
               ))}
             </div>
 

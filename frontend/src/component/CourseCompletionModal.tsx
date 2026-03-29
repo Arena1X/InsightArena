@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import Button from '@/components/Button';
 import { X, Users, Award, Check } from 'lucide-react';
 
 interface CourseCompletionModalProps {
@@ -49,14 +50,14 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
               <h2 id="course-completion-title" className="text-white text-2xl font-bold">
                 Stark Academy
               </h2>
-              <button
+              <Button
                 type="button"
                 onClick={onClose}
                 className="text-gray-400 hover:text-white w-8 h-8 rounded-full border border-gray-600 hover:border-gray-400 flex items-center justify-center transition-colors"
                 aria-label="Close modal"
               >
                 <X className="w-4 h-4" />
-              </button>
+              </Button>
             </div>
         
 
@@ -82,7 +83,7 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
 
           {/* Action Buttons */}
           <div className="flex flex-col gap-3 sm:flex-row">
-            <button
+            <Button
               type="button"
               onClick={handleClaimBadge}
               disabled={isClaimLoading || badgeClaimed}
@@ -100,9 +101,9 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
                   {badgeClaimed ? 'Claimed' : 'Claim Badge'}
                 </>
               )}
-            </button>
+            </Button>
 
-            <button
+            <Button
               type="button"
               onClick={handleJoinCommunity}
               disabled={isJoinLoading}
@@ -116,7 +117,7 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
                   Join Community
                 </>
               )}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

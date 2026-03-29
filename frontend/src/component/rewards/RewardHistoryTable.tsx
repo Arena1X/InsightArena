@@ -1,5 +1,5 @@
 "use client";
-
+import Button from '@/components/Button';
 import RewardStatusBadge, { RewardStatus } from "./RewardStatusBadge";
 import RewardTypeBadge, { RewardType } from "./RewardTypeBadge";
 
@@ -114,7 +114,7 @@ export default function RewardHistoryTable({
       {/* Load More */}
       {(hasMore || entries.length > 0) && (
         <div className="px-6 py-5 border-t border-gray-700/30 flex justify-center">
-          <button
+          <Button
             onClick={onLoadMore}
             disabled={isLoading || !hasMore}
             className="px-6 py-2 rounded-lg border border-gray-600 text-gray-300 text-sm font-medium
@@ -122,7 +122,7 @@ export default function RewardHistoryTable({
               disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-gray-600 disabled:hover:text-gray-300"
           >
             {isLoading ? "Loading..." : "Load More"}
-          </button>
+          </Button>
         </div>
       )}
     </div>

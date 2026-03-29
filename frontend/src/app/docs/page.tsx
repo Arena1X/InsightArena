@@ -1,5 +1,5 @@
 "use client";
-
+import Button from '@/components/Button';
 import React, { useState } from "react";
 import Header from "@/component/Header";
 import Footer from "@/component/Footer";
@@ -180,9 +180,9 @@ export default function DocsPage() {
                       {section.external ? <ExternalLink className="ml-2 w-4 h-4" /> : <ChevronRight className="ml-1 w-4 h-4" />}
                     </Link>
                   ) : (
-                    <button className="flex items-center text-sm font-semibold text-[#4FD1C5] hover:underline cursor-default">
+                    <Button className="flex items-center text-sm font-semibold text-[#4FD1C5] hover:underline cursor-default">
                       Coming Soon <ChevronRight className="ml-1 w-4 h-4 opacity-50" />
-                    </button>
+                    </Button>
                   )}
                 </div>
               </motion.div>
@@ -205,12 +205,12 @@ export default function DocsPage() {
               New to prediction markets? Understand how prices reflect probability, how liquidity works, and why decentralized markets offer superior insight compared to traditional polling.
             </p>
             <div className="flex flex-wrap gap-4">
-              <button className="bg-[#4FD1C5] hover:bg-[#3dbbb0] text-[#141824] font-bold px-8 py-3 rounded-xl transition-all shadow-lg shadow-[#4FD1C5]/20 transform active:scale-95">
+              <Button className="bg-[#4FD1C5] hover:bg-[#3dbbb0] text-[#141824] font-bold px-8 py-3 rounded-xl transition-all shadow-lg shadow-[#4FD1C5]/20 transform active:scale-95">
                 Start Learning
-              </button>
-              <button className="bg-white/10 hover:bg-white/20 border border-white/10 px-8 py-3 rounded-xl transition-all font-semibold backdrop-blur-sm">
+              </Button>
+              <Button className="bg-white/10 hover:bg-white/20 border border-white/10 px-8 py-3 rounded-xl transition-all font-semibold backdrop-blur-sm">
                 View All Guides
-              </button>
+              </Button>
             </div>
           </div>
         </section>
@@ -231,13 +231,13 @@ export default function DocsPage() {
                 key={idx}
                 className="border border-white/10 rounded-2xl bg-white/5 overflow-hidden transition-colors hover:border-white/20"
               >
-                <button
+                <Button
                   onClick={() => setActiveFaq(activeFaq === idx ? null : idx)}
                   className="w-full flex items-center justify-between p-6 text-left"
                 >
                   <span className="font-semibold text-lg">{faq.question}</span>
                   <ChevronDown className={`w-5 h-5 text-gray-500 transition-transform ${activeFaq === idx ? 'rotate-180 text-[#4FD1C5]' : ''}`} />
-                </button>
+                </Button>
                 <AnimatePresence>
                   {activeFaq === idx && (
                     <motion.div

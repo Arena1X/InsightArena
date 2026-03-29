@@ -1,5 +1,5 @@
 "use client";
-
+import Button from '@/components/Button';
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -67,7 +67,7 @@ export default function Faq() {
                 className="bg-gray-950/60 border border-[#1e2d45] rounded-lg"
               >
                 {/* Question Row */}
-                <button
+                <Button
                   onClick={() => toggle(index)}
                   className="w-full flex justify-between items-center px-6 py-5 text-left cursor-pointer"
                   aria-expanded={isOpen}
@@ -83,7 +83,7 @@ export default function Faq() {
                     }}
                     size={20}
                   />
-                </button>
+                </Button>
 
                 {/* Answer */}
                 <AnimatePresence initial={false}>

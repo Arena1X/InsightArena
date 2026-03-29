@@ -1,5 +1,5 @@
 "use client";
-
+import Button from '@/components/Button';
 import { ChevronRight } from "lucide-react";
 
 interface Competition {
@@ -53,10 +53,10 @@ export default function CompetitionsJoined() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-white font-semibold text-xl">Competitions Joined</h2>
-        <button className="flex items-center gap-1 text-[#4FD1C5] text-sm font-medium hover:text-[#72ddd3] transition">
+        <Button className="flex items-center gap-1 text-[#4FD1C5] text-sm font-medium hover:text-[#72ddd3] transition">
           View All Competitions
           <ChevronRight className="h-4 w-4" />
-        </button>
+        </Button>
       </div>
 
       {/* Competitions Grid */}

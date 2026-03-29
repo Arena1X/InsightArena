@@ -1,5 +1,5 @@
 import StatCard, { StatCardProps } from "../rewards/StatCard";
-
+import Button from '@/components/Button';
 function UsersIcon() {
   return (
     <svg
@@ -128,12 +128,12 @@ export default function LeaderboardOverview({
             ranks, and earn rewards for top performance.
           </p>
         </div>
-        <button
+        <Button
           type="button"
           className="flex-shrink-0 self-start px-5 py-2 rounded-lg border border-white/10 bg-white/5 text-sm font-medium text-[#d6daea] transition hover:bg-white/10"
         >
           View Full Rankings
-        </button>
+        </Button>
       </div>
 
       {/* Stat cards grid */}
