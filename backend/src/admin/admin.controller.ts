@@ -19,6 +19,7 @@ import { BanUserDto } from './dto/ban-user.dto';
 import { ActivityLogQueryDto } from './dto/activity-log-query.dto';
 import { StatsResponseDto } from './dto/stats-response.dto';
 import { ResolveMarketDto } from './dto/resolve-market.dto';
+import { UpdateSystemConfigDto } from './dto/system-config.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -73,6 +74,19 @@ export class AdminController {
   ) {
     return this.adminService.adminResolveMarket(
       id,
+      dto,
+      (req as { user: { id: string } }).user.id,
+    );
+  }
+
+  @Get('config')
+  async getConfig() {
+    return this.adminService.getConfig();
+  }
+
+  @Patch('config')
+  async updateConfig(@Body() dto: UpdateSystemConfigDto, @Request() req: any) {
+    return this.adminService.updateConfig(
       dto,
       (req as { user: { id: string } }).user.id,
     );
