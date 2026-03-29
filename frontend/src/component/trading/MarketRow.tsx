@@ -1,3 +1,4 @@
+import Button from '@/components/Button';
 import React from "react";
 import Image from "next/image";
 
@@ -79,7 +80,7 @@ const MarketRow: React.FC<MarketRowProps> = ({
           aria-label={isFavorite ? `Remove ${name} from favorites` : `Add ${name} to favorites`}
         >
           <StarIcon filled={isFavorite} />
-        </button>
+        </Button>
         <Button
           type="button"
           className="px-4 py-1.5 bg-[#7C3AED] text-white font-bold rounded-lg hover:bg-[#6D28D9] focus:outline-none text-sm"
@@ -87,7 +88,7 @@ const MarketRow: React.FC<MarketRowProps> = ({
           aria-label={`Trade ${name}`}
         >
           Trade
-        </button>
+        </Button>
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
 import { Twitter, Instagram, Github } from "lucide-react";
+import Button from '@/components/Button';
 const Footer = () => {
   return (
     <div className="pt-8">
@@ -21,7 +22,7 @@ const Footer = () => {
                 <a href="https://t.me/+wG8gxRxwrzQxNTk0" target="_blank">
                   <Button className="border-2 bg-gradient-to-r from-purple-500 to-blue-400 w-[90%] py-2 rounded-2xl cursor-pointer">
                     Join Telegram Group
-                  </button>
+                  </Button>
                 </a>
               </div>
             </div>

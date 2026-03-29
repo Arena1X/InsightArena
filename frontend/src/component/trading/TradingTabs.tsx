@@ -1,5 +1,5 @@
 import React from "react";
-
+import Button from '@/components/Button';
 interface TradingTabsProps {
   activeTab: string;
   onTabChange: (tab: string) => void;
@@ -49,7 +49,7 @@ const TradingTabs: React.FC<TradingTabsProps> = ({ activeTab, onTabChange }) => 
           onClick={() => onTabChange(tab)}
         >
           {tab}
-        </button>
+        </Button>
       ))}
     </div>
   );

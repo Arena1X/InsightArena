@@ -1,3 +1,4 @@
+import Button from '@/components/Button';
 import { useState } from "react";
 import { Progress } from "@/component/ui/progress";
 import { BookOpen } from "lucide-react";
@@ -34,7 +35,7 @@ export default function YourCoursesCard({ courses }: { courses: Course[] }) {
             onClick={() => setActiveTab(tab.value)}
           >
             {tab.label}
-          </button>
+          </Button>
         ))}
       </div>
       {/* Card principal */}

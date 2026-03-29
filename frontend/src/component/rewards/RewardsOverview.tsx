@@ -1,5 +1,5 @@
 import StatCard, { StatCardProps } from "./StatCard";
-
+import Button from '@/components/Button';
 // Icons
 function DollarIcon() {
   return (
@@ -95,7 +95,7 @@ export default function RewardsOverview({
             hover:bg-[#38b2ac] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {claimLoading ? "Claiming..." : "Claim Rewards"}
-        </button>
+        </Button>
       </div>
 
       {/* Stat cards grid */}

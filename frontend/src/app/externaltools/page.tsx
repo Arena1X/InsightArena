@@ -1,4 +1,5 @@
 "use client";
+import Button from '@/components/Button';
 import Header from "@/component/resources/Header";
 import Footer from "@/component/resources/Footer";
 import React, { useState } from "react";
@@ -112,7 +113,7 @@ const Resources = () => {
                             View {item.name}
                             <ExternalLink className="size-5" />
                           </a>
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   ))}
@@ -128,7 +129,7 @@ const Resources = () => {
                   <div className="flex items-center justify-center pb-4">
                     <Button className="underline border w-[30%] rounded-lg py-1 text-[14px]">
                       Learn More In Our Courses
-                    </button>
+                    </Button>
                   </div>
                 </div>
               </div>

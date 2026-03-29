@@ -1,5 +1,5 @@
 import React from "react";
-
+import Button from '@/components/Button';
 interface MarketSearchBarProps {
   searchValue: string;
   onSearchChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -50,7 +50,7 @@ const MarketSearchBar: React.FC<MarketSearchBarProps> = ({ searchValue, onSearch
         >
           <FilterIcon />
           All tokens
-        </button>
+        </Button>
         <Button
           type="button"
           aria-label="Start trading"
@@ -58,7 +58,7 @@ const MarketSearchBar: React.FC<MarketSearchBarProps> = ({ searchValue, onSearch
           style={{ background: '#9747FF9E', border: '1px solid #9747FF9E', minWidth: 0, width: 'auto', padding: '10px', gap: '10px' }}
         >
           Start Trading
-        </button>
+        </Button>
       </div>
     </div>
   );

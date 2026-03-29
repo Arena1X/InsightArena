@@ -1,5 +1,5 @@
 "use client";
-
+import Button from '@/components/Button';
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowUpRight,
@@ -355,7 +355,7 @@ export default function MarketsPage() {
                           <span>{market.traders.toLocaleString()} traders</span>
                         </div>
                       </div>
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </div>
@@ -408,7 +408,7 @@ export default function MarketsPage() {
                     >
                       View market details
                       <ArrowUpRight className="h-4 w-4" />
-                    </button>
+                    </Button>
                   </div>
                 ) : null}
               </aside>

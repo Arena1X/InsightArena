@@ -1,4 +1,5 @@
 "use client";
+import Button from '@/components/Button';
 import { useState } from "react";
 import type { NextPage } from "next";
 import Head from "next/head";
@@ -53,7 +54,7 @@ const SignUp: NextPage = () => {
                 >
                   <Image src="/google-logo.svg" alt="Google" width={20} height={20} className="mr-2" />
                   Google
-                </button>
+                </Button>
                 <Button
                   type="button"
                   aria-label="Continue with GitHub"
@@ -61,7 +62,7 @@ const SignUp: NextPage = () => {
                 >
                   <Github className="w-5 h-5 mr-2" />
                   GitHub
-                </button>
+                </Button>
               </div>
 
               {/* Divider */}
@@ -151,7 +152,7 @@ const SignUp: NextPage = () => {
                   className="w-full py-3 px-4 bg-purple-700 hover:bg-purple-600 text-white font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 focus:ring-offset-gray-900 mt-6"
                 >
                   Sign Up
-                </button>
+                </Button>
               </form>
 
               <div className="text-center mt-4">

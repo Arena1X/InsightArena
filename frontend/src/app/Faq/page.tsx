@@ -1,5 +1,5 @@
 "use client";
-
+import Button from '@/components/Button';
 import Link from "next/link";
 import { useState } from "react";
 import { ChevronLeft, Plus, Minus } from "lucide-react";
@@ -101,7 +101,7 @@ export default function CryptoFAQ() {
                       <Plus size={18} />
                     )}
                   </span>
-                </button>
+                </Button>
 
                 {item.isOpen && (
                   <div className="border-t border-white/10 px-5 py-5 text-[15px] leading-7 text-[#cbd5e1]">

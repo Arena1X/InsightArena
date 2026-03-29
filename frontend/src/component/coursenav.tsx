@@ -1,5 +1,5 @@
 "use client";
-
+import Button from '@/components/Button';
 import { useState } from "react";
 import { Dialog } from "@headlessui/react";
 import { Moon, Menu, X, Bell } from "lucide-react";
@@ -48,7 +48,7 @@ const Navbar = () => {
             />
             <span className="text-lg font-medium">Courses</span>
             <ChevronDown className="w-4 h-4" />
-          </button>
+          </Button>
           {/* Modal positioned directly under the button */}
           {isCoursesOpen && (
             <CoursesModal
@@ -72,7 +72,7 @@ const Navbar = () => {
             className="w-6 h-6"
           />
           <span className="text-lg font-medium">Trading</span>
-        </button>
+        </Button>
 
         {/* Airdrops */}
         <Button
@@ -88,7 +88,7 @@ const Navbar = () => {
             className="w-6 h-6"
           />
           <span className="text-lg font-medium">Airdrops</span>
-        </button>
+        </Button>
 
         {/* Resources Section */}
         <div className="relative">
@@ -109,7 +109,7 @@ const Navbar = () => {
             />
             <span className="text-lg font-medium">Resources</span>
             <ChevronDown className="w-4 h-4" />
-          </button>
+          </Button>
           {/* Modal positioned directly under the button */}
           {isResourcesOpen && (
             <ResourcesModal
@@ -120,10 +120,10 @@ const Navbar = () => {
         </div>
         <Button type="button" aria-label="View notifications">
           <Bell className="cursor-pointer text-gray-400 hover:text-white" />
-        </button>
+        </Button>
         <Button type="button" aria-label="Toggle theme">
           <Moon className="cursor-pointer" />
-        </button>
+        </Button>
         <Button
           type="button"
           aria-label="Open profile"
@@ -131,7 +131,7 @@ const Navbar = () => {
           onClick={() => router.push("/profile")}
         >
           PH
-        </button>
+        </Button>
       </div>
 
       {/* Mobile Hamburger */}
@@ -143,7 +143,7 @@ const Navbar = () => {
           className="cursor-pointer"
         >
           <Menu />
-        </button>
+        </Button>
       </div>
 
       {/* Mobile Menu Dialog */}
@@ -158,7 +158,7 @@ const Navbar = () => {
             <h2 className="text-xl font-bold">Menu</h2>
             <Button type="button" aria-label="Close mobile menu" onClick={() => setMobileMenuOpen(false)}>
               <X />
-            </button>
+            </Button>
           </div>
           
           {/* Mobile menu items with consistent styling */}
@@ -179,7 +179,7 @@ const Navbar = () => {
               className="w-6 h-6"
             />
             <span className="text-lg font-medium">Courses</span>
-          </button>
+          </Button>
           
           <Button
             type="button"
@@ -194,7 +194,7 @@ const Navbar = () => {
               className="w-6 h-6"
             />
             <span className="text-lg font-medium">Trading</span>
-          </button>
+          </Button>
           
           <Button
             type="button"
@@ -209,7 +209,7 @@ const Navbar = () => {
               className="w-6 h-6"
             />
             <span className="text-lg font-medium">Airdrops</span>
-          </button>
+          </Button>
           
           <Button 
             type="button"
@@ -228,15 +228,15 @@ const Navbar = () => {
               className="w-6 h-6"
             />
             <span className="text-lg font-medium">Resources</span>
-          </button>
+          </Button>
           
           <div className="flex items-center gap-4">
             <Button type="button" aria-label="View notifications">
               <Bell className="cursor-pointer text-gray-400 hover:text-white" />
-            </button>
+            </Button>
             <Button type="button" aria-label="Toggle theme">
               <Moon />
-            </button>
+            </Button>
             <Button
               type="button"
               aria-label="Open profile"
@@ -244,7 +244,7 @@ const Navbar = () => {
               onClick={() => router.push("/profile")}
             >
               PH
-            </button>
+            </Button>
           </div>
         </div>
       </Dialog>

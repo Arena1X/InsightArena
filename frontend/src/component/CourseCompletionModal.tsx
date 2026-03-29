@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import Button from '@/components/Button';
 import { X, Users, Award, Check } from 'lucide-react';
 
 interface CourseCompletionModalProps {
@@ -56,7 +57,7 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
                 aria-label="Close modal"
               >
                 <X className="w-4 h-4" />
-              </button>
+              </Button>
             </div>
         
 
@@ -100,7 +101,7 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
                   {badgeClaimed ? 'Claimed' : 'Claim Badge'}
                 </>
               )}
-            </button>
+            </Button>
 
             <Button
               type="button"
@@ -116,7 +117,7 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
                   Join Community
                 </>
               )}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
