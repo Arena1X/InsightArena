@@ -23,6 +23,10 @@ import {
 } from './dto/list-user-predictions.dto';
 
 import { ListUserCompetitionsDto } from './dto/list-user-competitions.dto';
+import {
+  ListUserMarketsDto,
+  PaginatedUserMarketsResponse,
+} from './dto/list-user-markets.dto';
 
 @Controller('users')
 export class UsersController {
@@ -92,6 +96,21 @@ export class UsersController {
     return this.usersService.findPublicPredictionsByAddress(address, query);
   }
 
+  @Get(':address/markets')
+  @Public()
+  @UsePipes(
+    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }),
+  )
+  @ApiOperation({ summary: 'List markets created by a user (public)' })
+  @ApiResponse({ status: 200, description: 'Paginated markets list' })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  async getUserMarkets(
+    @Param('address') address: string,
+    @Query() query: ListUserMarketsDto,
+  ): Promise<PaginatedUserMarketsResponse> {
+    return this.usersService.findMarketsByAddress(address, query);
+  }
+
   @Get(':address/competitions')
   @Public()
   @ApiOperation({ summary: 'Get competitions a user has participated in' })
@@ -101,5 +120,12 @@ export class UsersController {
     @Query() query: ListUserCompetitionsDto,
   ) {
     return this.usersService.findUserCompetitions(address, query);
+  }
+
+  @Get('me/export')
+  @ApiOperation({ summary: 'Export all user data (GDPR)' })
+  @ApiResponse({ status: 200, description: 'User data exported as JSON' })
+  async exportData(@CurrentUser() user: User) {
+    return await this.usersService.exportUserData(user.id);
   }
 }

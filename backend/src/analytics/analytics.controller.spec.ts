@@ -6,6 +6,7 @@ import { Market } from '../markets/entities/market.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { User } from '../users/entities/user.entity';
 import { ActivityLog } from './entities/activity-log.entity';
+import { MarketHistory } from './entities/market-history.entity';
 import { AnalyticsController } from './analytics.controller';
 import { AnalyticsService } from './analytics.service';
 
@@ -124,6 +125,14 @@ describe('AnalyticsController', () => {
             create: jest.fn(),
             save: jest.fn(),
             findAndCount: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(MarketHistory),
+          useValue: {
+            find: jest.fn(),
+            create: jest.fn(),
+            save: jest.fn(),
           },
         },
       ],

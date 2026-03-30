@@ -11,6 +11,7 @@ import { Prediction } from '../predictions/entities/prediction.entity';
 import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.entity';
 import { Market } from '../markets/entities/market.entity';
 import { ActivityLog } from './entities/activity-log.entity';
+import { MarketHistory } from './entities/market-history.entity';
 
 describe('predictorTierFromReputation', () => {
   it('maps thresholds to tier labels', () => {
@@ -97,6 +98,14 @@ describe('AnalyticsService', () => {
             create: jest.fn(),
             save: jest.fn(),
             findAndCount: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(MarketHistory),
+          useValue: {
+            find: jest.fn(),
+            create: jest.fn(),
+            save: jest.fn(),
           },
         },
       ],

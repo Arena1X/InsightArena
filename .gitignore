@@ -15,3 +15,5 @@ build/
 /node_modules/
 /dist/
 /build/
+
+issue.md

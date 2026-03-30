@@ -9,6 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Prediction } from './entities/prediction.entity';
 import { SubmitPredictionDto } from './dto/submit-prediction.dto';
+import { UpdatePredictionNoteDto } from './dto/update-prediction-note.dto';
 import {
   ListMyPredictionsDto,
   PredictionStatus,
@@ -165,6 +166,7 @@ export class PredictionsService {
       payout_claimed: prediction.payout_claimed,
       payout_amount_stroops: prediction.payout_amount_stroops,
       tx_hash: prediction.tx_hash ?? null,
+      note: prediction.note ?? null,
       submitted_at: prediction.submitted_at,
       status,
       market: {
@@ -188,6 +190,28 @@ export class PredictionsService {
       return PredictionStatus.Won;
     }
     return PredictionStatus.Lost;
+  }
+
+  /**
+   * Update the personal note on a prediction.
+   * Only the prediction owner can update their note.
+   */
+  async updateNote(
+    predictionId: string,
+    dto: UpdatePredictionNoteDto,
+    user: User,
+  ): Promise<Prediction> {
+    const prediction = await this.predictionsRepository.findOne({
+      where: { id: predictionId, user: { id: user.id } },
+      relations: ['market'],
+    });
+
+    if (!prediction) {
+      throw new NotFoundException(`Prediction "${predictionId}" not found`);
+    }
+
+    prediction.note = dto.note;
+    return this.predictionsRepository.save(prediction);
   }
 
   /**

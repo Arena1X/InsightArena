@@ -6,11 +6,13 @@ import { Market } from '../markets/entities/market.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { User } from '../users/entities/user.entity';
 import { ActivityLog } from './entities/activity-log.entity';
+import { MarketHistory } from './entities/market-history.entity';
 import { DashboardKpisDto } from './dto/dashboard-kpis.dto';
 import {
   MarketAnalyticsDto,
   OutcomeDistributionDto,
 } from './dto/market-analytics.dto';
+import { MarketHistoryResponseDto } from './dto/market-history.dto';
 
 /** Tier thresholds: Bronze < 200, Silver < 500, Gold < 1000, Platinum ≥ 1000 */
 export function predictorTierFromReputation(reputationScore: number): string {
@@ -40,6 +42,8 @@ export class AnalyticsService {
     private readonly marketsRepository: Repository<Market>,
     @InjectRepository(ActivityLog)
     private readonly activityLogsRepository: Repository<ActivityLog>,
+    @InjectRepository(MarketHistory)
+    private readonly marketHistoryRepository: Repository<MarketHistory>,
   ) {}
 
   async logActivity(
@@ -176,5 +180,79 @@ export class AnalyticsService {
       outcome_distribution: outcomeDistribution,
       time_remaining_seconds: timeRemainingSeconds,
     };
+  }
+
+  /**
+   * Get historical data for a market: prediction volume, pool size, participant growth over time
+   */
+  async getMarketHistory(marketId: string): Promise<MarketHistoryResponseDto> {
+    const market = await this.marketsRepository.findOne({
+      where: [{ id: marketId }, { on_chain_market_id: marketId }],
+    });
+
+    if (!market) {
+      throw new NotFoundException(`Market "${marketId}" not found`);
+    }
+
+    const history = await this.marketHistoryRepository.find({
+      where: { market: { id: market.id } },
+      order: { recorded_at: 'ASC' },
+    });
+
+    const historyPoints = history.map((h) => ({
+      timestamp: h.recorded_at,
+      prediction_volume: h.prediction_volume,
+      pool_size_stroops: h.pool_size_stroops,
+      participant_count: h.participant_count,
+      outcome_probabilities: h.outcome_probabilities
+        ? h.outcome_probabilities.map((p) => parseFloat(p))
+        : null,
+    }));
+
+    this.logger.log(
+      `Market history retrieved for "${market.title}" (${market.id}) - ${historyPoints.length} data points`,
+    );
+
+    return {
+      market_id: market.id,
+      title: market.title,
+      history: historyPoints,
+      generated_at: new Date(),
+    };
+  }
+
+  /**
+   * Record market snapshot for historical tracking
+   */
+  async recordMarketSnapshot(market: Market): Promise<void> {
+    const predictions = await this.predictionsRepository.find({
+      where: { market: { id: market.id } },
+    });
+
+    const outcomeCounts = new Map<string, number>();
+    market.outcome_options.forEach((outcome) => {
+      outcomeCounts.set(outcome, 0);
+    });
+
+    predictions.forEach((prediction) => {
+      const currentCount = outcomeCounts.get(prediction.chosen_outcome) || 0;
+      outcomeCounts.set(prediction.chosen_outcome, currentCount + 1);
+    });
+
+    const total = predictions.length;
+    const probabilities = Array.from(outcomeCounts.values()).map((count) =>
+      total > 0 ? ((count / total) * 100).toFixed(2) : '0.00',
+    );
+
+    const snapshot = this.marketHistoryRepository.create({
+      market,
+      recorded_at: new Date(),
+      prediction_volume: total,
+      pool_size_stroops: market.total_pool_stroops,
+      participant_count: market.participant_count,
+      outcome_probabilities: probabilities,
+    });
+
+    await this.marketHistoryRepository.save(snapshot);
   }
 }

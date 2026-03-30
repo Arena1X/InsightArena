@@ -3,7 +3,10 @@ import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { GenerateChallengeDto } from './dto/generate-challenge.dto';
 import { VerifyChallengeDto } from './dto/verify-challenge.dto';
+import { VerifyWalletDto } from './dto/verify-wallet.dto';
+import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 
+@ApiTags('Auth')
 @Throttle({ default: { limit: 10, ttl: 60000 } })
 @Controller('auth')
 export class AuthController {
@@ -25,5 +28,18 @@ export class AuthController {
       verifyChallengeDto.stellar_address,
       verifyChallengeDto.signed_challenge,
     );
+  }
+
+  @Post('verify-wallet')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verify wallet signature without session creation' })
+  @ApiResponse({ status: 200, description: 'Verification result' })
+  verifyWallet(@Body() dto: VerifyWalletDto) {
+    const verified = this.authService.verifyStellarSignature(
+      dto.stellar_address,
+      dto.challenge,
+      dto.signature,
+    );
+    return { verified };
   }
 }

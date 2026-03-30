@@ -1,23 +1,38 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, SelectQueryBuilder } from 'typeorm';
 import {
   Competition,
   CompetitionVisibility,
 } from './entities/competition.entity';
+import { CompetitionParticipant } from './entities/competition-participant.entity';
 import { CreateCompetitionDto } from './dto/create-competition.dto';
 import {
   ListCompetitionsDto,
   CompetitionStatus,
   PaginatedCompetitionsResponse,
 } from './dto/list-competitions.dto';
+import {
+  ListParticipantsQueryDto,
+  ParticipantItem,
+  PaginatedParticipantsResponse,
+} from './dto/list-participants.dto';
 import { User } from '../users/entities/user.entity';
+import { UserRankResponseDto } from './dto/user-rank-response.dto';
 
 @Injectable()
 export class CompetitionsService {
+  private rankCache = new Map<
+    string,
+    { data: UserRankResponseDto; timestamp: number }
+  >();
+  private readonly RANK_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
   constructor(
     @InjectRepository(Competition)
     private readonly competitionsRepository: Repository<Competition>,
+    @InjectRepository(CompetitionParticipant)
+    private readonly participantsRepository: Repository<CompetitionParticipant>,
   ) {}
 
   async create(dto: CreateCompetitionDto, user: User): Promise<Competition> {
@@ -139,10 +154,116 @@ export class CompetitionsService {
     return competition.end_time.getTime() - now.getTime(); // Time until end
   }
 
+  async getParticipants(
+    competitionId: string,
+    dto: ListParticipantsQueryDto,
+  ): Promise<PaginatedParticipantsResponse> {
+    const competition = await this.competitionsRepository.findOne({
+      where: { id: competitionId },
+    });
+
+    if (!competition) {
+      throw new NotFoundException(
+        `Competition with ID "${competitionId}" not found`,
+      );
+    }
+
+    const page = dto.page ?? 1;
+    const limit = Math.min(dto.limit ?? 20, 50);
+    const skip = (page - 1) * limit;
+
+    const [participants, total] = await this.participantsRepository
+      .createQueryBuilder('participant')
+      .leftJoinAndSelect('participant.user', 'user')
+      .where('participant.competition_id = :competitionId', { competitionId })
+      .orderBy('participant.score', 'DESC')
+      .addOrderBy('participant.joined_at', 'ASC')
+      .skip(skip)
+      .take(limit)
+      .getManyAndCount();
+
+    const data: ParticipantItem[] = participants.map((p, index) => ({
+      id: p.id,
+      user_id: p.user_id,
+      username: p.user?.username ?? null,
+      stellar_address: p.user?.stellar_address ?? '',
+      score: p.score,
+      rank: p.rank ?? skip + index + 1,
+      joined_at: p.joined_at,
+    }));
+
+    return { data, total, page, limit };
+  }
+
   async findById(id: string): Promise<Competition | null> {
     return this.competitionsRepository.findOne({
       where: { id },
       relations: ['creator'],
     });
+  }
+
+  async getMyRank(
+    competitionId: string,
+    userId: string,
+  ): Promise<UserRankResponseDto> {
+    const cacheKey = `${competitionId}:${userId}`;
+    const cached = this.rankCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.RANK_CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    const competition = await this.competitionsRepository.findOne({
+      where: { id: competitionId },
+    });
+
+    if (!competition) {
+      throw new NotFoundException(
+        `Competition with ID "${competitionId}" not found`,
+      );
+    }
+
+    const participant = await this.participantsRepository.findOne({
+      where: { competition_id: competitionId, user_id: userId },
+    });
+
+    if (!participant) {
+      throw new NotFoundException(
+        `User is not a participant in competition "${competitionId}"`,
+      );
+    }
+
+    // Calculate rank: count participants with higher score,
+    // or same score but joined earlier.
+    const rank =
+      (await this.participantsRepository
+        .createQueryBuilder('p')
+        .where('p.competition_id = :competitionId', { competitionId })
+        .andWhere(
+          '(p.score > :score OR (p.score = :score AND p.joined_at < :joinedAt))',
+          {
+            score: participant.score,
+            joinedAt: participant.joined_at,
+          },
+        )
+        .getCount()) + 1;
+
+    const total_participants = await this.participantsRepository.count({
+      where: { competition_id: competitionId },
+    });
+
+    const percentile =
+      total_participants > 0
+        ? Math.round((1 - (rank - 1) / total_participants) * 10000) / 100
+        : 100;
+
+    const result: UserRankResponseDto = {
+      rank,
+      score: participant.score,
+      total_participants,
+      percentile,
+    };
+
+    this.rankCache.set(cacheKey, { data: result, timestamp: Date.now() });
+    return result;
   }
 }

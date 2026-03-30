@@ -2,11 +2,14 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
+  Param,
   Body,
   Query,
   HttpCode,
   HttpStatus,
   UseGuards,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { BanGuard } from '../common/guards/ban.guard';
 import {
@@ -17,6 +20,7 @@ import {
 } from '@nestjs/swagger';
 import { PredictionsService } from './predictions.service';
 import { SubmitPredictionDto } from './dto/submit-prediction.dto';
+import { UpdatePredictionNoteDto } from './dto/update-prediction-note.dto';
 import {
   ListMyPredictionsDto,
   PaginatedMyPredictionsResponse,
@@ -64,5 +68,25 @@ export class PredictionsController {
     @CurrentUser() user: User,
   ): Promise<PaginatedMyPredictionsResponse> {
     return this.predictionsService.findMine(user, query);
+  }
+
+  @Patch(':id/note')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Update personal note on a prediction' })
+  @ApiResponse({
+    status: 200,
+    description: 'Prediction note updated',
+    type: Prediction,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Prediction not found or not owned by user',
+  })
+  async updateNote(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdatePredictionNoteDto,
+    @CurrentUser() user: User,
+  ): Promise<Prediction> {
+    return this.predictionsService.updateNote(id, dto, user);
   }
 }

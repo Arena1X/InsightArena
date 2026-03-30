@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { NotFoundException } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { NotificationsService } from './notifications.service';
 import { Notification, NotificationType } from './entities/notification.entity';
@@ -21,6 +22,8 @@ describe('NotificationsService', () => {
     save: jest.fn(),
     findAndCount: jest.fn(),
     update: jest.fn(),
+    softDelete: jest.fn(),
+    findOne: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -143,6 +146,30 @@ describe('NotificationsService', () => {
         { is_read: true },
       );
       expect(result).toEqual({ updated: 3 });
+    });
+  });
+
+  describe('remove', () => {
+    it('should soft delete notification when found and owned by user', async () => {
+      mockRepository.findOne.mockResolvedValue(mockNotification);
+      mockRepository.softDelete.mockResolvedValue({ affected: 1 });
+
+      await service.remove('notif-uuid-1', 'user-uuid-1');
+
+      expect(mockRepository.findOne).toHaveBeenCalledWith({
+        where: { id: 'notif-uuid-1', user_id: 'user-uuid-1' },
+      });
+      expect(mockRepository.softDelete).toHaveBeenCalledWith('notif-uuid-1');
+    });
+
+    it('should throw NotFoundException when notification not found or not owned', async () => {
+      mockRepository.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.remove('notif-uuid-1', 'user-uuid-1'),
+      ).rejects.toThrow(NotFoundException);
+
+      expect(mockRepository.softDelete).not.toHaveBeenCalled();
     });
   });
 });

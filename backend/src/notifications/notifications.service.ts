@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Notification, NotificationType } from './entities/notification.entity';
@@ -67,5 +67,17 @@ export class NotificationsService {
     );
 
     return { updated: result.affected ?? 0 };
+  }
+
+  async remove(id: string, userId: string): Promise<void> {
+    const notification = await this.notificationsRepository.findOne({
+      where: { id, user_id: userId },
+    });
+
+    if (!notification) {
+      throw new NotFoundException('Notification not found');
+    }
+
+    await this.notificationsRepository.softDelete(id);
   }
 }

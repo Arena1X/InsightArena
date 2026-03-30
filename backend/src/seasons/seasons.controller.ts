@@ -50,6 +50,22 @@ export class SeasonsController {
   }
 
   @Public()
+  @Get('current')
+  @ApiOperation({
+    summary: 'Get the current active season (public)',
+    description:
+      'Alias for /active. Returns the season that is currently active based on `is_active` flag and time window. Responds with 404 when none qualifies.',
+  })
+  @ApiResponse({ status: 200, description: 'Current season', type: Season })
+  @ApiResponse({
+    status: 404,
+    description: 'No season is active for the current time',
+  })
+  async getCurrent(): Promise<Season> {
+    return this.seasonsService.findActive();
+  }
+
+  @Public()
   @Get()
   @UsePipes(
     new ValidationPipe({

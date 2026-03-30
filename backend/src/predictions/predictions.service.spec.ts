@@ -336,4 +336,44 @@ describe('PredictionsService', () => {
       );
     });
   });
+
+  describe('updateNote', () => {
+    it('should update the note on a prediction owned by the user', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+      const prediction = {
+        id: 'pred-1',
+        user,
+        market,
+        chosen_outcome: 'Yes',
+        note: null,
+      } as unknown as Prediction;
+
+      mockPredictionsRepo.findOne.mockResolvedValue(prediction);
+      mockPredictionsRepo.save.mockResolvedValue({
+        ...prediction,
+        note: 'My analysis note',
+      } as Prediction);
+
+      const result = await service.updateNote(
+        'pred-1',
+        { note: 'My analysis note' },
+        user,
+      );
+
+      expect(result.note).toBe('My analysis note');
+      expect(mockPredictionsRepo.findOne).toHaveBeenCalledWith({
+        where: { id: 'pred-1', user: { id: user.id } },
+        relations: ['market'],
+      });
+    });
+
+    it('should throw NotFoundException if prediction is not found or not owned', async () => {
+      mockPredictionsRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.updateNote('non-existent', { note: 'Some note' }, makeUser()),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
 });

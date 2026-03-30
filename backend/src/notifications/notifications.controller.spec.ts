@@ -34,6 +34,7 @@ describe('NotificationsController', () => {
             findAllForUser: jest.fn(),
             markAsRead: jest.fn(),
             markAllAsRead: jest.fn().mockResolvedValue({ updated: 0 }),
+            remove: jest.fn(),
           },
         },
       ],
@@ -109,6 +110,16 @@ describe('NotificationsController', () => {
 
       expect(spy).toHaveBeenCalledWith('user-uuid-1');
       expect(result).toEqual({ updated: 3 });
+    });
+  });
+
+  describe('remove', () => {
+    it('should call service remove with id and userId', async () => {
+      const spy = jest.spyOn(service, 'remove').mockResolvedValue();
+
+      await controller.remove('notif-uuid-1', mockUser as User);
+
+      expect(spy).toHaveBeenCalledWith('notif-uuid-1', 'user-uuid-1');
     });
   });
 });

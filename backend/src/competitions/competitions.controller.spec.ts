@@ -6,7 +6,9 @@ import {
   Competition,
   CompetitionVisibility,
 } from './entities/competition.entity';
+import { CompetitionsService } from './competitions.service';
 import { CreateCompetitionDto } from './dto/create-competition.dto';
+import { UserRankResponseDto } from './dto/user-rank-response.dto';
 import { User } from '../users/entities/user.entity';
 
 describe('CompetitionsController', () => {
@@ -40,6 +42,7 @@ describe('CompetitionsController', () => {
             findAll: jest.fn(),
             findById: jest.fn(),
             list: jest.fn(),
+            getMyRank: jest.fn(),
           },
         },
       ],
@@ -112,6 +115,39 @@ describe('CompetitionsController', () => {
       await expect(controller.getCompetition('nonexistent')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('getMyRank', () => {
+    it('should return user rank and stats', async () => {
+      const mockRankResponse: UserRankResponseDto = {
+        rank: 1,
+        score: 1000,
+        total_participants: 100,
+        percentile: 100,
+      };
+
+      const spy = jest
+        .spyOn(service, 'getMyRank')
+        .mockResolvedValue(mockRankResponse);
+
+      const result = await controller.getMyRank(
+        'comp-uuid-1',
+        mockUser as User,
+      );
+
+      expect(spy).toHaveBeenCalledWith('comp-uuid-1', mockUser.id);
+      expect(result).toEqual(mockRankResponse);
+    });
+
+    it('should throw NotFoundException if service throws it', async () => {
+      jest
+        .spyOn(service, 'getMyRank')
+        .mockRejectedValue(new NotFoundException('Not found'));
+
+      await expect(
+        controller.getMyRank('nonexistent', mockUser as User),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });
