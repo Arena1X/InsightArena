@@ -266,7 +266,7 @@ impl LiquidityPool {
         let total_liquidity = initial_reserves
             .values()
             .iter()
-            .fold(0i128, |acc, val| acc + val);
+            .sum::<i128>();
 
         Self {
             market_id,

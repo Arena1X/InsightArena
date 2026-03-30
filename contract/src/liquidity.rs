@@ -5,7 +5,6 @@ use crate::errors::InsightArenaError;
 use crate::escrow;
 use crate::market;
 use crate::storage_types::{DataKey, LiquidityPool, LPPosition, SwapRecord};
-use crate::ttl;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -124,7 +123,7 @@ fn add_provider_to_list(env: &Env, market_id: u64, provider: &Address) {
         .get(&DataKey::LPProviderList(market_id))
         .unwrap_or_else(|| Vec::new(env));
 
-    if !providers.iter().any(|p| p == provider) {
+    if !providers.iter().any(|p| p == *provider) {
         providers.push_back(provider.clone());
         env.storage()
             .persistent()
@@ -132,7 +131,7 @@ fn add_provider_to_list(env: &Env, market_id: u64, provider: &Address) {
     }
 }
 
-fn calculate_liquidity_value(
+pub fn calculate_liquidity_value(
     lp_tokens: i128,
     total_lp_supply: i128,
     total_liquidity: i128,
@@ -152,7 +151,6 @@ fn calculate_liquidity_value(
 
 // ── Liquidity Management ──────────────────────────────────────────────────────
 
-/// Calculate LP tokens to mint for a deposit
 pub fn calculate_lp_tokens(
     deposit_amount: i128,
     total_liquidity: i128,
@@ -397,13 +395,12 @@ fn distribute_fees_to_lps(
         return Ok(());
     }
 
-    let pool = get_pool(env, market_id)?;
     let fee_per_lp = fee_amount
         .checked_div(providers.len() as i128)
         .ok_or(InsightArenaError::Overflow)?;
 
     for provider in providers.iter() {
-        if let Ok(mut position) = get_lp_position(env, provider, market_id) {
+        if let Ok(mut position) = get_lp_position(env, &provider, market_id) {
             position.fees_earned = position
                 .fees_earned
                 .checked_add(fee_per_lp)

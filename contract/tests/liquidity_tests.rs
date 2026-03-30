@@ -1,5 +1,4 @@
 use insightarena_contract::liquidity::{calculate_swap_output, calculate_lp_tokens};
-use insightarena_contract::errors::InsightArenaError;
 
 #[test]
 fn test_calculate_swap_output_equal_reserves() {
