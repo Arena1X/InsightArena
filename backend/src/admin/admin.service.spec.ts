@@ -11,6 +11,7 @@ import { ActivityLog } from '../analytics/entities/activity-log.entity';
 import { Role } from '../common/enums/role.enum';
 import { Competition } from '../competitions/entities/competition.entity';
 import { Comment } from '../markets/entities/comment.entity';
+import { CompetitionParticipant } from '../competitions/entities/competition-participant.entity';
 import { Market } from '../markets/entities/market.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Prediction } from '../predictions/entities/prediction.entity';
@@ -31,7 +32,9 @@ describe('AdminService.adminResolveMarket', () => {
   let service: AdminService;
   let marketsRepo: ReturnType<typeof mockRepo>;
   let predictionsRepo: ReturnType<typeof mockRepo>;
-  let sorobanService: jest.Mocked<Pick<SorobanService, 'resolveMarket'>>;
+  let sorobanService: jest.Mocked<
+    Pick<SorobanService, 'resolveMarket' | 'refundCompetitionParticipant'>
+  >;
   let notificationsService: jest.Mocked<Pick<NotificationsService, 'create'>>;
   let analyticsService: jest.Mocked<Pick<AnalyticsService, 'logActivity'>>;
 
@@ -58,7 +61,12 @@ describe('AdminService.adminResolveMarket', () => {
   beforeEach(async () => {
     marketsRepo = mockRepo();
     predictionsRepo = mockRepo();
-    sorobanService = { resolveMarket: jest.fn().mockResolvedValue({}) };
+    sorobanService = {
+      resolveMarket: jest.fn().mockResolvedValue({}),
+      refundCompetitionParticipant: jest
+        .fn()
+        .mockResolvedValue({ tx_hash: '1' }),
+    };
     notificationsService = { create: jest.fn().mockResolvedValue({}) };
     analyticsService = { logActivity: jest.fn().mockResolvedValue({}) };
 
@@ -70,6 +78,10 @@ describe('AdminService.adminResolveMarket', () => {
         { provide: getRepositoryToken(Comment), useValue: mockRepo() },
         { provide: getRepositoryToken(Prediction), useValue: predictionsRepo },
         { provide: getRepositoryToken(Competition), useValue: mockRepo() },
+        {
+          provide: getRepositoryToken(CompetitionParticipant),
+          useValue: mockRepo(),
+        },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: notificationsService },
@@ -237,6 +249,10 @@ describe('AdminService.featureMarket', () => {
         { provide: getRepositoryToken(Comment), useValue: mockRepo() },
         { provide: getRepositoryToken(Prediction), useValue: mockRepo() },
         { provide: getRepositoryToken(Competition), useValue: mockRepo() },
+        {
+          provide: getRepositoryToken(CompetitionParticipant),
+          useValue: mockRepo(),
+        },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
@@ -325,6 +341,10 @@ describe('AdminService.unfeatureMarket', () => {
         { provide: getRepositoryToken(Comment), useValue: mockRepo() },
         { provide: getRepositoryToken(Prediction), useValue: mockRepo() },
         { provide: getRepositoryToken(Competition), useValue: mockRepo() },
+        {
+          provide: getRepositoryToken(CompetitionParticipant),
+          useValue: mockRepo(),
+        },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
@@ -402,6 +422,10 @@ describe('AdminService.updateUserRole', () => {
         { provide: getRepositoryToken(Comment), useValue: mockRepo() },
         { provide: getRepositoryToken(Prediction), useValue: mockRepo() },
         { provide: getRepositoryToken(Competition), useValue: mockRepo() },
+        {
+          provide: getRepositoryToken(CompetitionParticipant),
+          useValue: mockRepo(),
+        },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         {
@@ -410,7 +434,10 @@ describe('AdminService.updateUserRole', () => {
         },
         {
           provide: SorobanService,
-          useValue: { resolveMarket: jest.fn() },
+          useValue: {
+            resolveMarket: jest.fn(),
+            refundCompetitionParticipant: jest.fn(),
+          },
         },
       ],
     }).compile();
@@ -457,5 +484,205 @@ describe('AdminService.updateUserRole', () => {
     await expect(
       service.updateUserRole('non-existent', { role: Role.Admin }, adminId),
     ).rejects.toThrow(NotFoundException);
+  });
+});
+
+describe('AdminService.adminCancelCompetition', () => {
+  let service: AdminService;
+  let competitionsRepo: ReturnType<typeof mockRepo>;
+  let participantsRepo: ReturnType<typeof mockRepo>;
+  let notificationsService: jest.Mocked<Pick<NotificationsService, 'create'>>;
+  let analyticsService: jest.Mocked<Pick<AnalyticsService, 'logActivity'>>;
+  let sorobanService: jest.Mocked<
+    Pick<SorobanService, 'resolveMarket' | 'refundCompetitionParticipant'>
+  >;
+
+  const adminId = 'admin-1';
+
+  beforeEach(async () => {
+    competitionsRepo = mockRepo();
+    participantsRepo = mockRepo();
+    notificationsService = { create: jest.fn().mockResolvedValue({}) };
+    analyticsService = { logActivity: jest.fn().mockResolvedValue({}) };
+    sorobanService = {
+      resolveMarket: jest.fn().mockResolvedValue({}),
+      refundCompetitionParticipant: jest
+        .fn()
+        .mockResolvedValue({ tx_hash: '1' }),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AdminService,
+        { provide: getRepositoryToken(User), useValue: mockRepo() },
+        { provide: getRepositoryToken(Market), useValue: mockRepo() },
+        { provide: getRepositoryToken(Comment), useValue: mockRepo() },
+        { provide: getRepositoryToken(Prediction), useValue: mockRepo() },
+        {
+          provide: getRepositoryToken(Competition),
+          useValue: competitionsRepo,
+        },
+        {
+          provide: getRepositoryToken(CompetitionParticipant),
+          useValue: participantsRepo,
+        },
+        { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
+        { provide: AnalyticsService, useValue: analyticsService },
+        { provide: NotificationsService, useValue: notificationsService },
+        { provide: SorobanService, useValue: sorobanService },
+      ],
+    }).compile();
+
+    service = module.get<AdminService>(AdminService);
+  });
+
+  it('throws NotFoundException when competition does not exist', async () => {
+    competitionsRepo.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.adminCancelCompetition('bad-id', adminId),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('throws ConflictException when competition is already cancelled', async () => {
+    competitionsRepo.findOne.mockResolvedValue({
+      id: 'comp-1',
+      title: 'Comp',
+      is_cancelled: true,
+      is_finalized: false,
+      prize_pool_stroops: '100',
+    } as Competition);
+
+    await expect(
+      service.adminCancelCompetition('comp-1', adminId),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('throws ConflictException when competition is finalized', async () => {
+    competitionsRepo.findOne.mockResolvedValue({
+      id: 'comp-1',
+      title: 'Comp',
+      is_cancelled: false,
+      is_finalized: true,
+      prize_pool_stroops: '100',
+    } as Competition);
+
+    await expect(
+      service.adminCancelCompetition('comp-1', adminId),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('cancels competition, refunds participants, and sends notifications', async () => {
+    const competition = {
+      id: 'comp-1',
+      title: 'Spring Championship',
+      is_cancelled: false,
+      is_finalized: false,
+      prize_pool_stroops: '101',
+    } as Competition;
+
+    const participants = [
+      {
+        user_id: 'user-1',
+        user: { id: 'user-1', stellar_address: 'GUSER1' } as User,
+      },
+      {
+        user_id: 'user-2',
+        user: { id: 'user-2', stellar_address: 'GUSER2' } as User,
+      },
+    ] as CompetitionParticipant[];
+
+    competitionsRepo.findOne.mockResolvedValue(competition);
+    participantsRepo.find.mockResolvedValue(participants);
+    competitionsRepo.save.mockImplementation((value: Competition) =>
+      Promise.resolve(value),
+    );
+
+    const result = await service.adminCancelCompetition('comp-1', adminId);
+
+    expect(sorobanService.refundCompetitionParticipant).toHaveBeenNthCalledWith(
+      1,
+      'GUSER1',
+      'comp-1',
+      '51',
+    );
+    expect(sorobanService.refundCompetitionParticipant).toHaveBeenNthCalledWith(
+      2,
+      'GUSER2',
+      'comp-1',
+      '50',
+    );
+    expect(notificationsService.create).toHaveBeenCalledTimes(2);
+    expect(analyticsService.logActivity).toHaveBeenCalledWith(
+      adminId,
+      'COMPETITION_CANCELLED_BY_ADMIN',
+      expect.objectContaining({
+        competition_id: 'comp-1',
+        refunds_initiated: true,
+      }),
+    );
+    expect(result.is_cancelled).toBe(true);
+  });
+
+  it('does not refund when there is no prize pool', async () => {
+    const competition = {
+      id: 'comp-1',
+      title: 'Spring Championship',
+      is_cancelled: false,
+      is_finalized: false,
+      prize_pool_stroops: '0',
+    } as Competition;
+
+    const participants = [
+      {
+        user_id: 'user-1',
+        user: { id: 'user-1', stellar_address: 'GUSER1' } as User,
+      },
+    ] as CompetitionParticipant[];
+
+    competitionsRepo.findOne.mockResolvedValue(competition);
+    participantsRepo.find.mockResolvedValue(participants);
+    competitionsRepo.save.mockImplementation((value: Competition) =>
+      Promise.resolve(value),
+    );
+
+    await service.adminCancelCompetition('comp-1', adminId);
+
+    expect(sorobanService.refundCompetitionParticipant).not.toHaveBeenCalled();
+    expect(notificationsService.create).toHaveBeenCalledWith(
+      'user-1',
+      expect.any(String),
+      'Competition Cancelled',
+      expect.any(String),
+      expect.objectContaining({ refunded_stroops: '0' }),
+    );
+  });
+
+  it('throws BadGatewayException when refund call fails', async () => {
+    const competition = {
+      id: 'comp-1',
+      title: 'Spring Championship',
+      is_cancelled: false,
+      is_finalized: false,
+      prize_pool_stroops: '100',
+    } as Competition;
+
+    const participants = [
+      {
+        user_id: 'user-1',
+        user: { id: 'user-1', stellar_address: 'GUSER1' } as User,
+      },
+    ] as CompetitionParticipant[];
+
+    competitionsRepo.findOne.mockResolvedValue(competition);
+    participantsRepo.find.mockResolvedValue(participants);
+    sorobanService.refundCompetitionParticipant.mockRejectedValueOnce(
+      new Error('refund failed'),
+    );
+
+    await expect(
+      service.adminCancelCompetition('comp-1', adminId),
+    ).rejects.toThrow(BadGatewayException);
+    expect(competitionsRepo.save).not.toHaveBeenCalled();
   });
 });

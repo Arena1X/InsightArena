@@ -16,6 +16,10 @@ export interface SorobanCreateSeasonResult {
   tx_hash: string;
 }
 
+export interface SorobanRefundResult {
+  tx_hash: string;
+}
+
 export interface SorobanRpcEvent {
   id: string;
   ledger: number;
@@ -124,6 +128,27 @@ export class SorobanService {
         `Soroban resolveMarket: market=${marketOnChainId} outcome=${outcome}`,
       );
       return Promise.resolve();
+    });
+  }
+
+  async refundCompetitionParticipant(
+    userStellarAddress: string,
+    competitionId: string,
+    refundAmountStroops: string,
+  ): Promise<SorobanRefundResult> {
+    return this.withSorobanErrorHandling('refundCompetitionParticipant', () => {
+      this.logger.log(
+        `Soroban refundCompetitionParticipant: user=${userStellarAddress} competition=${competitionId} amount=${refundAmountStroops}`,
+      );
+
+      const tx_hash = Buffer.from(
+        `refund:${competitionId}:${userStellarAddress}:${refundAmountStroops}:${Date.now()}`,
+      )
+        .toString('hex')
+        .padEnd(64, '0')
+        .slice(0, 64);
+
+      return Promise.resolve({ tx_hash });
     });
   }
 

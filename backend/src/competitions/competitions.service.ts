@@ -58,7 +58,10 @@ export class CompetitionsService {
 
   async findAll(): Promise<Competition[]> {
     return this.competitionsRepository.find({
-      where: { visibility: CompetitionVisibility.Public },
+      where: {
+        visibility: CompetitionVisibility.Public,
+        is_cancelled: false,
+      },
       order: { created_at: 'DESC' },
       relations: ['creator'],
     });
@@ -119,13 +122,21 @@ export class CompetitionsService {
     switch (status) {
       case CompetitionStatus.Active:
         return query.andWhere(
-          'competition.start_time <= :now AND competition.end_time >= :now',
+          'competition.start_time <= :now AND competition.end_time >= :now AND competition.is_cancelled = false',
           { now },
         );
       case CompetitionStatus.Upcoming:
-        return query.andWhere('competition.start_time > :now', { now });
+        return query.andWhere(
+          'competition.start_time > :now AND competition.is_cancelled = false',
+          { now },
+        );
       case CompetitionStatus.Ended:
-        return query.andWhere('competition.end_time < :now', { now });
+        return query.andWhere(
+          'competition.end_time < :now AND competition.is_cancelled = false',
+          { now },
+        );
+      case CompetitionStatus.Cancelled:
+        return query.andWhere('competition.is_cancelled = true');
       default:
         return query;
     }
@@ -135,6 +146,10 @@ export class CompetitionsService {
     competition: Competition,
     now: Date,
   ): CompetitionStatus {
+    if (competition.is_cancelled) {
+      return CompetitionStatus.Cancelled;
+    }
+
     if (now < competition.start_time) {
       return CompetitionStatus.Upcoming;
     } else if (now >= competition.start_time && now <= competition.end_time) {

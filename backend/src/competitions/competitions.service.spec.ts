@@ -136,7 +136,10 @@ describe('CompetitionsService', () => {
 
       expect(mockRepository.find).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { visibility: CompetitionVisibility.Public },
+          where: {
+            visibility: CompetitionVisibility.Public,
+            is_cancelled: false,
+          },
         }),
       );
       expect(result).toHaveLength(1);

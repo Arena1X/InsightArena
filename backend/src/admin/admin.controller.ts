@@ -2,17 +2,19 @@ import {
   Body,
   Controller,
   Get,
-  Param,
+  Delete,
   Patch,
+  Param,
   Post,
   Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from '../common/enums/role.enum';
+import { ApiBearerAuth, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
 import { AdminService } from './admin.service';
 import { ActivityLogQueryDto } from './dto/activity-log-query.dto';
 import { BanUserDto } from './dto/ban-user.dto';
@@ -32,6 +34,23 @@ export class AdminController {
   @Get('dashboard/stats')
   async getDashboardStats(): Promise<StatsResponseDto> {
     return this.adminService.getStats();
+  }
+
+  @Delete('competitions/:id')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Cancel a competition' })
+  @ApiResponse({ status: 200, description: 'Competition cancelled' })
+  @ApiResponse({ status: 404, description: 'Competition not found' })
+  @ApiResponse({
+    status: 409,
+    description: 'Competition cannot be cancelled',
+  })
+  @ApiResponse({ status: 502, description: 'Refund process failed' })
+  async cancelCompetition(@Param('id') id: string, @Request() req: any) {
+    return this.adminService.adminCancelCompetition(
+      id,
+      (req as { user: { id: string } }).user.id,
+    );
   }
 
   @Get('users')
