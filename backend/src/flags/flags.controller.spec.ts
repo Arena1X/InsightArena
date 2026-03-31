@@ -62,9 +62,15 @@ describe('FlagsController', () => {
 
       jest.spyOn(flagsService, 'createFlag').mockResolvedValue(mockFlag);
 
-      const result = await controller.createFlag(createFlagDto, mockRequest as any);
+      const result = await controller.createFlag(
+        createFlagDto,
+        mockRequest as any,
+      );
 
-      expect(flagsService.createFlag).toHaveBeenCalledWith('user-1', createFlagDto);
+      expect(flagsService.createFlag).toHaveBeenCalledWith(
+        'user-1',
+        createFlagDto,
+      );
       expect(result).toEqual(mockFlag);
     });
   });

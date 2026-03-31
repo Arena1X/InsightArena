@@ -1,4 +1,10 @@
-import { IsUUID, IsEnum, IsString, IsOptional, MaxLength } from 'class-validator';
+import {
+  IsUUID,
+  IsEnum,
+  IsString,
+  IsOptional,
+  MaxLength,
+} from 'class-validator';
 import { FlagReason } from '../entities/flag.entity';
 
 export class CreateFlagDto {

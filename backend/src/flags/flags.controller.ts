@@ -18,10 +18,7 @@ export class FlagsController {
   constructor(private readonly flagsService: FlagsService) {}
 
   @Post()
-  async createFlag(
-    @Body() createFlagDto: CreateFlagDto,
-    @Request() req: any,
-  ) {
+  async createFlag(@Body() createFlagDto: CreateFlagDto, @Request() req: any) {
     return this.flagsService.createFlag(
       (req as { user: { id: string } }).user.id,
       createFlagDto,
@@ -29,10 +26,7 @@ export class FlagsController {
   }
 
   @Get('my-flags')
-  async getMyFlags(
-    @Request() req: any,
-    @Query() query: ListFlagsQueryDto,
-  ) {
+  async getMyFlags(@Request() req: any, @Query() query: ListFlagsQueryDto) {
     return this.flagsService.listFlags({
       ...query,
       user_id: (req as { user: { id: string } }).user.id,
