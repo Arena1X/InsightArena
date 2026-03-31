@@ -247,6 +247,10 @@ describe('AdminService.featureMarket', () => {
         { provide: getRepositoryToken(Comment), useValue: mockRepo() },
         { provide: getRepositoryToken(Prediction), useValue: mockRepo() },
         { provide: getRepositoryToken(Competition), useValue: mockRepo() },
+        {
+          provide: getRepositoryToken(CompetitionParticipant),
+          useValue: mockRepo(),
+        },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
@@ -335,6 +339,10 @@ describe('AdminService.unfeatureMarket', () => {
         { provide: getRepositoryToken(Comment), useValue: mockRepo() },
         { provide: getRepositoryToken(Prediction), useValue: mockRepo() },
         { provide: getRepositoryToken(Competition), useValue: mockRepo() },
+        {
+          provide: getRepositoryToken(CompetitionParticipant),
+          useValue: mockRepo(),
+        },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
