@@ -19,6 +19,7 @@ import { Prediction } from '../predictions/entities/prediction.entity';
 import { SorobanService } from '../soroban/soroban.service';
 import { User } from '../users/entities/user.entity';
 import { AdminService } from './admin.service';
+import { SystemConfig } from './entities/system-config.entity';
 import { ResolveMarketDto } from './dto/resolve-market.dto';
 
 const mockRepo = () => ({
@@ -84,6 +85,7 @@ describe('AdminService.adminResolveMarket', () => {
           useValue: mockRepo(),
         },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
+        { provide: getRepositoryToken(SystemConfig), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: notificationsService },
         { provide: SorobanService, useValue: sorobanService },
@@ -262,6 +264,7 @@ describe('AdminService.featureMarket', () => {
           useValue: mockRepo(),
         },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
+        { provide: getRepositoryToken(SystemConfig), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
         { provide: SorobanService, useValue: { resolveMarket: jest.fn() } },
@@ -361,6 +364,7 @@ describe('AdminService.unfeatureMarket', () => {
           useValue: mockRepo(),
         },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
+        { provide: getRepositoryToken(SystemConfig), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
         { provide: SorobanService, useValue: { resolveMarket: jest.fn() } },
@@ -449,6 +453,7 @@ describe('AdminService.updateUserRole', () => {
           useValue: mockRepo(),
         },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
+        { provide: getRepositoryToken(SystemConfig), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         {
           provide: NotificationsService,

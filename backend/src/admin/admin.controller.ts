@@ -25,6 +25,7 @@ import { ModerateCommentDto } from './dto/moderate-comment.dto';
 import { ReportQueryDto } from './dto/report-query.dto';
 import { ResolveMarketDto } from './dto/resolve-market.dto';
 import { StatsResponseDto } from './dto/stats-response.dto';
+import { UpdateSystemConfigDto } from './dto/system-config.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 
 @Controller('admin')
@@ -160,5 +161,18 @@ export class AdminController {
   @Get('reports/activity')
   async getActivityReport(@Query() query: ReportQueryDto) {
     return this.adminService.getActivityReport(query);
+  }
+
+  @Get('config')
+  async getConfig() {
+    return this.adminService.getConfig();
+  }
+
+  @Patch('config')
+  async updateConfig(@Body() dto: UpdateSystemConfigDto, @Request() req: any) {
+    return this.adminService.updateConfig(
+      dto,
+      (req as { user: { id: string } }).user.id,
+    );
   }
 }

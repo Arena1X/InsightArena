@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { Competition } from '../competitions/entities/competition.entity';
 import { Market } from '../markets/entities/market.entity';
+import { Comment } from '../markets/entities/comment.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { SorobanService } from '../soroban/soroban.service';
@@ -36,6 +37,7 @@ describe('AdminService - system config', () => {
         AdminService,
         { provide: getRepositoryToken(User), useValue: mockRepo() },
         { provide: getRepositoryToken(Market), useValue: mockRepo() },
+        { provide: getRepositoryToken(Comment), useValue: mockRepo() },
         { provide: getRepositoryToken(Prediction), useValue: mockRepo() },
         { provide: getRepositoryToken(Competition), useValue: mockRepo() },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
@@ -82,7 +84,10 @@ describe('AdminService - system config', () => {
 
       await service.updateConfig({ platform_fee_percent: 3 }, adminId);
 
-      expect(configRepo.save).toHaveBeenCalledWith({ key: 'platform_fee_percent', value: 3 });
+      expect(configRepo.save).toHaveBeenCalledWith({
+        key: 'platform_fee_percent',
+        value: 3,
+      });
       expect(analyticsService.logActivity).toHaveBeenCalledWith(
         adminId,
         'SYSTEM_CONFIG_UPDATED',
@@ -97,7 +102,10 @@ describe('AdminService - system config', () => {
       await service.updateConfig({ maintenance_mode: true }, adminId);
 
       expect(configRepo.save).toHaveBeenCalledTimes(1);
-      expect(configRepo.save).toHaveBeenCalledWith({ key: 'maintenance_mode', value: true });
+      expect(configRepo.save).toHaveBeenCalledWith({
+        key: 'maintenance_mode',
+        value: true,
+      });
     });
   });
 });

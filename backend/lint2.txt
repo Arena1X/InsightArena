@@ -1,0 +1,23 @@
+
+> backend@0.0.1 lint C:\Users\DELL\Desktop\Arena\InsightArena\backend
+> eslint "{src,apps,libs,test}/**/*.ts" --fix
+
+
+C:\Users\DELL\Desktop\Arena\InsightArena\backend\src\admin\admin.service.ts
+  35:24  error    'SystemConfigValues' is an 'error' type that acts as 'any' and overrides all other types in this union type           @typescript-eslint/no-redundant-type-constituents
+  50:23  warning  Unsafe argument of type error typed assigned to a parameter of type `EntityClassOrSchema`                             @typescript-eslint/no-unsafe-argument
+  61:11  error    Unsafe assignment of an `any` value                                                                                   @typescript-eslint/no-unsafe-assignment
+  64:15  error    Unsafe member access .key on a type that cannot be resolved                                                           @typescript-eslint/no-unsafe-member-access
+  65:45  error    The type of computed name [row.key] cannot be resolved                                                                @typescript-eslint/no-unsafe-member-access
+  65:49  error    Unsafe member access .key on a type that cannot be resolved                                                           @typescript-eslint/no-unsafe-member-access
+  65:60  error    Unsafe member access .value on a type that cannot be resolved                                                         @typescript-eslint/no-unsafe-member-access
+  69:5   error    Unsafe assignment of an `any` value                                                                                   @typescript-eslint/no-unsafe-assignment
+  77:36  warning  Unsafe argument of type error typed assigned to a parameter of type `{ [s: string]: unknown; } | ArrayLike<unknown>`  @typescript-eslint/no-unsafe-argument
+
+C:\Users\DELL\Desktop\Arena\InsightArena\backend\src\markets\markets.service.spec.ts
+  315:7  warning  Unsafe argument of type `any` assigned to a parameter of type `SelectQueryBuilder<Market>`  @typescript-eslint/no-unsafe-argument
+  363:7  warning  Unsafe argument of type `any` assigned to a parameter of type `SelectQueryBuilder<Market>`  @typescript-eslint/no-unsafe-argument
+
+??? 11 problems (7 errors, 4 warnings)
+
+???ELIFECYCLE??? Command failed with exit code 1.

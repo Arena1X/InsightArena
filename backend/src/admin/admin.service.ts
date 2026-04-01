@@ -32,7 +32,12 @@ import {
 import { ResolveMarketDto } from './dto/resolve-market.dto';
 import { StatsResponseDto } from './dto/stats-response.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
-
+import { SystemConfig } from './entities/system-config.entity';
+import {
+  DEFAULT_CONFIG,
+  SystemConfigValues,
+  UpdateSystemConfigDto,
+} from './dto/system-config.dto';
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
@@ -77,7 +82,10 @@ export class AdminService {
     return config;
   }
 
-  async updateConfig(dto: UpdateSystemConfigDto, adminId: string): Promise<SystemConfigValues> {
+  async updateConfig(
+    dto: UpdateSystemConfigDto,
+    adminId: string,
+  ): Promise<SystemConfigValues> {
     const updates = Object.entries(dto).filter(([, v]) => v !== undefined);
 
     for (const [key, value] of updates) {

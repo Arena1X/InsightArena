@@ -1,10 +1,4 @@
-import {
-  IsNumber,
-  IsBoolean,
-  IsOptional,
-  Min,
-  Max,
-} from 'class-validator';
+import { IsNumber, IsBoolean, IsOptional, Min, Max } from 'class-validator';
 
 export class UpdateSystemConfigDto {
   @IsOptional()
