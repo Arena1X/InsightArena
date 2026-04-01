@@ -6,6 +6,7 @@ import { Comment } from '../markets/entities/comment.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { Competition } from '../competitions/entities/competition.entity';
 import { ActivityLog } from '../analytics/entities/activity-log.entity';
+import { SystemConfig } from './entities/system-config.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
@@ -19,6 +20,7 @@ import { AdminService } from './admin.service';
       Prediction,
       Competition,
       ActivityLog,
+      SystemConfig,
     ]),
     NotificationsModule,
   ],

@@ -32,6 +32,7 @@ import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
+  private configCache: SystemConfigValues | null = null;
 
   constructor(
     @InjectRepository(User)
@@ -46,10 +47,44 @@ export class AdminService {
     private readonly competitionsRepository: Repository<Competition>,
     @InjectRepository(ActivityLog)
     private readonly activityLogsRepository: Repository<ActivityLog>,
+    @InjectRepository(SystemConfig)
+    private readonly systemConfigRepository: Repository<SystemConfig>,
     private readonly analyticsService: AnalyticsService,
     private readonly notificationsService: NotificationsService,
     private readonly sorobanService: SorobanService,
   ) {}
+
+  async getConfig(): Promise<SystemConfigValues> {
+    if (this.configCache) return this.configCache;
+
+    const rows = await this.systemConfigRepository.find();
+    const config = { ...DEFAULT_CONFIG };
+
+    for (const row of rows) {
+      if (row.key in config) {
+        (config as Record<string, unknown>)[row.key] = row.value;
+      }
+    }
+
+    this.configCache = config;
+    return config;
+  }
+
+  async updateConfig(dto: UpdateSystemConfigDto, adminId: string): Promise<SystemConfigValues> {
+    const updates = Object.entries(dto).filter(([, v]) => v !== undefined);
+
+    for (const [key, value] of updates) {
+      await this.systemConfigRepository.save({ key, value });
+    }
+
+    this.configCache = null;
+
+    await this.analyticsService.logActivity(adminId, 'SYSTEM_CONFIG_UPDATED', {
+      updated_keys: updates.map(([k]) => k),
+    });
+
+    return this.getConfig();
+  }
 
   async getStats(): Promise<StatsResponseDto> {
     const now = new Date();
