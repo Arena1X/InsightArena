@@ -11,6 +11,8 @@ import { MarketTemplate } from './entities/market-template.entity';
 import { Market } from './entities/market.entity';
 import { UserBookmark } from './entities/user-bookmark.entity';
 import { MarketsService } from './markets.service';
+import { MarketsPayoutService } from './markets-payout.service';
+import { ResolveMarketDto } from './dto/resolve-market.dto';
 
 type MockRepo = jest.Mocked<
   Pick<Repository<Market>, 'create' | 'save' | 'findOne' | 'find'>
@@ -22,6 +24,7 @@ describe('MarketsService', () => {
   let sorobanService: jest.Mocked<
     Pick<SorobanService, 'createMarket' | 'resolveMarket'>
   >;
+  let marketsPayoutService: jest.Mocked<MarketsPayoutService>;
   let dataSource: jest.Mocked<DataSource>;
 
   const mockUser = {
@@ -54,6 +57,10 @@ describe('MarketsService', () => {
       createMarket: jest.fn(),
       resolveMarket: jest.fn(),
     };
+    
+    marketsPayoutService = {
+      triggerPayoutCalculation: jest.fn(),
+    } as any;
 
     dataSource = {
       createQueryRunner: jest.fn().mockReturnValue({
@@ -100,6 +107,10 @@ describe('MarketsService', () => {
         {
           provide: SorobanService,
           useValue: sorobanService,
+        },
+        {
+          provide: MarketsPayoutService,
+          useValue: marketsPayoutService,
         },
         {
           provide: DataSource,
@@ -159,10 +170,11 @@ describe('MarketsService', () => {
       is_resolved: true,
     } as Market);
 
-    await expect(service.resolveMarket('market-1', 'YES')).rejects.toThrow(
-      ConflictException,
-    );
+    await expect(
+      service.resolveMarket('market-1', { resolved_outcome: 'YES' }),
+    ).rejects.toThrow(ConflictException);
     expect(sorobanService.resolveMarket).not.toHaveBeenCalled();
+    expect(marketsPayoutService.triggerPayoutCalculation).not.toHaveBeenCalled();
   });
 
   it('resolveMarket() throws BadRequestException for invalid outcome', async () => {
@@ -174,10 +186,32 @@ describe('MarketsService', () => {
       is_resolved: false,
     } as Market);
 
-    await expect(service.resolveMarket('market-1', 'MAYBE')).rejects.toThrow(
-      BadRequestException,
-    );
+    await expect(
+      service.resolveMarket('market-1', { resolved_outcome: 'MAYBE' }),
+    ).rejects.toThrow(BadRequestException);
     expect(sorobanService.resolveMarket).not.toHaveBeenCalled();
+    expect(marketsPayoutService.triggerPayoutCalculation).not.toHaveBeenCalled();
+  });
+
+  it('resolveMarket() resolves on-chain, updates DB and triggers payout job', async () => {
+    const market = {
+      id: 'market-1',
+      on_chain_market_id: 'on-chain-1',
+      title: 'Unresolved market',
+      outcome_options: ['YES', 'NO'],
+      is_resolved: false,
+    } as Market;
+
+    marketsRepository.findOne.mockResolvedValue(market);
+    sorobanService.resolveMarket.mockResolvedValue();
+    marketsRepository.save.mockResolvedValue({ ...market, is_resolved: true, resolved_outcome: 'YES' });
+
+    const result = await service.resolveMarket('market-1', { resolved_outcome: 'YES' });
+
+    expect(sorobanService.resolveMarket).toHaveBeenCalledWith('on-chain-1', 'YES');
+    expect(marketsRepository.save).toHaveBeenCalled();
+    expect(marketsPayoutService.triggerPayoutCalculation).toHaveBeenCalledWith('market-1', 'YES');
+    expect(result.is_resolved).toBe(true);
   });
 
   describe('getTrendingMarkets', () => {
@@ -293,6 +327,7 @@ describe('MarketsService.findFeaturedMarkets', () => {
         { provide: getRepositoryToken(User), useValue: {} },
         { provide: UsersService, useValue: {} },
         { provide: SorobanService, useValue: {} },
+        { provide: MarketsPayoutService, useValue: {} },
         { provide: DataSource, useValue: {} },
       ],
     }).compile();

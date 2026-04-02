@@ -31,6 +31,7 @@ import {
   PaginatedMarketsResponse,
 } from './dto/list-markets.dto';
 import { PredictionStatsDto } from './dto/prediction-stats.dto';
+import { ResolveMarketDto } from './dto/resolve-market.dto';
 import {
   PaginatedTrendingMarketsResponse,
   TrendingMarketsQueryDto,
@@ -180,6 +181,22 @@ export class MarketsController {
   @ApiResponse({ status: 502, description: 'Soroban contract call failed' })
   async cancelMarket(@Param('id') id: string): Promise<Market> {
     return this.marketsService.cancelMarket(id);
+  }
+  
+  @Post(':id/resolve')
+  @Roles(Role.Admin)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Resolve a prediction market' })
+  @ApiResponse({ status: 200, description: 'Market resolved', type: Market })
+  @ApiResponse({ status: 400, description: 'Invalid outcome' })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  @ApiResponse({ status: 409, description: 'Market already resolved' })
+  @ApiResponse({ status: 502, description: 'Soroban contract call failed' })
+  async resolveMarket(
+    @Param('id') id: string,
+    @Body() dto: ResolveMarketDto,
+  ): Promise<Market> {
+    return this.marketsService.resolveMarket(id, dto);
   }
 
   @Post(':id/comments')

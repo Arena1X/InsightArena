@@ -5,6 +5,7 @@ import { Comment } from './entities/comment.entity';
 import { MarketTemplate } from './entities/market-template.entity';
 import { UserBookmark } from './entities/user-bookmark.entity';
 import { MarketsService } from './markets.service';
+import { MarketsPayoutService } from './markets-payout.service';
 import { MarketsController } from './markets.controller';
 import { UsersModule } from '../users/users.module';
 
@@ -14,7 +15,7 @@ import { UsersModule } from '../users/users.module';
     UsersModule,
   ],
   controllers: [MarketsController],
-  providers: [MarketsService],
-  exports: [MarketsService, TypeOrmModule],
+  providers: [MarketsService, MarketsPayoutService],
+  exports: [MarketsService, MarketsPayoutService, TypeOrmModule],
 })
 export class MarketsModule {}

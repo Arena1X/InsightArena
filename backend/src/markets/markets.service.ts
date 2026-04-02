@@ -28,6 +28,8 @@ import { Comment } from './entities/comment.entity';
 import { MarketTemplate } from './entities/market-template.entity';
 import { Market } from './entities/market.entity';
 import { UserBookmark } from './entities/user-bookmark.entity';
+import { ResolveMarketDto } from './dto/resolve-market.dto';
+import { MarketsPayoutService } from './markets-payout.service';
 
 @Injectable()
 export class MarketsService {
@@ -49,6 +51,7 @@ export class MarketsService {
     private readonly userBookmarksRepository: Repository<UserBookmark>,
     private readonly usersService: UsersService,
     private readonly sorobanService: SorobanService,
+    private readonly marketsPayoutService: MarketsPayoutService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -215,8 +218,9 @@ export class MarketsService {
     }
   }
 
-  async resolveMarket(id: string, outcome: string): Promise<Market> {
+  async resolveMarket(id: string, dto: ResolveMarketDto): Promise<Market> {
     const market = await this.findByIdOrOnChainId(id);
+    const outcome = dto.resolved_outcome;
 
     if (market.is_resolved) {
       throw new ConflictException('Market is already resolved');
@@ -240,7 +244,12 @@ export class MarketsService {
 
     market.is_resolved = true;
     market.resolved_outcome = outcome;
-    return this.marketsRepository.save(market);
+    const saved = await this.marketsRepository.save(market);
+
+    // Trigger background job to calculate and distribute payouts
+    await this.marketsPayoutService.triggerPayoutCalculation(market.id, outcome);
+
+    return saved;
   }
 
   /**
@@ -533,7 +542,6 @@ export class MarketsService {
   }
 
   /**
-<<<<<<< HEAD
    * Get featured markets
    */
   async findFeaturedMarkets(

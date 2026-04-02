@@ -6,6 +6,7 @@ import { Competition } from '../competitions/entities/competition.entity';
 import { FlagsModule } from '../flags/flags.module';
 import { Comment } from '../markets/entities/comment.entity';
 import { Market } from '../markets/entities/market.entity';
+import { MarketsModule } from '../markets/markets.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { User } from '../users/entities/user.entity';
