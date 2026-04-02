@@ -21,6 +21,7 @@ import { NotificationType } from '../notifications/entities/notification.entity'
 import { NotificationsService } from '../notifications/notifications.service';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { SorobanService } from '../soroban/soroban.service';
+import { MarketsService } from '../markets/markets.service';
 import { User } from '../users/entities/user.entity';
 import { ActivityLogQueryDto } from './dto/activity-log-query.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
@@ -55,6 +56,7 @@ export class AdminService {
     private readonly analyticsService: AnalyticsService,
     private readonly notificationsService: NotificationsService,
     private readonly sorobanService: SorobanService,
+    private readonly marketsService: MarketsService,
     private readonly flagsService: FlagsService,
   ) {}
 
@@ -268,45 +270,11 @@ export class AdminService {
     dto: ResolveMarketDto,
     adminId: string,
   ): Promise<Market> {
-    const market = await this.marketsRepository.findOne({
-      where: [{ id }, { on_chain_market_id: id }],
+    const saved = await this.marketsService.resolveMarket(id, {
+      resolved_outcome: dto.resolved_outcome,
     });
-
-    if (!market) {
-      throw new NotFoundException(`Market "${id}" not found`);
-    }
-
-    if (market.is_resolved) {
-      throw new ConflictException('Market is already resolved');
-    }
-
-    if (market.is_cancelled) {
-      throw new BadRequestException('Cannot resolve a cancelled market');
-    }
-
-    if (!market.outcome_options.includes(dto.resolved_outcome)) {
-      throw new BadRequestException(
-        `Invalid outcome "${dto.resolved_outcome}". Valid options: ${market.outcome_options.join(', ')}`,
-      );
-    }
-
-    // Trigger payout distribution on-chain
-    try {
-      await this.sorobanService.resolveMarket(
-        market.on_chain_market_id,
-        dto.resolved_outcome,
-      );
-    } catch (err) {
-      this.logger.error(
-        'Soroban resolveMarket failed during admin resolution',
-        err,
-      );
-      throw new BadGatewayException('Failed to resolve market on Soroban');
-    }
-
-    market.is_resolved = true;
-    market.resolved_outcome = dto.resolved_outcome;
-    const saved = await this.marketsRepository.save(market);
+    
+    const market = saved;
 
     // Notify all participants
     const predictions = await this.predictionsRepository.find({
