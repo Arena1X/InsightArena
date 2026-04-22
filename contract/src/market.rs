@@ -585,8 +585,9 @@ pub fn resolve_market(
         config::PERSISTENT_BUMP,
     );
 
-    emit_market_resolved(&env, market_id, resolved_outcome);
+    emit_market_resolved(&env, market_id, resolved_outcome.clone());
     reputation::on_market_resolved(&env, &market.creator, market.participant_count);
+    check_conditional_activation(&env, market_id, &resolved_outcome);
 
     Ok(())
 }
@@ -712,9 +713,50 @@ pub fn get_conditional_markets(env: &Env, parent_market_id: u64) -> Vec<Conditio
 }
 
 // TODO: validate_conditional_params
-// TODO: check_conditional_activation / activate / deactivate
 // TODO: get_parent_market / get_conditional_chain
 // TODO: calculate_conditional_depth / validate_no_circular_dependency
+
+fn activate_conditional_market(env: &Env, market_id: u64) -> Result<(), InsightArenaError> {
+    let mut conditional: ConditionalMarket = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ConditionalMarket(market_id))
+        .ok_or(InsightArenaError::MarketNotFound)?;
+
+    let now = env.ledger().timestamp();
+    conditional.activate(now);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::ConditionalMarket(market_id), &conditional);
+
+    env.events().publish(
+        (symbol_short!("cond"), symbol_short!("activ")),
+        (market_id, now),
+    );
+
+    Ok(())
+}
+
+fn check_conditional_activation(env: &Env, parent_market_id: u64, resolved_outcome: &Symbol) {
+    let child_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ConditionalChildren(parent_market_id))
+        .unwrap_or_else(|| Vec::new(env));
+
+    for child_id in child_ids.iter() {
+        if let Some(conditional) = env
+            .storage()
+            .persistent()
+            .get::<_, ConditionalMarket>(&DataKey::ConditionalMarket(child_id))
+        {
+            if &conditional.required_outcome == resolved_outcome {
+                let _ = activate_conditional_market(env, child_id);
+            }
+        }
+    }
+}
 
 // ── Analytics (merged from analytics.rs) ─────────────────────────────────────
 

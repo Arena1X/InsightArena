@@ -1,9 +1,9 @@
 #![cfg(test)]
 
 use insightarena_contract::market::CreateMarketParams;
-use insightarena_contract::storage_types::{DataKey, Market};
+use insightarena_contract::storage_types::{ConditionalMarket, DataKey, Market};
 use insightarena_contract::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
 
 fn register_token(env: &Env) -> Address {
@@ -21,6 +21,17 @@ fn deploy(env: &Env) -> InsightArenaContractClient<'_> {
     env.mock_all_auths();
     client.initialize(&admin, &oracle, &200_u32, &xlm_token);
     client
+}
+
+fn deploy_with_oracle(env: &Env) -> (InsightArenaContractClient<'_>, Address) {
+    let id = env.register(InsightArenaContract, ());
+    let client = InsightArenaContractClient::new(env, &id);
+    let admin = Address::generate(env);
+    let oracle = Address::generate(env);
+    let xlm_token = register_token(env);
+    env.mock_all_auths();
+    client.initialize(&admin, &oracle, &200_u32, &xlm_token);
+    (client, oracle)
 }
 
 fn default_params(env: &Env) -> CreateMarketParams {
@@ -271,4 +282,101 @@ fn test_get_conditional_markets_returns_correct_required_outcome() {
         .expect("Should find child with 'no' outcome");
     assert_eq!(no_child.required_outcome, symbol_short!("no"));
     assert_eq!(no_child.parent_market_id, parent_id);
+}
+
+// ── Issue #552: Conditional Activation Tests ──────────────────────────────────
+
+#[test]
+fn test_conditional_market_activates_on_parent_resolution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, oracle) = deploy_with_oracle(&env);
+    let creator = Address::generate(&env);
+
+    let parent_id = client.create_market(&creator, &default_params(&env));
+    let child_id = client.create_conditional_market(
+        &creator,
+        &parent_id,
+        &symbol_short!("yes"),
+        &default_params(&env),
+    );
+
+    // Advance past resolution_time (now + 2000)
+    env.ledger().with_mut(|l| l.timestamp = 3000);
+
+    client.resolve_market(&oracle, &parent_id, &symbol_short!("yes"));
+
+    let contract_id = client.address.clone();
+    let conditional: ConditionalMarket = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ConditionalMarket(child_id))
+            .unwrap()
+    });
+
+    assert!(conditional.is_activated);
+}
+
+#[test]
+fn test_conditional_market_does_not_activate_on_wrong_outcome() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, oracle) = deploy_with_oracle(&env);
+    let creator = Address::generate(&env);
+
+    let parent_id = client.create_market(&creator, &default_params(&env));
+    let child_id = client.create_conditional_market(
+        &creator,
+        &parent_id,
+        &symbol_short!("yes"),
+        &default_params(&env),
+    );
+
+    // Advance past resolution_time
+    env.ledger().with_mut(|l| l.timestamp = 3000);
+
+    // Resolve parent with "no" — child requires "yes", so it should NOT activate
+    client.resolve_market(&oracle, &parent_id, &symbol_short!("no"));
+
+    let contract_id = client.address.clone();
+    let conditional: ConditionalMarket = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ConditionalMarket(child_id))
+            .unwrap()
+    });
+
+    assert!(!conditional.is_activated);
+}
+
+#[test]
+fn test_conditional_market_activation_time_is_set() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, oracle) = deploy_with_oracle(&env);
+    let creator = Address::generate(&env);
+
+    let parent_id = client.create_market(&creator, &default_params(&env));
+    let child_id = client.create_conditional_market(
+        &creator,
+        &parent_id,
+        &symbol_short!("yes"),
+        &default_params(&env),
+    );
+
+    let resolve_time: u64 = 3000;
+    env.ledger().with_mut(|l| l.timestamp = resolve_time);
+
+    client.resolve_market(&oracle, &parent_id, &symbol_short!("yes"));
+
+    let contract_id = client.address.clone();
+    let conditional: ConditionalMarket = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ConditionalMarket(child_id))
+            .unwrap()
+    });
+
+    assert!(conditional.is_activated);
+    assert_eq!(conditional.activation_time, Some(resolve_time));
 }

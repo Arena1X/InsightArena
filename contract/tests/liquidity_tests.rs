@@ -571,3 +571,78 @@ fn test_swap_outcome_same_outcome() {
 fn test_swap_outcome_resolved_market() {
     // Swapping on resolved market should fail
 }
+
+// ── Tests moved from liquidity.rs inline block (#549) ─────────────────────────
+
+#[test]
+fn test_calculate_price_large_reserves() {
+    let result = calculate_swap_output(1_000_000, 1_000_000, 1_000_000, 30);
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    // (1_000_000 * 1_000_000) / (1_000_000 + 1_000_000) = 500_000
+    // Then apply fee: 500_000 * 9970 / 10000 = 498_500
+    assert_eq!(output, 498_500);
+}
+
+#[test]
+fn test_calculate_price_small_reserves() {
+    let result = calculate_swap_output(10, 10, 10, 30);
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    // (10 * 10) / (10 + 10) = 5, then apply fee: 5 * 9970 / 10000 = 4
+    assert_eq!(output, 4);
+}
+
+#[test]
+fn test_calculate_price_very_high() {
+    let result = calculate_swap_output(100, 100, 10_000, 30);
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    // (100 * 10_000) / (100 + 100) = 5000, then apply fee: 5000 * 9970 / 10000 = 4985
+    assert_eq!(output, 4985);
+}
+
+#[test]
+fn test_calculate_price_very_low() {
+    let result = calculate_swap_output(10_000, 10_000, 100, 30);
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    // (10_000 * 100) / (10_000 + 10_000) = 50, then apply fee: 50 * 9970 / 10000 = 49
+    assert_eq!(output, 49);
+}
+
+#[test]
+fn test_calculate_lp_tokens_proportional() {
+    // Deposit: 250, Liquidity: 1000, Supply: 1000 → Expected: 250
+    assert_eq!(calculate_lp_tokens(250, 1000, 1000), Ok(250));
+}
+
+#[test]
+fn test_calculate_lp_tokens_after_fees() {
+    // Deposit: 1000, Liquidity: 1100, Supply: 1000 → Expected: ~909
+    let result = calculate_lp_tokens(1000, 1100, 1000);
+    assert!(result.is_ok());
+    let lp_tokens = result.unwrap();
+    // (1000 * 1000) / 1100 = 909
+    assert_eq!(lp_tokens, 909);
+}
+
+#[test]
+fn test_calculate_lp_tokens_large_pool() {
+    // Deposit: 100, Liquidity: 1_000_000, Supply: 1_000_000 → Expected: 100
+    assert_eq!(calculate_lp_tokens(100, 1_000_000, 1_000_000), Ok(100));
+}
+
+#[test]
+fn test_calculate_lp_tokens_small_deposit() {
+    // Deposit: 1, Liquidity: 1_000_000, Supply: 1_000_000 → Expected: 1
+    assert_eq!(calculate_lp_tokens(1, 1_000_000, 1_000_000), Ok(1));
+}
+
+#[test]
+fn test_calculate_lp_tokens_multiple_deposits() {
+    // Sequential: 1000→1000 LP, 500→500 LP, 750→750 LP
+    assert_eq!(calculate_lp_tokens(1000, 0, 0), Ok(1000));
+    assert_eq!(calculate_lp_tokens(500, 1000, 1000), Ok(500));
+    assert_eq!(calculate_lp_tokens(750, 1500, 1500), Ok(750));
+}
