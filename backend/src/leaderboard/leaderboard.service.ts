@@ -1,9 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, LessThan } from 'typeorm';
 import { LeaderboardEntry } from './entities/leaderboard-entry.entity';
 import { LeaderboardHistory } from './entities/leaderboard-history.entity';
 import { UsersService } from '../users/users.service';
+import { User } from '../users/entities/user.entity';
 import {
   LeaderboardQueryDto,
   LeaderboardEntryResponse,
@@ -14,6 +15,7 @@ import {
   LeaderboardHistoryEntryResponse,
   PaginatedLeaderboardHistoryResponse,
 } from './dto/leaderboard-history.dto';
+import { UserRankDto } from './dto/user-rank.dto';
 
 @Injectable()
 export class LeaderboardService {
@@ -216,6 +218,48 @@ export class LeaderboardService {
     );
 
     return { data, total, page, limit };
+  }
+
+  /**
+   * Get user rank and stats by stellar address
+   * Returns 404 if user has no leaderboard entry
+   */
+  async getUserRank(stellarAddress: string): Promise<UserRankDto> {
+    let user: User | undefined;
+    try {
+      user = await this.usersService.findByAddress(stellarAddress);
+    } catch {
+      throw new NotFoundException(
+        `User with address "${stellarAddress}" not found`,
+      );
+    }
+
+    const entry = await this.leaderboardRepository.findOne({
+      where: { user_id: user.id, season_id: null },
+    });
+
+    if (!entry) {
+      throw new NotFoundException(
+        `No leaderboard entry found for user "${stellarAddress}"`,
+      );
+    }
+
+    const accuracyRate =
+      entry.total_predictions > 0
+        ? ((entry.correct_predictions / entry.total_predictions) * 100).toFixed(
+            1,
+          )
+        : '0.0';
+
+    return {
+      rank: entry.rank,
+      reputation_score: entry.reputation_score,
+      season_points: entry.season_points,
+      total_predictions: entry.total_predictions,
+      correct_predictions: entry.correct_predictions,
+      accuracy_rate: accuracyRate,
+      total_winnings_stroops: entry.total_winnings_stroops,
+    };
   }
 
   /**
