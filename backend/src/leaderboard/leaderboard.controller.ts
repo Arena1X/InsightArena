@@ -1,4 +1,4 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query, Param } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { LeaderboardService } from './leaderboard.service';
 import {
@@ -9,6 +9,7 @@ import {
   LeaderboardHistoryQueryDto,
   PaginatedLeaderboardHistoryResponse,
 } from './dto/leaderboard-history.dto';
+import { UserRankDto } from './dto/user-rank.dto';
 import { Public } from '../common/decorators/public.decorator';
 
 @ApiTags('Leaderboard')
@@ -54,5 +55,25 @@ export class LeaderboardController {
     @Query() query: LeaderboardHistoryQueryDto,
   ): Promise<PaginatedLeaderboardHistoryResponse> {
     return this.leaderboardService.getHistory(query);
+  }
+
+  @Get(':address')
+  @Public()
+  @ApiOperation({
+    summary: 'Get user rank and stats by Stellar address (public)',
+    description:
+      'Returns rank, reputation_score, season_points, total_predictions, correct_predictions, accuracy_rate, and total_winnings_stroops for a user. Returns 404 if user has no leaderboard entry.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'User rank and leaderboard stats',
+    type: UserRankDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'User not found or has no leaderboard entry',
+  })
+  async getUserRank(@Param('address') address: string): Promise<UserRankDto> {
+    return this.leaderboardService.getUserRank(address);
   }
 }

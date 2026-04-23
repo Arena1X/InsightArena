@@ -226,7 +226,9 @@ describe('FlagsService', () => {
 
       jest
         .spyOn(flagsRepository, 'createQueryBuilder')
-        .mockReturnValue(mockQueryBuilder as unknown as SelectQueryBuilder<Flag>);
+        .mockReturnValue(
+          mockQueryBuilder as unknown as SelectQueryBuilder<Flag>,
+        );
 
       const result = await service.listFlags(query);
 
@@ -291,7 +293,9 @@ describe('FlagsService', () => {
       jest
         .spyOn(flagsRepository, 'findOne')
         .mockResolvedValue(createMockFlag());
-      jest.spyOn(marketsRepository, 'update').mockResolvedValue({} as unknown as UpdateResult);
+      jest
+        .spyOn(marketsRepository, 'update')
+        .mockResolvedValue({} as unknown as UpdateResult);
       jest.spyOn(flagsRepository, 'save').mockResolvedValue({
         ...createMockFlag(),
         status: FlagStatus.RESOLVED,
@@ -322,7 +326,9 @@ describe('FlagsService', () => {
       jest
         .spyOn(flagsRepository, 'findOne')
         .mockResolvedValue(createMockFlag());
-      jest.spyOn(usersRepository, 'update').mockResolvedValue({} as unknown as UpdateResult);
+      jest
+        .spyOn(usersRepository, 'update')
+        .mockResolvedValue({} as unknown as UpdateResult);
       jest.spyOn(flagsRepository, 'save').mockResolvedValue({
         ...createMockFlag(),
         status: FlagStatus.RESOLVED,

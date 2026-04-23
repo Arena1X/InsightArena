@@ -41,6 +41,7 @@ describe('CompetitionsController', () => {
             findAll: jest.fn(),
             findById: jest.fn(),
             list: jest.fn(),
+            getParticipants: jest.fn(),
             getMyRank: jest.fn(),
             joinCompetition: jest.fn(),
             leave: jest.fn(),
@@ -116,6 +117,52 @@ describe('CompetitionsController', () => {
       await expect(controller.getCompetition('nonexistent')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('getParticipants', () => {
+    it('should return paginated participants sorted by score', async () => {
+      const mockParticipantsResponse = {
+        data: [
+          {
+            id: 'p1',
+            user_id: 'user-1',
+            username: 'user1',
+            stellar_address: 'GADDR1',
+            score: 1000,
+            rank: 1,
+            joined_at: new Date(),
+          },
+        ],
+        total: 1,
+        page: 1,
+        limit: 20,
+      };
+
+      const spy = jest
+        .spyOn(service, 'getParticipants')
+        .mockResolvedValue(mockParticipantsResponse as never);
+
+      const result = await controller.getParticipants('comp-uuid-1', {
+        page: 1,
+        limit: 20,
+      });
+
+      expect(spy).toHaveBeenCalledWith('comp-uuid-1', {
+        page: 1,
+        limit: 20,
+      });
+      expect(result).toEqual(mockParticipantsResponse);
+    });
+
+    it('should throw NotFoundException if competition not found', async () => {
+      jest
+        .spyOn(service, 'getParticipants')
+        .mockRejectedValue(new NotFoundException('Competition not found'));
+
+      await expect(
+        controller.getParticipants('nonexistent', { page: 1, limit: 20 }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 

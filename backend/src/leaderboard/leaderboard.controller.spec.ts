@@ -36,6 +36,7 @@ describe('LeaderboardController', () => {
           provide: LeaderboardService,
           useValue: {
             getLeaderboard: jest.fn(),
+            getUserRank: jest.fn(),
           },
         },
       ],
@@ -77,6 +78,42 @@ describe('LeaderboardController', () => {
       expect(spy).toHaveBeenCalledWith(
         expect.objectContaining({ season_id: 'season-1' }),
       );
+    });
+  });
+
+  describe('getUserRank', () => {
+    it('should return user rank by stellar address', async () => {
+      const mockUserRank = {
+        rank: 1,
+        reputation_score: 100,
+        season_points: 50,
+        total_predictions: 10,
+        correct_predictions: 7,
+        accuracy_rate: '70.0',
+        total_winnings_stroops: '500000',
+      };
+
+      const spy = jest
+        .spyOn(service, 'getUserRank')
+        .mockResolvedValue(mockUserRank);
+
+      const result = await controller.getUserRank(
+        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+      );
+
+      expect(spy).toHaveBeenCalledWith(
+        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+      );
+      expect(result).toEqual(mockUserRank);
+    });
+
+    it('should throw NotFoundException for unknown address', async () => {
+      const spy = jest
+        .spyOn(service, 'getUserRank')
+        .mockRejectedValue(new Error('User not found'));
+
+      await expect(controller.getUserRank('INVALID_ADDRESS')).rejects.toThrow();
+      expect(spy).toHaveBeenCalledWith('INVALID_ADDRESS');
     });
   });
 });
