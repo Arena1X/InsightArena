@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod conditional;
 pub mod config;
 pub mod errors;
 pub mod escrow;
@@ -147,6 +148,21 @@ impl InsightArenaContract {
         market_id: u64,
     ) -> Result<(), InsightArenaError> {
         market::cancel_market(&env, caller, market_id)
+    }
+
+    /// Set conditional activation configuration for a market.
+    pub fn set_conditional_config(
+        env: Env,
+        child_id: u64,
+        parent_id: u64,
+        required_outcome: Symbol,
+    ) -> Result<(), InsightArenaError> {
+        // Validation: both markets must exist
+        market::get_market(&env, child_id)?;
+        market::get_market(&env, parent_id)?;
+        
+        conditional::set_conditional_config(&env, child_id, parent_id, required_outcome);
+        Ok(())
     }
 
     // ── Prediction ────────────────────────────────────────────────────────────

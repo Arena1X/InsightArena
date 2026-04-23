@@ -36,6 +36,10 @@ pub enum DataKey {
     SeasonCount,
     /// Emergency pause flag. Used to halt sensitive operations across the platform.
     Paused,
+    /// Keyed by market_id (parent). Stores the list of child market IDs that depend on this parent.
+    ConditionalChildren(u64),
+    /// Keyed by market_id (child). Stores the conditional configuration.
+    ConditionalConfig(u64),
 }
 
 #[contracttype]
@@ -331,6 +335,21 @@ impl InviteCode {
             current_uses: 0,
             expires_at,
             is_active: true,
+        }
+    }
+}
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConditionalConfig {
+    pub parent_id: u64,
+    pub required_outcome: Symbol,
+}
+
+impl ConditionalConfig {
+    pub fn new(parent_id: u64, required_outcome: Symbol) -> Self {
+        Self {
+            parent_id,
+            required_outcome,
         }
     }
 }

@@ -217,6 +217,11 @@ pub fn submit_prediction(
         );
     }
 
+    // ── Guard: Conditional activation ─────────────────────────────────────────
+    if !crate::conditional::is_market_activated(env, market_id) {
+        return Err(InsightArenaError::Unauthorized); // Or a new error like MarketNotActive
+    }
+
     // ── Guard 5 & 6: stake_amount must be within [min_stake, max_stake] ───────
     if stake_amount < market.min_stake {
         return Err(InsightArenaError::StakeTooLow);

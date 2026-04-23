@@ -72,6 +72,18 @@ pub fn resolve_market(
     // ── Emit MarketResolved event ─────────────────────────────────────────────
     market::emit_market_resolved(&env, market_id, resolved_outcome);
 
+    // ── Check for conditional children ────────────────────────────────────────
+    let children = crate::conditional::get_conditional_markets(&env, market_id);
+
+    for child_id in children.iter() {
+        // Try to activate each conditional child
+        if let Ok(should_activate) = crate::conditional::check_conditional_activation(&env, child_id) {
+            if should_activate {
+                let _ = crate::conditional::activate_conditional_market(&env, child_id);
+            }
+        }
+    }
+
     Ok(())
 }
 
