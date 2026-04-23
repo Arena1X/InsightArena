@@ -1,7 +1,7 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, SelectQueryBuilder, UpdateResult } from 'typeorm';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
@@ -226,7 +226,7 @@ describe('FlagsService', () => {
 
       jest
         .spyOn(flagsRepository, 'createQueryBuilder')
-        .mockReturnValue(mockQueryBuilder as any);
+        .mockReturnValue(mockQueryBuilder as unknown as SelectQueryBuilder<Flag>);
 
       const result = await service.listFlags(query);
 
@@ -291,7 +291,7 @@ describe('FlagsService', () => {
       jest
         .spyOn(flagsRepository, 'findOne')
         .mockResolvedValue(createMockFlag());
-      jest.spyOn(marketsRepository, 'update').mockResolvedValue({} as any);
+      jest.spyOn(marketsRepository, 'update').mockResolvedValue({} as unknown as UpdateResult);
       jest.spyOn(flagsRepository, 'save').mockResolvedValue({
         ...createMockFlag(),
         status: FlagStatus.RESOLVED,
@@ -322,7 +322,7 @@ describe('FlagsService', () => {
       jest
         .spyOn(flagsRepository, 'findOne')
         .mockResolvedValue(createMockFlag());
-      jest.spyOn(usersRepository, 'update').mockResolvedValue({} as any);
+      jest.spyOn(usersRepository, 'update').mockResolvedValue({} as unknown as UpdateResult);
       jest.spyOn(flagsRepository, 'save').mockResolvedValue({
         ...createMockFlag(),
         status: FlagStatus.RESOLVED,

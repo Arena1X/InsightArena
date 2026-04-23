@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Repository, SelectQueryBuilder } from 'typeorm';
 import { SorobanService } from '../soroban/soroban.service';
 import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
@@ -325,7 +325,7 @@ describe('MarketsService.findFeaturedMarkets', () => {
     };
 
     marketsRepository.createQueryBuilder.mockReturnValue(
-      mockQueryBuilder as any,
+      mockQueryBuilder as unknown as SelectQueryBuilder<Market>,
     );
 
     const featuredMarkets = [makeFeaturedMarket(), makeFeaturedMarket()];
@@ -373,7 +373,7 @@ describe('MarketsService.findFeaturedMarkets', () => {
     };
 
     marketsRepository.createQueryBuilder.mockReturnValue(
-      mockQueryBuilder as any,
+      mockQueryBuilder as unknown as SelectQueryBuilder<Market>,
     );
     mockQueryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
 

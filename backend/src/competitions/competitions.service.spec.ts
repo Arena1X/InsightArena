@@ -323,7 +323,9 @@ describe('CompetitionsService', () => {
         decrement: jest.fn().mockResolvedValue({}),
       };
 
-      mockRepository.manager.transaction.mockImplementation((cb) => cb(mockManager));
+      mockRepository.manager.transaction.mockImplementation(
+        (cb: (manager: unknown) => Promise<unknown>) => cb(mockManager),
+      );
 
       await service.leave('comp-uuid-1', 'user-uuid-1');
 
@@ -371,7 +373,9 @@ describe('CompetitionsService', () => {
         findOne: jest.fn().mockResolvedValue(null),
       };
 
-      mockRepository.manager.transaction.mockImplementation((cb) => cb(mockManager));
+      mockRepository.manager.transaction.mockImplementation(
+        (cb: (manager: unknown) => Promise<unknown>) => cb(mockManager),
+      );
 
       await expect(service.leave('comp-1', 'user-1')).rejects.toThrow(
         'You are not a participant in this competition',
