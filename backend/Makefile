@@ -14,7 +14,7 @@ help:
 	@echo "  make clean    - Clean build artifacts"
 
 # Run all CI checks
-ci: lint test build migrate
+ci: lint test build
 	@echo "✅ All CI checks passed!"
 
 # Install dependencies

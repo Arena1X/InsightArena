@@ -124,7 +124,6 @@ This runs in order:
 1. ✅ ESLint — code quality
 2. ✅ Jest unit tests — all `*.spec.ts` files
 3. ✅ TypeScript build — via NestJS CLI
-4. ✅ Database migrations — runs all pending migrations
 
 ### Individual Commands
 
@@ -132,7 +131,6 @@ This runs in order:
 make lint    # Run ESLint only
 make test    # Run Jest only
 make build   # Build only
-make migrate # Run database migrations only
 make clean   # Remove dist/ and coverage/
 make help    # List all targets
 ```
