@@ -63,7 +63,7 @@ describe('MarketsService - Bulk Creation', () => {
 
     sorobanService = {
       createMarket: jest.fn().mockResolvedValue({
-        market_id: 'market_123',
+        on_chain_market_id: 'market_123',
         tx_hash: 'tx_hash_123',
       }),
     } as any;

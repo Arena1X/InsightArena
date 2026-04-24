@@ -37,15 +37,20 @@ import {
   PaginatedTrendingMarketsResponse,
   TrendingMarketsQueryDto,
 } from './dto/trending-markets.dto';
+import { MarketAnalyticsSummaryDto } from './dto/market-analytics-summary.dto';
 import { Comment } from './entities/comment.entity';
 import { MarketTemplate } from './entities/market-template.entity';
 import { Market } from './entities/market.entity';
 import { MarketsService } from './markets.service';
+import { AnalyticsService } from '../analytics/analytics.service';
 
 @ApiTags('Markets')
 @Controller('markets')
 export class MarketsController {
-  constructor(private readonly marketsService: MarketsService) {}
+  constructor(
+    private readonly marketsService: MarketsService,
+    private readonly analyticsService: AnalyticsService,
+  ) {}
 
   @Get('templates')
   @Public()
@@ -85,6 +90,30 @@ export class MarketsController {
     @Param('id') id: string,
   ): Promise<PredictionStatsDto[]> {
     return this.marketsService.getPredictionStats(id);
+  }
+
+  @Get(':id/analytics')
+  @Public()
+  @ApiOperation({ summary: 'Get market analytics summary' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Market analytics summary including pool size, participants, outcomes, time remaining, and 24h volume',
+    type: MarketAnalyticsSummaryDto,
+  })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  async getMarketAnalytics(
+    @Param('id') id: string,
+  ): Promise<MarketAnalyticsSummaryDto> {
+    const analytics = await this.analyticsService.getMarketAnalytics(id);
+
+    return {
+      poolSize: analytics.total_pool_stroops,
+      participantCount: analytics.participant_count,
+      outcomeDistribution: analytics.outcome_distribution,
+      timeRemaining: analytics.time_remaining_seconds,
+      volume24h: analytics.volume_24h_stroops,
+    };
   }
 
   @Post()

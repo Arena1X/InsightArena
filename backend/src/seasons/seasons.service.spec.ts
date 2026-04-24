@@ -310,6 +310,7 @@ describe('SeasonsService', () => {
       const result = await service.create(withSync);
 
       expect(sorobanService.createSeason).toHaveBeenCalledWith(
+        dto.season_number,
         Math.floor(new Date(dto.start_time).getTime() / 1000),
         Math.floor(new Date(dto.end_time).getTime() / 1000),
         dto.reward_pool_stroops,

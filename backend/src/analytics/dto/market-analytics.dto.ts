@@ -27,4 +27,7 @@ export class MarketAnalyticsDto {
 
   @Expose()
   time_remaining_seconds: number;
+
+  @Expose()
+  volume_24h_stroops: string;
 }

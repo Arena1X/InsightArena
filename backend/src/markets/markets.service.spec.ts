@@ -137,7 +137,7 @@ describe('MarketsService', () => {
     const dto = makeCreateDto();
 
     sorobanService.createMarket.mockResolvedValue({
-      market_id: 'market-on-chain-1',
+      on_chain_market_id: 'market-on-chain-1',
       tx_hash: 'abc123',
     });
 
@@ -156,7 +156,19 @@ describe('MarketsService', () => {
 
     const result = await service.createMarket(dto, mockUser);
 
-    expect(sorobanService.createMarket).toHaveBeenCalled();
+    expect(sorobanService.createMarket).toHaveBeenCalledWith(
+      dto.title,
+      dto.description,
+      dto.category,
+      dto.outcome_options,
+      dto.end_time,
+      dto.resolution_time,
+      mockUser.stellar_address,
+      dto.creator_fee_bps,
+      dto.min_stake_stroops,
+      dto.max_stake_stroops,
+      dto.is_public,
+    );
     expect(marketsRepository.create).toHaveBeenCalled();
     expect(marketsRepository.save).toHaveBeenCalledWith(createdEntity);
     expect(result).toEqual(savedEntity);

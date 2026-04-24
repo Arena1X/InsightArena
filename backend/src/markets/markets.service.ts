@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
   Injectable,
   Logger,
   NotFoundException,
@@ -161,9 +162,17 @@ export class MarketsService {
             dto.outcome_options,
             dto.end_time,
             dto.resolution_time,
+            user.stellar_address,
+            dto.creator_fee_bps,
+            dto.min_stake_stroops,
+            dto.max_stake_stroops,
+            dto.is_public,
           );
-          onChainMarketId = result.market_id;
+          onChainMarketId = result.on_chain_market_id;
         } catch (err) {
+          if (err instanceof HttpException) {
+            throw err;
+          }
           this.logger.error('Soroban createMarket failed', err);
           throw new BadGatewayException('Failed to create market on Soroban');
         }
@@ -219,12 +228,20 @@ export class MarketsService {
         dto.outcome_options,
         dto.end_time,
         dto.resolution_time,
+        user.stellar_address,
+        dto.creator_fee_bps,
+        dto.min_stake_stroops,
+        dto.max_stake_stroops,
+        dto.is_public,
       );
-      onChainMarketId = result.market_id;
+      onChainMarketId = result.on_chain_market_id;
       this.logger.log(
         `Soroban createMarket called for "${dto.title}" — on_chain_id: ${onChainMarketId}`,
       );
     } catch (err) {
+      if (err instanceof HttpException) {
+        throw err;
+      }
       this.logger.error('Soroban createMarket failed', err);
       throw new BadGatewayException('Failed to create market on Soroban');
     }

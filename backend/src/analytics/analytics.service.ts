@@ -39,6 +39,11 @@ export function accuracyRateFromUser(user: User): string {
 @Injectable()
 export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name);
+  private readonly MARKET_ANALYTICS_CACHE_TTL_MS = 5 * 60 * 1000;
+  private readonly marketAnalyticsCache = new Map<
+    string,
+    { cachedAt: number; data: MarketAnalyticsDto }
+  >();
 
   constructor(
     @InjectRepository(User)
@@ -135,6 +140,15 @@ export class AnalyticsService {
    * Get market analytics: pool size, participant count, outcome distribution, and time remaining
    */
   async getMarketAnalytics(marketId: string): Promise<MarketAnalyticsDto> {
+    const nowMs = Date.now();
+    const cached = this.marketAnalyticsCache.get(marketId);
+    if (
+      cached &&
+      nowMs - cached.cachedAt < this.MARKET_ANALYTICS_CACHE_TTL_MS
+    ) {
+      return cached.data;
+    }
+
     const market = await this.marketsRepository.findOne({
       where: [{ id: marketId }, { on_chain_market_id: marketId }],
     });
@@ -171,7 +185,15 @@ export class AnalyticsService {
       };
     });
 
-    const now = new Date().getTime();
+    const volume24hStroops = predictions.reduce((sum, prediction) => {
+      const submittedAt = new Date(prediction.submitted_at).getTime();
+      if (nowMs - submittedAt <= 24 * 60 * 60 * 1000) {
+        return sum + BigInt(prediction.stake_amount_stroops);
+      }
+      return sum;
+    }, 0n);
+
+    const now = nowMs;
     const endTime = new Date(market.end_time).getTime();
     const timeRemainingSeconds = Math.max(
       0,
@@ -182,13 +204,30 @@ export class AnalyticsService {
       `Market analytics retrieved for "${market.title}" (${market.id}) - ${predictions.length} predictions`,
     );
 
-    return {
+    const payload: MarketAnalyticsDto = {
       market_id: market.id,
       total_pool_stroops: market.total_pool_stroops,
       participant_count: market.participant_count,
       outcome_distribution: outcomeDistribution,
       time_remaining_seconds: timeRemainingSeconds,
+      volume_24h_stroops: volume24hStroops.toString(),
     };
+
+    this.marketAnalyticsCache.set(marketId, { cachedAt: nowMs, data: payload });
+    if (marketId !== market.id) {
+      this.marketAnalyticsCache.set(market.id, {
+        cachedAt: nowMs,
+        data: payload,
+      });
+    }
+    if (market.on_chain_market_id && marketId !== market.on_chain_market_id) {
+      this.marketAnalyticsCache.set(market.on_chain_market_id, {
+        cachedAt: nowMs,
+        data: payload,
+      });
+    }
+
+    return payload;
   }
 
   /**

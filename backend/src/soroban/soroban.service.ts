@@ -1,13 +1,32 @@
-import { Injectable, Logger } from '@nestjs/common';
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
+import {
+  Account,
+  Address,
+  BASE_FEE,
+  Contract,
+  Keypair,
+  Networks,
+  TransactionBuilder,
+  nativeToScVal,
+  rpc as SorobanRpc,
+  scValToNative,
+  xdr,
+} from '@stellar/stellar-sdk';
 
 export interface SorobanPredictionResult {
   tx_hash: string;
 }
 
 export interface SorobanCreateMarketResult {
-  market_id: string;
+  on_chain_market_id: string;
   tx_hash: string;
 }
 
@@ -80,45 +99,106 @@ export class SorobanService {
     outcomeOptions: string[],
     endTime: string,
     resolutionTime: string,
+    creator: string,
+    creatorFeeBps = 0,
+    minStakeStroops = '0',
+    maxStakeStroops = '0',
+    isPublic = true,
   ): Promise<SorobanCreateMarketResult> {
-    return this.withSorobanErrorHandling('createMarket', () => {
+    return this.withSorobanErrorHandling('createMarket', async () => {
       this.logger.log(
-        `Soroban createMarket: title=${title} category=${category} outcomes=${outcomeOptions.length} end=${endTime} resolve=${resolutionTime}`,
+        `Soroban createMarket: title=${title} category=${category} outcomes=${outcomeOptions.length} end=${endTime} resolve=${resolutionTime} creator=${creator}`,
       );
 
-      const market_id = `market_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const tx_hash = Buffer.from(`${market_id}:${description}`)
-        .toString('hex')
-        .padEnd(64, '0')
-        .slice(0, 64);
+      const end = new Date(endTime);
+      const resolution = new Date(resolutionTime);
+      if (Number.isNaN(end.getTime()) || Number.isNaN(resolution.getTime())) {
+        throw new BadRequestException('Invalid end_time or resolution_time');
+      }
 
-      return Promise.resolve({ market_id, tx_hash });
+      const params = this.buildCreateMarketParamsScVal({
+        title,
+        description,
+        category,
+        outcomeOptions,
+        endTimeUnix: Math.floor(end.getTime() / 1000),
+        resolutionTimeUnix: Math.floor(resolution.getTime() / 1000),
+        disputeWindowSeconds: 24 * 60 * 60,
+        creatorFeeBps,
+        minStakeStroops,
+        maxStakeStroops,
+        isPublic,
+      });
+
+      const creatorAddr = Address.fromString(creator);
+      const { txHash, returnValue } = await this.invokeContract(
+        'create_market',
+        [creatorAddr.toScVal(), params],
+      );
+
+      const native = this.scValToNativeSafe(returnValue);
+      const on_chain_market_id = this.toStringId(native);
+
+      return { on_chain_market_id, tx_hash: txHash };
     });
   }
 
   /**
    * Create a season on the Soroban contract (admin flow).
-   * Stub implementation until real contract invocations are wired via stellar-sdk.
    */
   async createSeason(
+    seasonNumber: number,
     startTimeUnix: number,
     endTimeUnix: number,
     rewardPoolStroops: string,
   ): Promise<SorobanCreateSeasonResult> {
-    return this.withSorobanErrorHandling('createSeason', () => {
+    return this.withSorobanErrorHandling('createSeason', async () => {
       this.logger.log(
-        `Soroban createSeason: start=${startTimeUnix} end=${endTimeUnix} pool=${rewardPoolStroops}`,
+        `Soroban createSeason: season=${seasonNumber} start=${startTimeUnix} end=${endTimeUnix} pool=${rewardPoolStroops}`,
       );
-      const mix =
-        (BigInt(startTimeUnix) ^ BigInt(endTimeUnix)) & BigInt(0x7fffffff);
-      const on_chain_season_id = mix === 0n ? 1 : Number(mix);
-      const tx_hash = Buffer.from(
-        `season:${startTimeUnix}:${endTimeUnix}:${rewardPoolStroops}`,
-      )
-        .toString('hex')
-        .padEnd(64, '0')
-        .slice(0, 64);
-      return Promise.resolve({ on_chain_season_id, tx_hash });
+
+      const start = Number(startTimeUnix);
+      const end = Number(endTimeUnix);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        throw new BadRequestException('Invalid start_time or end_time');
+      }
+
+      const active = await this.getActiveSeasonIfAny();
+      if (active) {
+        const activeStart = this.toNumber(
+          active.start_time ?? active.startTime,
+        );
+        const activeEnd = this.toNumber(active.end_time ?? active.endTime);
+        if (
+          activeStart !== null &&
+          activeEnd !== null &&
+          this.rangesOverlap(activeStart, activeEnd, startTimeUnix, endTimeUnix)
+        ) {
+          throw new ConflictException('SeasonAlreadyActive');
+        }
+      }
+
+      const keypair = this.getServerKeypair();
+      const adminAddr = Address.fromString(keypair.publicKey());
+
+      const { txHash, returnValue } = await this.invokeContract(
+        'create_season',
+        [
+          adminAddr.toScVal(),
+          nativeToScVal(BigInt(startTimeUnix), { type: 'u64' }),
+          nativeToScVal(BigInt(endTimeUnix), { type: 'u64' }),
+          nativeToScVal(BigInt(rewardPoolStroops), { type: 'i128' }),
+        ],
+        keypair,
+      );
+
+      const native = this.scValToNativeSafe(returnValue);
+      const on_chain_season_id = Number(this.toNumber(native) ?? 0);
+      if (!Number.isFinite(on_chain_season_id) || on_chain_season_id <= 0) {
+        throw new Error('Failed to parse on-chain season id');
+      }
+
+      return { on_chain_season_id, tx_hash: txHash };
     });
   }
 
@@ -260,10 +340,329 @@ export class SorobanService {
     try {
       return await fn();
     } catch (error) {
+      this.rethrowContractErrorAsHttp(operation, error);
       const message =
         error instanceof Error ? error.message : 'Unknown Soroban error';
       this.logger.error(`Soroban ${operation} failed: ${message}`);
       throw error;
+    }
+  }
+
+  private getNetworkPassphrase(): string {
+    const val = (this.network ?? '').toLowerCase().trim();
+    if (val === 'testnet') return Networks.TESTNET;
+    if (val === 'mainnet' || val === 'public') return Networks.PUBLIC;
+    return this.network;
+  }
+
+  private getServerKeypair(): Keypair {
+    if (!this.serverSecretKey) {
+      throw new Error('SERVER_SECRET_KEY is not configured');
+    }
+    return Keypair.fromSecret(this.serverSecretKey);
+  }
+
+  private async getActiveSeasonIfAny(): Promise<Record<
+    string,
+    unknown
+  > | null> {
+    if (!this.contractId) {
+      return null;
+    }
+
+    const { returnValue } = await this.simulateContract(
+      'get_active_season',
+      [],
+    );
+    const native = this.scValToNativeSafe(returnValue);
+
+    if (native instanceof Map) {
+      const obj: Record<string, unknown> = {};
+      for (const [k, v] of native.entries()) {
+        obj[String(k)] = v;
+      }
+      return obj;
+    }
+
+    if (!native || typeof native !== 'object') {
+      return null;
+    }
+    return native as Record<string, unknown>;
+  }
+
+  private rangesOverlap(
+    aStart: number,
+    aEnd: number,
+    bStart: number,
+    bEnd: number,
+  ): boolean {
+    return aStart < bEnd && aEnd > bStart;
+  }
+
+  private buildCreateMarketParamsScVal(input: {
+    title: string;
+    description: string;
+    category: string;
+    outcomeOptions: string[];
+    endTimeUnix: number;
+    resolutionTimeUnix: number;
+    disputeWindowSeconds: number;
+    creatorFeeBps: number;
+    minStakeStroops: string;
+    maxStakeStroops: string;
+    isPublic: boolean;
+  }): xdr.ScVal {
+    const outcomes = xdr.ScVal.scvVec(
+      input.outcomeOptions.map((o) =>
+        nativeToScVal(String(o), { type: 'symbol' }),
+      ),
+    );
+
+    const entries: xdr.ScMapEntry[] = [
+      new xdr.ScMapEntry({
+        key: nativeToScVal('title', { type: 'symbol' }),
+        val: nativeToScVal(input.title, { type: 'string' }),
+      }),
+      new xdr.ScMapEntry({
+        key: nativeToScVal('description', { type: 'symbol' }),
+        val: nativeToScVal(input.description, { type: 'string' }),
+      }),
+      new xdr.ScMapEntry({
+        key: nativeToScVal('category', { type: 'symbol' }),
+        val: nativeToScVal(input.category, { type: 'symbol' }),
+      }),
+      new xdr.ScMapEntry({
+        key: nativeToScVal('outcomes', { type: 'symbol' }),
+        val: outcomes,
+      }),
+      new xdr.ScMapEntry({
+        key: nativeToScVal('end_time', { type: 'symbol' }),
+        val: nativeToScVal(BigInt(input.endTimeUnix), { type: 'u64' }),
+      }),
+      new xdr.ScMapEntry({
+        key: nativeToScVal('resolution_time', { type: 'symbol' }),
+        val: nativeToScVal(BigInt(input.resolutionTimeUnix), { type: 'u64' }),
+      }),
+      new xdr.ScMapEntry({
+        key: nativeToScVal('dispute_window', { type: 'symbol' }),
+        val: nativeToScVal(BigInt(input.disputeWindowSeconds), { type: 'u64' }),
+      }),
+      new xdr.ScMapEntry({
+        key: nativeToScVal('creator_fee_bps', { type: 'symbol' }),
+        val: nativeToScVal(input.creatorFeeBps, { type: 'u32' }),
+      }),
+      new xdr.ScMapEntry({
+        key: nativeToScVal('min_stake', { type: 'symbol' }),
+        val: nativeToScVal(BigInt(input.minStakeStroops), { type: 'i128' }),
+      }),
+      new xdr.ScMapEntry({
+        key: nativeToScVal('max_stake', { type: 'symbol' }),
+        val: nativeToScVal(BigInt(input.maxStakeStroops), { type: 'i128' }),
+      }),
+      new xdr.ScMapEntry({
+        key: nativeToScVal('is_public', { type: 'symbol' }),
+        val: nativeToScVal(input.isPublic, { type: 'bool' }),
+      }),
+    ];
+
+    return xdr.ScVal.scvMap(entries);
+  }
+
+  private async simulateContract(
+    method: string,
+    args: xdr.ScVal[],
+    keypair?: Keypair,
+  ): Promise<{ returnValue: xdr.ScVal }> {
+    const kp = keypair ?? this.getServerKeypair();
+    const tx = await this.buildContractTx(kp, method, args);
+    const simulation = await (this.rpcServer as any).simulateTransaction(tx);
+
+    if (simulation?.error) {
+      throw new Error(
+        typeof simulation.error === 'string'
+          ? simulation.error
+          : JSON.stringify(simulation.error),
+      );
+    }
+
+    const returnValue: xdr.ScVal | undefined =
+      simulation?.result?.retval ?? simulation?.retval;
+    if (!returnValue) {
+      throw new Error('Soroban simulation missing return value');
+    }
+
+    return { returnValue };
+  }
+
+  private async invokeContract(
+    method: string,
+    args: xdr.ScVal[],
+    keypair?: Keypair,
+  ): Promise<{ txHash: string; returnValue: xdr.ScVal }> {
+    const kp = keypair ?? this.getServerKeypair();
+    const tx = await this.buildContractTx(kp, method, args);
+    const simulation = await (this.rpcServer as any).simulateTransaction(tx);
+
+    if (simulation?.error) {
+      throw new Error(
+        typeof simulation.error === 'string'
+          ? simulation.error
+          : JSON.stringify(simulation.error),
+      );
+    }
+
+    const assembled = SorobanRpc.assembleTransaction(tx, simulation);
+    const assembledTx =
+      typeof (assembled as any).build === 'function'
+        ? (assembled as any).build()
+        : assembled;
+    assembledTx.sign(kp);
+
+    const send = (await (this.rpcServer as any).sendTransaction(assembledTx)) as {
+      hash?: string;
+      status?: string;
+    };
+
+    const txHash = send.hash ?? '';
+    if (!txHash) {
+      throw new Error('Soroban RPC sendTransaction did not return tx hash');
+    }
+
+    const finalTx = await this.pollForTransaction(txHash);
+    const returnValue =
+      this.tryExtractReturnValue(finalTx) ??
+      simulation?.result?.retval ??
+      simulation?.retval;
+
+    if (!returnValue) {
+      throw new Error('Soroban transaction missing return value');
+    }
+
+    return { txHash, returnValue };
+  }
+
+  private async buildContractTx(
+    keypair: Keypair,
+    method: string,
+    args: xdr.ScVal[],
+  ): Promise<any> {
+    if (!this.contractId) {
+      throw new Error('SOROBAN_CONTRACT_ID is not configured');
+    }
+
+    const account = await (this.rpcServer as any).getAccount(
+      keypair.publicKey(),
+    );
+
+    const source =
+      account instanceof Account
+        ? account
+        : new Account(
+            account.accountId ?? keypair.publicKey(),
+            account.sequence,
+          );
+
+    const contract = new Contract(this.contractId);
+    const op = contract.call(method, ...(args ?? []));
+
+    return new TransactionBuilder(source, {
+      fee: BASE_FEE,
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+  }
+
+  private async pollForTransaction(txHash: string): Promise<any> {
+    const maxAttempts = 20;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const res = await (this.rpcServer as any).getTransaction(txHash);
+      const status = String(res?.status ?? '').toUpperCase();
+      if (status === 'SUCCESS') return res;
+      if (status === 'FAILED') {
+        throw new Error(res?.resultXdr ?? 'Soroban transaction failed');
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+
+    throw new Error('Soroban transaction timed out');
+  }
+
+  private tryExtractReturnValue(txResponse: any): xdr.ScVal | null {
+    const rv = txResponse?.returnValue ?? txResponse?.result?.returnValue;
+    if (!rv) return null;
+    if (rv instanceof xdr.ScVal) return rv;
+    if (typeof rv === 'string') {
+      try {
+        return xdr.ScVal.fromXDR(rv, 'base64');
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private scValToNativeSafe(val: xdr.ScVal): unknown {
+    try {
+      return scValToNative(val);
+    } catch {
+      return null;
+    }
+  }
+
+  private toNumber(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'bigint') {
+      const asNum = Number(value);
+      return Number.isFinite(asNum) ? asNum : null;
+    }
+    if (typeof value === 'string') {
+      const asNum = Number(value);
+      return Number.isFinite(asNum) ? asNum : null;
+    }
+    return null;
+  }
+
+  private toStringId(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' && Number.isFinite(value))
+      return String(value);
+    if (typeof value === 'bigint') return value.toString();
+    return '';
+  }
+
+  private extractContractErrorCode(error: unknown): number | null {
+    const msg =
+      typeof error === 'string'
+        ? error
+        : error instanceof Error
+          ? error.message
+          : '';
+
+    // Common patterns: "Error(Contract, #17)", "ContractError(17)"
+    const match =
+      msg.match(/Contract[^0-9#]*#?(\d{1,4})/) ?? msg.match(/\b#(\d{1,4})\b/);
+    if (!match) return null;
+    const code = Number(match[1]);
+    return Number.isFinite(code) ? code : null;
+  }
+
+  private rethrowContractErrorAsHttp(operation: string, error: unknown): void {
+    const code = this.extractContractErrorCode(error);
+    if (code === null) return;
+
+    // Contract error codes (see contract/src/errors.rs)
+    if (code === 17 || code === 18 || code === 102) {
+      throw new BadRequestException(`${operation} rejected by contract`, {
+        cause: error as any,
+      });
+    }
+
+    if (code === 101) {
+      throw new ServiceUnavailableException('Contract is paused', {
+        cause: error as any,
+      });
     }
   }
 
@@ -291,17 +690,6 @@ export class SorobanService {
     }
 
     return { id, ledger, topic, value };
-  }
-
-  private toNumber(value: unknown): number | null {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
-    }
-    if (typeof value === 'string') {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
   }
 
   private toStringArray(value: unknown): string[] {

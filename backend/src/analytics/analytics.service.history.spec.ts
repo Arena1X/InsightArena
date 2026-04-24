@@ -22,6 +22,8 @@ describe('AnalyticsService - Market History', () => {
     outcome_options: ['YES', 'NO'],
     participant_count: 10,
     total_pool_stroops: '5000000',
+    end_time: new Date(Date.now() + 60 * 60 * 1000),
+    resolution_time: new Date(Date.now() + 2 * 60 * 60 * 1000),
     created_at: new Date(),
   } as Market;
 
@@ -123,5 +125,49 @@ describe('AnalyticsService - Market History', () => {
     marketsRepository.findOne.mockResolvedValue(null);
 
     await expect(service.getMarketHistory('invalid-id')).rejects.toThrow();
+  });
+
+  it('should calculate 24h volume in market analytics', async () => {
+    const recent = new Date(Date.now() - 60 * 60 * 1000);
+    const old = new Date(Date.now() - 26 * 60 * 60 * 1000);
+
+    predictionsRepository.find.mockResolvedValue([
+      {
+        chosen_outcome: 'YES',
+        stake_amount_stroops: '100',
+        submitted_at: recent,
+      },
+      {
+        chosen_outcome: 'NO',
+        stake_amount_stroops: '250',
+        submitted_at: old,
+      },
+      {
+        chosen_outcome: 'YES',
+        stake_amount_stroops: '300',
+        submitted_at: recent,
+      },
+    ] as Prediction[]);
+
+    const result = await service.getMarketAnalytics('market-1');
+
+    expect(result.volume_24h_stroops).toBe('400');
+    expect(result.outcome_distribution).toHaveLength(2);
+  });
+
+  it('should cache market analytics for five minutes', async () => {
+    predictionsRepository.find.mockResolvedValue([
+      {
+        chosen_outcome: 'YES',
+        stake_amount_stroops: '100',
+        submitted_at: new Date(),
+      },
+    ] as Prediction[]);
+
+    await service.getMarketAnalytics('market-1');
+    await service.getMarketAnalytics('market-1');
+
+    expect(marketsRepository.findOne).toHaveBeenCalledTimes(1);
+    expect(predictionsRepository.find).toHaveBeenCalledTimes(1);
   });
 });

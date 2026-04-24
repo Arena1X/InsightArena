@@ -160,6 +160,7 @@ export class SeasonsService {
       const endUnix = Math.floor(endsAt.getTime() / 1000);
       try {
         const chain = await this.sorobanService.createSeason(
+          dto.season_number,
           startUnix,
           endUnix,
           dto.reward_pool_stroops,
