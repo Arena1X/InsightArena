@@ -97,6 +97,95 @@ describe('SorobanService', () => {
     });
   });
 
+  describe('refundCompetitionParticipant', () => {
+    it('should successfully refund a participant', async () => {
+      const mockTxHash = 'a'.repeat(64);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getAccount')
+        .mockResolvedValue({
+          sequenceNumber: () => '1',
+          accountId: () => testServerKeypair.publicKey(),
+        } as any);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({
+          results: [{}],
+          transactionData: {},
+          minResourceFee: '100',
+        } as any);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'sendTransaction')
+        .mockResolvedValue({
+          status: 'PENDING',
+          hash: mockTxHash,
+        } as any);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getTransaction')
+        .mockResolvedValue({
+          status: 'SUCCESS',
+          hash: mockTxHash,
+        } as any);
+
+      const result = await service.refundCompetitionParticipant(
+        testKeypair.publicKey(),
+        'comp_123',
+        '1000000',
+      );
+
+      expect(result.tx_hash).toBe(mockTxHash);
+    });
+
+    it('should throw EscrowEmpty error when simulation fails with that message', async () => {
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getAccount')
+        .mockResolvedValue({
+          sequenceNumber: () => '1',
+          accountId: () => testServerKeypair.publicKey(),
+        } as any);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({
+          error: 'Contract Error: EscrowEmpty',
+        } as any);
+
+      await expect(
+        service.refundCompetitionParticipant(
+          testKeypair.publicKey(),
+          'comp_123',
+          '1000000',
+        ),
+      ).rejects.toThrow('EscrowEmpty');
+    });
+
+    it('should throw InsufficientFunds error when simulation fails with that message', async () => {
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getAccount')
+        .mockResolvedValue({
+          sequenceNumber: () => '1',
+          accountId: () => testServerKeypair.publicKey(),
+        } as any);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({
+          error: 'Contract Error: InsufficientFunds',
+        } as any);
+
+      await expect(
+        service.refundCompetitionParticipant(
+          testKeypair.publicKey(),
+          'comp_123',
+          '1000000',
+        ),
+      ).rejects.toThrow('InsufficientFunds');
+    });
+  });
+
   describe('resolveMarket', () => {
     it('should resolve market and return void', async () => {
       await expect(

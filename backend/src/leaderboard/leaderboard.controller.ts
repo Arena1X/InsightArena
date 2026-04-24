@@ -53,7 +53,13 @@ export class LeaderboardController {
   })
   async getHistory(
     @Query() query: LeaderboardHistoryQueryDto,
-  ): Promise<PaginatedLeaderboardHistoryResponse> {
+  ): Promise<any> {
+    if (query.address) {
+      return this.leaderboardService.getHistoryForAddress(
+        query.address,
+        query.days,
+      );
+    }
     return this.leaderboardService.getHistory(query);
   }
 

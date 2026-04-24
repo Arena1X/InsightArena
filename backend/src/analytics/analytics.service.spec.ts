@@ -246,4 +246,58 @@ describe('AnalyticsService', () => {
     const result = await service.getDashboard({ id: baseUser.id } as User);
     expect(result.current_streak).toBe(0);
   });
+
+  describe('getMarketHistory', () => {
+    it('should return market history in the requested format', async () => {
+      const mockMarket = { id: 'market-1', title: 'Market 1' } as Market;
+      const mockHistory = [
+        {
+          recorded_at: new Date(),
+          pool_size_stroops: '1000',
+          participant_count: 5,
+          outcome_probabilities: ['60.00', '40.00'],
+        } as MarketHistory,
+      ];
+
+      const marketsRepository = module.get(getRepositoryToken(Market));
+      const marketHistoryRepository = module.get(
+        getRepositoryToken(MarketHistory),
+      );
+
+      jest.spyOn(marketsRepository, 'findOne').mockResolvedValue(mockMarket);
+
+      const qb = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue(mockHistory),
+      };
+      jest
+        .spyOn(marketHistoryRepository, 'createQueryBuilder')
+        .mockReturnValue(qb as any);
+
+      const result = await service.getMarketHistory('market-1');
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        recorded_at: mockHistory[0].recorded_at,
+        pool_size_stroops: '1000',
+        participant_count: 5,
+        outcome_probabilities: [60, 40],
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'history.recorded_at >= :from',
+        expect.any(Object),
+      );
+    });
+
+    it('should throw NotFoundException for invalid market', async () => {
+      const marketsRepository = module.get(getRepositoryToken(Market));
+      jest.spyOn(marketsRepository, 'findOne').mockResolvedValue(null);
+
+      await expect(service.getMarketHistory('invalid')).rejects.toThrow(
+        'Market "invalid" not found',
+      );
+    });
+  });
 });

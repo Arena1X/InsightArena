@@ -1,6 +1,12 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, LessThan, IsNull } from 'typeorm';
+import {
+  Repository,
+  DataSource,
+  LessThan,
+  IsNull,
+  MoreThanOrEqual,
+} from 'typeorm';
 import { LeaderboardEntry } from './entities/leaderboard-entry.entity';
 import { LeaderboardHistory } from './entities/leaderboard-history.entity';
 import { UsersService } from '../users/users.service';
@@ -308,5 +314,35 @@ export class LeaderboardService {
     this.logger.log(
       `Daily snapshot complete: ${entries.length} entries saved in ${elapsed}ms`,
     );
+  }
+
+  /**
+   * Get user history snapshots for a specific Stellar address
+   */
+  async getHistoryForAddress(address: string, days: number = 30) {
+    const validDays = Math.min(Math.max(days || 30, 1), 90);
+
+    const user = await this.usersService.findByAddress(address);
+    if (!user) {
+      throw new NotFoundException(`User with address ${address} not found`);
+    }
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - validDays);
+
+    const history = await this.historyRepository.find({
+      where: {
+        user_id: user.id,
+        snapshot_date: MoreThanOrEqual(cutoffDate),
+      },
+      order: { snapshot_date: 'DESC' },
+    });
+
+    return history.map((h) => ({
+      snapshot_date: h.snapshot_date,
+      rank: h.rank,
+      reputation_score: h.reputation_score,
+      season_points: h.season_points,
+    }));
   }
 }

@@ -1,6 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { rpc as SorobanRpc, Keypair } from '@stellar/stellar-sdk';
+import {
+  rpc as SorobanRpc,
+  Keypair,
+  TransactionBuilder,
+  Address,
+  Contract,
+  nativeToScVal,
+  Networks,
+} from '@stellar/stellar-sdk';
 
 export interface SorobanPredictionResult {
   tx_hash: string;
@@ -160,21 +168,90 @@ export class SorobanService {
     userStellarAddress: string,
     competitionId: string,
     refundAmountStroops: string,
+    correlationId?: string,
   ): Promise<SorobanRefundResult> {
-    return this.withSorobanErrorHandling('refundCompetitionParticipant', () => {
-      this.logger.log(
-        `Soroban refundCompetitionParticipant: user=${userStellarAddress} competition=${competitionId} amount=${refundAmountStroops}`,
-      );
+    const cid = correlationId || `refund_${Date.now()}`;
+    return this.withSorobanErrorHandling(
+      `refundCompetitionParticipant[${cid}]`,
+      async () => {
+        this.logger.log(
+          `[${cid}] Initiating Soroban refund: user=${userStellarAddress} competition=${competitionId} amount=${refundAmountStroops}`,
+        );
 
-      const tx_hash = Buffer.from(
-        `refund:${competitionId}:${userStellarAddress}:${refundAmountStroops}:${Date.now()}`,
-      )
-        .toString('hex')
-        .padEnd(64, '0')
-        .slice(0, 64);
+        const serverKeypair = Keypair.fromSecret(this.serverSecretKey);
+        const serverAccount = await this.rpcServer.getAccount(
+          serverKeypair.publicKey(),
+        );
 
-      return Promise.resolve({ tx_hash });
-    });
+        const contract = new Contract(this.contractId);
+
+        // Build the invocation
+        const tx = new TransactionBuilder(serverAccount, {
+          fee: '10000', // Base fee, updated by simulation
+          networkPassphrase:
+            this.network === 'testnet' ? Networks.TESTNET : Networks.PUBLIC,
+        })
+          .addOperation(
+            contract.call(
+              'refund',
+              new Address(userStellarAddress).toScVal(),
+              nativeToScVal(BigInt(refundAmountStroops), { type: 'u128' }),
+            ),
+          )
+          .setTimeout(30)
+          .build();
+
+        // Simulate
+        const simulation = await this.rpcServer.simulateTransaction(tx);
+        if (SorobanRpc.Api.isSimulationError(simulation)) {
+          if (simulation.error.includes('EscrowEmpty')) {
+            throw new Error('EscrowEmpty');
+          }
+          if (simulation.error.includes('InsufficientFunds')) {
+            throw new Error('InsufficientFunds');
+          }
+          throw new Error(`Simulation failed: ${simulation.error}`);
+        }
+
+        // Assemble and Sign
+        const assembledTx = SorobanRpc.assembleTransaction(tx, simulation);
+        assembledTx.sign(serverKeypair);
+
+        // Submit
+        const response = await this.rpcServer.sendTransaction(assembledTx);
+        if (response.status === 'ERROR') {
+          throw new Error(
+            `Transaction submission failed: ${JSON.stringify(response.errorResultXdr)}`,
+          );
+        }
+
+        this.logger.log(`[${cid}] Refund submitted. tx_hash=${response.hash}`);
+
+        // Wait for completion
+        let statusResponse = await this.rpcServer.getTransaction(response.hash);
+        let attempts = 0;
+        while (
+          (statusResponse.status === 'NOT_FOUND' ||
+            statusResponse.status === 'PENDING') &&
+          attempts < 10
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          statusResponse = await this.rpcServer.getTransaction(response.hash);
+          attempts++;
+        }
+
+        if (statusResponse.status === 'SUCCESS') {
+          this.logger.log(
+            `[${cid}] Refund transaction confirmed: tx_hash=${response.hash}`,
+          );
+          return { tx_hash: response.hash };
+        } else {
+          throw new Error(
+            `Transaction failed with status ${statusResponse.status}`,
+          );
+        }
+      },
+    );
   }
 
   /**

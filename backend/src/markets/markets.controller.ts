@@ -41,11 +41,15 @@ import { Comment } from './entities/comment.entity';
 import { MarketTemplate } from './entities/market-template.entity';
 import { Market } from './entities/market.entity';
 import { MarketsService } from './markets.service';
+import { AnalyticsService } from '../analytics/analytics.service';
 
 @ApiTags('Markets')
 @Controller('markets')
 export class MarketsController {
-  constructor(private readonly marketsService: MarketsService) {}
+  constructor(
+    private readonly marketsService: MarketsService,
+    private readonly analyticsService: AnalyticsService,
+  ) {}
 
   @Get('templates')
   @Public()
@@ -264,5 +268,26 @@ export class MarketsController {
   @ApiResponse({ status: 404, description: 'Market not found' })
   async removeBookmark(@Param('id') id: string, @CurrentUser() user: User) {
     return this.marketsService.removeBookmark(id, user);
+  }
+
+  @Get(':id/history')
+  @Public()
+  @ApiOperation({
+    summary: 'Get historical data for a market',
+    description:
+      'Returns pool size, participant count, and outcome probabilities over time.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Historical data points',
+  })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  async getMarketHistory(
+    @Param('id') id: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('interval') interval?: 'hourly' | 'daily',
+  ) {
+    return this.analyticsService.getMarketHistory(id, from, to, interval);
   }
 }

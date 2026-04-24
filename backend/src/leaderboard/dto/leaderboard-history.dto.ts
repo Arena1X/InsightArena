@@ -18,6 +18,17 @@ export class LeaderboardHistoryQueryDto {
   @IsUUID()
   user_id?: string;
 
+  @ApiPropertyOptional({ description: 'Filter by Stellar address' })
+  @IsOptional()
+  address?: string;
+
+  @ApiPropertyOptional({ description: 'Number of days for history (max 90)', default: 30 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  days?: number;
+
   @ApiPropertyOptional({ description: 'Page number', default: 1 })
   @IsOptional()
   @Type(() => Number)
