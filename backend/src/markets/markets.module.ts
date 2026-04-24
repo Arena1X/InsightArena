@@ -8,6 +8,7 @@ import { Prediction } from '../predictions/entities/prediction.entity';
 import { MarketsService } from './markets.service';
 import { MarketsController } from './markets.controller';
 import { UsersModule } from '../users/users.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { UsersModule } from '../users/users.module';
       Prediction,
     ]),
     UsersModule,
+    AnalyticsModule,
   ],
   controllers: [MarketsController],
   providers: [MarketsService],

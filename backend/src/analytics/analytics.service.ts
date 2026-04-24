@@ -194,7 +194,11 @@ export class AnalyticsService {
   /**
    * Get historical data for a market: prediction volume, pool size, participant growth over time
    */
-  async getMarketHistory(marketId: string): Promise<MarketHistoryResponseDto> {
+  async getMarketHistory(
+    marketId: string,
+    from?: string,
+    to?: string,
+  ): Promise<MarketHistoryResponseDto> {
     const market = await this.marketsRepository.findOne({
       where: [{ id: marketId }, { on_chain_market_id: marketId }],
     });
@@ -203,29 +207,38 @@ export class AnalyticsService {
       throw new NotFoundException(`Market "${marketId}" not found`);
     }
 
-    const history = await this.marketHistoryRepository.find({
-      where: { market: { id: market.id } },
-      order: { recorded_at: 'ASC' },
-    });
+    const qb = this.marketHistoryRepository
+      .createQueryBuilder('history')
+      .where('history.marketId = :marketId', { marketId: market.id });
 
-    const historyPoints = history.map((h) => ({
-      timestamp: h.recorded_at,
-      prediction_volume: h.prediction_volume,
-      pool_size_stroops: h.pool_size_stroops,
-      participant_count: h.participant_count,
-      outcome_probabilities: h.outcome_probabilities
-        ? h.outcome_probabilities.map((p) => parseFloat(p))
-        : null,
-    }));
+    if (from) {
+      qb.andWhere('history.recorded_at >= :from', { from });
+    } else {
+      const lastWeek = new Date();
+      lastWeek.setDate(lastWeek.getDate() - 7);
+      qb.andWhere('history.recorded_at >= :from', { from: lastWeek });
+    }
 
-    this.logger.log(
-      `Market history retrieved for "${market.title}" (${market.id}) - ${historyPoints.length} data points`,
-    );
+    if (to) {
+      qb.andWhere('history.recorded_at <= :to', { to });
+    }
+
+    qb.orderBy('history.recorded_at', 'ASC');
+
+    const history = await qb.getMany();
 
     return {
       market_id: market.id,
       title: market.title,
-      history: historyPoints,
+      history: history.map((h) => ({
+        timestamp: h.recorded_at,
+        prediction_volume: h.prediction_volume,
+        pool_size_stroops: h.pool_size_stroops,
+        participant_count: h.participant_count,
+        outcome_probabilities: h.outcome_probabilities
+          ? h.outcome_probabilities.map((p) => parseFloat(p))
+          : null,
+      })),
       generated_at: new Date(),
     };
   }

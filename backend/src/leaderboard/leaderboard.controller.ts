@@ -50,10 +50,17 @@ export class LeaderboardController {
   @ApiResponse({
     status: 200,
     description: 'Historical leaderboard with rank changes',
+    type: PaginatedLeaderboardHistoryResponse,
   })
   async getHistory(
     @Query() query: LeaderboardHistoryQueryDto,
-  ): Promise<PaginatedLeaderboardHistoryResponse> {
+  ): Promise<PaginatedLeaderboardHistoryResponse | any[]> {
+    if (query.address) {
+      return this.leaderboardService.getHistoryForAddress(
+        query.address,
+        query.days,
+      );
+    }
     return this.leaderboardService.getHistory(query);
   }
 

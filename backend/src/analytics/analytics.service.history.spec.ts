@@ -30,6 +30,12 @@ describe('AnalyticsService - Market History', () => {
       find: jest.fn(),
       create: jest.fn(),
       save: jest.fn(),
+      createQueryBuilder: jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      }),
     } as any;
 
     marketsRepository = {
@@ -91,7 +97,8 @@ describe('AnalyticsService - Market History', () => {
       },
     ] as MarketHistory[];
 
-    marketHistoryRepository.find.mockResolvedValue(mockHistory);
+    const qb = marketHistoryRepository.createQueryBuilder();
+    (qb.getMany as jest.Mock).mockResolvedValue(mockHistory);
 
     const result = await service.getMarketHistory('market-1');
 
