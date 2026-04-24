@@ -1,9 +1,11 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Param, Query, UseInterceptors } from '@nestjs/common';
+import { CacheInterceptor, CacheTTL } from '@nestjs/cache-manager';
 import {
   ApiBearerAuth,
   ApiOperation,
   ApiResponse,
   ApiTags,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
@@ -31,7 +33,7 @@ export class AnalyticsController {
     type: DashboardKpisDto,
   })
   async getDashboard(@CurrentUser() user: User): Promise<DashboardKpisDto> {
-    return this.analyticsService.getDashboard(user);
+    return this.analyticsService.getDashboardKPIs(user);
   }
 
   @Get('markets/:id')
@@ -53,6 +55,24 @@ export class AnalyticsController {
   @Get('markets/:id/history')
   @Public()
   @ApiOperation({ summary: 'Get historical data for a market over time' })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    type: String,
+    description: 'Start date (ISO string)',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    type: String,
+    description: 'End date (ISO string)',
+  })
+  @ApiQuery({
+    name: 'interval',
+    required: false,
+    type: String,
+    description: 'Time interval (hour, day, week)',
+  })
   @ApiResponse({
     status: 200,
     description:
@@ -62,13 +82,22 @@ export class AnalyticsController {
   @ApiResponse({ status: 404, description: 'Market not found' })
   async getMarketHistory(
     @Param('id') id: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('interval') interval?: string, // TODO: Implement interval-based aggregation
   ): Promise<MarketHistoryResponseDto> {
-    return this.analyticsService.getMarketHistory(id);
+    return this.analyticsService.getMarketHistory(id, from, to, interval);
   }
 
   @Get('users/:address/trends')
   @Public()
   @ApiOperation({ summary: 'Get user performance trends over time' })
+  @ApiQuery({
+    name: 'days',
+    required: false,
+    type: Number,
+    description: 'Number of days to retrieve (default 30, max 90)',
+  })
   @ApiResponse({
     status: 200,
     description:
@@ -78,12 +107,15 @@ export class AnalyticsController {
   @ApiResponse({ status: 404, description: 'User not found' })
   async getUserTrends(
     @Param('address') address: string,
+    @Query('days') days?: number,
   ): Promise<UserTrendsDto> {
-    return this.analyticsService.getUserTrends(address);
+    return this.analyticsService.getUserTrends(address, days);
   }
 
   @Get('categories')
   @Public()
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(600) // 10 minutes
   @ApiOperation({ summary: 'Get category analytics and statistics' })
   @ApiResponse({
     status: 200,

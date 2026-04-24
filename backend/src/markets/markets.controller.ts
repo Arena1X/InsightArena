@@ -294,4 +294,24 @@ export class MarketsController {
   async removeBookmark(@Param('id') id: string, @CurrentUser() user: User) {
     return this.marketsService.removeBookmark(id, user);
   }
+
+  @Get(':id/history')
+  @Public()
+  @ApiOperation({
+    summary: 'Get historical data for a market',
+    description:
+      'Returns pool size, participant count, and outcome probabilities over time.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Historical data points',
+  })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  async getMarketHistory(
+    @Param('id') id: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.analyticsService.getMarketHistory(id, from, to);
+  }
 }

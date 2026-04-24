@@ -9,8 +9,12 @@ import {
   Query,
   Request,
   UseGuards,
+  UseInterceptors,
+  Response as ExpressResponse,
 } from '@nestjs/common';
+import { CacheInterceptor, CacheTTL } from '@nestjs/cache-manager';
 import { ApiBearerAuth, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import type { Response } from 'express';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -22,7 +26,7 @@ import { ActivityLogQueryDto } from './dto/activity-log-query.dto';
 import { BanUserDto } from './dto/ban-user.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { ModerateCommentDto } from './dto/moderate-comment.dto';
-import { ReportQueryDto } from './dto/report-query.dto';
+import { ReportQueryDto, ReportFormat } from './dto/report-query.dto';
 import { ResolveMarketDto } from './dto/resolve-market.dto';
 import { StatsResponseDto } from './dto/stats-response.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
@@ -34,6 +38,9 @@ export class AdminController {
   constructor(private readonly adminService: AdminService) {}
 
   @Get('dashboard/stats')
+  @Roles(Role.Admin, Role.Moderator)
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(60) // 1 minute
   async getDashboardStats(): Promise<StatsResponseDto> {
     return this.adminService.getStats();
   }
@@ -103,11 +110,13 @@ export class AdminController {
   }
 
   @Get('flags')
+  @Roles(Role.Admin, Role.Moderator)
   async listFlags(@Query() query: ListFlagsQueryDto) {
     return this.adminService.listFlags(query);
   }
 
   @Patch('flags/:id/resolve')
+  @Roles(Role.Admin, Role.Moderator)
   async resolveFlag(
     @Param('id') id: string,
     @Body() dto: ResolveFlagDto,
@@ -158,7 +167,28 @@ export class AdminController {
   }
 
   @Get('reports/activity')
-  async getActivityReport(@Query() query: ReportQueryDto) {
-    return this.adminService.getActivityReport(query);
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get activity report for platform monitoring' })
+  @ApiResponse({
+    status: 200,
+    description: 'Activity report in JSON or CSV format',
+  })
+  @ApiResponse({ status: 400, description: 'Invalid date range' })
+  async getActivityReport(
+    @Query() query: ReportQueryDto,
+    @ExpressResponse() res: Response,
+  ): Promise<void> {
+    const result = await this.adminService.getActivityReport(query);
+
+    if (query.format === ReportFormat.CSV) {
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        'attachment; filename="activity-report.csv"',
+      );
+      res.send(result);
+    } else {
+      res.json(result);
+    }
   }
 }

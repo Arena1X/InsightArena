@@ -1,7 +1,7 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, SelectQueryBuilder, UpdateResult } from 'typeorm';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
@@ -188,7 +188,7 @@ describe('FlagsService', () => {
       );
     });
 
-    it('should throw ForbiddenException if user already flagged the market', async () => {
+    it('should throw ConflictException if user already flagged the market', async () => {
       const createFlagDto = {
         market_id: 'market-1',
         reason: FlagReason.INAPPROPRIATE_CONTENT,
@@ -200,7 +200,7 @@ describe('FlagsService', () => {
         .mockResolvedValue(createMockFlag());
 
       await expect(service.createFlag('user-1', createFlagDto)).rejects.toThrow(
-        ForbiddenException,
+        ConflictException,
       );
     });
   });
@@ -226,7 +226,9 @@ describe('FlagsService', () => {
 
       jest
         .spyOn(flagsRepository, 'createQueryBuilder')
-        .mockReturnValue(mockQueryBuilder as any);
+        .mockReturnValue(
+          mockQueryBuilder as unknown as SelectQueryBuilder<Flag>,
+        );
 
       const result = await service.listFlags(query);
 
@@ -291,7 +293,9 @@ describe('FlagsService', () => {
       jest
         .spyOn(flagsRepository, 'findOne')
         .mockResolvedValue(createMockFlag());
-      jest.spyOn(marketsRepository, 'update').mockResolvedValue({} as any);
+      jest
+        .spyOn(marketsRepository, 'update')
+        .mockResolvedValue({} as unknown as UpdateResult);
       jest.spyOn(flagsRepository, 'save').mockResolvedValue({
         ...createMockFlag(),
         status: FlagStatus.RESOLVED,
@@ -322,7 +326,9 @@ describe('FlagsService', () => {
       jest
         .spyOn(flagsRepository, 'findOne')
         .mockResolvedValue(createMockFlag());
-      jest.spyOn(usersRepository, 'update').mockResolvedValue({} as any);
+      jest
+        .spyOn(usersRepository, 'update')
+        .mockResolvedValue({} as unknown as UpdateResult);
       jest.spyOn(flagsRepository, 'save').mockResolvedValue({
         ...createMockFlag(),
         status: FlagStatus.RESOLVED,
@@ -359,7 +365,7 @@ describe('FlagsService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('should throw ForbiddenException if flag is already resolved', async () => {
+    it('should throw ConflictException if flag is already resolved', async () => {
       const resolveFlagDto = {
         action: FlagResolutionAction.DISMISS,
       };
@@ -370,7 +376,7 @@ describe('FlagsService', () => {
 
       await expect(
         service.resolveFlag('flag-1', resolveFlagDto, 'admin-1'),
-      ).rejects.toThrow(ForbiddenException);
+      ).rejects.toThrow(ConflictException);
     });
   });
 });

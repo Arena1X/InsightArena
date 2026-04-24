@@ -244,7 +244,7 @@ fn get_platform_stats_after_activity() {
     let stats = client.get_platform_stats();
     assert_eq!(stats.total_markets, 1);
     assert_eq!(stats.total_volume_xlm, 50_000_000);
-    assert_eq!(stats.active_users, 2);
+    assert_eq!(stats.active_users, 3);
 }
 
 #[test]
@@ -294,7 +294,7 @@ fn test_analytics_aggregation() {
     let stats = client.get_platform_stats();
     assert_eq!(stats.total_markets, 2);
     assert_eq!(stats.total_volume_xlm, 140_000_000);
-    assert_eq!(stats.active_users, 2);
+    assert_eq!(stats.active_users, 3);
 
     let u1_stats = client.get_user_stats(&u1);
     assert_eq!(u1_stats.total_predictions, 2);

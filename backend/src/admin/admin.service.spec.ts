@@ -12,6 +12,7 @@ import { Role } from '../common/enums/role.enum';
 import { CompetitionParticipant } from '../competitions/entities/competition-participant.entity';
 import { Competition } from '../competitions/entities/competition.entity';
 import { FlagsService } from '../flags/flags.service';
+import { Flag, FlagStatus } from '../flags/entities/flag.entity';
 import { Comment } from '../markets/entities/comment.entity';
 import { Market } from '../markets/entities/market.entity';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -62,6 +63,7 @@ describe('AdminService.adminResolveMarket', () => {
   beforeEach(async () => {
     marketsRepo = mockRepo();
     predictionsRepo = mockRepo();
+    const flagsRepo = mockRepo();
     sorobanService = {
       resolveMarket: jest.fn().mockResolvedValue({}),
       refundCompetitionParticipant: jest
@@ -84,6 +86,7 @@ describe('AdminService.adminResolveMarket', () => {
           useValue: mockRepo(),
         },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
+        { provide: getRepositoryToken(Flag), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: notificationsService },
         { provide: SorobanService, useValue: sorobanService },
@@ -262,6 +265,7 @@ describe('AdminService.featureMarket', () => {
           useValue: mockRepo(),
         },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
+        { provide: getRepositoryToken(Flag), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
         { provide: SorobanService, useValue: { resolveMarket: jest.fn() } },
@@ -361,6 +365,7 @@ describe('AdminService.unfeatureMarket', () => {
           useValue: mockRepo(),
         },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
+        { provide: getRepositoryToken(Flag), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
         { provide: SorobanService, useValue: { resolveMarket: jest.fn() } },
@@ -449,6 +454,7 @@ describe('AdminService.updateUserRole', () => {
           useValue: mockRepo(),
         },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
+        { provide: getRepositoryToken(Flag), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         {
           provide: NotificationsService,
@@ -556,6 +562,7 @@ describe('AdminService.adminCancelCompetition', () => {
           useValue: participantsRepo,
         },
         { provide: getRepositoryToken(ActivityLog), useValue: mockRepo() },
+        { provide: getRepositoryToken(Flag), useValue: mockRepo() },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: NotificationsService, useValue: notificationsService },
         { provide: SorobanService, useValue: sorobanService },

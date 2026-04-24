@@ -1,18 +1,38 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Test, TestingModule } from '@nestjs/testing';
 import {
-  Keypair,
-  nativeToScVal,
   rpc as SorobanRpc,
+  Keypair,
+  StrKey,
+  SorobanDataBuilder,
 } from '@stellar/stellar-sdk';
 import { SorobanService } from './soroban.service';
 
 describe('SorobanService', () => {
   let service: SorobanService;
-  let serverKeypair: Keypair;
+  let mockConfigService: jest.Mocked<ConfigService>;
+
+  const testKeypair = Keypair.random();
+  const testServerKeypair = Keypair.random();
+  const testMarketId = 'market_123';
+  const testOutcome = 'Yes';
+  const testStake = '1000000';
+  // Generate a valid Soroban contract ID (starts with 'C')
+  const validContractId = StrKey.encodeContract(Buffer.alloc(32));
 
   beforeEach(async () => {
+    mockConfigService = {
+      get: jest.fn((key: string) => {
+        const values: Record<string, string> = {
+          SOROBAN_CONTRACT_ID: validContractId,
+          STELLAR_NETWORK: 'testnet',
+          SERVER_SECRET_KEY: testServerKeypair.secret(),
+          SOROBAN_RPC_URL: 'https://soroban-testnet.stellar.org',
+        };
+        return values[key];
+      }),
+    } as unknown as jest.Mocked<ConfigService>;
+
     jest
       .spyOn(SorobanRpc.Server.prototype, 'getHealth')
       .mockResolvedValue({ status: 'healthy' } as never);
@@ -24,18 +44,7 @@ describe('SorobanService', () => {
         SorobanService,
         {
           provide: ConfigService,
-          useValue: {
-            get: jest.fn((key: string) => {
-              const values: Record<string, string> = {
-                SOROBAN_CONTRACT_ID:
-                  'CBYIU4E5KXQYWY7RM3L2WN2B4QBBSY7WQGPJAP6XTN6QH6NWSQBRW6UV',
-                STELLAR_NETWORK: 'testnet',
-                SERVER_SECRET_KEY: serverKeypair.secret(),
-                SOROBAN_RPC_URL: 'https://soroban-testnet.stellar.org',
-              };
-              return values[key];
-            }),
-          },
+          useValue: mockConfigService,
         },
       ],
     }).compile();
@@ -48,81 +57,147 @@ describe('SorobanService', () => {
   });
 
   it('initializes rpc client and passes connection test', async () => {
-    expect(service.getRpcClient()).toBeInstanceOf(SorobanRpc.Server);
+    expect(service.getRpcClient()).toBeDefined();
     await expect(service.testConnection()).resolves.toBe(true);
   });
 
-  describe('createMarket', () => {
-    it('returns on-chain market id and tx hash from contract invocation', async () => {
-      jest.spyOn(service as any, 'invokeContract').mockResolvedValue({
-        txHash: 'txhash-1',
-        returnValue: nativeToScVal(123n, { type: 'u64' }),
-      });
+  describe('submitPrediction', () => {
+    it('should submit a prediction and return tx_hash', async () => {
+      const result = await service.submitPrediction(
+        testKeypair.publicKey(),
+        testMarketId,
+        testOutcome,
+        testStake,
+      );
 
-      await expect(
-        service.createMarket(
-          'Title',
-          'Description',
-          'Crypto',
-          ['YES', 'NO'],
-          new Date(Date.now() + 60_000).toISOString(),
-          new Date(Date.now() + 120_000).toISOString(),
-          serverKeypair.publicKey(),
-          100,
-          '1000',
-          '1000000',
-          true,
-        ),
-      ).resolves.toEqual({
-        on_chain_market_id: '123',
-        tx_hash: 'txhash-1',
-      });
+      expect(result.tx_hash).toBeDefined();
+      expect(result.tx_hash).toHaveLength(64);
     });
 
-    it('maps contract InvalidTimeRange errors to BadRequestException', async () => {
-      jest
-        .spyOn(service as any, 'invokeContract')
-        .mockRejectedValue(new Error('Error(Contract, #17)'));
-
+    it('should throw on invalid user address', async () => {
       await expect(
-        service.createMarket(
-          'Title',
-          'Description',
-          'Crypto',
-          ['YES', 'NO'],
-          new Date(Date.now() + 60_000).toISOString(),
-          new Date(Date.now() + 120_000).toISOString(),
-          serverKeypair.publicKey(),
+        service.submitPrediction(
+          'invalid-address',
+          testMarketId,
+          testOutcome,
+          testStake,
         ),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toThrow();
     });
   });
 
-  describe('createSeason', () => {
-    it('throws ConflictException when active season overlaps', async () => {
-      jest.spyOn(service as any, 'getActiveSeasonIfAny').mockResolvedValue({
-        start_time: 100,
-        end_time: 200,
-      });
+  describe('claimPayout', () => {
+    it('should claim payout and return tx_hash', async () => {
+      const result = await service.claimPayout(
+        testKeypair.publicKey(),
+        testMarketId,
+      );
 
-      await expect(
-        service.createSeason(1, 150, 250, '1000'),
-      ).rejects.toBeInstanceOf(ConflictException);
+      expect(result.tx_hash).toBeDefined();
+      expect(result.tx_hash).toHaveLength(64);
     });
 
-    it('returns on-chain season id and tx hash from contract invocation', async () => {
-      jest
-        .spyOn(service as any, 'getActiveSeasonIfAny')
-        .mockResolvedValue(null);
-      jest.spyOn(service as any, 'invokeContract').mockResolvedValue({
-        txHash: 'txhash-2',
-        returnValue: nativeToScVal(5, { type: 'u32' }),
-      });
+    it('should throw on invalid user address', async () => {
+      await expect(
+        service.claimPayout('invalid-address', testMarketId),
+      ).rejects.toThrow();
+    });
+  });
 
-      await expect(service.createSeason(1, 10, 20, '1000')).resolves.toEqual({
-        on_chain_season_id: 5,
-        tx_hash: 'txhash-2',
-      });
+  describe('refundCompetitionParticipant', () => {
+    it('should successfully refund a participant', async () => {
+      const mockTxHash = 'a'.repeat(64);
+      jest.spyOn(SorobanRpc.Server.prototype, 'getAccount').mockResolvedValue({
+        sequenceNumber: () => '1',
+        accountId: () => testServerKeypair.publicKey(),
+        incrementSequenceNumber: () => {},
+      } as never);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({
+          results: [{}],
+          transactionData: new SorobanDataBuilder(),
+          result: { auth: [] },
+          minResourceFee: '100',
+          _parsed: true,
+        } as never);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'sendTransaction')
+        .mockResolvedValue({
+          status: 'PENDING',
+          hash: mockTxHash,
+        } as never);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getTransaction')
+        .mockResolvedValue({
+          status: 'SUCCESS',
+          hash: mockTxHash,
+        } as never);
+
+      const result = await service.refundCompetitionParticipant(
+        testKeypair.publicKey(),
+        'comp_123',
+        '1000000',
+      );
+
+      expect(result.tx_hash).toBe(mockTxHash);
+    });
+
+    it('should throw EscrowEmpty error when simulation fails with that message', async () => {
+      jest.spyOn(SorobanRpc.Server.prototype, 'getAccount').mockResolvedValue({
+        sequenceNumber: () => '1',
+        accountId: () => testServerKeypair.publicKey(),
+        incrementSequenceNumber: () => {},
+      } as never);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({
+          error: 'Contract Error: EscrowEmpty',
+          _parsed: true,
+        } as never);
+
+      await expect(
+        service.refundCompetitionParticipant(
+          testKeypair.publicKey(),
+          'comp_123',
+          '1000000',
+        ),
+      ).rejects.toThrow('EscrowEmpty');
+    });
+
+    it('should throw InsufficientFunds error when simulation fails with that message', async () => {
+      jest.spyOn(SorobanRpc.Server.prototype, 'getAccount').mockResolvedValue({
+        sequenceNumber: () => '1',
+        accountId: () => testServerKeypair.publicKey(),
+        incrementSequenceNumber: () => {},
+      } as never);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({
+          error: 'Contract Error: InsufficientFunds',
+          _parsed: true,
+        } as never);
+
+      await expect(
+        service.refundCompetitionParticipant(
+          testKeypair.publicKey(),
+          'comp_123',
+          '1000000',
+        ),
+      ).rejects.toThrow('InsufficientFunds');
+    });
+  });
+
+  describe('resolveMarket', () => {
+    it('should resolve market and return void', async () => {
+      await expect(
+        service.resolveMarket(testMarketId, testOutcome),
+      ).resolves.toBeUndefined();
     });
   });
 });

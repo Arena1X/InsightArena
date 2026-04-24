@@ -1,9 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, LessThan } from 'typeorm';
+import {
+  Repository,
+  DataSource,
+  LessThan,
+  IsNull,
+  MoreThanOrEqual,
+} from 'typeorm';
 import { LeaderboardEntry } from './entities/leaderboard-entry.entity';
 import { LeaderboardHistory } from './entities/leaderboard-history.entity';
 import { UsersService } from '../users/users.service';
+import { User } from '../users/entities/user.entity';
 import {
   LeaderboardQueryDto,
   LeaderboardEntryResponse,
@@ -14,6 +21,7 @@ import {
   LeaderboardHistoryEntryResponse,
   PaginatedLeaderboardHistoryResponse,
 } from './dto/leaderboard-history.dto';
+import { UserRankDto } from './dto/user-rank.dto';
 
 @Injectable()
 export class LeaderboardService {
@@ -219,6 +227,48 @@ export class LeaderboardService {
   }
 
   /**
+   * Get user rank and stats by stellar address
+   * Returns 404 if user has no leaderboard entry
+   */
+  async getUserRank(stellarAddress: string): Promise<UserRankDto> {
+    let user: User | undefined;
+    try {
+      user = await this.usersService.findByAddress(stellarAddress);
+    } catch {
+      throw new NotFoundException(
+        `User with address "${stellarAddress}" not found`,
+      );
+    }
+
+    const entry = await this.leaderboardRepository.findOne({
+      where: { user_id: user.id, season_id: IsNull() },
+    });
+
+    if (!entry) {
+      throw new NotFoundException(
+        `No leaderboard entry found for user "${stellarAddress}"`,
+      );
+    }
+
+    const accuracyRate =
+      entry.total_predictions > 0
+        ? ((entry.correct_predictions / entry.total_predictions) * 100).toFixed(
+            1,
+          )
+        : '0.0';
+
+    return {
+      rank: entry.rank,
+      reputation_score: entry.reputation_score,
+      season_points: entry.season_points,
+      total_predictions: entry.total_predictions,
+      correct_predictions: entry.correct_predictions,
+      accuracy_rate: accuracyRate,
+      total_winnings_stroops: entry.total_winnings_stroops,
+    };
+  }
+
+  /**
    * Create daily snapshot of current leaderboard
    * Called by the daily cron job
    */
@@ -264,5 +314,35 @@ export class LeaderboardService {
     this.logger.log(
       `Daily snapshot complete: ${entries.length} entries saved in ${elapsed}ms`,
     );
+  }
+
+  /**
+   * Get user history snapshots for a specific Stellar address
+   */
+  async getHistoryForAddress(address: string, days: number = 30) {
+    const validDays = Math.min(Math.max(days || 30, 1), 90);
+
+    const user = await this.usersService.findByAddress(address);
+    if (!user) {
+      throw new NotFoundException(`User with address ${address} not found`);
+    }
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - validDays);
+
+    const history = await this.historyRepository.find({
+      where: {
+        user_id: user.id,
+        snapshot_date: MoreThanOrEqual(cutoffDate),
+      },
+      order: { snapshot_date: 'DESC' },
+    });
+
+    return history.map((h) => ({
+      snapshot_date: h.snapshot_date,
+      rank: h.rank,
+      reputation_score: h.reputation_score,
+      season_points: h.season_points,
+    }));
   }
 }

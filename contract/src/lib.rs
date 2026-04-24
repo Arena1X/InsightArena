@@ -1,5 +1,9 @@
 #![no_std]
 #![allow(non_snake_case)]
+#[cfg(test)]
+mod test {
+    // mod governance_test;//.
+}
 
 pub mod config;
 pub mod dispute;
@@ -21,9 +25,9 @@ pub use crate::governance::{Proposal, ProposalType};
 pub use crate::liquidity::{calculate_liquidity_value, calculate_lp_tokens, calculate_swap_output};
 pub use crate::market::CreateMarketParams;
 pub use crate::storage_types::{
-    ConditionalChain, ConditionalMarket, CreatorStats, DataKey, Dispute, InviteCode, LPPosition,
-    LeaderboardEntry, LeaderboardSnapshot, LiquidityPool, Market, MarketStats, PlatformStats,
-    Prediction, Season, SwapRecord, UserProfile,
+    ConditionalChain, ConditionalMarket, CreatorLeaderboardEntry, CreatorStats, DataKey,
+    Dispute, InviteCode, LPPosition, LeaderboardEntry, LeaderboardSnapshot, LiquidityPool,
+    Market, MarketStats, PlatformStats, Prediction, Season, SwapRecord, UserProfile,
 };
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
@@ -324,6 +328,11 @@ impl InsightArenaContract {
         governance::list_proposals(&env, start, limit)
     }
 
+    /// Return a single governance proposal by ID.
+    pub fn get_proposal(env: Env, proposal_id: u32) -> Result<Proposal, InsightArenaError> {
+        governance::get_proposal(&env, proposal_id)
+    }
+
     /// Return the total protocol fees accumulated in the treasury.
     pub fn get_treasury_balance(env: Env) -> i128 {
         escrow::get_treasury_balance(&env)
@@ -465,6 +474,11 @@ impl InsightArenaContract {
         reputation::get_creator_stats(env, creator)
     }
 
+    /// Return a sorted list of top creators by reputation score.
+    pub fn get_top_creators(env: Env, limit: u32) -> Vec<CreatorLeaderboardEntry> {
+        reputation::get_top_creators(&env, limit)
+    }
+
     /// Admin function to forcefully reset a creator's statistics.
     pub fn reset_creator_stats(
         env: Env,
@@ -558,6 +572,11 @@ impl InsightArenaContract {
         market_id: u64,
     ) -> Result<crate::storage_types::LPPosition, InsightArenaError> {
         liquidity::get_lp_position_public(&env, provider, market_id)
+    }
+
+    /// Get all active LP positions for a market.
+    pub fn get_all_lp_providers(env: Env, market_id: u64) -> Vec<crate::storage_types::LPPosition> {
+        liquidity::get_all_lp_providers(&env, market_id)
     }
 
     /// Extends analytics to expose 24-hour pool trading volume.

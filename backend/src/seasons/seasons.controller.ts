@@ -66,6 +66,19 @@ export class SeasonsController {
   }
 
   @Public()
+  @Get(':id')
+  @ApiOperation({
+    summary: 'Get season by ID (public)',
+    description:
+      'Returns full season details including top winner if finalized.',
+  })
+  @ApiResponse({ status: 200, description: 'Season details', type: Season })
+  @ApiResponse({ status: 404, description: 'Season not found' })
+  async getById(@Param('id') id: string): Promise<Season> {
+    return this.seasonsService.findById(id);
+  }
+
+  @Public()
   @Get()
   @UsePipes(
     new ValidationPipe({

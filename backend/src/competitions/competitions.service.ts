@@ -349,7 +349,7 @@ export class CompetitionsService {
     return saved;
   }
 
-  async leaveCompetition(competitionId: string, user: User): Promise<void> {
+  async leave(competitionId: string, userId: string): Promise<void> {
     const competition = await this.competitionsRepository.findOne({
       where: { id: competitionId },
     });
@@ -368,28 +368,29 @@ export class CompetitionsService {
       );
     }
 
-    // Find participant
-    const participant = await this.participantsRepository.findOne({
-      where: {
-        user_id: user.id,
-        competition_id: competitionId,
-      },
-    });
+    // Use transaction for atomic removal and decrement
+    await this.competitionsRepository.manager.transaction(async (manager) => {
+      const participant = await manager.findOne(CompetitionParticipant, {
+        where: {
+          user_id: userId,
+          competition_id: competitionId,
+        },
+      });
 
-    if (!participant) {
-      throw new NotFoundException(
-        'You are not a participant in this competition',
+      if (!participant) {
+        throw new NotFoundException(
+          'You are not a participant in this competition',
+        );
+      }
+
+      await manager.remove(participant);
+
+      await manager.decrement(
+        Competition,
+        { id: competitionId },
+        'participant_count',
+        1,
       );
-    }
-
-    // Remove participant
-    await this.participantsRepository.remove(participant);
-
-    // Update participant count
-    await this.competitionsRepository.decrement(
-      { id: competitionId },
-      'participant_count',
-      1,
-    );
+    });
   }
 }

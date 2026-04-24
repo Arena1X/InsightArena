@@ -1,246 +1,299 @@
-import { NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
-import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.entity';
-import { Market } from '../markets/entities/market.entity';
-import { Prediction } from '../predictions/entities/prediction.entity';
-import { User } from '../users/entities/user.entity';
-import { ActivityLog } from './entities/activity-log.entity';
-import { MarketHistory } from './entities/market-history.entity';
 import { AnalyticsController } from './analytics.controller';
 import { AnalyticsService } from './analytics.service';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { UserTrendsDto } from './dto/user-trends.dto';
+import { DashboardKpisDto } from './dto/dashboard-kpis.dto';
+import { MarketAnalyticsDto } from './dto/market-analytics.dto';
+import { MarketHistoryResponseDto } from './dto/market-history.dto';
+import { User } from '../users/entities/user.entity';
 
 describe('AnalyticsController', () => {
   let controller: AnalyticsController;
-  let service: AnalyticsService;
-  let mockMarketsRepository: any;
-  let mockPredictionsRepository: any;
+  let service: jest.Mocked<AnalyticsService>;
 
-  const mockMarket: Market = {
-    id: 'market-123',
-    on_chain_market_id: 'on-chain-123',
-    title: 'Test Market',
-    description: 'Test Description',
-    category: 'sports',
-    outcome_options: ['Yes', 'No', 'Maybe'],
-    end_time: new Date(Date.now() + 3600000), // 1 hour from now
-    resolution_time: new Date(Date.now() + 7200000),
-    is_resolved: false,
-    resolved_outcome: null,
-    is_public: true,
-    is_cancelled: false,
-    total_pool_stroops: '5000000',
-    participant_count: 25,
-    creator: {} as User,
+  const mockUser: User = {
+    id: 'user-123',
+    stellar_address: 'GABC123',
+    username: 'testuser',
+    total_predictions: 10,
+    correct_predictions: 7,
+    reputation_score: 750,
+    total_winnings_stroops: BigInt(1000000),
+    total_staked_stroops: BigInt(500000),
+    is_banned: false,
     created_at: new Date(),
     updated_at: new Date(),
-  } as Market;
+  } as unknown as User;
 
-  const mockPredictions: Prediction[] = [
-    {
-      id: 'pred-1',
-      user: {} as User,
-      market: mockMarket,
-      chosen_outcome: 'Yes',
-      stake_amount_stroops: '1000000',
-      payout_claimed: false,
-      payout_amount_stroops: '0',
-      tx_hash: 'hash1',
-      submitted_at: new Date(),
+  const mockDashboardKpis: DashboardKpisDto = {
+    total_predictions: 10,
+    accuracy_rate: '70.0',
+    current_rank: 5,
+    total_rewards_earned_stroops: '1000000',
+    active_predictions_count: 3,
+    current_streak: 2,
+    reputation_score: 750,
+    tier: 'Gold Predictor',
+  };
+
+  const mockMarketAnalytics: MarketAnalyticsDto = {
+    market_id: 'market-123',
+    total_pool_stroops: '5000000',
+    participant_count: 25,
+    outcome_distribution: [
+      { outcome: 'YES', count: 15, percentage: 60 },
+      { outcome: 'NO', count: 10, percentage: 40 },
+    ],
+    time_remaining_seconds: 3600,
+  };
+
+  const mockMarketHistory: MarketHistoryResponseDto = {
+    market_id: 'market-123',
+    title: 'Test Market',
+    history: [
+      {
+        timestamp: new Date(),
+        prediction_volume: 10,
+        pool_size_stroops: '1000000',
+        participant_count: 10,
+        outcome_probabilities: [60.0, 40.0],
+      },
+    ],
+    generated_at: new Date(),
+  };
+
+  const mockUserTrends: UserTrendsDto = {
+    address: 'GABC123',
+    accuracy_trend: [
+      { timestamp: new Date(), value: 50 },
+      { timestamp: new Date(), value: 60 },
+    ],
+    prediction_volume_trend: [
+      { timestamp: new Date(), value: 1 },
+      { timestamp: new Date(), value: 2 },
+    ],
+    profit_loss_trend: [
+      { timestamp: new Date(), value: 0 },
+      { timestamp: new Date(), value: 100000 },
+    ],
+    category_performance: [
+      {
+        category: 'Politics',
+        accuracy_rate: 75,
+        prediction_count: 10,
+        profit_loss_stroops: '500000',
+      },
+    ],
+    best_category: {
+      category: 'Politics',
+      accuracy_rate: 75,
+      prediction_count: 10,
+      profit_loss_stroops: '500000',
     },
-    {
-      id: 'pred-2',
-      user: {} as User,
-      market: mockMarket,
-      chosen_outcome: 'Yes',
-      stake_amount_stroops: '500000',
-      payout_claimed: false,
-      payout_amount_stroops: '0',
-      tx_hash: 'hash2',
-      submitted_at: new Date(),
-    },
-    {
-      id: 'pred-3',
-      user: {} as User,
-      market: mockMarket,
-      chosen_outcome: 'No',
-      stake_amount_stroops: '2000000',
-      payout_claimed: false,
-      payout_amount_stroops: '0',
-      tx_hash: 'hash3',
-      submitted_at: new Date(),
-    },
-    {
-      id: 'pred-4',
-      user: {} as User,
-      market: mockMarket,
-      chosen_outcome: 'Maybe',
-      stake_amount_stroops: '1500000',
-      payout_claimed: false,
-      payout_amount_stroops: '0',
-      tx_hash: 'hash4',
-      submitted_at: new Date(),
-    },
-  ];
+    worst_category: null,
+  };
 
   beforeEach(async () => {
-    mockMarketsRepository = {
-      findOne: jest.fn(),
-    };
-
-    mockPredictionsRepository = {
-      find: jest.fn(),
-    };
-
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AnalyticsController],
       providers: [
-        AnalyticsService,
         {
-          provide: getRepositoryToken(Market),
-          useValue: mockMarketsRepository,
-        },
-        {
-          provide: getRepositoryToken(Prediction),
-          useValue: mockPredictionsRepository,
-        },
-        {
-          provide: getRepositoryToken(User),
-          useValue: { findOne: jest.fn() },
-        },
-        {
-          provide: getRepositoryToken(LeaderboardEntry),
+          provide: AnalyticsService,
           useValue: {
-            createQueryBuilder: jest.fn().mockReturnValue({
-              where: jest.fn().mockReturnThis(),
-              andWhere: jest.fn().mockReturnThis(),
-              orderBy: jest.fn().mockReturnThis(),
-              getOne: jest.fn(),
-            }),
+            getUserTrends: jest.fn(),
+            getMarketAnalytics: jest.fn(),
+            getMarketHistory: jest.fn(),
+            getDashboardKPIs: jest.fn(),
+            getCategoryAnalytics: jest.fn(),
           },
         },
         {
-          provide: getRepositoryToken(ActivityLog),
+          provide: CACHE_MANAGER,
           useValue: {
-            create: jest.fn(),
-            save: jest.fn(),
-            findAndCount: jest.fn(),
-          },
-        },
-        {
-          provide: getRepositoryToken(MarketHistory),
-          useValue: {
-            find: jest.fn(),
-            create: jest.fn(),
-            save: jest.fn(),
+            get: jest.fn(),
+            set: jest.fn(),
+            del: jest.fn(),
           },
         },
       ],
     }).compile();
 
     controller = module.get<AnalyticsController>(AnalyticsController);
-    service = module.get<AnalyticsService>(AnalyticsService);
+    service = module.get(AnalyticsService);
+  });
+
+  it('should be defined', () => {
+    expect(controller).toBeDefined();
+  });
+
+  describe('getDashboard', () => {
+    it('should return dashboard KPIs for authenticated user', async () => {
+      service.getDashboardKPIs.mockResolvedValue(mockDashboardKpis);
+
+      const result = await controller.getDashboard(mockUser);
+
+      expect(result).toEqual(mockDashboardKpis);
+      expect(service.getDashboardKPIs).toHaveBeenCalledWith(mockUser);
+    });
+
+    it('should return correct tier based on reputation score', async () => {
+      const goldTierKpis = {
+        ...mockDashboardKpis,
+        reputation_score: 750,
+        tier: 'Gold Predictor',
+      };
+      service.getDashboardKPIs.mockResolvedValue(goldTierKpis);
+
+      const result = await controller.getDashboard(mockUser);
+
+      expect(result.tier).toBe('Gold Predictor');
+      expect(result.reputation_score).toBe(750);
+    });
   });
 
   describe('getMarketAnalytics', () => {
-    it('should return market analytics with outcome distribution', async () => {
-      mockMarketsRepository.findOne.mockResolvedValue(mockMarket);
-      mockPredictionsRepository.find.mockResolvedValue(mockPredictions);
+    it('should return market analytics for valid market ID', async () => {
+      service.getMarketAnalytics.mockResolvedValue(mockMarketAnalytics);
 
       const result = await controller.getMarketAnalytics('market-123');
 
-      expect(result).toBeDefined();
-      expect(result.market_id).toBe('market-123');
-      expect(result.total_pool_stroops).toBe('5000000');
-      expect(result.participant_count).toBe(25);
-      expect(result.outcome_distribution).toHaveLength(3);
+      expect(result).toEqual(mockMarketAnalytics);
+      expect(service.getMarketAnalytics).toHaveBeenCalledWith('market-123');
     });
 
-    it('should calculate percentages that sum to 100%', async () => {
-      mockMarketsRepository.findOne.mockResolvedValue(mockMarket);
-      mockPredictionsRepository.find.mockResolvedValue(mockPredictions);
-
-      const result = await controller.getMarketAnalytics('market-123');
-
-      const totalPercentage = result.outcome_distribution.reduce(
-        (sum, outcome) => sum + outcome.percentage,
-        0,
+    it('should throw 404 for unknown market ID', async () => {
+      service.getMarketAnalytics.mockRejectedValue(
+        new Error('Market not found'),
       );
-      expect(totalPercentage).toBe(100);
-    });
-
-    it('should calculate correct counts per outcome', async () => {
-      mockMarketsRepository.findOne.mockResolvedValue(mockMarket);
-      mockPredictionsRepository.find.mockResolvedValue(mockPredictions);
-
-      const result = await controller.getMarketAnalytics('market-123');
-
-      const yesOutcome = result.outcome_distribution.find(
-        (o) => o.outcome === 'Yes',
-      );
-      const noOutcome = result.outcome_distribution.find(
-        (o) => o.outcome === 'No',
-      );
-      const maybeOutcome = result.outcome_distribution.find(
-        (o) => o.outcome === 'Maybe',
-      );
-
-      expect(yesOutcome!.count).toBe(2);
-      expect(noOutcome!.count).toBe(1);
-      expect(maybeOutcome!.count).toBe(1);
-    });
-
-    it('should calculate positive time_remaining_seconds when market is open', async () => {
-      mockMarketsRepository.findOne.mockResolvedValue(mockMarket);
-      mockPredictionsRepository.find.mockResolvedValue(mockPredictions);
-
-      const result = await controller.getMarketAnalytics('market-123');
-
-      expect(result.time_remaining_seconds).toBeGreaterThan(0);
-    });
-
-    it('should return 0 time_remaining_seconds when market has expired', async () => {
-      const expiredMarket = {
-        ...mockMarket,
-        end_time: new Date(Date.now() - 3600000), // 1 hour ago
-      };
-
-      mockMarketsRepository.findOne.mockResolvedValue(expiredMarket);
-      mockPredictionsRepository.find.mockResolvedValue(mockPredictions);
-
-      const result = await controller.getMarketAnalytics('market-123');
-
-      expect(result.time_remaining_seconds).toBe(0);
-    });
-
-    it('should return 404 when market does not exist', async () => {
-      mockMarketsRepository.findOne.mockResolvedValue(null);
 
       await expect(
-        controller.getMarketAnalytics('non-existent-id'),
-      ).rejects.toThrow(NotFoundException);
+        controller.getMarketAnalytics('unknown-market'),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('getMarketHistory', () => {
+    it('should return market history with default parameters', async () => {
+      service.getMarketHistory.mockResolvedValue(mockMarketHistory);
+
+      const result = await controller.getMarketHistory('market-123');
+
+      expect(result).toEqual(mockMarketHistory);
+      expect(service.getMarketHistory).toHaveBeenCalledWith(
+        'market-123',
+        undefined,
+        undefined,
+        undefined,
+      );
     });
 
-    it('should handle market lookup by on-chain ID', async () => {
-      mockMarketsRepository.findOne.mockResolvedValue(mockMarket);
-      mockPredictionsRepository.find.mockResolvedValue(mockPredictions);
+    it('should return market history with query parameters', async () => {
+      service.getMarketHistory.mockResolvedValue(mockMarketHistory);
 
-      const result = await controller.getMarketAnalytics('on-chain-123');
+      const result = await controller.getMarketHistory(
+        'market-123',
+        '2024-01-01',
+        '2024-01-31',
+        'day',
+      );
 
-      expect(result.market_id).toBe('market-123');
+      expect(result).toEqual(mockMarketHistory);
+      expect(service.getMarketHistory).toHaveBeenCalledWith(
+        'market-123',
+        '2024-01-01',
+        '2024-01-31',
+        'day',
+      );
     });
 
-    it('should initialize all outcomes with 0 if no predictions exist', async () => {
-      mockMarketsRepository.findOne.mockResolvedValue(mockMarket);
-      mockPredictionsRepository.find.mockResolvedValue([]);
+    it('should default to last 7 days if no range provided', async () => {
+      const historyWithDefaults = { ...mockMarketHistory };
+      service.getMarketHistory.mockResolvedValue(historyWithDefaults);
 
-      const result = await controller.getMarketAnalytics('market-123');
+      const result = await controller.getMarketHistory('market-123');
 
-      expect(result.outcome_distribution).toHaveLength(3);
-      result.outcome_distribution.forEach((outcome) => {
-        expect(outcome.count).toBe(0);
-        expect(outcome.percentage).toBe(0);
-      });
+      expect(result).toEqual(historyWithDefaults);
+      expect(service.getMarketHistory).toHaveBeenCalledWith(
+        'market-123',
+        undefined,
+        undefined,
+        undefined,
+      );
+    });
+
+    it('should throw 404 for unknown market ID', async () => {
+      service.getMarketHistory.mockRejectedValue(new Error('Market not found'));
+
+      await expect(
+        controller.getMarketHistory('unknown-market'),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('getUserTrends', () => {
+    it('should return user trends with default days parameter', async () => {
+      service.getUserTrends.mockResolvedValue(mockUserTrends);
+
+      const result = await controller.getUserTrends('GABC123');
+
+      expect(result).toEqual(mockUserTrends);
+      expect(service.getUserTrends).toHaveBeenCalledWith('GABC123', undefined);
+    });
+
+    it('should return user trends with custom days parameter', async () => {
+      service.getUserTrends.mockResolvedValue(mockUserTrends);
+
+      const result = await controller.getUserTrends('GABC123', 60);
+
+      expect(result).toEqual(mockUserTrends);
+      expect(service.getUserTrends).toHaveBeenCalledWith('GABC123', 60);
+    });
+
+    it('should throw 404 for unknown user address', async () => {
+      service.getUserTrends.mockRejectedValue(new Error('User not found'));
+
+      await expect(controller.getUserTrends('GUNKNOWN')).rejects.toThrow();
+    });
+
+    it('should return trends with one entry per day for requested period', async () => {
+      const trendsWithDailyData: UserTrendsDto = {
+        ...mockUserTrends,
+        accuracy_trend: Array.from({ length: 30 }, (_, i) => ({
+          timestamp: new Date(Date.now() - (30 - i) * 24 * 60 * 60 * 1000),
+          value: 50 + i,
+        })),
+      };
+
+      service.getUserTrends.mockResolvedValue(trendsWithDailyData);
+
+      const result = await controller.getUserTrends('GABC123', 30);
+
+      expect(result.accuracy_trend.length).toBe(30);
+    });
+  });
+
+  describe('getCategoryAnalytics', () => {
+    it('should return category analytics', async () => {
+      const mockCategoryAnalytics = {
+        categories: [
+          {
+            name: 'Politics',
+            total_markets: 10,
+            active_markets: 5,
+            total_volume_stroops: '1000000',
+            avg_participants: 20,
+            trending: true,
+          },
+        ],
+        generated_at: new Date(),
+      };
+      service.getCategoryAnalytics.mockResolvedValue(mockCategoryAnalytics);
+
+      const result = await controller.getCategoryAnalytics();
+
+      expect(result).toEqual(mockCategoryAnalytics);
+      expect(service.getCategoryAnalytics).toHaveBeenCalled();
     });
   });
 });

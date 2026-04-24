@@ -660,8 +660,6 @@ fn test_pool_volume_returns_zero_for_unknown_market() {
     assert_eq!(client.get_pool_volume_24h(&999), 0);
 }
 
- 
-
 #[test]
 fn test_get_swap_history_empty_before_any_swaps() {
     let env = Env::default();
@@ -810,4 +808,78 @@ fn test_collect_lp_fees_fails_when_no_fees_earned() {
 
     let result = client.try_collect_lp_fees(&provider, &market_id);
     assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+}
+
+#[test]
+fn test_get_all_lp_providers_empty_before_any_liquidity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, _xlm_token) = deploy_with_token(&env);
+
+    let creator = Address::generate(&env);
+    let market_id = client.create_market(&creator, &lp_market_params(&env));
+
+    let providers = client.get_all_lp_providers(&market_id);
+    assert_eq!(providers.len(), 0);
+}
+
+#[test]
+fn test_get_all_lp_providers_returns_all_providers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+
+    let creator = Address::generate(&env);
+    let provider_a = Address::generate(&env);
+    let provider_b = Address::generate(&env);
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let market_id = client.create_market(&creator, &lp_market_params(&env));
+
+    let amount_a = 120_000_i128;
+    let amount_b = 180_000_i128;
+
+    sa.mint(&provider_a, &amount_a);
+    token.approve(&provider_a, &client.address, &amount_a, &9999);
+    client.add_liquidity(&provider_a, &market_id, &amount_a);
+
+    sa.mint(&provider_b, &amount_b);
+    token.approve(&provider_b, &client.address, &amount_b, &9999);
+    client.add_liquidity(&provider_b, &market_id, &amount_b);
+
+    let providers = client.get_all_lp_providers(&market_id);
+    assert_eq!(providers.len(), 2);
+
+    let found_a = providers.iter().any(|p| p.provider == provider_a);
+    let found_b = providers.iter().any(|p| p.provider == provider_b);
+    assert!(found_a);
+    assert!(found_b);
+}
+
+#[test]
+fn test_get_all_lp_providers_reflects_removals() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+
+    let creator = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let market_id = client.create_market(&creator, &lp_market_params(&env));
+
+    let amount = 150_000_i128;
+    sa.mint(&provider, &amount);
+    token.approve(&provider, &client.address, &amount, &9999);
+    client.add_liquidity(&provider, &market_id, &amount);
+
+    let position = client.get_lp_position(&provider, &market_id);
+    client.remove_liquidity(&provider, &market_id, &position.lp_tokens);
+
+    let providers = client.get_all_lp_providers(&market_id);
+    assert_eq!(providers.len(), 0);
 }

@@ -5,6 +5,7 @@ use insightarena_contract::reputation::*;
 use insightarena_contract::storage_types::CreatorStats;
 use insightarena_contract::{InsightArenaContract, InsightArenaContractClient};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
+use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
 use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
 
 fn register_token(env: &Env) -> Address {
@@ -13,7 +14,7 @@ fn register_token(env: &Env) -> Address {
         .address()
 }
 
-fn deploy(env: &Env) -> (InsightArenaContractClient<'_>, Address, Address) {
+fn deploy(env: &Env) -> (InsightArenaContractClient<'_>, Address, Address, Address) {
     let id = env.register(InsightArenaContract, ());
     let client = InsightArenaContractClient::new(env, &id);
     let admin = Address::generate(env);
@@ -21,7 +22,7 @@ fn deploy(env: &Env) -> (InsightArenaContractClient<'_>, Address, Address) {
     let xlm_token = register_token(env);
     env.mock_all_auths();
     client.initialize(&admin, &oracle, &200_u32, &xlm_token);
-    (client, admin, oracle)
+    (client, admin, oracle, xlm_token)
 }
 
 fn default_params(env: &Env) -> CreateMarketParams {
@@ -138,7 +139,7 @@ fn reputation_participation_bonus_capped_at_200() {
 fn get_creator_stats_returns_default_for_unknown_creator() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = deploy(&env);
+    let (client, _, _, _) = deploy(&env);
     let unknown = Address::generate(&env);
 
     let stats = client.get_creator_stats(&unknown);
@@ -151,7 +152,7 @@ fn get_creator_stats_returns_default_for_unknown_creator() {
 fn stats_updated_on_market_creation() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, _) = deploy(&env);
+    let (client, _, _, _) = deploy(&env);
     let creator = Address::generate(&env);
 
     client.create_market(&creator, &default_params(&env));
@@ -165,7 +166,7 @@ fn stats_updated_on_market_creation() {
 fn stats_updated_on_market_resolution() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, oracle) = deploy(&env);
+    let (client, _, oracle, _) = deploy(&env);
     let creator = Address::generate(&env);
 
     let id = client.create_market(&creator, &default_params(&env));
@@ -181,7 +182,7 @@ fn stats_updated_on_market_resolution() {
 fn stats_accumulate_across_multiple_markets() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, oracle) = deploy(&env);
+    let (client, _, oracle, _) = deploy(&env);
     let creator = Address::generate(&env);
 
     let id1 = client.create_market(&creator, &default_params(&env));
@@ -202,7 +203,7 @@ fn stats_accumulate_across_multiple_markets() {
 fn reputation_score_stored_in_stats() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, oracle) = deploy(&env);
+    let (client, _, oracle, _) = deploy(&env);
     let creator = Address::generate(&env);
 
     let id = client.create_market(&creator, &default_params(&env));
@@ -218,7 +219,7 @@ fn reputation_score_stored_in_stats() {
 fn reputation_score_always_in_range() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, oracle) = deploy(&env);
+    let (client, _, oracle, _) = deploy(&env);
     let creator = Address::generate(&env);
 
     for _ in 0..3 {
@@ -238,7 +239,7 @@ fn test_reputation_decay_over_time() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _, oracle) = deploy(&env);
+    let (client, _, oracle, _) = deploy(&env);
     let creator = Address::generate(&env);
 
     // Create and resolve market to get positive reputation
@@ -264,7 +265,7 @@ fn test_reputation_with_high_dispute_count() {
     // Test reputation calculation with many disputes to verify penalty cap
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _, oracle) = deploy(&env);
+    let (client, _, oracle, _) = deploy(&env);
     let creator = Address::generate(&env);
 
     // Create and resolve multiple markets
@@ -302,7 +303,7 @@ fn test_reputation_with_high_dispute_count() {
 fn test_reset_creator_stats_clears_all_fields() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, admin, oracle) = deploy(&env);
+    let (client, admin, oracle, _) = deploy(&env);
     let creator = Address::generate(&env);
 
     let id = client.create_market(&creator, &default_params(&env));
@@ -327,7 +328,7 @@ fn test_reset_creator_stats_clears_all_fields() {
 fn test_reset_creator_stats_unauthorized_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, _admin, _) = deploy(&env);
+    let (client, _admin, _, _) = deploy(&env);
     let creator = Address::generate(&env);
     let unauthorized = Address::generate(&env);
 
@@ -339,7 +340,7 @@ fn test_reset_creator_stats_unauthorized_fails() {
 fn test_reset_creator_stats_reputation_becomes_zero() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, admin, oracle) = deploy(&env);
+    let (client, admin, oracle, _) = deploy(&env);
     let creator = Address::generate(&env);
 
     let id = client.create_market(&creator, &default_params(&env));
@@ -353,4 +354,209 @@ fn test_reset_creator_stats_reputation_becomes_zero() {
 
     let stats_after = client.get_creator_stats(&creator);
     assert_eq!(stats_after.reputation_score, 0);
+}
+
+#[test]
+fn test_get_top_creators_empty_before_any_markets() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, _) = deploy(&env);
+
+    let top_creators = client.get_top_creators(&10);
+    assert_eq!(top_creators.len(), 0);
+}
+
+#[test]
+fn test_get_top_creators_returns_sorted_by_reputation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, oracle, _) = deploy(&env);
+
+    let creator1 = Address::generate(&env);
+    let creator2 = Address::generate(&env);
+    let creator3 = Address::generate(&env);
+
+    // Creator 1: 1/1 resolved -> 600
+    let id1 = client.create_market(&creator1, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+    client.resolve_market(&oracle, &id1, &symbol_short!("yes"));
+
+    // Creator 2: 2/2 resolved -> 600 (same as creator 1 for now, but we'll add participants)
+    // Actually, let's just make them different.
+    // Creator 2: 2/2 resolved, 50 avg participants -> 600 + 100 = 700
+    let id2 = client.create_market(&creator2, &default_params(&env));
+    let id3 = client.create_market(&creator2, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+    client.resolve_market(&oracle, &id2, &symbol_short!("yes"));
+    client.resolve_market(&oracle, &id3, &symbol_short!("no"));
+    // Manual stats update for simplicity in testing if needed,
+    // but resolving with participants would be better.
+    // Wait, on_market_resolved takes participant_count.
+    // In our resolve_market call, it uses market.participant_count which is 0 by default.
+
+    // Let's just use different resolution ratios.
+    // Creator 1: 1/1 = 600
+    // Creator 3: 1/2 = (1/2)*600 = 300
+    let id4 = client.create_market(&creator3, &default_params(&env));
+    let _id5 = client.create_market(&creator3, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+    client.resolve_market(&oracle, &id4, &symbol_short!("yes"));
+
+    let top = client.get_top_creators(&10);
+    assert_eq!(top.len(), 3);
+    assert_eq!(top.get(0).unwrap().address, creator1); // 600
+    assert_eq!(top.get(1).unwrap().address, creator2); // 600 (depends on order if same)
+    assert_eq!(top.get(2).unwrap().address, creator3); // 300
+
+    assert_eq!(top.get(0).unwrap().stats.reputation_score, 600);
+    assert_eq!(top.get(2).unwrap().stats.reputation_score, 300);
+}
+
+#[test]
+fn test_get_top_creators_respects_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, _) = deploy(&env);
+
+    for _ in 0..5 {
+        let creator = Address::generate(&env);
+        client.create_market(&creator, &default_params(&env));
+    }
+
+    let top = client.get_top_creators(&3);
+    assert_eq!(top.len(), 3);
+
+    let top_more = client.get_top_creators(&10);
+    assert_eq!(top_more.len(), 5);
+}
+
+// ── Dispute-related reputation tests ──────────────────────────────────────────
+
+#[test]
+fn test_dispute_count_increments_on_raise() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    // Create and resolve a market
+    let market_id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+
+    // Check initial stats
+    let stats_before = client.get_creator_stats(&creator);
+    assert_eq!(stats_before.dispute_count, 0);
+    let initial_reputation = stats_before.reputation_score;
+
+    // Fund the disputer and approve spending
+    let bond = 1_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+
+    // Raise a dispute
+    client.raise_dispute(&disputer, &market_id, &bond);
+
+    // Check that dispute count incremented
+    let stats_after = client.get_creator_stats(&creator);
+    assert_eq!(stats_after.dispute_count, 1);
+    assert!(stats_after.reputation_score < initial_reputation);
+}
+
+#[test]
+fn test_reputation_decreases_with_disputes() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    // Create and resolve multiple markets to build reputation
+    for _ in 0..3 {
+        let market_id = client.create_market(&creator, &default_params(&env));
+        env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+        client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+    }
+
+    let stats_no_disputes = client.get_creator_stats(&creator);
+    let reputation_no_disputes = stats_no_disputes.reputation_score;
+
+    // Raise disputes on the first two markets
+    let market_id_1 = client.create_market(&creator, &default_params(&env));
+    let market_id_2 = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+    client.resolve_market(&oracle, &market_id_1, &symbol_short!("yes"));
+    client.resolve_market(&oracle, &market_id_2, &symbol_short!("no"));
+
+    // Fund disputer for first dispute
+    let bond1 = 1_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond1);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond1, &9999);
+    client.raise_dispute(&disputer, &market_id_1, &bond1);
+    let stats_one_dispute = client.get_creator_stats(&creator);
+    
+    // Fund disputer for second dispute
+    let bond2 = 1_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond2);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond2, &9999);
+    client.raise_dispute(&disputer, &market_id_2, &bond2);
+    let stats_two_disputes = client.get_creator_stats(&creator);
+
+    // Verify reputation decreases with each dispute
+    assert!(stats_one_dispute.reputation_score < reputation_no_disputes);
+    assert!(stats_two_disputes.reputation_score < stats_one_dispute.reputation_score);
+    assert_eq!(stats_two_disputes.dispute_count, 2);
+}
+
+#[test]
+fn test_reputation_capped_at_zero_with_many_disputes() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    // Create a single market to have minimal reputation
+    let market_id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+
+    let initial_stats = client.get_creator_stats(&creator);
+    // Should be 600 (1/1 resolved * 600)
+    assert_eq!(initial_stats.reputation_score, 600);
+
+    // Create many markets and raise disputes to exceed penalty cap
+    for i in 0..15 {
+        let market_id = client.create_market(&creator, &default_params(&env));
+        env.ledger().set_timestamp(env.ledger().timestamp() + 2000 + i * 100);
+        client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+        
+        // Fund disputer for each dispute
+        let bond = 1_000_000_i128;
+        StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+        TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+        client.raise_dispute(&disputer, &market_id, &bond);
+    }
+
+    let final_stats = client.get_creator_stats(&creator);
+    
+    // With 15 disputes: penalty = min(15 * 50, 200) = 200
+    // With 16 markets (1 initial + 15): resolution_ratio = 16/16 * 600 = 600
+    // Final score = 600 + 0 - 200 = 400
+    // But if we had even more disputes, it should never go below 0
+    assert!(final_stats.reputation_score >= 0);
+    assert_eq!(final_stats.dispute_count, 15);
+    
+    // Test the formula directly with extreme dispute count
+    let extreme_stats = CreatorStats {
+        markets_created: 1,
+        markets_resolved: 0, // No resolved markets
+        average_participant_count: 0,
+        dispute_count: 100, // Extreme dispute count
+        reputation_score: 0,
+    };
+    
+    let extreme_reputation = calculate_creator_reputation(&extreme_stats);
+    assert_eq!(extreme_reputation, 0); // Should be capped at 0, not underflow
 }

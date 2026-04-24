@@ -1,5 +1,5 @@
 import {
-  ForbiddenException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -45,7 +45,7 @@ export class FlagsService {
     });
 
     if (existingFlag) {
-      throw new ForbiddenException('You have already flagged this market');
+      throw new ConflictException('You have already flagged this market');
     }
 
     const flag = this.flagsRepository.create({
@@ -126,7 +126,7 @@ export class FlagsService {
     }
 
     if (flag.status !== FlagStatus.PENDING) {
-      throw new ForbiddenException('Flag has already been resolved');
+      throw new ConflictException('Flag has already been resolved');
     }
 
     flag.status = FlagStatus.RESOLVED;

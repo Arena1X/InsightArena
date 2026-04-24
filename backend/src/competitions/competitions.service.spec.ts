@@ -37,6 +37,9 @@ describe('CompetitionsService', () => {
     find: jest.fn(),
     findOne: jest.fn(),
     createQueryBuilder: jest.fn(),
+    manager: {
+      transaction: jest.fn(),
+    },
   };
 
   const mockParticipantsRepository = {
@@ -303,6 +306,80 @@ describe('CompetitionsService', () => {
       expect(
         mockParticipantsRepository.createQueryBuilder,
       ).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('leave', () => {
+    it('should remove participant and decrement count before competition starts', async () => {
+      const futureDate = new Date();
+      futureDate.setHours(futureDate.getHours() + 1);
+
+      const comp = { ...mockCompetition, start_time: futureDate };
+      mockRepository.findOne.mockResolvedValue(comp);
+
+      const mockManager = {
+        findOne: jest.fn().mockResolvedValue({ id: 'part-1' }),
+        remove: jest.fn().mockResolvedValue({}),
+        decrement: jest.fn().mockResolvedValue({}),
+      };
+
+      mockRepository.manager.transaction.mockImplementation(
+        (cb: (manager: unknown) => Promise<unknown>) => cb(mockManager),
+      );
+
+      await service.leave('comp-uuid-1', 'user-uuid-1');
+
+      expect(mockRepository.findOne).toHaveBeenCalledWith({
+        where: { id: 'comp-uuid-1' },
+      });
+      expect(mockManager.findOne).toHaveBeenCalled();
+      expect(mockManager.remove).toHaveBeenCalled();
+      expect(mockManager.decrement).toHaveBeenCalledWith(
+        Competition,
+        { id: 'comp-uuid-1' },
+        'participant_count',
+        1,
+      );
+    });
+
+    it('should throw NotFoundException if competition does not exist', async () => {
+      mockRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.leave('non-existent', 'user-1')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('should throw BadRequestException if competition has already started', async () => {
+      const pastDate = new Date();
+      pastDate.setHours(pastDate.getHours() - 1);
+
+      const comp = { ...mockCompetition, start_time: pastDate };
+      mockRepository.findOne.mockResolvedValue(comp);
+
+      await expect(service.leave('comp-1', 'user-1')).rejects.toThrow(
+        'Cannot leave competition after it has started',
+      );
+    });
+
+    it('should throw NotFoundException if user is not a participant', async () => {
+      const futureDate = new Date();
+      futureDate.setHours(futureDate.getHours() + 1);
+
+      const comp = { ...mockCompetition, start_time: futureDate };
+      mockRepository.findOne.mockResolvedValue(comp);
+
+      const mockManager = {
+        findOne: jest.fn().mockResolvedValue(null),
+      };
+
+      mockRepository.manager.transaction.mockImplementation(
+        (cb: (manager: unknown) => Promise<unknown>) => cb(mockManager),
+      );
+
+      await expect(service.leave('comp-1', 'user-1')).rejects.toThrow(
+        'You are not a participant in this competition',
+      );
     });
   });
 });

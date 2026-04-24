@@ -172,7 +172,7 @@ export class CompetitionsController {
     @Param('id') id: string,
     @CurrentUser() user: User,
   ): Promise<LeaveCompetitionResponseDto> {
-    await this.competitionsService.leaveCompetition(id, user);
+    await this.competitionsService.leave(id, user.id);
     return {
       message: 'Successfully left competition',
       competition_id: id,

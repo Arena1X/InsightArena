@@ -14,6 +14,7 @@ import { CompetitionParticipant } from '../competitions/entities/competition-par
 import { Competition } from '../competitions/entities/competition.entity';
 import { ListFlagsQueryDto } from '../flags/dto/list-flags-query.dto';
 import { ResolveFlagDto } from '../flags/dto/resolve-flag.dto';
+import { Flag, FlagStatus } from '../flags/entities/flag.entity';
 import { FlagsService } from '../flags/flags.service';
 import { Comment } from '../markets/entities/comment.entity';
 import { Market } from '../markets/entities/market.entity';
@@ -52,6 +53,8 @@ export class AdminService {
     private readonly competitionParticipantsRepository: Repository<CompetitionParticipant>,
     @InjectRepository(ActivityLog)
     private readonly activityLogsRepository: Repository<ActivityLog>,
+    @InjectRepository(Flag)
+    private readonly flagsRepository: Repository<Flag>,
     private readonly analyticsService: AnalyticsService,
     private readonly notificationsService: NotificationsService,
     private readonly sorobanService: SorobanService,
@@ -96,6 +99,10 @@ export class AdminService {
       BigInt(100)
     ).toString();
 
+    const pending_flags = await this.flagsRepository.count({
+      where: { status: FlagStatus.PENDING },
+    });
+
     return {
       total_users,
       active_users_24h,
@@ -107,6 +114,7 @@ export class AdminService {
       total_volume_stroops,
       total_competitions,
       platform_revenue_stroops,
+      pending_flags,
     };
   }
 

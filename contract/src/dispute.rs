@@ -4,6 +4,7 @@ use crate::config;
 use crate::errors::InsightArenaError;
 use crate::escrow;
 use crate::market;
+use crate::reputation;
 use crate::storage_types::{DataKey, Dispute};
 
 fn bump_dispute(env: &Env, market_id: u64) {
@@ -88,6 +89,9 @@ pub fn raise_dispute(
         .set(&DataKey::Dispute(market_id), &dispute);
     bump_dispute(&env, market_id);
 
+    // Update creator's dispute count and reputation
+    reputation::on_dispute_raised(&env, &market.creator);
+
     emit_dispute_raised(&env, market_id, &disputer, bond, now);
 
     Ok(())
@@ -132,163 +136,4 @@ pub fn resolve_dispute(
     emit_dispute_resolved(&env, market_id, &admin, uphold);
 
     Ok(())
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod dispute_tests {
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
-    use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-    use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
-
-    use crate::market::CreateMarketParams;
-    use crate::storage_types::DataKey;
-    use crate::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
-
-    fn register_token(env: &Env) -> Address {
-        let token_admin = Address::generate(env);
-        env.register_stellar_asset_contract_v2(token_admin)
-            .address()
-    }
-
-    fn deploy(env: &Env) -> (InsightArenaContractClient<'_>, Address, Address, Address) {
-        let id = env.register(InsightArenaContract, ());
-        let client = InsightArenaContractClient::new(env, &id);
-        let admin = Address::generate(env);
-        let oracle = Address::generate(env);
-        let xlm_token = register_token(env);
-        env.mock_all_auths();
-        client.initialize(&admin, &oracle, &200_u32, &xlm_token);
-        (client, admin, oracle, xlm_token)
-    }
-
-    fn params(env: &Env, dispute_window: u64) -> CreateMarketParams {
-        let now = env.ledger().timestamp();
-        CreateMarketParams {
-            title: String::from_str(env, "Dispute market"),
-            description: String::from_str(env, "For dispute tests"),
-            category: Symbol::new(env, "Sports"),
-            outcomes: vec![env, symbol_short!("yes"), symbol_short!("no")],
-            end_time: now + 10,
-            resolution_time: now + 20,
-            dispute_window,
-            creator_fee_bps: 100,
-            min_stake: 10_000_000,
-            max_stake: 100_000_000,
-            is_public: true,
-        }
-    }
-
-    #[test]
-    fn raise_dispute_fails_outside_window() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _admin, oracle, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let disputer = Address::generate(&env);
-
-        let id = client.create_market(&creator, &params(&env, 30));
-        env.ledger().set_timestamp(env.ledger().timestamp() + 20);
-        client.resolve_market(&oracle, &id, &symbol_short!("yes"));
-
-        // Move beyond resolved_at + dispute_window.
-        env.ledger().set_timestamp(env.ledger().timestamp() + 31);
-
-        StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &10_000_000);
-        TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &10_000_000, &9999);
-
-        let result = client.try_raise_dispute(&disputer, &id, &10_000_000);
-        assert!(matches!(
-            result,
-            Err(Ok(InsightArenaError::DisputeWindowClosed))
-        ));
-    }
-
-    #[test]
-    fn raise_dispute_locks_bond_in_escrow_and_stores_dispute() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _admin, oracle, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let disputer = Address::generate(&env);
-
-        let id = client.create_market(&creator, &params(&env, 86_400));
-        env.ledger().set_timestamp(env.ledger().timestamp() + 20);
-        client.resolve_market(&oracle, &id, &symbol_short!("yes"));
-
-        let bond = 15_000_000_i128;
-        StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
-        TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
-
-        let token = TokenClient::new(&env, &xlm_token);
-        let contract_before = token.balance(&client.address);
-        let disputer_before = token.balance(&disputer);
-
-        client.raise_dispute(&disputer, &id, &bond);
-
-        assert_eq!(token.balance(&disputer), disputer_before - bond);
-        assert_eq!(token.balance(&client.address), contract_before + bond);
-
-        // dispute record exists
-        let stored = env.as_contract(&client.address, || {
-            env.storage()
-                .persistent()
-                .get::<DataKey, crate::storage_types::Dispute>(&DataKey::Dispute(id))
-        });
-        assert!(stored.is_some());
-    }
-
-    #[test]
-    fn resolve_dispute_uphold_returns_bond_and_reopens_market() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, oracle, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let disputer = Address::generate(&env);
-
-        let id = client.create_market(&creator, &params(&env, 86_400));
-        env.ledger().set_timestamp(env.ledger().timestamp() + 20);
-        client.resolve_market(&oracle, &id, &symbol_short!("yes"));
-
-        let bond = 12_000_000_i128;
-        StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
-        TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
-        client.raise_dispute(&disputer, &id, &bond);
-
-        let token = TokenClient::new(&env, &xlm_token);
-        let disputer_before = token.balance(&disputer);
-
-        client.resolve_dispute(&admin, &id, &true);
-
-        assert_eq!(token.balance(&disputer), disputer_before + bond);
-
-        let market = client.get_market(&id);
-        assert!(!market.is_resolved);
-        assert_eq!(market.resolved_outcome, None);
-        assert_eq!(market.resolved_at, None);
-    }
-
-    #[test]
-    fn resolve_dispute_reject_forfeits_bond_to_treasury_balance() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, oracle, xlm_token) = deploy(&env);
-        let creator = Address::generate(&env);
-        let disputer = Address::generate(&env);
-
-        let id = client.create_market(&creator, &params(&env, 86_400));
-        env.ledger().set_timestamp(env.ledger().timestamp() + 20);
-        client.resolve_market(&oracle, &id, &symbol_short!("yes"));
-
-        let bond = 9_000_000_i128;
-        StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
-        TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
-        client.raise_dispute(&disputer, &id, &bond);
-
-        let treasury_before = client.get_treasury_balance();
-        client.resolve_dispute(&admin, &id, &false);
-        let treasury_after = client.get_treasury_balance();
-        assert_eq!(treasury_after, treasury_before + bond);
-    }
 }

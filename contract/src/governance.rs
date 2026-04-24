@@ -221,6 +221,17 @@ pub fn execute_proposal(
     Ok(())
 }
 
+/// Return a single proposal by ID, extending its TTL on read.
+pub fn get_proposal(env: &Env, proposal_id: u32) -> Result<Proposal, InsightArenaError> {
+    let proposal = load_proposal(env, proposal_id)?;
+    env.storage().persistent().extend_ttl(
+        &DataKey::Proposal(proposal_id),
+        crate::config::PERSISTENT_THRESHOLD,
+        crate::config::PERSISTENT_BUMP,
+    );
+    Ok(proposal)
+}
+
 /// Return a paginated slice of proposals in creation order.
 ///
 /// - `start` is the 1-based proposal ID to begin from (inclusive).

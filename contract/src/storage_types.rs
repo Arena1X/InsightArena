@@ -121,6 +121,13 @@ pub struct CreatorStats {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreatorLeaderboardEntry {
+    pub address: Address,
+    pub stats: CreatorStats,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Prediction {
     /// The ID of the market this prediction is designated for.
     pub market_id: u64,

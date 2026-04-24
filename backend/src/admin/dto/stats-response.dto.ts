@@ -30,4 +30,7 @@ export class StatsResponseDto {
 
   @ApiProperty()
   platform_revenue_stroops: string;
+
+  @ApiProperty()
+  pending_flags: number;
 }
