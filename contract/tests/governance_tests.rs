@@ -1,6 +1,6 @@
 use insightarena_contract::governance::ProposalType;
 use insightarena_contract::storage_types::DataKey;
-use insightarena_contract::{InsightArenaContract, InsightArenaContractClient};
+use insightarena_contract::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{Address, Env, Symbol, Vec};
 
@@ -169,4 +169,53 @@ fn test_execute_proposal_fails_before_voting_ends() {
     let executor = Address::generate(&env);
     let result = client.try_execute_proposal(&executor, &id);
     assert!(result.is_err());
+}
+
+// ── Issue #570: cancel_proposal tests ─────────────────────────────────────────
+
+#[test]
+fn test_cancel_proposal_by_proposer_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy(&env);
+
+    let proposer = Address::generate(&env);
+    let duration = 3_600_u64;
+    let id = client.create_proposal(&proposer, &ProposalType::UpdateProtocolFee(400), &duration);
+
+    client.cancel_proposal(&proposer, &id);
+
+    let proposal = client.get_proposal(&id);
+    assert!(proposal.executed);
+}
+
+#[test]
+fn test_cancel_proposal_by_admin_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = deploy(&env);
+
+    let proposer = Address::generate(&env);
+    let duration = 3_600_u64;
+    let id = client.create_proposal(&proposer, &ProposalType::UpdateProtocolFee(400), &duration);
+
+    client.cancel_proposal(&admin, &id);
+
+    let proposal = client.get_proposal(&id);
+    assert!(proposal.executed);
+}
+
+#[test]
+fn test_cancel_proposal_by_non_proposer_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy(&env);
+
+    let proposer = Address::generate(&env);
+    let non_proposer = Address::generate(&env);
+    let duration = 3_600_u64;
+    let id = client.create_proposal(&proposer, &ProposalType::UpdateProtocolFee(400), &duration);
+
+    let result = client.try_cancel_proposal(&non_proposer, &id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
 }

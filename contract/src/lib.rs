@@ -206,6 +206,11 @@ impl InsightArenaContract {
         market::get_conditional_chain(&env, market_id)
     }
 
+    /// Return the conditional depth of a market (0 for root, 1 for first-level conditional, etc.).
+    pub fn calculate_conditional_depth(env: Env, market_id: u64) -> u32 {
+        market::calculate_conditional_depth(&env, market_id)
+    }
+
     // ── Dispute ───────────────────────────────────────────────────────────────
 
     /// Return the active dispute for a market. Extends TTL on read.
@@ -331,6 +336,15 @@ impl InsightArenaContract {
     /// Return a single governance proposal by ID.
     pub fn get_proposal(env: Env, proposal_id: u32) -> Result<Proposal, InsightArenaError> {
         governance::get_proposal(&env, proposal_id)
+    }
+
+    /// Cancel a proposal. Only the proposer or admin may cancel; executed proposals cannot be cancelled.
+    pub fn cancel_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u32,
+    ) -> Result<(), InsightArenaError> {
+        governance::cancel_proposal(&env, caller, proposal_id)
     }
 
     /// Return the total protocol fees accumulated in the treasury.

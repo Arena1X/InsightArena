@@ -78,6 +78,13 @@ fn emit_proposal_executed(env: &Env, proposal_id: u32, summary: Symbol) {
     );
 }
 
+fn emit_proposal_cancelled(env: &Env, proposal_id: u32) {
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("canceld")),
+        proposal_id,
+    );
+}
+
 pub fn create_proposal(
     env: &Env,
     proposer: Address,
@@ -218,6 +225,36 @@ pub fn execute_proposal(
     proposal.executed = true;
     store_proposal(env, &proposal);
     emit_proposal_executed(env, proposal_id, summary);
+    Ok(())
+}
+
+/// Cancel a proposal before it is executed.
+///
+/// Only the original proposer or the platform admin may cancel. Proposals that
+/// have already been executed cannot be cancelled.
+pub fn cancel_proposal(
+    env: &Env,
+    caller: Address,
+    proposal_id: u32,
+) -> Result<(), InsightArenaError> {
+    caller.require_auth();
+
+    let mut proposal = load_proposal(env, proposal_id)?;
+
+    if proposal.executed {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
+    let cfg = config::get_config(env)?;
+    if caller != proposal.proposer && caller != cfg.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    proposal.executed = true;
+    store_proposal(env, &proposal);
+
+    emit_proposal_cancelled(env, proposal_id);
+
     Ok(())
 }
 

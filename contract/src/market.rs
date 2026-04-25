@@ -633,7 +633,13 @@ pub fn create_conditional_market(
 ) -> Result<u64, InsightArenaError> {
     validate_conditional_params(env, parent_market_id, &required_outcome, &params)?;
 
-    let depth = calculate_conditional_depth(env, parent_market_id)?;
+    let parent_depth = calculate_conditional_depth(env, parent_market_id);
+    let depth = parent_depth
+        .checked_add(1)
+        .ok_or(InsightArenaError::Overflow)?;
+    if depth > MAX_CONDITIONAL_DEPTH {
+        return Err(InsightArenaError::ConditionalDepthExceeded);
+    }
 
     let new_market_id = load_market_count(env)
         .checked_add(1)
@@ -763,24 +769,25 @@ pub fn get_conditional_chain(
     Ok(chain)
 }
 
-fn calculate_conditional_depth(env: &Env, parent_market_id: u64) -> Result<u32, InsightArenaError> {
-    let mut depth = 1;
-    if let Some(parent_cond) = env
-        .storage()
-        .persistent()
-        .get::<_, ConditionalMarket>(&DataKey::ConditionalMarket(parent_market_id))
-    {
-        depth = parent_cond
-            .conditional_depth
-            .checked_add(1)
-            .ok_or(InsightArenaError::Overflow)?;
+/// Walk up the ConditionalParent chain from `market_id`, counting hops to the root.
+/// Returns 0 for root (non-conditional) markets, 1 for first-level conditionals, etc.
+pub fn calculate_conditional_depth(env: &Env, market_id: u64) -> u32 {
+    let mut depth = 0u32;
+    let mut cursor = market_id;
+    loop {
+        match env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::ConditionalParent(cursor))
+        {
+            Some(parent_id) => {
+                depth = depth.saturating_add(1);
+                cursor = parent_id;
+            }
+            None => break,
+        }
     }
-
-    if depth > MAX_CONDITIONAL_DEPTH {
-        return Err(InsightArenaError::ConditionalDepthExceeded);
-    }
-
-    Ok(depth)
+    depth
 }
 
 fn validate_conditional_params(

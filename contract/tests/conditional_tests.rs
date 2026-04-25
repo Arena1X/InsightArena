@@ -1865,3 +1865,67 @@ fn test_deactivated_market_rejects_new_predictions() {
         "prediction on deactivated market should fail with MarketAlreadyCancelled"
     );
 }
+
+// ── Issue #557: calculate_conditional_depth tests ────────────────────────────
+
+#[test]
+fn test_calculate_depth_root_market_is_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let creator = Address::generate(&env);
+
+    let root_id = client.create_market(&creator, &default_params(&env));
+    assert_eq!(client.calculate_conditional_depth(&root_id), 0);
+}
+
+#[test]
+fn test_calculate_depth_first_level_is_one() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let creator = Address::generate(&env);
+
+    let root_id = client.create_market(&creator, &default_params(&env));
+    let child_id = client.create_conditional_market(
+        &creator,
+        &root_id,
+        &symbol_short!("yes"),
+        &conditional_params(&env, &client, root_id),
+    );
+
+    assert_eq!(client.calculate_conditional_depth(&child_id), 1);
+}
+
+#[test]
+fn test_calculate_depth_nested_three_levels() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let creator = Address::generate(&env);
+
+    let root = client.create_market(&creator, &default_params(&env));
+    let c1 = client.create_conditional_market(
+        &creator,
+        &root,
+        &symbol_short!("yes"),
+        &conditional_params(&env, &client, root),
+    );
+    let c2 = client.create_conditional_market(
+        &creator,
+        &c1,
+        &symbol_short!("yes"),
+        &conditional_params(&env, &client, c1),
+    );
+    let c3 = client.create_conditional_market(
+        &creator,
+        &c2,
+        &symbol_short!("yes"),
+        &conditional_params(&env, &client, c2),
+    );
+
+    assert_eq!(client.calculate_conditional_depth(&root), 0);
+    assert_eq!(client.calculate_conditional_depth(&c1), 1);
+    assert_eq!(client.calculate_conditional_depth(&c2), 2);
+    assert_eq!(client.calculate_conditional_depth(&c3), 3);
+}
