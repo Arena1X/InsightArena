@@ -2,9 +2,10 @@
 
 import RewardsWalletCard from "@/component/RewardsWalletCard";
 import NotificationsCard from "@/component/NotificationsCard";
+import { useWallet } from "@/context/WalletContext";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
@@ -21,6 +22,11 @@ import {
   X,
   Home,
 } from "lucide-react";
+
+function truncateAddress(address: string): string {
+  if (address.length < 10) return address;
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
 
 const navigation = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
@@ -59,6 +65,25 @@ type SidebarContentProps = {
 
 function SidebarContent({ onNavigate }: SidebarContentProps) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { address, logout } = useWallet();
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyAddress = async () => {
+    if (!address) return;
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy address:", err);
+    }
+  };
+
+  const handleDisconnect = () => {
+    logout();
+    router.push("/");
+  };
 
   return (
     <div className="flex h-full flex-col bg-[#171d2d] text-white">
@@ -103,11 +128,28 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
           <p className="text-xs uppercase tracking-[0.24em] text-[#6f7891]">
             Connected
           </p>
-          <p className="mt-2 truncate text-sm font-semibold text-white">
-            0x71A4...9cF2
-          </p>
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <p
+              className="truncate text-sm font-semibold text-white cursor-help"
+              title={address ?? ""}
+            >
+              {address ? truncateAddress(address) : "Not connected"}
+            </p>
+            {address && (
+              <button
+                type="button"
+                onClick={handleCopyAddress}
+                aria-label="Copy wallet address"
+                className="text-xs text-[#4fd1c5] hover:text-[#72ddd3] transition"
+                title={copied ? "Copied!" : "Copy address"}
+              >
+                {copied ? "✓" : "📋"}
+              </button>
+            )}
+          </div>
           <button
             type="button"
+            onClick={handleDisconnect}
             aria-label="Disconnect wallet"
             className="mt-3 text-sm font-medium text-[#4fd1c5] transition hover:text-[#72ddd3]"
           >
@@ -120,6 +162,9 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
 }
 
 function TopNavigation() {
+  const { address, user } = useWallet();
+  const displayName = user?.username ?? (address ? truncateAddress(address) : "User");
+
   return (
     <section className="border-b border-orange-500/30 px-6">
       <div className="flex items-center justify-between gap-6 py-4">
@@ -132,7 +177,7 @@ function TopNavigation() {
         </Link>
         <div className="text-center">
           <h1 className="text-3xl font-semibold tracking-tight sm:text-[2.45rem]">
-            Welcome back, Ayomide
+            Welcome back, {displayName}
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-[#97a0b5] sm:text-base"></p>
         </div>
