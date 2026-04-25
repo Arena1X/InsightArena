@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import Header from "@/component/Header";
 import Footer from "@/component/Footer";
+import PageBackground from "@/component/PageBackground";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Search, 
@@ -103,19 +104,10 @@ export default function DocsPage() {
   );
 
   return (
-    <div className="relative min-h-screen bg-[#141824] text-white selection:bg-[#4FD1C5]/30">
-      {/* Background Elements */}
-      <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-500/10 blur-[120px] rounded-full" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-teal-500/10 blur-[120px] rounded-full" />
-        <div className="absolute inset-0 opacity-20" 
-             style={{ backgroundImage: "radial-gradient(#ffffff10 1px, transparent 1px)", backgroundSize: "40px 40px" }} 
-        />
-      </div>
-
+    <PageBackground>
       <Header />
 
-      <main className="relative z-10 pt-32 pb-24 px-6 max-w-7xl mx-auto">
+      <main className="relative z-10 pt-32 pb-24 px-6 max-w-7xl mx-auto text-white selection:bg-[#4FD1C5]/30">
         {/* Hero Area */}
         <section className="text-center mb-20">
           <motion.div
@@ -287,6 +279,6 @@ export default function DocsPage() {
       </main>
 
       <Footer />
-    </div>
+    </PageBackground>
   );
 }
