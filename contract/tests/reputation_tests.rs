@@ -57,6 +57,84 @@ fn reputation_zero_for_new_creator() {
 }
 
 #[test]
+fn test_reputation_zero_markets_returns_zero() {
+    let stats = CreatorStats {
+        markets_created: 0,
+        markets_resolved: 0,
+        average_participant_count: 0,
+        dispute_count: 0,
+        reputation_score: 0,
+    };
+    assert_eq!(calculate_creator_reputation(&stats), 0);
+}
+
+#[test]
+fn test_reputation_perfect_resolution_rate_scores_600() {
+    // 10/10 resolved, no participants, no disputes -> 600
+    let stats = CreatorStats {
+        markets_created: 10,
+        markets_resolved: 10,
+        average_participant_count: 0,
+        dispute_count: 0,
+        reputation_score: 0,
+    };
+    assert_eq!(calculate_creator_reputation(&stats), 600);
+}
+
+#[test]
+fn test_reputation_dispute_penalty_reduces_score() {
+    let without_dispute = CreatorStats {
+        markets_created: 10,
+        markets_resolved: 10,
+        average_participant_count: 20,
+        dispute_count: 0,
+        reputation_score: 0,
+    };
+
+    let with_dispute = CreatorStats {
+        dispute_count: 2,
+        ..without_dispute.clone()
+    };
+
+    let base = calculate_creator_reputation(&without_dispute);
+    let penalized = calculate_creator_reputation(&with_dispute);
+    assert!(penalized < base);
+}
+
+#[test]
+fn test_reputation_capped_at_1000() {
+    // Deliberately oversized resolved/created ratio to verify explicit clamp.
+    let stats = CreatorStats {
+        markets_created: 1,
+        markets_resolved: 100,
+        average_participant_count: 200,
+        dispute_count: 0,
+        reputation_score: 0,
+    };
+    assert_eq!(calculate_creator_reputation(&stats), 1000);
+}
+
+#[test]
+fn test_reputation_participation_bonus_adds_up_to_200() {
+    let medium_participation = CreatorStats {
+        markets_created: 10,
+        markets_resolved: 10,
+        average_participant_count: 50,
+        dispute_count: 0,
+        reputation_score: 0,
+    };
+    let high_participation = CreatorStats {
+        average_participant_count: 300,
+        ..medium_participation.clone()
+    };
+
+    let medium_score = calculate_creator_reputation(&medium_participation);
+    let high_score = calculate_creator_reputation(&high_participation);
+    assert_eq!(medium_score, 700);
+    assert_eq!(high_score, 800);
+}
+
+#[test]
 fn reputation_perfect_score_no_disputes() {
     // 10/10 resolved, 100 avg participants → 600 + 200 - 0 = 800
     let stats = CreatorStats {
