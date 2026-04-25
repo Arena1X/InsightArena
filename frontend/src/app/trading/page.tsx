@@ -2,6 +2,7 @@
 import React, { useState } from "react";
 import Header from "@/component/Header";
 import Footer from "@/component/Footer";
+import PageBackground from "@/component/PageBackground";
 import StatsCards from "@/component/trading/StatsCards";
 import TradingTabs from "@/component/trading/TradingTabs";
 import MarketSearchBar from "@/component/trading/MarketSearchBar";
@@ -78,7 +79,7 @@ export default function TradingPage() {
   };
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col">
+    <PageBackground>
       <Header />
       <main className="flex-1 max-w-6xl mx-auto w-full px-4 py-8">
         <h1 className="text-2xl font-bold mb-2">Crypto Trading Hub</h1>
@@ -105,6 +106,6 @@ export default function TradingPage() {
         {/* Add Tournament, Portfolio, Leaderboards tab content as needed */}
       </main>
       <Footer />
-    </div>
+    </PageBackground>
   );
 } 
