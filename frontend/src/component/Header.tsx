@@ -4,12 +4,14 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ChevronDown, Copy } from "lucide-react";
-import { useWallet } from "@/context/WalletContext";
+import { useOptionalWallet } from "@/context/WalletContext";
 
 export default function Header() {
   const pathname = usePathname();
   const router = useRouter();
-  const { address, logout } = useWallet();
+  const wallet = useOptionalWallet();
+  const address = wallet?.address ?? null;
+  const logout = wallet?.logout;
   const isAuthenticated = Boolean(address);
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -139,7 +141,7 @@ export default function Header() {
   };
 
   const handleDisconnect = () => {
-    logout();
+    logout?.();
     setIsDropdownOpen(false);
     setIsMobileMenuOpen(false);
     router.push("/");

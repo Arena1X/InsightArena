@@ -39,3 +39,8 @@ export function useWallet() {
   }
   return context;
 }
+
+export function useOptionalWallet() {
+  const context = useContext(WalletContext);
+  return context ?? null;
+}
