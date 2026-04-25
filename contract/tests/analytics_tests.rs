@@ -393,3 +393,76 @@ fn test_analytics_after_market_resolution() {
     assert_eq!(stats.leading_outcome, symbol_short!("yes"));
     assert_eq!(stats.leading_outcome_pool, 60_000_000);
 }
+
+#[test]
+fn test_get_platform_stats_reflects_market_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    assert_eq!(client.get_platform_stats().total_markets, 0);
+
+    client.create_market(&creator, &default_params(&env));
+    assert_eq!(client.get_platform_stats().total_markets, 1);
+
+    client.create_market(&creator, &default_params(&env));
+    assert_eq!(client.get_platform_stats().total_markets, 2);
+}
+
+#[test]
+fn test_get_platform_stats_reflects_total_volume() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm) = deploy(&env);
+    let creator = Address::generate(&env);
+    let id = client.create_market(&creator, &default_params(&env));
+
+    let u1 = Address::generate(&env);
+    let amount = 50_000_000;
+    fund(&env, &xlm, &u1, amount);
+
+    client.submit_prediction(&u1, &id, &symbol_short!("yes"), &amount);
+
+    let stats = client.get_platform_stats();
+    assert_eq!(stats.total_volume_xlm, amount);
+}
+
+#[test]
+fn test_get_market_stats_returns_correct_pool_and_participants() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm) = deploy(&env);
+    let creator = Address::generate(&env);
+    let id = client.create_market(&creator, &default_params(&env));
+
+    let u1 = Address::generate(&env);
+    let u2 = Address::generate(&env);
+    fund(&env, &xlm, &u1, 25_000_000);
+    fund(&env, &xlm, &u2, 35_000_000);
+
+    client.submit_prediction(&u1, &id, &symbol_short!("yes"), &25_000_000);
+    client.submit_prediction(&u2, &id, &symbol_short!("no"), &35_000_000);
+
+    let stats = client.get_market_stats(&id);
+    assert_eq!(stats.total_pool, 60_000_000);
+    assert_eq!(stats.participant_count, 2);
+}
+
+#[test]
+fn test_get_user_stats_returns_correct_profile() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm) = deploy(&env);
+    let creator = Address::generate(&env);
+    let id = client.create_market(&creator, &default_params(&env));
+
+    let user = Address::generate(&env);
+    fund(&env, &xlm, &user, 40_000_000);
+
+    client.submit_prediction(&user, &id, &symbol_short!("yes"), &40_000_000);
+
+    let profile = client.get_user_stats(&user);
+    assert_eq!(profile.total_predictions, 1);
+    assert_eq!(profile.total_staked, 40_000_000);
+}
