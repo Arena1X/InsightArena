@@ -611,3 +611,113 @@ fn test_participant_count_does_not_double_count() {
     let season = client.get_season(&season_id);
     assert_eq!(season.participant_count, 1);
 }
+
+#[test]
+fn test_reset_season_points_zeroes_all_user_points() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 200_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 100_000_000);
+
+    let season_id = client.create_season(&admin, &0, &10_000, &100_000_000);
+
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    fund(&env, &xlm_token, &user1, 50_000_000);
+    fund(&env, &xlm_token, &user2, 50_000_000);
+
+    let market_id = client.create_market(&admin, &default_market_params(&env));
+    client.submit_prediction(&user1, &market_id, &symbol_short!("yes"), &10_000_000);
+    client.submit_prediction(&user2, &market_id, &symbol_short!("yes"), &10_000_000);
+
+    client.reset_season_points(&admin, &season_id);
+
+    let profile1_after = client.get_user_stats(&user1);
+    let profile2_after = client.get_user_stats(&user2);
+    assert_eq!(profile1_after.season_points, 0);
+    assert_eq!(profile2_after.season_points, 0);
+}
+
+#[test]
+fn test_reset_season_points_activates_new_season() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 200_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 100_000_000);
+
+    let season1_id = client.create_season(&admin, &0, &100, &50_000_000);
+    let season2_id = client.create_season(&admin, &200, &300, &50_000_000);
+
+    env.ledger().set_timestamp(50);
+    let active_before = client.get_active_season().unwrap();
+    assert_eq!(active_before.season_id, season1_id);
+
+    client.reset_season_points(&admin, &season2_id);
+
+    env.ledger().set_timestamp(250);
+    let active_after = client.get_active_season().unwrap();
+    assert_eq!(active_after.season_id, season2_id);
+
+    let season2 = client.get_season(&season2_id);
+    assert!(season2.is_active);
+}
+
+#[test]
+fn test_reset_season_points_deactivates_old_seasons() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 300_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 200_000_000);
+
+    let season1_id = client.create_season(&admin, &0, &100, &100_000_000);
+    let season2_id = client.create_season(&admin, &200, &300, &100_000_000);
+
+    env.ledger().set_timestamp(50);
+    let active_before = client.get_active_season().unwrap();
+    assert_eq!(active_before.season_id, season1_id);
+    assert!(active_before.is_active);
+
+    client.reset_season_points(&admin, &season2_id);
+
+    let season1_after = client.get_season(&season1_id);
+    assert!(!season1_after.is_active);
+
+    let season2_after = client.get_season(&season2_id);
+    assert!(season2_after.is_active);
+}
+
+#[test]
+fn test_reset_season_points_fails_for_non_admin() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 200_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 100_000_000);
+
+    let season_id = client.create_season(&admin, &0, &10_000, &100_000_000);
+
+    let non_admin = Address::generate(&env);
+    let result = client.try_reset_season_points(&non_admin, &season_id);
+    assert_eq!(result, Err(Ok(InsightArenaError::Unauthorized)));
+}
+
+#[test]
+fn test_reset_season_points_fails_for_finalized_season() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 200_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 100_000_000);
+
+    let season_id = client.create_season(&admin, &0, &100, &100_000_000);
+    client.update_leaderboard(&admin, &season_id, &sample_entries(&env));
+
+    env.ledger().set_timestamp(100);
+    client.finalize_season(&admin, &season_id);
+
+    let result = client.try_reset_season_points(&admin, &season_id);
+    assert_eq!(result, Err(Ok(InsightArenaError::SeasonAlreadyFinalized)));
+}
