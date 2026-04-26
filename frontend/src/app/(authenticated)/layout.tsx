@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { DashboardShell } from "@/component/dashboard-shell";
 import { WalletProvider } from "@/context/WalletContext";
 import { AuthenticatedPageLoadingSkeleton } from "@/component/loading-route-skeletons";
+import { AuthGuard } from "@/component/AuthGuard";
 
 export default function AuthenticatedLayout({
   children,
@@ -12,11 +13,13 @@ export default function AuthenticatedLayout({
 }) {
   return (
     <WalletProvider>
-      <DashboardShell>
-        <Suspense fallback={<AuthenticatedPageLoadingSkeleton />}>
-          {children}
-        </Suspense>
-      </DashboardShell>
+      <AuthGuard>
+        <DashboardShell>
+          <Suspense fallback={<AuthenticatedPageLoadingSkeleton />}>
+            {children}
+          </Suspense>
+        </DashboardShell>
+      </AuthGuard>
     </WalletProvider>
   );
 }
