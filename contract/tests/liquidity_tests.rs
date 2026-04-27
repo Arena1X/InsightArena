@@ -13,7 +13,7 @@ use insightarena_contract::liquidity::*;
 use insightarena_contract::{
     CreateMarketParams, InsightArenaContract, InsightArenaContractClient, InsightArenaError,
 };
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
 use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
 
@@ -1068,4 +1068,121 @@ fn test_swap_outcome_distributes_fees_to_lps() {
 
     let position_after = client.get_lp_position(&provider, &market_id);
     assert!(position_after.fees_earned > 0);
+}
+
+// ── add_liquidity / remove_liquidity Integration Tests ───────────────────────
+
+#[test]
+fn test_add_liquidity_mints_correct_lp_tokens() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm_token) = deploy_with_token(&env);
+    let provider = Address::generate(&env);
+    let market_id = client.create_market(&admin, &lp_market_params(&env));
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+    let amount = 10_000_i128;
+
+    sa.mint(&provider, &amount);
+    token.approve(&provider, &client.address, &amount, &9999);
+
+    let lp_tokens = client.add_liquidity(&provider, &market_id, &amount);
+
+    // First provider: LP tokens == deposit amount
+    assert_eq!(lp_tokens, amount);
+
+    let position = client.get_lp_position(&provider, &market_id);
+    assert_eq!(position.lp_tokens, lp_tokens);
+    assert_eq!(position.initial_deposit, amount);
+}
+
+#[test]
+fn test_remove_liquidity_returns_correct_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm_token) = deploy_with_token(&env);
+    let provider = Address::generate(&env);
+    let market_id = client.create_market(&admin, &lp_market_params(&env));
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+    let amount = 10_000_i128;
+
+    sa.mint(&provider, &amount);
+    token.approve(&provider, &client.address, &amount, &9999);
+
+    let lp_tokens = client.add_liquidity(&provider, &market_id, &amount);
+
+    // Withdraw half
+    let half = lp_tokens / 2;
+    let withdrawn = client.remove_liquidity(&provider, &market_id, &half);
+
+    // Should receive half the deposited amount back
+    assert_eq!(withdrawn, amount / 2);
+}
+
+#[test]
+fn test_remove_liquidity_fails_with_insufficient_lp_tokens() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm_token) = deploy_with_token(&env);
+    let provider = Address::generate(&env);
+    let market_id = client.create_market(&admin, &lp_market_params(&env));
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+    let amount = 10_000_i128;
+
+    sa.mint(&provider, &amount);
+    token.approve(&provider, &client.address, &amount, &9999);
+
+    let lp_tokens = client.add_liquidity(&provider, &market_id, &amount);
+
+    // Attempt to remove more LP tokens than owned
+    let result = client.try_remove_liquidity(&provider, &market_id, &(lp_tokens + 1));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_add_liquidity_fails_below_minimum() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm_token) = deploy_with_token(&env);
+    let provider = Address::generate(&env);
+    let market_id = client.create_market(&admin, &lp_market_params(&env));
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    // MIN_LIQUIDITY is 1000; deposit 999 should fail
+    let too_small = 999_i128;
+    sa.mint(&provider, &too_small);
+    token.approve(&provider, &client.address, &too_small, &9999);
+
+    let result = client.try_add_liquidity(&provider, &market_id, &too_small);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_add_liquidity_fails_on_resolved_market() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy_with_token(&env);
+    let provider = Address::generate(&env);
+    let market_id = client.create_market(&admin, &lp_market_params(&env));
+
+    // Advance time past market end and resolve
+    env.ledger().with_mut(|l| l.timestamp += 2000);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+    let amount = 10_000_i128;
+
+    sa.mint(&provider, &amount);
+    token.approve(&provider, &client.address, &amount, &9999);
+
+    let result = client.try_add_liquidity(&provider, &market_id, &amount);
+    assert!(result.is_err());
 }

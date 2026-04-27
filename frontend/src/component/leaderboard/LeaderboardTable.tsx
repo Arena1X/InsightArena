@@ -59,9 +59,10 @@ function Th({ children, className = "" }: { children: ReactNode; className?: str
 
 interface LeaderboardTableProps {
   entries?: LeaderboardEntry[];
+  currentUser?: string;
 }
 
-export default function LeaderboardTable({ entries = DEFAULT_ENTRIES }: LeaderboardTableProps) {
+export default function LeaderboardTable({ entries = DEFAULT_ENTRIES, currentUser }: LeaderboardTableProps) {
   return (
     <div className="rounded-2xl border border-gray-700/30 bg-[#0f172a] overflow-hidden">
       <div className="overflow-x-auto">
@@ -78,10 +79,11 @@ export default function LeaderboardTable({ entries = DEFAULT_ENTRIES }: Leaderbo
           <tbody className="divide-y divide-white/5">
             {entries.map((entry) => {
               const rowAccent = RANK_STYLES[entry.rank]?.row ?? "";
+              const isCurrentUser = currentUser && entry.username === currentUser;
               return (
                 <tr
                   key={entry.rank}
-                  className={`transition hover:bg-white/[0.03] ${rowAccent} ${entry.rank <= 3 ? "bg-white/[0.02]" : ""}`}
+                  className={`transition hover:bg-white/[0.03] ${rowAccent} ${entry.rank <= 3 ? "bg-white/[0.02]" : ""} ${isCurrentUser ? "bg-[#4FD1C5]/10 ring-1 ring-inset ring-[#4FD1C5]/20" : ""}`}
                 >
                   <td className="px-4 py-3.5">
                     <RankBadge rank={entry.rank} />
@@ -91,6 +93,11 @@ export default function LeaderboardTable({ entries = DEFAULT_ENTRIES }: Leaderbo
                       <Avatar username={entry.username} />
                       <span className="text-sm font-medium text-white truncate max-w-[140px]">
                         {entry.username}
+                        {isCurrentUser && (
+                          <span className="ml-2 text-[10px] font-semibold text-[#4FD1C5] uppercase tracking-wider">
+                            You
+                          </span>
+                        )}
                       </span>
                     </div>
                   </td>
