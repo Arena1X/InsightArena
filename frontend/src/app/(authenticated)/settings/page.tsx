@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState } from "react";
 import { User, Bell, Shield, AlertTriangle, Download, LogOut } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ function SectionCard({
   children,
 }: {
   id: string;
-  icon: React.ElementType;
+  icon: React.ComponentType<{ className?: string }>;
   title: string;
   children: React.ReactNode;
 }) {
@@ -240,7 +240,7 @@ function DangerZone() {
 
 // ── Sidebar nav ───────────────────────────────────────────────────────────────
 
-const NAV_ITEMS = [
+const NAV_ITEMS: { id: string; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: "profile",       label: "Profile",       icon: User },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "privacy",       label: "Privacy",       icon: Shield },
