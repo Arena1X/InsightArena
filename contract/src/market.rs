@@ -599,7 +599,27 @@ pub fn resolve_market(
 
     emit_market_resolved(&env, market_id, resolved_outcome.clone());
     reputation::on_market_resolved(&env, &market.creator, market.participant_count);
-    check_conditional_activation(&env, market_id, &resolved_outcome);
+
+    // Explicitly check conditional children and attempt activation/deactivation.
+    let child_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ConditionalChildren(market_id))
+        .unwrap_or_else(|| Vec::new(&env));
+
+    for child_id in child_ids.iter() {
+        if let Some(conditional) = env
+            .storage()
+            .persistent()
+            .get::<_, ConditionalMarket>(&DataKey::ConditionalMarket(child_id))
+        {
+            if &conditional.required_outcome == &resolved_outcome {
+                let _ = activate_conditional_market(&env, child_id);
+            } else {
+                let _ = deactivate_conditional_market(&env, child_id);
+            }
+        }
+    }
 
     Ok(())
 }
