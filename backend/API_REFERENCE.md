@@ -1039,6 +1039,42 @@ Example curl:
 curl http://localhost:3000/api/v1/markets/<market-id>/predictions
 ```
 
+### `GET /markets/:id/analytics`
+One-line description: Get analytics for a specific market.
+
+Auth required: No
+
+Request body: none
+
+Query parameters: none
+
+Success response:
+- `200 OK`
+```json
+{
+  "market_id": "uuid",
+  "total_pool_stroops": "string",
+  "participant_count": number,
+  "outcome_distribution": [
+    {
+      "outcome": "string",
+      "count": number,
+      "percentage": number
+    }
+  ],
+  "time_remaining_seconds": number
+}
+```
+
+Error responses:
+- `404` if the market is not found
+- `500` on server error
+
+Example curl:
+```bash
+curl http://localhost:3000/api/v1/markets/<market-id>/analytics
+```
+
 ### `POST /markets/:id/comments`
 One-line description: Post a comment on a market.
 

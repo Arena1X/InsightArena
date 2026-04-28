@@ -41,6 +41,7 @@ import { MarketTemplate } from './entities/market-template.entity';
 import { Market } from './entities/market.entity';
 import { MarketsService } from './markets.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { MarketAnalyticsDto } from '../analytics/dto/market-analytics.dto';
 import { DisputesService } from '../disputes/disputes.service';
 
 @ApiTags('Markets')
@@ -90,6 +91,22 @@ export class MarketsController {
     @Param('id') id: string,
   ): Promise<PredictionStatsDto[]> {
     return this.marketsService.getPredictionStats(id);
+  }
+
+  @Get(':id/analytics')
+  @Public()
+  @ApiOperation({ summary: 'Get market analytics and statistics' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Market analytics including pool size, outcome distribution, and time remaining',
+    type: MarketAnalyticsDto,
+  })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  async getMarketAnalytics(
+    @Param('id') id: string,
+  ): Promise<MarketAnalyticsDto> {
+    return this.analyticsService.getMarketAnalytics(id);
   }
 
   @Post()
