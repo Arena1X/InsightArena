@@ -7,6 +7,7 @@ import {
   CompetitionVisibility,
 } from './entities/competition.entity';
 import { CreateCompetitionDto } from './dto/create-competition.dto';
+import { UserRankResponseDto } from './dto/user-rank-response.dto';
 import { User } from '../users/entities/user.entity';
 
 describe('CompetitionsController', () => {
@@ -40,6 +41,10 @@ describe('CompetitionsController', () => {
             findAll: jest.fn(),
             findById: jest.fn(),
             list: jest.fn(),
+            getParticipants: jest.fn(),
+            getMyRank: jest.fn(),
+            joinCompetition: jest.fn(),
+            leave: jest.fn(),
           },
         },
       ],
@@ -82,9 +87,10 @@ describe('CompetitionsController', () => {
         page: 1,
         limit: 20,
       };
+
       const spy = jest
         .spyOn(service, 'list')
-        .mockResolvedValue(mockResponse);
+        .mockResolvedValue(mockResponse as never);
 
       const result = await controller.listCompetitions({ page: 1, limit: 20 });
 
@@ -111,6 +117,112 @@ describe('CompetitionsController', () => {
       await expect(controller.getCompetition('nonexistent')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('getParticipants', () => {
+    it('should return paginated participants sorted by score', async () => {
+      const mockParticipantsResponse = {
+        data: [
+          {
+            id: 'p1',
+            user_id: 'user-1',
+            username: 'user1',
+            stellar_address: 'GADDR1',
+            score: 1000,
+            rank: 1,
+            joined_at: new Date(),
+          },
+        ],
+        total: 1,
+        page: 1,
+        limit: 20,
+      };
+
+      const spy = jest
+        .spyOn(service, 'getParticipants')
+        .mockResolvedValue(mockParticipantsResponse as never);
+
+      const result = await controller.getParticipants('comp-uuid-1', {
+        page: 1,
+        limit: 20,
+      });
+
+      expect(spy).toHaveBeenCalledWith('comp-uuid-1', {
+        page: 1,
+        limit: 20,
+      });
+      expect(result).toEqual(mockParticipantsResponse);
+    });
+
+    it('should throw NotFoundException if competition not found', async () => {
+      jest
+        .spyOn(service, 'getParticipants')
+        .mockRejectedValue(new NotFoundException('Competition not found'));
+
+      await expect(
+        controller.getParticipants('nonexistent', { page: 1, limit: 20 }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('getMyRank', () => {
+    it('should return user rank and stats', async () => {
+      const mockRankResponse: UserRankResponseDto = {
+        rank: 1,
+        score: 1000,
+        total_participants: 100,
+        percentile: 100,
+      };
+
+      const spy = jest
+        .spyOn(service, 'getMyRank')
+        .mockResolvedValue(mockRankResponse);
+
+      const result = await controller.getMyRank(
+        'comp-uuid-1',
+        mockUser as User,
+      );
+
+      expect(spy).toHaveBeenCalledWith('comp-uuid-1', mockUser.id);
+      expect(result).toEqual(mockRankResponse);
+    });
+
+    it('should throw NotFoundException if service throws it', async () => {
+      jest
+        .spyOn(service, 'getMyRank')
+        .mockRejectedValue(new NotFoundException('Not found'));
+
+      await expect(
+        controller.getMyRank('nonexistent', mockUser as User),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('leaveCompetition', () => {
+    it('should successfully leave competition', async () => {
+      const spy = jest.spyOn(service, 'leave').mockResolvedValue(undefined);
+
+      const result = await controller.leaveCompetition(
+        'comp-uuid-1',
+        mockUser as User,
+      );
+
+      expect(spy).toHaveBeenCalledWith('comp-uuid-1', mockUser.id);
+      expect(result).toEqual({
+        message: 'Successfully left competition',
+        competition_id: 'comp-uuid-1',
+      });
+    });
+
+    it('should throw error if service throws it', async () => {
+      jest
+        .spyOn(service, 'leave')
+        .mockRejectedValue(new NotFoundException('Not found'));
+
+      await expect(
+        controller.leaveCompetition('nonexistent', mockUser as User),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

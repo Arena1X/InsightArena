@@ -1,13 +1,27 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import {
+  Repository,
+  DataSource,
+  LessThan,
+  IsNull,
+  MoreThanOrEqual,
+} from 'typeorm';
 import { LeaderboardEntry } from './entities/leaderboard-entry.entity';
+import { LeaderboardHistory } from './entities/leaderboard-history.entity';
 import { UsersService } from '../users/users.service';
+import { User } from '../users/entities/user.entity';
 import {
   LeaderboardQueryDto,
   LeaderboardEntryResponse,
   PaginatedLeaderboardResponse,
 } from './dto/leaderboard-query.dto';
+import {
+  LeaderboardHistoryQueryDto,
+  LeaderboardHistoryEntryResponse,
+  PaginatedLeaderboardHistoryResponse,
+} from './dto/leaderboard-history.dto';
+import { UserRankDto } from './dto/user-rank.dto';
 
 @Injectable()
 export class LeaderboardService {
@@ -16,6 +30,8 @@ export class LeaderboardService {
   constructor(
     @InjectRepository(LeaderboardEntry)
     private readonly leaderboardRepository: Repository<LeaderboardEntry>,
+    @InjectRepository(LeaderboardHistory)
+    private readonly historyRepository: Repository<LeaderboardHistory>,
     private readonly usersService: UsersService,
     private readonly dataSource: DataSource,
   ) {}
@@ -126,5 +142,207 @@ export class LeaderboardService {
     this.logger.log(
       `Leaderboard recalculation complete: ${sorted.length} users updated in ${elapsed}ms`,
     );
+  }
+
+  /**
+   * Get historical leaderboard rankings with optional filters
+   */
+  async getHistory(
+    query: LeaderboardHistoryQueryDto,
+  ): Promise<PaginatedLeaderboardHistoryResponse> {
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 100);
+    const skip = (page - 1) * limit;
+
+    const qb = this.historyRepository
+      .createQueryBuilder('history')
+      .leftJoinAndSelect('history.user', 'user');
+
+    if (query.date) {
+      qb.where('history.snapshot_date = :date', { date: query.date });
+    }
+
+    if (query.season_id) {
+      qb.andWhere('history.season_id = :season_id', {
+        season_id: query.season_id,
+      });
+    } else if (!query.date) {
+      qb.andWhere('history.season_id IS NULL');
+    }
+
+    if (query.user_id) {
+      qb.andWhere('history.user_id = :user_id', { user_id: query.user_id });
+    }
+
+    qb.orderBy('history.snapshot_date', 'DESC')
+      .addOrderBy('history.rank', 'ASC')
+      .skip(skip)
+      .take(limit);
+
+    const [entries, total] = await qb.getManyAndCount();
+
+    const data: LeaderboardHistoryEntryResponse[] = await Promise.all(
+      entries.map(async (entry) => {
+        const accuracyRate =
+          entry.total_predictions > 0
+            ? (
+                (entry.correct_predictions / entry.total_predictions) *
+                100
+              ).toFixed(1)
+            : '0.0';
+
+        // Calculate rank change if user_id is specified
+        let rankChange: number | null = null;
+        if (query.user_id) {
+          const previousEntry = await this.historyRepository.findOne({
+            where: {
+              user_id: entry.user_id,
+              snapshot_date: LessThan(entry.snapshot_date),
+              season_id: entry.season_id ?? undefined,
+            },
+            order: { snapshot_date: 'DESC' },
+          });
+
+          if (previousEntry) {
+            rankChange = previousEntry.rank - entry.rank;
+          }
+        }
+
+        return {
+          rank: entry.rank,
+          user_id: entry.user_id,
+          username: entry.user?.username ?? null,
+          stellar_address: entry.user?.stellar_address ?? '',
+          reputation_score: entry.reputation_score,
+          accuracy_rate: accuracyRate,
+          total_winnings_stroops: entry.total_winnings_stroops,
+          season_points: entry.season_points,
+          snapshot_date: entry.snapshot_date,
+          rank_change: rankChange,
+        };
+      }),
+    );
+
+    return { data, total, page, limit };
+  }
+
+  /**
+   * Get user rank and stats by stellar address
+   * Returns 404 if user has no leaderboard entry
+   */
+  async getUserRank(stellarAddress: string): Promise<UserRankDto> {
+    let user: User | undefined;
+    try {
+      user = await this.usersService.findByAddress(stellarAddress);
+    } catch {
+      throw new NotFoundException(
+        `User with address "${stellarAddress}" not found`,
+      );
+    }
+
+    const entry = await this.leaderboardRepository.findOne({
+      where: { user_id: user.id, season_id: IsNull() },
+    });
+
+    if (!entry) {
+      throw new NotFoundException(
+        `No leaderboard entry found for user "${stellarAddress}"`,
+      );
+    }
+
+    const accuracyRate =
+      entry.total_predictions > 0
+        ? ((entry.correct_predictions / entry.total_predictions) * 100).toFixed(
+            1,
+          )
+        : '0.0';
+
+    return {
+      rank: entry.rank,
+      reputation_score: entry.reputation_score,
+      season_points: entry.season_points,
+      total_predictions: entry.total_predictions,
+      correct_predictions: entry.correct_predictions,
+      accuracy_rate: accuracyRate,
+      total_winnings_stroops: entry.total_winnings_stroops,
+    };
+  }
+
+  /**
+   * Create daily snapshot of current leaderboard
+   * Called by the daily cron job
+   */
+  async createDailySnapshot(): Promise<void> {
+    const start = Date.now();
+    this.logger.log('Creating daily leaderboard snapshot...');
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const entries = await this.leaderboardRepository.find({
+      relations: ['user'],
+    });
+
+    await this.dataSource.transaction(async (manager) => {
+      for (const entry of entries) {
+        const existing = await manager.findOne(LeaderboardHistory, {
+          where: {
+            user_id: entry.user_id,
+            snapshot_date: today,
+            season_id: entry.season_id ?? undefined,
+          },
+        });
+
+        if (!existing) {
+          const history = manager.create(LeaderboardHistory, {
+            user_id: entry.user_id,
+            snapshot_date: today,
+            rank: entry.rank,
+            reputation_score: entry.reputation_score,
+            season_points: entry.season_points,
+            total_predictions: entry.total_predictions,
+            correct_predictions: entry.correct_predictions,
+            total_winnings_stroops: entry.total_winnings_stroops,
+            season_id: entry.season_id ?? undefined,
+          });
+          await manager.save(LeaderboardHistory, history);
+        }
+      }
+    });
+
+    const elapsed = Date.now() - start;
+    this.logger.log(
+      `Daily snapshot complete: ${entries.length} entries saved in ${elapsed}ms`,
+    );
+  }
+
+  /**
+   * Get user history snapshots for a specific Stellar address
+   */
+  async getHistoryForAddress(address: string, days: number = 30) {
+    const validDays = Math.min(Math.max(days || 30, 1), 90);
+
+    const user = await this.usersService.findByAddress(address);
+    if (!user) {
+      throw new NotFoundException(`User with address ${address} not found`);
+    }
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - validDays);
+
+    const history = await this.historyRepository.find({
+      where: {
+        user_id: user.id,
+        snapshot_date: MoreThanOrEqual(cutoffDate),
+      },
+      order: { snapshot_date: 'DESC' },
+    });
+
+    return history.map((h) => ({
+      snapshot_date: h.snapshot_date,
+      rank: h.rank,
+      reputation_score: h.reputation_score,
+      season_points: h.season_points,
+    }));
   }
 }

@@ -17,4 +17,14 @@ export class LeaderboardScheduler {
       this.logger.error('Leaderboard recalculation failed', err);
     }
   }
+
+  @Cron('0 0 * * *')
+  async handleDailySnapshot(): Promise<void> {
+    this.logger.log('Daily leaderboard snapshot triggered');
+    try {
+      await this.leaderboardService.createDailySnapshot();
+    } catch (err) {
+      this.logger.error('Daily snapshot failed', err);
+    }
+  }
 }

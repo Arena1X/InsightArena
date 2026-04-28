@@ -46,6 +46,7 @@ export interface PredictionWithStatus {
   payout_claimed: boolean;
   payout_amount_stroops: string;
   tx_hash: string | null;
+  note: string | null;
   submitted_at: Date;
   status: PredictionStatus;
   market: {

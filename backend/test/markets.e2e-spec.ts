@@ -1,7 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Market } from '../src/markets/entities/market.entity';
@@ -10,7 +9,7 @@ import { Repository } from 'typeorm';
 import { PredictionStatsDto } from '../src/markets/dto/prediction-stats.dto';
 
 describe('Markets (e2e)', () => {
-  let app: INestApplication<App>;
+  let app: INestApplication;
   let marketsRepository: Repository<Market>;
   let usersRepository: Repository<User>;
 

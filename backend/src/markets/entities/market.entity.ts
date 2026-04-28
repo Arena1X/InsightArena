@@ -1,18 +1,18 @@
 import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-  ManyToOne,
-  Index,
-} from 'typeorm';
-import {
-  IsString,
-  IsOptional,
-  IsNumber,
   IsBoolean,
+  IsNumber,
+  IsOptional,
+  IsString,
   Min,
 } from 'class-validator';
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  Index,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+} from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 
 @Entity('markets')
@@ -20,6 +20,7 @@ import { User } from '../../users/entities/user.entity';
 @Index(['creator'])
 @Index(['category'])
 @Index(['is_resolved'])
+@Index(['is_featured'])
 export class Market {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -69,6 +70,14 @@ export class Market {
   @Column({ default: false })
   @IsBoolean()
   is_cancelled: boolean;
+
+  @Column({ default: false })
+  @IsBoolean()
+  is_featured: boolean;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  @IsOptional()
+  featured_at: Date | null;
 
   @Column({ type: 'bigint', default: '0' })
   @IsString()

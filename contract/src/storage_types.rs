@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Map, String, Symbol, Vec};
 
 #[contracttype]
 #[derive(Clone)]
@@ -36,10 +36,94 @@ pub enum DataKey {
     SeasonCount,
     /// Emergency pause flag. Used to halt sensitive operations across the platform.
     Paused,
-    /// Keyed by market_id (parent). Stores the list of child market IDs that depend on this parent.
-    ConditionalChildren(u64),
-    /// Keyed by market_id (child). Stores the conditional configuration.
-    ConditionalConfig(u64),
+    /// Singleton category whitelist stored in instance storage.
+    Categories,
+    /// Keyed by category symbol. Stores market IDs in creation order for that category.
+    CategoryIndex(Symbol),
+    /// Keyed by proposal_id. Stores governance proposal metadata/state.
+    Proposal(u32),
+    /// Singleton counter. Tracks the total number of governance proposals.
+    ProposalCount,
+    /// Keyed by (proposal_id, voter). Tracks whether a voter has voted on a proposal.
+    ProposalVote(u32, Address),
+    /// Temporary storage lock for escrow operations (prevents reentrancy)
+    EscrowLock,
+    /// Keyed by market_id. Stores an active dispute (if any) for that market.
+    Dispute(u64),
+    /// Singleton. Cumulative platform stake volume (stroops) for analytics.
+    PlatformVolume,
+    /// Keyed by creator address. Aggregated creator reputation statistics.
+    CreatorStats(Address),
+    /// Keyed by market_id. Stores AMM pool state for a market.
+    LiquidityPool(u64),
+    /// Keyed by (market_id, provider). Stores a provider's LP position.
+    LPPosition(u64, Address),
+    /// Keyed by market_id. Stores the list of liquidity providers.
+    LPProviderList(u64),
+    /// Keyed by market_id. Stores historical swap records.
+    SwapHistory(u64),
+    /// Keyed by market_id. Stores rolling 24h pool volume.
+    PoolVolume(u64),
+
+    // Conditional Market keys
+    ConditionalMarket(u64),   // market_id -> ConditionalMarket
+    ConditionalChildren(u64), // parent_market_id -> Vec<u64>
+    ConditionalParent(u64),   // market_id -> u64 (parent_market_id)
+    ConditionalChain(u64),    // market_id -> ConditionalChain
+    ConditionalDepth(u64),    // market_id -> u32
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Dispute {
+    pub disputer: Address,
+    pub bond: i128,
+    pub filed_at: u64,
+}
+
+impl Dispute {
+    pub fn new(disputer: Address, bond: i128, filed_at: u64) -> Self {
+        Self {
+            disputer,
+            bond,
+            filed_at,
+        }
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MarketStats {
+    pub total_pool: i128,
+    pub participant_count: u32,
+    pub leading_outcome: Symbol,
+    pub leading_outcome_pool: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformStats {
+    pub total_markets: u64,
+    pub total_volume_xlm: i128,
+    pub active_users: u32,
+    pub treasury_balance: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreatorStats {
+    pub markets_created: u32,
+    pub markets_resolved: u32,
+    pub average_participant_count: u32,
+    pub dispute_count: u32,
+    pub reputation_score: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreatorLeaderboardEntry {
+    pub address: Address,
+    pub stats: CreatorStats,
 }
 
 #[contracttype]
@@ -105,6 +189,8 @@ pub struct Market {
     pub resolution_time: u64,
     /// The final outcome, set only after the market is resolved. Defaults to None.
     pub resolved_outcome: Option<Symbol>,
+    /// Ledger timestamp when the market was resolved (set alongside `resolved_outcome`).
+    pub resolved_at: Option<u64>,
     /// Indicates whether the market has been closed (end_time passed) and is awaiting oracle resolution. Defaults to false.
     pub is_closed: bool,
     /// Indicates whether the market has been resolved and payouts processed. Defaults to false.
@@ -124,6 +210,8 @@ pub struct Market {
     pub max_stake: i128,
     /// The current number of unique participants holding a stake. Defaults to 0.
     pub participant_count: u32,
+    /// Dispute window duration in seconds after resolution.
+    pub dispute_window: u64,
 }
 
 impl Market {
@@ -143,6 +231,7 @@ impl Market {
         creator_fee_bps: u32,
         min_stake: i128,
         max_stake: i128,
+        dispute_window: u64,
     ) -> Self {
         Self {
             market_id,
@@ -155,6 +244,7 @@ impl Market {
             end_time,
             resolution_time,
             resolved_outcome: None,
+            resolved_at: None,
             is_closed: false,
             is_resolved: false,
             is_cancelled: false,
@@ -164,6 +254,106 @@ impl Market {
             min_stake,
             max_stake,
             participant_count: 0,
+            dispute_window,
+        }
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiquidityPool {
+    pub market_id: u64,
+    pub total_liquidity: i128,
+    pub outcome_reserves: Map<Symbol, i128>,
+    pub lp_token_supply: i128,
+    pub fee_bps: u32,
+    pub created_at: u64,
+}
+
+impl LiquidityPool {
+    pub fn new(
+        market_id: u64,
+        initial_reserves: Map<Symbol, i128>,
+        fee_bps: u32,
+        created_at: u64,
+    ) -> Self {
+        let total_liquidity = initial_reserves.values().iter().sum::<i128>();
+
+        Self {
+            market_id,
+            total_liquidity,
+            outcome_reserves: initial_reserves,
+            lp_token_supply: 0,
+            fee_bps,
+            created_at,
+        }
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LPPosition {
+    pub provider: Address,
+    pub market_id: u64,
+    pub lp_tokens: i128,
+    pub initial_deposit: i128,
+    pub fees_earned: i128,
+    pub created_at: u64,
+}
+
+impl LPPosition {
+    pub fn new(
+        provider: Address,
+        market_id: u64,
+        lp_tokens: i128,
+        initial_deposit: i128,
+        created_at: u64,
+    ) -> Self {
+        Self {
+            provider,
+            market_id,
+            lp_tokens,
+            initial_deposit,
+            fees_earned: 0,
+            created_at,
+        }
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SwapRecord {
+    pub trader: Address,
+    pub market_id: u64,
+    pub from_outcome: Symbol,
+    pub to_outcome: Symbol,
+    pub amount_in: i128,
+    pub amount_out: i128,
+    pub fee_paid: i128,
+    pub timestamp: u64,
+}
+
+impl SwapRecord {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        trader: Address,
+        market_id: u64,
+        from_outcome: Symbol,
+        to_outcome: Symbol,
+        amount_in: i128,
+        amount_out: i128,
+        fee_paid: i128,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            trader,
+            market_id,
+            from_outcome,
+            to_outcome,
+            amount_in,
+            amount_out,
+            fee_paid,
+            timestamp,
         }
     }
 }
@@ -338,18 +528,49 @@ impl InviteCode {
         }
     }
 }
+
+// ── Conditional Market Types ──────────────────────────────────────────────────
+
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConditionalConfig {
-    pub parent_id: u64,
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConditionalMarket {
+    pub market_id: u64,
+    pub parent_market_id: u64,
     pub required_outcome: Symbol,
+    pub is_activated: bool,
+    pub activation_time: Option<u64>,
+    pub conditional_depth: u32,
+    pub created_at: u64,
 }
 
-impl ConditionalConfig {
-    pub fn new(parent_id: u64, required_outcome: Symbol) -> Self {
+impl ConditionalMarket {
+    pub fn new(
+        market_id: u64,
+        parent_market_id: u64,
+        required_outcome: Symbol,
+        conditional_depth: u32,
+        created_at: u64,
+    ) -> Self {
         Self {
-            parent_id,
+            market_id,
+            parent_market_id,
             required_outcome,
+            is_activated: false,
+            activation_time: None,
+            conditional_depth,
+            created_at,
         }
     }
+
+    pub fn activate(&mut self, activation_time: u64) {
+        self.is_activated = true;
+        self.activation_time = Some(activation_time);
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConditionalChain {
+    pub market_ids: Vec<u64>,
+    pub depth: u32,
 }

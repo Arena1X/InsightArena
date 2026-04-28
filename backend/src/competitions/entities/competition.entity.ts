@@ -48,6 +48,9 @@ export class Competition {
   @Column({ default: false })
   is_finalized: boolean;
 
+  @Column({ default: false })
+  is_cancelled: boolean;
+
   @Index()
   @Column({
     type: 'enum',

@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Patch,
+  Delete,
   Param,
   Query,
   HttpCode,
@@ -62,5 +63,16 @@ export class NotificationsController {
   @ApiResponse({ status: 200, description: 'Count of notifications updated' })
   async markAllAsRead(@CurrentUser() user: User): Promise<{ updated: number }> {
     return this.notificationsService.markAllAsRead(user.id);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Delete a notification' })
+  @ApiResponse({ status: 204, description: 'Notification deleted' })
+  async remove(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<void> {
+    return this.notificationsService.remove(id, user.id);
   }
 }

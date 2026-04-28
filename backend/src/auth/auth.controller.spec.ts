@@ -4,6 +4,7 @@ import { User } from '../users/entities/user.entity';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { VerifyChallengeDto } from './dto/verify-challenge.dto';
+import { RateLimitService } from './rate-limit.service';
 
 const mockAuthService = () => ({
   generateChallenge: jest
@@ -12,6 +13,7 @@ const mockAuthService = () => ({
       (address: string) => `InsightArena:nonce:1234567890:randomhex:${address}`,
     ),
   verifyChallenge: jest.fn(),
+  verifyStellarSignature: jest.fn(),
 });
 
 describe('AuthController', () => {
@@ -21,7 +23,13 @@ describe('AuthController', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AuthController],
-      providers: [{ provide: AuthService, useValue: mockAuthService() }],
+      providers: [
+        { provide: AuthService, useValue: mockAuthService() },
+        {
+          provide: RateLimitService,
+          useValue: { getRateLimitStatus: jest.fn() },
+        },
+      ],
     }).compile();
 
     controller = module.get<AuthController>(AuthController);
@@ -91,6 +99,39 @@ describe('AuthController', () => {
       await expect(controller.verifyChallenge(dto)).rejects.toThrow(
         UnauthorizedException,
       );
+    });
+  });
+
+  describe('verifyWallet', () => {
+    it('should return { verified: true } for a valid signature', () => {
+      const dto = {
+        stellar_address: 'G...Address',
+        challenge: 'InsightArena:dispute:123',
+        signature: 'a1b2c3d4',
+      };
+      authService.verifyStellarSignature.mockReturnValue(true);
+
+      const result = controller.verifyWallet(dto);
+
+      expect(result).toEqual({ verified: true });
+      expect(authService.verifyStellarSignature).toHaveBeenCalledWith(
+        dto.stellar_address,
+        dto.challenge,
+        dto.signature,
+      );
+    });
+
+    it('should return { verified: false } for an invalid signature', () => {
+      const dto = {
+        stellar_address: 'G...Address',
+        challenge: 'InsightArena:dispute:123',
+        signature: 'wrong-signature',
+      };
+      authService.verifyStellarSignature.mockReturnValue(false);
+
+      const result = controller.verifyWallet(dto);
+
+      expect(result).toEqual({ verified: false });
     });
   });
 });

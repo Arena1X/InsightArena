@@ -33,6 +33,8 @@ describe('SorobanListener', () => {
   };
 
   beforeEach(async () => {
+    process.env.SOROBAN_CONTRACT_ID = 'test-contract-id';
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SorobanListener,
@@ -65,6 +67,10 @@ describe('SorobanListener', () => {
     sorobanService = module.get(SorobanService);
 
     jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    delete process.env.SOROBAN_CONTRACT_ID;
   });
 
   it('should be defined', () => {

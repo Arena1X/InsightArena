@@ -21,7 +21,10 @@ const Navbar = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
-    <nav className="bg-black border-1 rounded-lg border-white text-white px-6 py-4 flex justify-between w-full items-center m-auto mt-4 ">
+    <nav
+      className="bg-black border-1 rounded-lg border-white text-white px-6 py-4 flex justify-between w-full items-center m-auto mt-4 "
+      aria-label="Courses navigation"
+    >
       <Link href="/" className="text-[2rem] font-bold">Stark Academy</Link>
 
       {/* Desktop Menu */}
@@ -29,6 +32,10 @@ const Navbar = () => {
         {/* Course section */}
         <div className="relative">
           <button
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={isCoursesOpen}
+            aria-label="Open courses menu"
             onClick={() => setIsCoursesOpen(!isCoursesOpen)}
             className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
           >
@@ -52,7 +59,11 @@ const Navbar = () => {
         </div>
 
         {/* Trading section */}
-        <div className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer">
+        <button
+          type="button"
+          aria-label="Open trading section"
+          className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
+        >
           <Image
             src={tradingicon}
             alt="Trading icon"
@@ -61,10 +72,14 @@ const Navbar = () => {
             className="w-6 h-6"
           />
           <span className="text-lg font-medium">Trading</span>
-        </div>
+        </button>
 
         {/* Airdrops */}
-        <div className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer">
+        <button
+          type="button"
+          aria-label="Open airdrops section"
+          className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
+        >
           <Image
             src={airdropicon}
             alt="Airdrop icon"
@@ -73,11 +88,15 @@ const Navbar = () => {
             className="w-6 h-6"
           />
           <span className="text-lg font-medium">Airdrops</span>
-        </div>
+        </button>
 
         {/* Resources Section */}
         <div className="relative">
           <button
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={isResourcesOpen}
+            aria-label="Open resources menu"
             onClick={() => setIsResourcesOpen(!isResourcesOpen)}
             className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
           >
@@ -99,19 +118,30 @@ const Navbar = () => {
             />
           )}
         </div>
-        <Bell className="cursor-pointer text-gray-400 hover:text-white" />
-        <Moon className="cursor-pointer" />
-        <div
+        <button type="button" aria-label="View notifications">
+          <Bell className="cursor-pointer text-gray-400 hover:text-white" />
+        </button>
+        <button type="button" aria-label="Toggle theme">
+          <Moon className="cursor-pointer" />
+        </button>
+        <button
+          type="button"
+          aria-label="Open profile"
           className="bg-purple-500 text-white rounded-full w-8 h-8 flex items-center justify-center cursor-pointer"
           onClick={() => router.push("/profile")}
         >
           PH
-        </div>
+        </button>
       </div>
 
       {/* Mobile Hamburger */}
       <div className="md:hidden">
-        <button onClick={() => setMobileMenuOpen(true)} className="cursor-pointer">
+        <button
+          type="button"
+          aria-label="Open mobile menu"
+          onClick={() => setMobileMenuOpen(true)}
+          className="cursor-pointer"
+        >
           <Menu />
         </button>
       </div>
@@ -126,13 +156,15 @@ const Navbar = () => {
         <div className="fixed top-0 right-0 w-2/3 h-full bg-black p-6 space-y-6 cursor-pointer">
           <div className="flex justify-between items-center">
             <h2 className="text-xl font-bold">Menu</h2>
-            <button onClick={() => setMobileMenuOpen(false)}>
+            <button type="button" aria-label="Close mobile menu" onClick={() => setMobileMenuOpen(false)}>
               <X />
             </button>
           </div>
           
           {/* Mobile menu items with consistent styling */}
           <button 
+            type="button"
+            aria-label="Open courses menu"
             onClick={() => {
               setIsCoursesOpen(true);
               setMobileMenuOpen(false);
@@ -149,7 +181,11 @@ const Navbar = () => {
             <span className="text-lg font-medium">Courses</span>
           </button>
           
-          <div className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer">
+          <button
+            type="button"
+            aria-label="Open trading section"
+            className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
+          >
             <Image
               src={tradingicon}
               alt="Trading icon"
@@ -158,9 +194,13 @@ const Navbar = () => {
               className="w-6 h-6"
             />
             <span className="text-lg font-medium">Trading</span>
-          </div>
+          </button>
           
-          <div className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer">
+          <button
+            type="button"
+            aria-label="Open airdrops section"
+            className="flex items-center gap-3 text-white hover:text-gray-300 transition-colors cursor-pointer"
+          >
             <Image
               src={airdropicon}
               alt="Airdrop icon"
@@ -169,9 +209,11 @@ const Navbar = () => {
               className="w-6 h-6"
             />
             <span className="text-lg font-medium">Airdrops</span>
-          </div>
+          </button>
           
           <button 
+            type="button"
+            aria-label="Open resources menu"
             onClick={() => {
               setIsResourcesOpen(true);
               setMobileMenuOpen(false);
@@ -189,14 +231,20 @@ const Navbar = () => {
           </button>
           
           <div className="flex items-center gap-4">
-            <Bell className="cursor-pointer text-gray-400 hover:text-white" />
-            <Moon />
-            <div
+            <button type="button" aria-label="View notifications">
+              <Bell className="cursor-pointer text-gray-400 hover:text-white" />
+            </button>
+            <button type="button" aria-label="Toggle theme">
+              <Moon />
+            </button>
+            <button
+              type="button"
+              aria-label="Open profile"
               className="bg-purple-500 text-white rounded-full w-8 h-8 flex items-center justify-center cursor-pointer"
               onClick={() => router.push("/profile")}
             >
               PH
-            </div>
+            </button>
           </div>
         </div>
       </Dialog>

@@ -2,6 +2,7 @@
 import React, { useState } from "react";
 import Header from "@/component/Header";
 import Footer from "@/component/Footer";
+import PageBackground from "@/component/PageBackground";
 import StatsCards from "@/component/trading/StatsCards";
 import TradingTabs from "@/component/trading/TradingTabs";
 import MarketSearchBar from "@/component/trading/MarketSearchBar";
@@ -78,33 +79,42 @@ export default function TradingPage() {
   };
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col">
-      <Header />
-      <main className="flex-1 max-w-6xl mx-auto w-full px-4 py-8">
-        <h1 className="text-2xl font-bold mb-2">Crypto Trading Hub</h1>
-        <p className="text-gray-400 mb-6 text-sm">
-          Practice Trading With Real-Time Data And Compete In Tournaments
-        </p>
-        <StatsCards {...stats} />
-        <TradingTabs activeTab={activeTab} onTabChange={setActiveTab} />
-        {activeTab === "Live market" && (
-          <>
-            <MarketSearchBar
-              searchValue={search}
-              onSearchChange={(e) => setSearch(e.target.value)}
-              onFilterClick={handleFilterClick}
-            />
-            <h2 className="text-xl font-semibold mb-4">Live Cryptocurrency Markets</h2>
-            <MarketList
-              markets={filteredMarkets.map((m) => ({ ...m, icon: icons[m.name] }))}
-              onTrade={handleTrade}
-              onFavorite={handleFavorite}
-            />
-          </>
-        )}
-        {/* Add Tournament, Portfolio, Leaderboards tab content as needed */}
-      </main>
-      <Footer />
-    </div>
+    <PageBackground>
+      <div className="flex min-h-screen flex-col">
+        <Header />
+        <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pt-28">
+          <h1 className="mb-2 text-2xl font-bold text-white">
+            Crypto Trading Hub
+          </h1>
+          <p className="mb-6 text-sm text-gray-300/80">
+            Practice Trading With Real-Time Data And Compete In Tournaments
+          </p>
+          <StatsCards {...stats} />
+          <TradingTabs activeTab={activeTab} onTabChange={setActiveTab} />
+          {activeTab === "Live market" && (
+            <>
+              <MarketSearchBar
+                searchValue={search}
+                onSearchChange={(e) => setSearch(e.target.value)}
+                onFilterClick={handleFilterClick}
+              />
+              <h2 className="mb-4 text-xl font-semibold text-white">
+                Live Cryptocurrency Markets
+              </h2>
+              <MarketList
+                markets={filteredMarkets.map((m) => ({
+                  ...m,
+                  icon: icons[m.name],
+                }))}
+                onTrade={handleTrade}
+                onFavorite={handleFavorite}
+              />
+            </>
+          )}
+          {/* Add Tournament, Portfolio, Leaderboards tab content as needed */}
+        </main>
+        <Footer />
+      </div>
+    </PageBackground>
   );
 } 

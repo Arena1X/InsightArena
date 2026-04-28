@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { getDataSourceToken } from '@nestjs/typeorm';
 import { LeaderboardService } from './leaderboard.service';
 import { LeaderboardEntry } from './entities/leaderboard-entry.entity';
+import { LeaderboardHistory } from './entities/leaderboard-history.entity';
 import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { LeaderboardQueryDto } from './dto/leaderboard-query.dto';
@@ -49,6 +50,12 @@ describe('LeaderboardService', () => {
     createQueryBuilder: jest.fn(() => mockQb),
   };
 
+  const mockHistoryRepository = {
+    createQueryBuilder: jest.fn(() => mockQb),
+    findOne: jest.fn(),
+    find: jest.fn(),
+  };
+
   const mockUsersService = {
     findAll: jest.fn(),
   };
@@ -64,6 +71,10 @@ describe('LeaderboardService', () => {
         {
           provide: getRepositoryToken(LeaderboardEntry),
           useValue: mockEntryRepository,
+        },
+        {
+          provide: getRepositoryToken(LeaderboardHistory),
+          useValue: mockHistoryRepository,
         },
         {
           provide: UsersService,
@@ -175,6 +186,64 @@ describe('LeaderboardService', () => {
 
       expect(mockUsersService.findAll).toHaveBeenCalled();
       expect(mockDataSource.transaction).toHaveBeenCalled();
+    });
+  });
+
+  describe('getUserRank', () => {
+    it('should return user rank and stats by stellar address', async () => {
+      mockUsersService.findByAddress = jest
+        .fn()
+        .mockResolvedValue(mockUser as User);
+      mockEntryRepository.findOne = jest
+        .fn()
+        .mockResolvedValue(mockEntry as LeaderboardEntry);
+
+      const result = await service.getUserRank(
+        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+      );
+
+      expect(result.rank).toBe(1);
+      expect(result.reputation_score).toBe(100);
+      expect(result.accuracy_rate).toBe('70.0');
+      expect(mockUsersService.findByAddress).toHaveBeenCalledWith(
+        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+      );
+    });
+
+    it('should throw NotFoundException if user not found', async () => {
+      mockUsersService.findByAddress = jest
+        .fn()
+        .mockRejectedValue(new Error('User not found'));
+
+      await expect(service.getUserRank('INVALID_ADDRESS')).rejects.toThrow(
+        'User with address',
+      );
+    });
+
+    it('should throw NotFoundException if no leaderboard entry', async () => {
+      mockUsersService.findByAddress = jest
+        .fn()
+        .mockResolvedValue(mockUser as User);
+      mockEntryRepository.findOne = jest.fn().mockResolvedValue(null);
+
+      await expect(
+        service.getUserRank('GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN'),
+      ).rejects.toThrow('No leaderboard entry found');
+    });
+
+    it('should compute accuracy_rate correctly for getUserRank', async () => {
+      mockUsersService.findByAddress = jest
+        .fn()
+        .mockResolvedValue(mockUser as User);
+      mockEntryRepository.findOne = jest
+        .fn()
+        .mockResolvedValue(mockEntry as LeaderboardEntry);
+
+      const result = await service.getUserRank(
+        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+      );
+
+      expect(result.accuracy_rate).toBe('70.0');
     });
   });
 });

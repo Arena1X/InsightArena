@@ -42,6 +42,9 @@ export class Prediction {
   @Column({ nullable: true })
   tx_hash: string;
 
+  @Column({ type: 'text', nullable: true })
+  note: string | null;
+
   @CreateDateColumn()
   submitted_at: Date;
 }

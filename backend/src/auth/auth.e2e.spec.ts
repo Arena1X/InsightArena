@@ -11,6 +11,8 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { Reflector } from '@nestjs/core';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RateLimitService } from './rate-limit.service';
+import { ThrottlerModule } from '@nestjs/throttler';
 
 const sign = (kp: Keypair, text: string): string =>
   kp.sign(Buffer.from(text, 'utf-8')).toString('hex');
@@ -58,6 +60,16 @@ describe('Auth E2E — challenge → verify flow', () => {
         JwtStrategy,
         Reflector,
         {
+          provide: RateLimitService,
+          useValue: {
+            getRateLimitStatus: jest.fn().mockResolvedValue({
+              limit: 100,
+              remaining: 99,
+              reset_at: new Date(),
+            }),
+          },
+        },
+        {
           provide: ConfigService,
           useValue: {
             get: jest.fn((key: string) => {
@@ -92,6 +104,7 @@ describe('Auth E2E — challenge → verify flow', () => {
 
     await app.init();
     const httpServer = app.getHttpServer() as Parameters<typeof request>[0];
+    // @ts-expect-error supertest type mismatch
     server = request(httpServer);
   });
 

@@ -54,6 +54,14 @@ pub enum InsightArenaError {
     /// Raised during market creation when the requested fee is out of bounds.
     InvalidFee = 18,
 
+    // ── Dispute ───────────────────────────────────────────────────────────────
+    /// Dispute window has closed for this market.
+    DisputeWindowClosed = 60,
+    /// A dispute has already been filed for this market.
+    DisputeAlreadyFiled = 61,
+    /// No active dispute exists for this market.
+    DisputeNotFound = 62,
+
     // ── Prediction ────────────────────────────────────────────────────────────
     /// No prediction exists for the given `(market_id, predictor)` pair.
     /// Raised on lookup when the user has not yet staked in this market.
@@ -92,6 +100,9 @@ pub enum InsightArenaError {
     /// No season exists for the given `season_id`.
     /// Raised on any season lookup that returns nothing from storage.
     SeasonNotFound = 42,
+    /// The new season's time range overlaps with an existing non-finalized season.
+    /// Raised when creating a season that would be active simultaneously with another.
+    SeasonOverlap = 43,
 
     // ── Invite ────────────────────────────────────────────────────────────────
     /// The supplied invite code symbol does not exist in storage or does not
@@ -104,6 +115,11 @@ pub enum InsightArenaError {
     /// Raised when a redemption attempt arrives after the usage cap is exhausted.
     InviteCodeMaxUsed = 52,
 
+    // ── User ──────────────────────────────────────────────────────────────────
+    /// No user profile exists for the given address.
+    /// Raised when a user stats lookup finds no stored profile.
+    UserNotFound = 63,
+
     // ── General ───────────────────────────────────────────────────────────────
     /// An arithmetic operation produced a value outside the valid i128/u32 range.
     /// Raised anywhere checked arithmetic (pool accumulation, payout calculation)
@@ -115,4 +131,8 @@ pub enum InsightArenaError {
     /// A supplied argument fails basic validation that is not covered by a more
     /// specific error code (e.g. empty strings, zero-length outcome lists).
     InvalidInput = 102,
+
+    // ── Conditional Markets ───────────────────────────────────────────────────
+    /// The maximum allowed depth for nested conditional markets has been exceeded.
+    ConditionalDepthExceeded = 103,
 }

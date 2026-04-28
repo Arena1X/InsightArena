@@ -1,14 +1,15 @@
-.PHONY: ci lint test build install clean help
+.PHONY: ci lint test build install clean migrate help
 
 # Default target
 help:
 	@echo "Backend CI/CD Pipeline Checks"
 	@echo "=============================="
 	@echo "Available targets:"
-	@echo "  make ci       - Run all CI checks (lint, test, build)"
+	@echo "  make ci       - Run all CI checks (lint, test, build, migrate)"
 	@echo "  make lint     - Run ESLint"
 	@echo "  make test     - Run Jest unit tests"
 	@echo "  make build    - Build TypeScript project"
+	@echo "  make migrate  - Run pending database migrations"
 	@echo "  make install  - Install dependencies"
 	@echo "  make clean    - Clean build artifacts"
 
@@ -35,6 +36,11 @@ test:
 build:
 	@echo "🏗️  Building project..."
 	pnpm run build
+
+# Run database migrations
+migrate:
+	@echo "🗄️  Running database migrations..."
+	pnpm run migration:run
 
 # Clean build artifacts
 clean:

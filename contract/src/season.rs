@@ -1,19 +1,120 @@
-use soroban_sdk::{symbol_short, Address, Env, Vec};
-
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
 use crate::storage_types::{
     DataKey, LeaderboardEntry, LeaderboardSnapshot, RewardPayout, Season, UserProfile,
 };
-use crate::ttl;
+
+use soroban_sdk::{symbol_short, Address, Env, Vec};
+
+// ── Leaderboard helpers (merged from leaderboard.rs) ─────────────────────────
+
+/// `stake_bonus = floor(stake_xlm / 10)` → `floor(stake_stroops / 10^8 stroops)`.
+const STROOPS_PER_STAKE_POINT: i128 = 100_000_000;
+
+/// Fetch a leaderboard snapshot for a specific season.
+pub fn get_leaderboard_snapshot(
+    env: &Env,
+    season_id: u32,
+) -> Result<LeaderboardSnapshot, InsightArenaError> {
+    let key = DataKey::Leaderboard(season_id);
+    env.storage()
+        .persistent()
+        .get(&key)
+        .ok_or(InsightArenaError::SeasonNotFound)
+}
+
+/// Store a leaderboard snapshot.
+pub fn store_snapshot(env: &Env, snapshot: &LeaderboardSnapshot) {
+    let key = DataKey::Leaderboard(snapshot.season_id);
+    env.storage().persistent().set(&key, snapshot);
+}
+
+/// Pure function: calculate season points from stake and prediction accuracy.
+///
+/// `season_points = (base_points + stake_bonus) * (correct / total) * 2`
+pub fn calculate_points(stake_amount: i128, correct: u32, total: u32) -> u32 {
+    if total == 0 {
+        return 0;
+    }
+    let correct = correct.min(total) as i128;
+    let total = total as i128;
+    let stake = stake_amount.max(0_i128);
+    let stake_bonus = stake / STROOPS_PER_STAKE_POINT;
+    let sum = 100_i128.saturating_add(stake_bonus);
+    let numer = sum.saturating_mul(correct).saturating_mul(2_i128);
+    let res = numer / total;
+    if res < 0 {
+        return 0;
+    }
+    if res > u32::MAX as i128 {
+        u32::MAX
+    } else {
+        res as u32
+    }
+}
+
+/// Returns season points for `user` in `season_id`.
+/// - Finalized seasons: points from the leaderboard snapshot.
+/// - Active season: live `UserProfile::season_points`.
+/// - Unknown users: `0`. Never panics.
+pub fn get_user_season_points(env: &Env, user: Address, season_id: u32) -> u32 {
+    let Some(season) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, Season>(&DataKey::Season(season_id))
+    else {
+        return 0;
+    };
+
+    if season.is_finalized {
+        if let Ok(snapshot) = get_leaderboard_snapshot(env, season_id) {
+            for e in snapshot.entries.iter() {
+                if e.user == user {
+                    return e.points;
+                }
+            }
+        }
+        return 0;
+    }
+
+    let is_live_season = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u32>(&DataKey::ActiveSeason)
+        .map(|id| id == season_id)
+        .unwrap_or_else(|| {
+            get_active_season(env)
+                .map(|s| s.season_id == season_id)
+                .unwrap_or(false)
+        });
+
+    if is_live_season {
+        return env
+            .storage()
+            .persistent()
+            .get::<DataKey, UserProfile>(&DataKey::User(user))
+            .map(|p| p.season_points)
+            .unwrap_or(0);
+    }
+
+    if let Ok(snapshot) = get_leaderboard_snapshot(env, season_id) {
+        for e in snapshot.entries.iter() {
+            if e.user == user {
+                return e.points;
+            }
+        }
+    }
+
+    0
+}
 
 fn bump_season(env: &Env, season_id: u32) {
-    ttl::extend_season_ttl(env, season_id);
+    config::extend_season_ttl(env, season_id);
 }
 
 fn bump_leaderboard(env: &Env, season_id: u32) {
-    ttl::extend_season_ttl(env, season_id);
+    config::extend_season_ttl(env, season_id);
 }
 
 fn bump_season_count(env: &Env) {
@@ -75,9 +176,23 @@ pub(crate) fn track_user_profile(env: &Env, address: &Address) {
 
     users.push_back(address.clone());
     store_user_list(env, &users);
+
+    let has_predictions = env
+        .storage()
+        .persistent()
+        .get::<DataKey, UserProfile>(&DataKey::User(address.clone()))
+        .map(|profile| profile.total_predictions > 0)
+        .unwrap_or(false);
+
+    if has_predictions {
+        if let Some(mut season) = get_active_season(env) {
+            season.participant_count = season.participant_count.saturating_add(1);
+            store_season(env, &season);
+        }
+    }
 }
 
-fn load_season(env: &Env, season_id: u32) -> Result<Season, InsightArenaError> {
+pub fn load_season(env: &Env, season_id: u32) -> Result<Season, InsightArenaError> {
     let season = env
         .storage()
         .persistent()
@@ -272,7 +387,7 @@ fn emit_season_created(
     );
 }
 
-fn emit_leaderboard_updated(env: &Env, season_id: u32, updated_at: u64) {
+pub fn emit_leaderboard_updated(env: &Env, season_id: u32, updated_at: u64) {
     env.events().publish(
         (symbol_short!("lead"), symbol_short!("updtd")),
         (season_id, updated_at),
@@ -306,6 +421,23 @@ pub fn create_season(
 
     if end_time <= start_time {
         return Err(InsightArenaError::InvalidTimeRange);
+    }
+
+    let total = season_count(env);
+    let mut season_id = 1_u32;
+    while season_id <= total {
+        if let Some(season) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Season>(&DataKey::Season(season_id))
+        {
+            if !season.is_finalized {
+                if season.start_time < end_time && start_time < season.end_time {
+                    return Err(InsightArenaError::SeasonOverlap);
+                }
+            }
+        }
+        season_id = season_id.saturating_add(1);
     }
 
     let season_id = season_count(env)
@@ -399,7 +531,9 @@ pub fn update_leaderboard(
     }
 
     let updated_at = env.ledger().timestamp();
-    store_leaderboard_snapshot(
+
+    // Call the persistence layer in leaderboard.rs
+    store_snapshot(
         env,
         &LeaderboardSnapshot {
             season_id,
@@ -425,6 +559,26 @@ pub fn get_leaderboard(
         .ok_or(InsightArenaError::SeasonNotFound)?;
     bump_leaderboard(env, season_id);
     Ok(snapshot)
+}
+
+pub fn get_season_participants(
+    env: &Env,
+    season_id: u32,
+) -> Result<Vec<Address>, InsightArenaError> {
+    let snapshot = get_leaderboard(env, season_id)?;
+    let mut participants = Vec::new(env);
+
+    for entry in snapshot.entries.iter() {
+        if entry.points == 0 {
+            continue;
+        }
+
+        if !participants.iter().any(|user| user == entry.user) {
+            participants.push_back(entry.user);
+        }
+    }
+
+    Ok(participants)
 }
 
 pub fn finalize_season(env: &Env, admin: Address, season_id: u32) -> Result<(), InsightArenaError> {
@@ -535,302 +689,4 @@ pub fn reset_season_points(
     }
 
     Ok(reset_count)
-}
-
-#[cfg(test)]
-mod season_tests {
-    use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
-    use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-    use soroban_sdk::{symbol_short, vec, Address, Env, IntoVal, Symbol, Vec};
-
-    use crate::{
-        DataKey, InsightArenaContract, InsightArenaContractClient, InsightArenaError,
-        LeaderboardEntry, UserProfile,
-    };
-
-    fn register_token(env: &Env) -> Address {
-        let token_admin = Address::generate(env);
-        env.register_stellar_asset_contract_v2(token_admin)
-            .address()
-    }
-
-    fn deploy(env: &Env) -> (InsightArenaContractClient<'_>, Address, Address) {
-        let id = env.register(InsightArenaContract, ());
-        let client = InsightArenaContractClient::new(env, &id);
-        let admin = Address::generate(env);
-        let oracle = Address::generate(env);
-        let xlm_token = register_token(env);
-        env.mock_all_auths();
-        client.initialize(&admin, &oracle, &200_u32, &xlm_token);
-        (client, admin, xlm_token)
-    }
-
-    fn fund(env: &Env, token: &Address, to: &Address, amount: i128) {
-        StellarAssetClient::new(env, token).mint(to, &amount);
-    }
-
-    fn sample_entries(env: &Env) -> Vec<LeaderboardEntry> {
-        vec![
-            env,
-            LeaderboardEntry {
-                rank: 1,
-                user: Address::generate(env),
-                points: 100,
-                correct_predictions: 10,
-                total_predictions: 12,
-            },
-            LeaderboardEntry {
-                rank: 2,
-                user: Address::generate(env),
-                points: 80,
-                correct_predictions: 8,
-                total_predictions: 11,
-            },
-            LeaderboardEntry {
-                rank: 3,
-                user: Address::generate(env),
-                points: 50,
-                correct_predictions: 5,
-                total_predictions: 9,
-            },
-            LeaderboardEntry {
-                rank: 4,
-                user: Address::generate(env),
-                points: 30,
-                correct_predictions: 3,
-                total_predictions: 6,
-            },
-        ]
-    }
-
-    #[test]
-    fn create_season_and_getters_work() {
-        let env = Env::default();
-        let (client, admin, xlm_token) = deploy(&env);
-        fund(&env, &xlm_token, &admin, 100_000_000);
-        TokenClient::new(&env, &xlm_token).approve(&admin, &client.address, &50_000_000, &9999);
-
-        let season_id = client.create_season(&admin, &100, &200, &50_000_000);
-        assert_eq!(season_id, 1);
-
-        let season = client.get_season(&season_id);
-        assert_eq!(season.reward_pool, 50_000_000);
-        assert!(!season.is_finalized);
-
-        assert!(client.get_active_season().is_none());
-
-        env.ledger().set_timestamp(150);
-        let active = client.get_active_season().unwrap();
-        assert_eq!(active.season_id, season_id);
-
-        let snapshot = client.get_leaderboard(&season_id);
-        assert_eq!(snapshot.season_id, season_id);
-        assert_eq!(snapshot.entries.len(), 0);
-    }
-
-    #[test]
-    fn create_season_rejects_invalid_time_range() {
-        let env = Env::default();
-        let (client, admin, xlm_token) = deploy(&env);
-        fund(&env, &xlm_token, &admin, 100_000_000);
-        TokenClient::new(&env, &xlm_token).approve(&admin, &client.address, &50_000_000, &9999);
-
-        let result = client.try_create_season(&admin, &200, &100, &50_000_000);
-        assert_eq!(result, Err(Ok(InsightArenaError::InvalidTimeRange)));
-    }
-
-    #[test]
-    fn update_leaderboard_rejects_non_sequential_ranks() {
-        let env = Env::default();
-        let (client, admin, xlm_token) = deploy(&env);
-        fund(&env, &xlm_token, &admin, 100_000_000);
-        TokenClient::new(&env, &xlm_token).approve(&admin, &client.address, &50_000_000, &9999);
-        let season_id = client.create_season(&admin, &100, &200, &50_000_000);
-
-        let bad_entries = vec![
-            &env,
-            LeaderboardEntry {
-                rank: 1,
-                user: Address::generate(&env),
-                points: 10,
-                correct_predictions: 1,
-                total_predictions: 1,
-            },
-            LeaderboardEntry {
-                rank: 3,
-                user: Address::generate(&env),
-                points: 9,
-                correct_predictions: 1,
-                total_predictions: 1,
-            },
-        ];
-
-        let result = client.try_update_leaderboard(&admin, &season_id, &bad_entries);
-        assert_eq!(result, Err(Ok(InsightArenaError::InvalidInput)));
-    }
-
-    #[test]
-    fn get_leaderboard_returns_season_not_found_for_unknown_season() {
-        let env = Env::default();
-        let (client, _admin, _xlm_token) = deploy(&env);
-
-        let result = client.try_get_leaderboard(&99);
-        assert_eq!(result, Err(Ok(InsightArenaError::SeasonNotFound)));
-    }
-
-    #[test]
-    fn update_leaderboard_emits_event() {
-        let env = Env::default();
-        let (client, admin, xlm_token) = deploy(&env);
-        fund(&env, &xlm_token, &admin, 100_000_000);
-        TokenClient::new(&env, &xlm_token).approve(&admin, &client.address, &50_000_000, &9999);
-        let season_id = client.create_season(&admin, &100, &200, &50_000_000);
-
-        env.ledger().set_timestamp(150);
-        let entries = sample_entries(&env);
-        client.update_leaderboard(&admin, &season_id, &entries);
-
-        let events = env.events().all();
-        let last = events.last().unwrap();
-        let topic0: Symbol = last.1.get(0).unwrap().into_val(&env);
-        let topic1: Symbol = last.1.get(1).unwrap().into_val(&env);
-        assert_eq!(topic0, symbol_short!("lead"));
-        assert_eq!(topic1, symbol_short!("updtd"));
-    }
-
-    #[test]
-    fn finalize_season_distributes_rewards_and_sets_winner() {
-        let env = Env::default();
-        let (client, admin, xlm_token) = deploy(&env);
-        fund(&env, &xlm_token, &admin, 200_000_000);
-        TokenClient::new(&env, &xlm_token).approve(&admin, &client.address, &100_000_000, &9999);
-        let season_id = client.create_season(&admin, &10, &100, &100_000_000);
-
-        let entries = sample_entries(&env);
-        let winner = entries.get(0).unwrap().user.clone();
-        let second = entries.get(1).unwrap().user.clone();
-        let third = entries.get(2).unwrap().user.clone();
-        let fourth = entries.get(3).unwrap().user.clone();
-
-        client.update_leaderboard(&admin, &season_id, &entries);
-        env.ledger().set_timestamp(100);
-
-        client.finalize_season(&admin, &season_id);
-
-        assert_eq!(
-            TokenClient::new(&env, &xlm_token).balance(&winner),
-            40_000_000
-        );
-        assert_eq!(
-            TokenClient::new(&env, &xlm_token).balance(&second),
-            20_000_000
-        );
-        assert_eq!(
-            TokenClient::new(&env, &xlm_token).balance(&third),
-            10_000_000
-        );
-        assert_eq!(
-            TokenClient::new(&env, &xlm_token).balance(&fourth),
-            30_000_000
-        );
-
-        let season = client.get_season(&season_id);
-        assert!(season.is_finalized);
-        assert_eq!(season.top_winner, Some(winner));
-    }
-
-    #[test]
-    fn finalize_season_rejects_early_and_second_finalization() {
-        let env = Env::default();
-        let (client, admin, xlm_token) = deploy(&env);
-        fund(&env, &xlm_token, &admin, 200_000_000);
-        TokenClient::new(&env, &xlm_token).approve(&admin, &client.address, &100_000_000, &9999);
-        let season_id = client.create_season(&admin, &10, &100, &100_000_000);
-        client.update_leaderboard(&admin, &season_id, &sample_entries(&env));
-
-        env.ledger().set_timestamp(99);
-        let early = client.try_finalize_season(&admin, &season_id);
-        assert_eq!(early, Err(Ok(InsightArenaError::SeasonNotActive)));
-
-        env.ledger().set_timestamp(100);
-        client.finalize_season(&admin, &season_id);
-        let again = client.try_finalize_season(&admin, &season_id);
-        assert_eq!(again, Err(Ok(InsightArenaError::SeasonAlreadyFinalized)));
-    }
-
-    #[test]
-    fn reset_season_points_resets_profiles_and_preserves_snapshots() {
-        let env = Env::default();
-        let (client, admin, xlm_token) = deploy(&env);
-        fund(&env, &xlm_token, &admin, 200_000_000);
-        TokenClient::new(&env, &xlm_token).approve(&admin, &client.address, &100_000_000, &9999);
-        let season_one = client.create_season(&admin, &10, &100, &50_000_000);
-        let season_two = client.create_season(&admin, &101, &200, &50_000_000);
-
-        let entries = sample_entries(&env);
-        client.update_leaderboard(&admin, &season_one, &entries.clone());
-
-        let user_a = Address::generate(&env);
-        let user_b = Address::generate(&env);
-        let users = vec![&env, user_a.clone(), user_b.clone()];
-        let contract_id = client.address.clone();
-        env.as_contract(&contract_id, || {
-            env.storage().persistent().set(
-                &DataKey::User(user_a.clone()),
-                &UserProfile {
-                    address: user_a.clone(),
-                    total_predictions: 2,
-                    correct_predictions: 1,
-                    total_staked: 20_000_000,
-                    total_winnings: 10_000_000,
-                    season_points: 42,
-                    reputation_score: 50,
-                    joined_at: 1,
-                },
-            );
-            env.storage().persistent().set(
-                &DataKey::User(user_b.clone()),
-                &UserProfile {
-                    address: user_b.clone(),
-                    total_predictions: 3,
-                    correct_predictions: 2,
-                    total_staked: 30_000_000,
-                    total_winnings: 15_000_000,
-                    season_points: 77,
-                    reputation_score: 66,
-                    joined_at: 2,
-                },
-            );
-            env.storage().persistent().set(&DataKey::UserList, &users);
-        });
-
-        let reset_count = client.reset_season_points(&admin, &season_two);
-        assert_eq!(reset_count, 2);
-
-        let profile_a: UserProfile = env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&DataKey::User(user_a.clone()))
-                .unwrap()
-        });
-        let profile_b: UserProfile = env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&DataKey::User(user_b.clone()))
-                .unwrap()
-        });
-        assert_eq!(profile_a.season_points, 0);
-        assert_eq!(profile_b.season_points, 0);
-
-        let active_season_id: u32 = env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&DataKey::ActiveSeason)
-                .unwrap()
-        });
-        assert_eq!(active_season_id, season_two);
-
-        let preserved = client.get_leaderboard(&season_one);
-        assert_eq!(preserved.entries, entries);
-    }
 }

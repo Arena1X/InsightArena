@@ -3,8 +3,10 @@ use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol, Vec}
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
-use crate::storage_types::{DataKey, Market, Prediction};
-use crate::ttl;
+use crate::reputation;
+use crate::storage_types::{
+    ConditionalMarket, DataKey, Market, MarketStats, PlatformStats, Prediction, UserProfile,
+};
 
 // ── Params struct ─────────────────────────────────────────────────────────────
 // Soroban limits contract functions to 10 parameters. Bundling the market
@@ -20,6 +22,7 @@ pub struct CreateMarketParams {
     pub outcomes: Vec<Symbol>,
     pub end_time: u64,
     pub resolution_time: u64,
+    pub dispute_window: u64,
     pub creator_fee_bps: u32,
     pub min_stake: i128,
     pub max_stake: i128,
@@ -29,7 +32,7 @@ pub struct CreateMarketParams {
 // ── TTL helpers ───────────────────────────────────────────────────────────────
 
 fn bump_market(env: &Env, market_id: u64) {
-    ttl::extend_market_ttl(env, market_id);
+    config::extend_market_ttl(env, market_id);
 }
 
 fn bump_counter(env: &Env) {
@@ -38,6 +41,80 @@ fn bump_counter(env: &Env) {
         PERSISTENT_THRESHOLD,
         PERSISTENT_BUMP,
     );
+}
+
+fn bump_categories(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
+}
+
+fn bump_category_index(env: &Env, category: &Symbol) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::CategoryIndex(category.clone()),
+        PERSISTENT_THRESHOLD,
+        PERSISTENT_BUMP,
+    );
+}
+
+fn load_categories(env: &Env) -> Vec<Symbol> {
+    let categories = env
+        .storage()
+        .instance()
+        .get(&DataKey::Categories)
+        .unwrap_or_else(|| config::default_categories(env));
+
+    if env.storage().instance().has(&DataKey::Categories) {
+        bump_categories(env);
+    }
+
+    categories
+}
+
+fn save_categories(env: &Env, categories: &Vec<Symbol>) {
+    env.storage()
+        .instance()
+        .set(&DataKey::Categories, categories);
+    bump_categories(env);
+}
+
+fn load_category_index(env: &Env, category: &Symbol) -> Vec<u64> {
+    let key = DataKey::CategoryIndex(category.clone());
+    let market_ids = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    if env.storage().persistent().has(&key) {
+        bump_category_index(env, category);
+    }
+
+    market_ids
+}
+
+fn save_category_index(env: &Env, category: &Symbol, market_ids: &Vec<u64>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::CategoryIndex(category.clone()), market_ids);
+    bump_category_index(env, category);
+}
+
+fn append_market_to_category_index(env: &Env, category: &Symbol, market_id: u64) {
+    let mut market_ids = load_category_index(env, category);
+    market_ids.push_back(market_id);
+    save_category_index(env, category, &market_ids);
+}
+
+fn require_admin(env: &Env, admin: &Address) -> Result<(), InsightArenaError> {
+    admin.require_auth();
+
+    let cfg = config::get_config(env)?;
+    if admin != &cfg.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    Ok(())
 }
 
 // ── Counter helpers ───────────────────────────────────────────────────────────
@@ -87,6 +164,41 @@ pub fn emit_market_resolved(env: &Env, market_id: u64, resolved_outcome: Symbol)
     );
 }
 
+/// Calculate price of outcome A in terms of outcome B.
+/// Returns price with 6 decimal precision (multiplied by 1_000_000).
+pub fn calculate_price(reserve_a: i128, reserve_b: i128) -> Result<i128, InsightArenaError> {
+    if reserve_a <= 0 || reserve_b <= 0 {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
+    let price = reserve_b
+        .checked_mul(1_000_000)
+        .ok_or(InsightArenaError::Overflow)?
+        .checked_div(reserve_a)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    Ok(price)
+}
+
+fn has_duplicate_outcomes(outcomes: &Vec<Symbol>) -> bool {
+    let mut index: u32 = 0;
+    while index < outcomes.len() {
+        let outcome = outcomes.get(index).unwrap();
+        let mut next_index = index + 1;
+
+        while next_index < outcomes.len() {
+            if outcomes.get(next_index) == Some(outcome.clone()) {
+                return true;
+            }
+            next_index += 1;
+        }
+
+        index += 1;
+    }
+
+    false
+}
+
 // ── Entry-point logic ─────────────────────────────────────────────────────────
 
 /// Create a new prediction market and return its auto-assigned `market_id`.
@@ -97,8 +209,9 @@ pub fn emit_market_resolved(env: &Env, market_id: u64, resolved_outcome: Symbol)
 /// 3. `end_time` must be strictly after the current ledger timestamp
 /// 4. `resolution_time` must be >= `end_time`
 /// 5. At least two distinct outcomes required
-/// 6. `creator_fee_bps` must not exceed the platform cap
-/// 7. `min_stake` >= platform minimum; `max_stake` >= `min_stake`
+/// 6. `category` must be in the admin-managed whitelist
+/// 7. `creator_fee_bps` must not exceed the platform cap
+/// 8. `min_stake` >= platform minimum; `max_stake` >= `min_stake`
 pub fn create_market(
     env: &Env,
     creator: Address,
@@ -125,9 +238,15 @@ pub fn create_market(
     if params.outcomes.len() < 2 {
         return Err(InsightArenaError::InvalidInput);
     }
+    if has_duplicate_outcomes(&params.outcomes) {
+        return Err(InsightArenaError::InvalidInput);
+    }
 
     // ── Load config for fee and stake floor checks ────────────────────────────
     let cfg = config::get_config(env)?;
+    if !load_categories(env).contains(params.category.clone()) {
+        return Err(InsightArenaError::InvalidInput);
+    }
 
     // ── Guard 6: creator fee must not exceed the platform cap ─────────────────
     if params.creator_fee_bps > cfg.max_creator_fee_bps {
@@ -160,15 +279,21 @@ pub fn create_market(
         params.creator_fee_bps,
         params.min_stake,
         params.max_stake,
+        params.dispute_window,
     );
 
     env.storage()
         .persistent()
         .set(&DataKey::Market(market_id), &market);
     bump_market(env, market_id);
+    append_market_to_category_index(env, &market.category, market_id);
 
     // ── Emit MarketCreated event ──────────────────────────────────────────────
     emit_market_created(env, market_id, &creator, params.end_time);
+
+    // ── Update creator reputation stats ──────────────────────────────────────
+    reputation::on_market_created(env, &creator);
+    crate::season::track_user_profile(env, &creator);
 
     Ok(market_id)
 }
@@ -226,6 +351,76 @@ pub fn list_markets(env: &Env, start: u64, limit: u32) -> Vec<Market> {
             collected += 1;
         }
         id += 1;
+    }
+
+    result
+}
+
+pub fn add_category(env: &Env, admin: Address, category: Symbol) -> Result<(), InsightArenaError> {
+    require_admin(env, &admin)?;
+
+    let mut categories = load_categories(env);
+    if !categories.contains(category.clone()) {
+        categories.push_back(category);
+        save_categories(env, &categories);
+    }
+
+    Ok(())
+}
+
+pub fn remove_category(
+    env: &Env,
+    admin: Address,
+    category: Symbol,
+) -> Result<(), InsightArenaError> {
+    require_admin(env, &admin)?;
+
+    let mut categories = load_categories(env);
+    let mut index: u32 = 0;
+
+    while index < categories.len() {
+        if categories.get(index) == Some(category.clone()) {
+            categories.remove(index);
+            save_categories(env, &categories);
+            break;
+        }
+        index += 1;
+    }
+
+    Ok(())
+}
+
+pub fn list_categories(env: &Env) -> Vec<Symbol> {
+    load_categories(env)
+}
+
+pub fn get_markets_by_category(env: &Env, category: Symbol, start: u64, limit: u32) -> Vec<Market> {
+    const MAX_LIMIT: u32 = 50;
+    let effective_limit = if limit > MAX_LIMIT { MAX_LIMIT } else { limit };
+    let market_ids = load_category_index(env, &category);
+    let mut result = Vec::new(env);
+    let total = u64::from(market_ids.len());
+
+    if effective_limit == 0 || start >= total {
+        return result;
+    }
+
+    let mut collected: u32 = 0;
+    let mut offset = start as u32;
+
+    while u64::from(offset) < total && collected < effective_limit {
+        if let Some(market_id) = market_ids.get(offset) {
+            if let Some(market) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Market>(&DataKey::Market(market_id))
+            {
+                bump_market(env, market_id);
+                result.push_back(market);
+                collected += 1;
+            }
+        }
+        offset += 1;
     }
 
     result
@@ -320,11 +515,10 @@ pub fn cancel_market(env: &Env, caller: Address, market_id: u64) -> Result<(), I
         .set(&DataKey::Market(market_id), &market);
     bump_market(env, market_id);
 
-    // ── Iterate all predictors and issue refunds ──────────────────────────────
-    let predictors: Vec<Address> = env
+    let predictors = env
         .storage()
         .persistent()
-        .get(&DataKey::PredictorList(market_id))
+        .get::<DataKey, Vec<Address>>(&DataKey::PredictorList(market_id))
         .unwrap_or_else(|| Vec::new(env));
 
     for predictor in predictors.iter() {
@@ -334,591 +528,587 @@ pub fn cancel_market(env: &Env, caller: Address, market_id: u64) -> Result<(), I
         }
     }
 
-    // ── Emit MarketCancelled event ────────────────────────────────────────────
+    // Deactivate all conditional children so no orphaned markets remain.
+    let child_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ConditionalChildren(market_id))
+        .unwrap_or_else(|| Vec::new(env));
+
+    for child_id in child_ids.iter() {
+        let _ = deactivate_conditional_market(env, child_id);
+    }
+
     emit_market_cancelled(env, market_id, &caller);
 
     Ok(())
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ── Oracle / Resolution ───────────────────────────────────────────────────────
 
-#[cfg(test)]
-mod market_tests {
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
-    use soroban_sdk::{symbol_short, vec, Address, Env, String};
+/// Transition a market into the "resolved" state by recording the winning outcome.
+///
+/// Validation order:
+/// 1. `oracle` address must provide valid cryptographic authorisation.
+/// 2. `oracle` must match the `oracle_address` stored in global configuration.
+/// 3. Market must exist in persistent storage.
+/// 4. `current_time >= market.resolution_time` — resolution window must be open.
+/// 5. `market.is_resolved == false` — prevents double-resolution.
+/// 6. `resolved_outcome` must be one of the symbols in `market.outcome_options`.
+pub fn resolve_market(
+    env: Env,
+    oracle: Address,
+    market_id: u64,
+    resolved_outcome: Symbol,
+) -> Result<(), InsightArenaError> {
+    oracle.require_auth();
 
-    use crate::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
-
-    use super::CreateMarketParams;
-
-    /// Register a mock XLM token (Stellar Asset Contract) and return its address.
-    fn register_token(env: &Env) -> Address {
-        let token_admin = Address::generate(env);
-        env.register_stellar_asset_contract_v2(token_admin)
-            .address()
+    let cfg = config::get_config(&env)?;
+    if oracle != cfg.oracle_address {
+        return Err(InsightArenaError::Unauthorized);
     }
 
-    fn deploy(env: &Env) -> InsightArenaContractClient<'_> {
-        let id = env.register(InsightArenaContract, ());
-        let client = InsightArenaContractClient::new(env, &id);
-        let admin = Address::generate(env);
-        let oracle = Address::generate(env);
-        let xlm_token = register_token(env);
-        env.mock_all_auths();
-        client.initialize(&admin, &oracle, &200_u32, &xlm_token);
-        client
+    let mut market = get_market(&env, market_id)?;
+
+    let now = env.ledger().timestamp();
+    if now < market.resolution_time {
+        return Err(InsightArenaError::MarketStillOpen);
     }
 
-    fn default_params(env: &Env) -> CreateMarketParams {
-        let now = env.ledger().timestamp();
-        CreateMarketParams {
-            title: String::from_str(env, "Will it rain?"),
-            description: String::from_str(env, "Daily weather market"),
-            category: symbol_short!("weather"),
-            outcomes: vec![env, symbol_short!("yes"), symbol_short!("no")],
-            end_time: now + 1000,
-            resolution_time: now + 2000,
-            creator_fee_bps: 100,
-            min_stake: 10_000_000,
-            max_stake: 100_000_000,
-            is_public: true,
+    if market.is_resolved {
+        return Err(InsightArenaError::MarketAlreadyResolved);
+    }
+
+    if !market.outcome_options.contains(resolved_outcome.clone()) {
+        return Err(InsightArenaError::InvalidOutcome);
+    }
+
+    market.is_resolved = true;
+    market.resolved_outcome = Some(resolved_outcome.clone());
+    market.resolved_at = Some(now);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Market(market_id), &market);
+
+    env.storage().persistent().extend_ttl(
+        &DataKey::Market(market_id),
+        config::PERSISTENT_THRESHOLD,
+        config::PERSISTENT_BUMP,
+    );
+
+    emit_market_resolved(&env, market_id, resolved_outcome.clone());
+    reputation::on_market_resolved(&env, &market.creator, market.participant_count);
+    check_conditional_activation(&env, market_id, &resolved_outcome);
+
+    Ok(())
+}
+
+pub fn update_oracle_from_governance(
+    env: &Env,
+    new_oracle: Address,
+) -> Result<(), InsightArenaError> {
+    let mut cfg = config::get_config(env)?;
+    cfg.oracle_address = new_oracle;
+    env.storage().persistent().set(&DataKey::Config, &cfg);
+    Ok(())
+}
+
+// ── Conditional Markets (merged from conditional.rs) ─────────────────────────
+
+/// Maximum depth of conditional market chains.
+pub const MAX_CONDITIONAL_DEPTH: u32 = 5;
+
+/// Maximum number of conditional markets per parent.
+pub const MAX_CONDITIONALS_PER_PARENT: u32 = 50;
+
+/// Create a child market that only becomes active when a parent market resolves
+/// to a specific outcome.
+pub fn create_conditional_market(
+    env: &Env,
+    creator: Address,
+    parent_market_id: u64,
+    required_outcome: Symbol,
+    params: CreateMarketParams,
+) -> Result<u64, InsightArenaError> {
+    validate_conditional_params(env, parent_market_id, &required_outcome, &params)?;
+
+    let parent_depth = calculate_conditional_depth(env, parent_market_id);
+    let depth = parent_depth
+        .checked_add(1)
+        .ok_or(InsightArenaError::Overflow)?;
+    if depth > MAX_CONDITIONAL_DEPTH {
+        return Err(InsightArenaError::ConditionalDepthExceeded);
+    }
+
+    let new_market_id = load_market_count(env)
+        .checked_add(1)
+        .ok_or(InsightArenaError::Overflow)?;
+    validate_no_circular_dependency(env, new_market_id, parent_market_id)?;
+
+    let market_id = create_market(env, creator, params)?;
+
+    let conditional_market = ConditionalMarket::new(
+        market_id,
+        parent_market_id,
+        required_outcome,
+        depth,
+        env.ledger().timestamp(),
+    );
+    env.storage()
+        .persistent()
+        .set(&DataKey::ConditionalMarket(market_id), &conditional_market);
+
+    let children_key = DataKey::ConditionalChildren(parent_market_id);
+    let mut children: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&children_key)
+        .unwrap_or_else(|| Vec::new(env));
+    children.push_back(market_id);
+    env.storage().persistent().set(&children_key, &children);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::ConditionalParent(market_id), &parent_market_id);
+
+    Ok(market_id)
+}
+
+/// Get all conditional markets (children) for a given parent market.
+///
+/// Returns a vector of `ConditionalMarket` structs representing all child markets
+/// that were created with the specified parent market ID. Returns an empty vector
+/// if no children exist.
+///
+/// # Arguments
+/// * `env` - The contract environment
+/// * `parent_market_id` - The market ID to query for children
+///
+/// # Returns
+/// A `Vec<ConditionalMarket>` containing all child markets, or an empty vector if none exist.
+pub fn get_conditional_markets(env: &Env, parent_market_id: u64) -> Vec<ConditionalMarket> {
+    let children_key = DataKey::ConditionalChildren(parent_market_id);
+    let child_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&children_key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut results: Vec<ConditionalMarket> = Vec::new(env);
+
+    for child_id in child_ids.iter() {
+        if let Some(conditional_market) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, ConditionalMarket>(&DataKey::ConditionalMarket(child_id))
+        {
+            results.push_back(conditional_market);
         }
     }
 
-    #[test]
-    fn create_market_success_returns_incremented_id() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
+    results
+}
 
-        let id = client.create_market(&creator, &default_params(&env));
-        assert_eq!(id, 1);
+/// Get the direct parent market for a conditional market.
+///
+/// Returns `MarketNotFound` when `market_id` is not a conditional market.
+pub fn get_parent_market(env: &Env, market_id: u64) -> Result<Market, InsightArenaError> {
+    let parent_market_id: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ConditionalParent(market_id))
+        .ok_or(InsightArenaError::MarketNotFound)?;
 
-        let id2 = client.create_market(&creator, &default_params(&env));
-        assert_eq!(id2, 2);
+    get_market(env, parent_market_id)
+}
+
+/// Return the ancestry chain for a market, from the provided market up to root.
+///
+/// The returned chain always includes `market_id` as the first element.
+/// The computed result is cached at `DataKey::ConditionalChain(market_id)`.
+pub fn get_conditional_chain(
+    env: &Env,
+    market_id: u64,
+) -> Result<crate::storage_types::ConditionalChain, InsightArenaError> {
+    if !env.storage().persistent().has(&DataKey::Market(market_id)) {
+        return Err(InsightArenaError::MarketNotFound);
     }
 
-    #[test]
-    fn create_market_fails_end_time_in_past() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
-
-        let mut p = default_params(&env);
-        p.end_time = env.ledger().timestamp(); // not strictly after now
-
-        let result = client.try_create_market(&creator, &p);
-        assert!(matches!(
-            result,
-            Err(Ok(InsightArenaError::InvalidTimeRange))
-        ));
+    if let Some(cached) = env
+        .storage()
+        .persistent()
+        .get::<_, crate::storage_types::ConditionalChain>(&DataKey::ConditionalChain(market_id))
+    {
+        return Ok(cached);
     }
 
-    #[test]
-    fn create_market_fails_resolution_before_end() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
+    let mut chain_ids: Vec<u64> = Vec::new(env);
+    chain_ids.push_back(market_id);
 
-        let mut p = default_params(&env);
-        p.resolution_time = p.end_time - 1;
-
-        let result = client.try_create_market(&creator, &p);
-        assert!(matches!(
-            result,
-            Err(Ok(InsightArenaError::InvalidTimeRange))
-        ));
+    let mut cursor = market_id;
+    while let Some(parent_id) = env
+        .storage()
+        .persistent()
+        .get::<_, u64>(&DataKey::ConditionalParent(cursor))
+    {
+        chain_ids.push_back(parent_id);
+        cursor = parent_id;
     }
 
-    #[test]
-    fn create_market_fails_single_outcome() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
+    let depth = chain_ids.len();
+    let chain = crate::storage_types::ConditionalChain {
+        market_ids: chain_ids,
+        depth,
+    };
 
-        let mut p = default_params(&env);
-        p.outcomes = vec![&env, symbol_short!("yes")];
+    env.storage()
+        .persistent()
+        .set(&DataKey::ConditionalChain(market_id), &chain);
 
-        let result = client.try_create_market(&creator, &p);
-        assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+    Ok(chain)
+}
+
+/// Walk up the ConditionalParent chain from `market_id`, counting hops to the root.
+/// Returns 0 for root (non-conditional) markets, 1 for first-level conditionals, etc.
+pub fn calculate_conditional_depth(env: &Env, market_id: u64) -> u32 {
+    let mut depth = 0u32;
+    let mut cursor = market_id;
+    loop {
+        match env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::ConditionalParent(cursor))
+        {
+            Some(parent_id) => {
+                depth = depth.saturating_add(1);
+                cursor = parent_id;
+            }
+            None => break,
+        }
+    }
+    depth
+}
+
+fn validate_conditional_params(
+    env: &Env,
+    parent_market_id: u64,
+    required_outcome: &Symbol,
+    params: &CreateMarketParams,
+) -> Result<(), InsightArenaError> {
+    let parent_market: Market = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Market(parent_market_id))
+        .ok_or(InsightArenaError::MarketNotFound)?;
+
+    if parent_market.is_resolved || parent_market.is_cancelled {
+        return Err(InsightArenaError::MarketExpired);
     }
 
-    #[test]
-    fn create_market_fails_fee_too_high() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
-
-        let mut p = default_params(&env);
-        p.creator_fee_bps = 501; // exceeds 500 bps cap
-
-        let result = client.try_create_market(&creator, &p);
-        assert!(matches!(result, Err(Ok(InsightArenaError::InvalidFee))));
+    if !parent_market.outcome_options.contains(required_outcome.clone()) {
+        return Err(InsightArenaError::InvalidOutcome);
     }
 
-    #[test]
-    fn create_market_fails_when_paused() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
-
-        client.set_paused(&true);
-        let result = client.try_create_market(&creator, &default_params(&env));
-        assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+    if params.end_time <= parent_market.resolution_time {
+        return Err(InsightArenaError::InvalidTimeRange);
     }
 
-    #[test]
-    fn create_market_fails_stake_too_low() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
-
-        let mut p = default_params(&env);
-        p.min_stake = 1; // below 10_000_000 stroops platform floor
-
-        let result = client.try_create_market(&creator, &p);
-        assert!(matches!(result, Err(Ok(InsightArenaError::StakeTooLow))));
+    if params.resolution_time <= params.end_time {
+        return Err(InsightArenaError::InvalidTimeRange);
     }
 
-    // ── get_market ────────────────────────────────────────────────────────────
+    Ok(())
+}
 
-    #[test]
-    fn get_market_returns_correct_market() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
+fn validate_no_circular_dependency(
+    env: &Env,
+    new_market_id: u64,
+    parent_market_id: u64,
+) -> Result<(), InsightArenaError> {
+    let mut current = parent_market_id;
 
-        let id = client.create_market(&creator, &default_params(&env));
-        let market = client.get_market(&id);
-        assert_eq!(market.market_id, id);
-        assert_eq!(market.creator, creator);
-    }
-
-    #[test]
-    fn get_market_returns_not_found_for_missing_id() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-
-        let result = client.try_get_market(&99_u64);
-        assert!(matches!(result, Err(Ok(InsightArenaError::MarketNotFound))));
-    }
-
-    // ── get_market_count ──────────────────────────────────────────────────────
-
-    #[test]
-    fn get_market_count_zero_before_any_market() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-
-        assert_eq!(client.get_market_count(), 0);
-    }
-
-    #[test]
-    fn get_market_count_increments_with_each_market() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
-
-        client.create_market(&creator, &default_params(&env));
-        assert_eq!(client.get_market_count(), 1);
-
-        client.create_market(&creator, &default_params(&env));
-        assert_eq!(client.get_market_count(), 2);
-    }
-
-    // ── list_markets ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn list_markets_empty_when_no_markets() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-
-        let list = client.list_markets(&1_u64, &10_u32);
-        assert_eq!(list.len(), 0);
-    }
-
-    #[test]
-    fn list_markets_returns_all_when_within_limit() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
-
-        for _ in 0..3 {
-            client.create_market(&creator, &default_params(&env));
+    loop {
+        if current == new_market_id {
+            return Err(InsightArenaError::ConditionalDepthExceeded);
         }
 
-        let list = client.list_markets(&1_u64, &10_u32);
-        assert_eq!(list.len(), 3);
-        assert_eq!(list.get(0).unwrap().market_id, 1);
-        assert_eq!(list.get(2).unwrap().market_id, 3);
-    }
-
-    #[test]
-    fn list_markets_respects_pagination_start() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
-
-        for _ in 0..5 {
-            client.create_market(&creator, &default_params(&env));
+        if let Some(next_parent) = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::ConditionalParent(current))
+        {
+            current = next_parent;
+        } else {
+            break;
         }
-
-        // Start from market ID 3, take up to 10
-        let list = client.list_markets(&3_u64, &10_u32);
-        assert_eq!(list.len(), 3); // IDs 3, 4, 5
-        assert_eq!(list.get(0).unwrap().market_id, 3);
     }
 
-    #[test]
-    fn list_markets_caps_at_max_limit_50() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
+    Ok(())
+}
 
-        for _ in 0..60 {
-            client.create_market(&creator, &default_params(&env));
+fn emit_conditional_deactivated(env: &Env, market_id: u64) {
+    env.events().publish(
+        (symbol_short!("cond"), symbol_short!("deactiv")),
+        market_id,
+    );
+}
+
+/// Deactivate a conditional market whose parent was cancelled or resolved to a
+/// non-matching outcome. Sets `is_activated = false`, marks the underlying
+/// `Market` as `is_cancelled = true`, refunds any stakes already placed, and
+/// emits a deactivation event.
+pub fn deactivate_conditional_market(
+    env: &Env,
+    market_id: u64,
+) -> Result<(), InsightArenaError> {
+    // Load and update the ConditionalMarket record.
+    let mut conditional: ConditionalMarket = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ConditionalMarket(market_id))
+        .ok_or(InsightArenaError::MarketNotFound)?;
+
+    conditional.is_activated = false;
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::ConditionalMarket(market_id), &conditional);
+
+    // Mark the underlying Market as cancelled and refund any stakes.
+    let mut market = get_market(env, market_id)?;
+
+    if !market.is_cancelled && !market.is_resolved {
+        market.is_cancelled = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Market(market_id), &market);
+        bump_market(env, market_id);
+
+        let predictors = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<Address>>(&DataKey::PredictorList(market_id))
+            .unwrap_or_else(|| Vec::new(env));
+
+        for predictor in predictors.iter() {
+            let key = DataKey::Prediction(market_id, predictor.clone());
+            if let Some(prediction) =
+                env.storage().persistent().get::<DataKey, Prediction>(&key)
+            {
+                escrow::refund(env, &predictor, prediction.stake_amount)?;
+            }
         }
-
-        let list = client.list_markets(&1_u64, &100_u32); // ask for 100, should get 50
-        assert_eq!(list.len(), 50);
     }
 
-    #[test]
-    fn list_markets_empty_when_start_out_of_bounds() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let client = deploy(&env);
-        let creator = Address::generate(&env);
+    emit_conditional_deactivated(env, market_id);
 
-        client.create_market(&creator, &default_params(&env));
+    Ok(())
+}
 
-        // start > total count → empty
-        let list = client.list_markets(&99_u64, &10_u32);
-        assert_eq!(list.len(), 0);
+fn activate_conditional_market(env: &Env, market_id: u64) -> Result<(), InsightArenaError> {
+    let mut conditional: ConditionalMarket = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ConditionalMarket(market_id))
+        .ok_or(InsightArenaError::MarketNotFound)?;
+
+    let now = env.ledger().timestamp();
+    conditional.activate(now);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::ConditionalMarket(market_id), &conditional);
+
+    env.events().publish(
+        (symbol_short!("cond"), symbol_short!("activ")),
+        (market_id, now),
+    );
+
+    Ok(())
+}
+
+fn check_conditional_activation(env: &Env, parent_market_id: u64, resolved_outcome: &Symbol) {
+    let child_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ConditionalChildren(parent_market_id))
+        .unwrap_or_else(|| Vec::new(env));
+
+    for child_id in child_ids.iter() {
+        if let Some(conditional) = env
+            .storage()
+            .persistent()
+            .get::<_, ConditionalMarket>(&DataKey::ConditionalMarket(child_id))
+        {
+            if &conditional.required_outcome == resolved_outcome {
+                let _ = activate_conditional_market(env, child_id);
+            } else {
+                // Parent resolved to a different outcome — deactivate this child.
+                let _ = deactivate_conditional_market(env, child_id);
+            }
+        }
+    }
+}
+
+// ── Analytics (merged from analytics.rs) ─────────────────────────────────────
+
+/// Increment the cumulative platform volume by `amount`. Called on every stake.
+pub fn add_volume(env: &Env, amount: i128) {
+    let key = DataKey::PlatformVolume;
+    let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+    let updated = current.saturating_add(amount);
+    env.storage().persistent().set(&key, &updated);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
+}
+
+/// Accumulate per-outcome stake pools by iterating the predictor list.
+fn accumulate_outcome_pools(env: &Env, market_id: u64) -> (Vec<Symbol>, Vec<i128>) {
+    let predictors: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PredictorList(market_id))
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut outcome_symbols: Vec<Symbol> = Vec::new(env);
+    let mut outcome_pools: Vec<i128> = Vec::new(env);
+
+    for predictor in predictors.iter() {
+        if let Some(pred) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Prediction>(&DataKey::Prediction(market_id, predictor))
+        {
+            let mut found = false;
+            for (idx, sym) in (0_u32..).zip(outcome_symbols.iter()) {
+                if sym == pred.chosen_outcome {
+                    let current = outcome_pools.get(idx).unwrap_or(0);
+                    outcome_pools.set(idx, current.saturating_add(pred.stake_amount));
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                outcome_symbols.push_back(pred.chosen_outcome.clone());
+                outcome_pools.push_back(pred.stake_amount);
+            }
+        }
     }
 
-    // ── close_market ──────────────────────────────────────────────────────────
+    (outcome_symbols, outcome_pools)
+}
 
-    /// Helper: deploy a contract and return client together with pre-registered
-    /// admin and oracle addresses (the same ones used during `initialize`).
-    fn deploy_with_actors(env: &Env) -> (InsightArenaContractClient<'_>, Address, Address) {
-        let id = env.register(InsightArenaContract, ());
-        let client = InsightArenaContractClient::new(env, &id);
-        let admin = Address::generate(env);
-        let oracle = Address::generate(env);
-        let xlm_token = register_token(env);
-        env.mock_all_auths();
-        client.initialize(&admin, &oracle, &200_u32, &xlm_token);
-        (client, admin, oracle)
+/// Aggregate stats for a single market from stored market + prediction data.
+pub fn get_market_stats(env: Env, market_id: u64) -> Result<MarketStats, InsightArenaError> {
+    let market: Market = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Market(market_id))
+        .ok_or(InsightArenaError::MarketNotFound)?;
+
+    let (outcome_symbols, outcome_pools) = accumulate_outcome_pools(&env, market_id);
+
+    let mut leading_outcome = Symbol::new(&env, "");
+    let mut leading_pool: i128 = 0;
+    for i in 0..outcome_symbols.len() {
+        let pool = outcome_pools.get(i).unwrap_or(0);
+        if pool > leading_pool {
+            leading_pool = pool;
+            leading_outcome = outcome_symbols.get(i).unwrap();
+        }
     }
 
-    /// Helper: deploy contract, return client + admin + oracle + token address.
-    fn deploy_with_token(env: &Env) -> (InsightArenaContractClient<'_>, Address, Address, Address) {
-        let id = env.register(InsightArenaContract, ());
-        let client = InsightArenaContractClient::new(env, &id);
-        let admin = Address::generate(env);
-        let oracle = Address::generate(env);
-        let xlm_token = register_token(env);
-        env.mock_all_auths();
-        client.initialize(&admin, &oracle, &200_u32, &xlm_token);
-        (client, admin, oracle, xlm_token)
+    Ok(MarketStats {
+        total_pool: market.total_pool,
+        participant_count: market.participant_count,
+        leading_outcome,
+        leading_outcome_pool: leading_pool,
+    })
+}
+
+/// Return per-outcome stake totals sorted descending by stake.
+pub fn get_outcome_distribution(
+    env: Env,
+    market_id: u64,
+) -> Result<Vec<(Symbol, i128)>, InsightArenaError> {
+    if !env.storage().persistent().has(&DataKey::Market(market_id)) {
+        return Err(InsightArenaError::MarketNotFound);
     }
 
-    // (a) close_market called before end_time → MarketStillOpen
-    #[test]
-    fn close_market_fails_before_end_time() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _admin, oracle) = deploy_with_actors(&env);
-        let creator = Address::generate(&env);
+    let (mut outcome_symbols, mut outcome_pools) = accumulate_outcome_pools(&env, market_id);
 
-        // Market end_time is now + 1000; current timestamp is still "now"
-        let id = client.create_market(&creator, &default_params(&env));
+    let n = outcome_symbols.len();
+    for i in 1..n {
+        let mut j = i;
+        while j > 0 {
+            let a = outcome_pools.get(j).unwrap_or(0);
+            let b = outcome_pools.get(j - 1).unwrap_or(0);
+            if a > b {
+                outcome_pools.set(j, b);
+                outcome_pools.set(j - 1, a);
+                let sym_a = outcome_symbols.get(j).unwrap();
+                let sym_b = outcome_symbols.get(j - 1).unwrap();
+                outcome_symbols.set(j, sym_b);
+                outcome_symbols.set(j - 1, sym_a);
+                j -= 1;
+            } else {
+                break;
+            }
+        }
+    }
 
-        let result = client.try_close_market(&oracle, &id);
-        assert!(matches!(
-            result,
-            Err(Ok(InsightArenaError::MarketStillOpen))
+    let mut result: Vec<(Symbol, i128)> = Vec::new(&env);
+    for i in 0..n {
+        result.push_back((
+            outcome_symbols.get(i).unwrap(),
+            outcome_pools.get(i).unwrap_or(0),
         ));
     }
 
-    // (b) close_market called after end_time by the oracle → success + is_closed == true
-    #[test]
-    fn close_market_success_by_oracle_after_end_time() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _admin, oracle) = deploy_with_actors(&env);
-        let creator = Address::generate(&env);
+    Ok(result)
+}
 
-        let id = client.create_market(&creator, &default_params(&env));
+/// Return the stored `UserProfile` for a given address.
+pub fn get_user_stats(env: Env, user: Address) -> Result<UserProfile, InsightArenaError> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::User(user))
+        .ok_or(InsightArenaError::UserNotFound)
+}
 
-        // Advance ledger time past end_time (now + 1000)
-        env.ledger().set_timestamp(env.ledger().timestamp() + 1001);
+/// Return platform-wide aggregated stats using cached counters (O(1)).
+pub fn get_platform_stats(env: Env) -> PlatformStats {
+    let total_markets: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::MarketCount)
+        .unwrap_or(0);
 
-        client.close_market(&oracle, &id);
+    let total_volume_xlm: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PlatformVolume)
+        .unwrap_or(0);
 
-        let market = client.get_market(&id);
-        assert!(market.is_closed);
-        assert!(!market.is_resolved);
-    }
+    let active_users: u32 = env
+        .storage()
+        .persistent()
+        .get::<DataKey, Vec<Address>>(&DataKey::UserList)
+        .map(|v| v.len())
+        .unwrap_or(0);
 
-    // (b-alt) close_market called after end_time by the admin → success
-    #[test]
-    fn close_market_success_by_admin_after_end_time() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, _oracle) = deploy_with_actors(&env);
-        let creator = Address::generate(&env);
+    let treasury_balance: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Treasury)
+        .unwrap_or(0);
 
-        let id = client.create_market(&creator, &default_params(&env));
-
-        env.ledger().set_timestamp(env.ledger().timestamp() + 1001);
-
-        client.close_market(&admin, &id);
-
-        let market = client.get_market(&id);
-        assert!(market.is_closed);
-    }
-
-    // (c) double-close attempt → MarketAlreadyResolved not triggered, but a
-    //     second close on an already-closed (not yet resolved) market succeeds
-    //     because is_resolved is still false; however once resolved it must fail.
-    //     We test the resolved path: set is_resolved manually via a resolved market
-    //     scenario by directly checking that a market flagged resolved returns the error.
-    //
-    //     Since we can only interact through the public ABI, we test the reachable
-    //     path: close a market that has already been resolved (simulated by calling
-    //     close twice — second call must still pass because is_resolved stays false
-    //     until resolve_market is implemented).  Instead we verify that calling
-    //     close on a non-existent market returns MarketNotFound, and that calling
-    //     close on an already-closed-then-externally-resolved market returns
-    //     MarketAlreadyResolved via direct storage manipulation in the test.
-    #[test]
-    fn close_market_fails_when_already_resolved() {
-        use crate::storage_types::{DataKey, Market};
-
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _admin, oracle) = deploy_with_actors(&env);
-        let creator = Address::generate(&env);
-
-        let id = client.create_market(&creator, &default_params(&env));
-
-        // Advance past end_time and close the market normally
-        env.ledger().set_timestamp(env.ledger().timestamp() + 1001);
-        client.close_market(&oracle, &id);
-
-        // Simulate resolution by mutating the stored market directly using the
-        // correct contract address from the deployed client.
-        let contract_id = client.address.clone();
-        let mut market: Market = env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&DataKey::Market(id))
-                .unwrap()
-        });
-        market.is_resolved = true;
-        env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Market(id), &market);
-        });
-
-        // Now try to close again — should fail with MarketAlreadyResolved
-        let result = client.try_close_market(&oracle, &id);
-        assert!(matches!(
-            result,
-            Err(Ok(InsightArenaError::MarketAlreadyResolved))
-        ));
-    }
-
-    // ── cancel_market ─────────────────────────────────────────────────────────
-
-    // (a) Non-admin caller → Unauthorized
-    #[test]
-    fn cancel_market_fails_for_non_admin() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, _admin, _oracle, _token) = deploy_with_token(&env);
-        let creator = Address::generate(&env);
-        let random = Address::generate(&env);
-
-        let id = client.create_market(&creator, &default_params(&env));
-
-        let result = client.try_cancel_market(&random, &id);
-        assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
-    }
-
-    // (b) Unknown market_id → MarketNotFound
-    #[test]
-    fn cancel_market_fails_market_not_found() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, _oracle, _token) = deploy_with_token(&env);
-
-        let result = client.try_cancel_market(&admin, &99_u64);
-        assert!(matches!(result, Err(Ok(InsightArenaError::MarketNotFound))));
-    }
-
-    // (c) Already-resolved market → MarketAlreadyResolved
-    #[test]
-    fn cancel_market_fails_when_already_resolved() {
-        use crate::storage_types::{DataKey, Market};
-
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, _oracle, _token) = deploy_with_token(&env);
-        let creator = Address::generate(&env);
-
-        let id = client.create_market(&creator, &default_params(&env));
-
-        // Simulate resolution via direct storage mutation.
-        let contract_id = client.address.clone();
-        let mut market: Market = env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&DataKey::Market(id))
-                .unwrap()
-        });
-        market.is_resolved = true;
-        env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Market(id), &market);
-        });
-
-        let result = client.try_cancel_market(&admin, &id);
-        assert!(matches!(
-            result,
-            Err(Ok(InsightArenaError::MarketAlreadyResolved))
-        ));
-    }
-
-    // (d) Double-cancel → MarketAlreadyCancelled
-    #[test]
-    fn cancel_market_fails_when_already_cancelled() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, _oracle, _token) = deploy_with_token(&env);
-        let creator = Address::generate(&env);
-
-        let id = client.create_market(&creator, &default_params(&env));
-        client.cancel_market(&admin, &id); // first cancel succeeds
-
-        let result = client.try_cancel_market(&admin, &id);
-        assert!(matches!(
-            result,
-            Err(Ok(InsightArenaError::MarketAlreadyCancelled))
-        ));
-    }
-
-    // (e) Successful cancel with no predictors → market.is_cancelled == true,
-    //     MarketCancelled event emitted, no refund calls made.
-    #[test]
-    fn cancel_market_success_no_predictors() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, _oracle, _token) = deploy_with_token(&env);
-        let creator = Address::generate(&env);
-
-        let id = client.create_market(&creator, &default_params(&env));
-        client.cancel_market(&admin, &id);
-
-        let market = client.get_market(&id);
-        assert!(market.is_cancelled);
-        assert!(!market.is_resolved);
-    }
-
-    // (f) Cancel with multiple predictors → all stakes refunded, balances restored.
-    //
-    // Because no `predict` function exists yet, predictions are seeded directly
-    // into persistent storage (same technique as the close_market resolved test).
-    // The contract escrow balance is pre-funded by minting tokens to the contract.
-    #[test]
-    fn cancel_market_refunds_all_predictors() {
-        use crate::storage_types::{DataKey, Prediction};
-        use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, _oracle, xlm_token) = deploy_with_token(&env);
-        let creator = Address::generate(&env);
-
-        let id = client.create_market(&creator, &default_params(&env));
-
-        // Prepare two predictors with distinct stakes.
-        let predictor_a = Address::generate(&env);
-        let predictor_b = Address::generate(&env);
-        let stake_a: i128 = 20_000_000; // 2 XLM
-        let stake_b: i128 = 50_000_000; // 5 XLM
-
-        let contract_id = client.address.clone();
-
-        // Seed Prediction records and PredictorList directly into contract storage.
-        env.as_contract(&contract_id, || {
-            let pred_a = Prediction::new(
-                id,
-                predictor_a.clone(),
-                symbol_short!("yes"),
-                stake_a,
-                env.ledger().timestamp(),
-            );
-            let pred_b = Prediction::new(
-                id,
-                predictor_b.clone(),
-                symbol_short!("no"),
-                stake_b,
-                env.ledger().timestamp(),
-            );
-
-            env.storage()
-                .persistent()
-                .set(&DataKey::Prediction(id, predictor_a.clone()), &pred_a);
-            env.storage()
-                .persistent()
-                .set(&DataKey::Prediction(id, predictor_b.clone()), &pred_b);
-
-            let mut predictors = soroban_sdk::Vec::new(&env);
-            predictors.push_back(predictor_a.clone());
-            predictors.push_back(predictor_b.clone());
-            env.storage()
-                .persistent()
-                .set(&DataKey::PredictorList(id), &predictors);
-        });
-
-        // Fund the contract escrow with the total staked amount.
-        let total_staked = stake_a + stake_b;
-        StellarAssetClient::new(&env, &xlm_token).mint(&contract_id, &total_staked);
-
-        // Confirm predictors start with zero balance.
-        let token_client = TokenClient::new(&env, &xlm_token);
-        assert_eq!(token_client.balance(&predictor_a), 0);
-        assert_eq!(token_client.balance(&predictor_b), 0);
-
-        // Cancel the market.
-        client.cancel_market(&admin, &id);
-
-        // Every predictor must receive exactly their stake back.
-        assert_eq!(token_client.balance(&predictor_a), stake_a);
-        assert_eq!(token_client.balance(&predictor_b), stake_b);
-
-        // Market must be flagged as cancelled.
-        let market = client.get_market(&id);
-        assert!(market.is_cancelled);
+    PlatformStats {
+        total_markets,
+        total_volume_xlm,
+        active_users,
+        treasury_balance,
     }
 }

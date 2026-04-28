@@ -1,143 +1,141 @@
-# Backend API
+# InsightArena — Backend
 
-NestJS backend for InsightArena prediction market platform.
+NestJS REST API powering the InsightArena prediction market platform. Handles authentication, market management, predictions, leaderboards, competitions, analytics, and Soroban contract orchestration on the Stellar network.
+
+---
+
+## Tech Stack
+
+| Layer           | Technology            |
+| --------------- | --------------------- |
+| Framework       | NestJS 11             |
+| Language        | TypeScript 5          |
+| Database        | PostgreSQL + TypeORM  |
+| Auth            | JWT + Passport        |
+| Blockchain      | Stellar SDK + Soroban |
+| Package Manager | pnpm 9                |
+| Testing         | Jest                  |
+| Docs            | Swagger / OpenAPI     |
+
+---
 
 ## Prerequisites
 
-- Node.js 18+ and pnpm
-- PostgreSQL database
-- Make (for running CI checks)
+- Node.js 20+
+- pnpm 9 — `npm install -g pnpm`
+- PostgreSQL (local or Docker)
+- Make
 
-## Project setup
+---
 
-```bash
-$ pnpm install
-```
-
-## Environment Configuration
-
-Copy `.env.example` to `.env` and configure your environment variables:
+## Getting Started
 
 ```bash
+# 1. Install dependencies
+pnpm install
+
+# 2. Configure environment
 cp .env.example .env
+# Edit .env with your DB credentials and secrets
+
+# 3. Run database migrations
+pnpm run migration:run
+
+# 4. Start in development mode
+pnpm run start:dev
 ```
 
-## Database Setup
+API base URL: `http://localhost:3000/api/v1`  
+Swagger UI: `http://localhost:3000/api/v1/docs`  
+OpenAPI JSON: `http://localhost:3000/api/v1/docs-json`
 
-Run migrations to set up the database schema:
+---
+
+## Environment Variables
+
+| Variable              | Description                       |
+| --------------------- | --------------------------------- |
+| `DATABASE_URL`        | PostgreSQL connection string      |
+| `JWT_SECRET`          | JWT signing secret (min 32 chars) |
+| `JWT_EXPIRES_IN`      | Token expiry e.g. `7d`            |
+| `STELLAR_NETWORK`     | `testnet` or `mainnet`            |
+| `SOROBAN_CONTRACT_ID` | Deployed contract ID              |
+| `PORT`                | Server port (default `3000`)      |
+
+---
+
+## Scripts
 
 ```bash
-# Generate a new migration
-$ pnpm run migration:generate -- src/migrations/MigrationName
-
-# Run migrations
-$ pnpm run migration:run
-
-# Revert last migration
-$ pnpm run migration:revert
+pnpm run start:dev     # Development with watch mode
+pnpm run start:prod    # Production
+pnpm run build         # Compile TypeScript
+pnpm run lint          # Run ESLint (auto-fix)
+pnpm run test          # Run unit tests
+pnpm run test:cov      # Run tests with coverage
+pnpm run test:e2e      # Run end-to-end tests
+pnpm run format        # Format with Prettier
 ```
 
-## Compile and run the project
+---
+
+## Database Migrations
 
 ```bash
-# development
-$ pnpm run start
+# Run all pending migrations
+pnpm run migration:run
 
-# watch mode
-$ pnpm run start:dev
+# Generate a new migration from entity changes
+pnpm run migration:generate -- src/migrations/MigrationName
 
-# production mode
-$ pnpm run start:prod
+# Revert the last migration
+pnpm run migration:revert
 ```
 
-## Run tests
+---
+
+## Project Structure
+
+```
+src/
+├── auth/           # JWT authentication and wallet verification
+├── users/          # User profiles and management
+├── markets/        # Prediction market CRUD and lifecycle
+├── predictions/    # Prediction submission and resolution
+├── leaderboard/    # Rankings and scoring
+├── competitions/   # Competition management
+├── analytics/      # Platform analytics and history
+├── achievements/   # User achievement tracking
+├── admin/          # Admin controls and moderation
+├── health/         # Health check endpoint
+├── common/         # Guards, decorators, interceptors, filters
+└── config/         # Environment validation and TypeORM config
+```
+
+---
+
+## Health Check
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
-
-# watch mode
-$ pnpm run test:watch
+curl http://localhost:3000/api/v1/health
 ```
 
-## CI/CD Pipeline Checks
+Returns `200 OK` when the service, database, and disk are healthy. Returns `503` otherwise.
 
-The project includes a Makefile for running CI checks before committing code. This ensures code quality and prevents build failures.
+---
 
-### Available Make Commands
+## CI
+
+Before committing, run the full pipeline locally:
 
 ```bash
-# Run all CI checks (lint + test + build)
-$ make ci
-
-# Run linter only
-$ make lint
-
-# Run tests only
-$ make test
-
-# Build project only
-$ make build
-
-# Install dependencies
-$ make install
-
-# Clean build artifacts
-$ make clean
-
-# Show help
-$ make help
+make ci
 ```
 
-### Before Committing Code
+This runs lint → test → build in sequence. See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for the full guide.
 
-Always run the full CI pipeline to ensure your changes pass all checks:
+---
 
-```bash
-$ make ci
-```
+## Contributing
 
-This will:
-1. ✅ Run ESLint to check code quality
-2. ✅ Run all unit tests
-3. ✅ Build the TypeScript project
-
-If any step fails, fix the issues before committing.
-
-### Troubleshooting CI Failures
-
-**Linting errors:**
-```bash
-# Auto-fix linting issues
-$ pnpm run lint
-
-# Check without fixing
-$ pnpm run lint -- --fix=false
-```
-
-**Test failures:**
-```bash
-# Run tests in watch mode to debug
-$ pnpm run test:watch
-
-# Run specific test file
-$ pnpm run test -- path/to/test.spec.ts
-```
-
-**Build errors:**
-```bash
-# Check TypeScript compilation
-$ pnpm run build
-
-# Clean and rebuild
-$ make clean && make build
-```
-
-
-```
+See [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md).

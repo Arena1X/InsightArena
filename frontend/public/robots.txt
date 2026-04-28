@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+Disallow: /api/
+Disallow: /admin/
+
+Sitemap: https://insightarena.com/sitemap.xml

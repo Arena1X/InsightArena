@@ -2,11 +2,16 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
+  Param,
   Body,
   Query,
   HttpCode,
   HttpStatus,
+  UseGuards,
+  ParseUUIDPipe,
 } from '@nestjs/common';
+import { BanGuard } from '../common/guards/ban.guard';
 import {
   ApiTags,
   ApiOperation,
@@ -15,9 +20,11 @@ import {
 } from '@nestjs/swagger';
 import { PredictionsService } from './predictions.service';
 import { SubmitPredictionDto } from './dto/submit-prediction.dto';
+import { UpdatePredictionNoteDto } from './dto/update-prediction-note.dto';
 import {
   ListMyPredictionsDto,
   PaginatedMyPredictionsResponse,
+  PredictionWithStatus,
 } from './dto/list-my-predictions.dto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { User } from '../users/entities/user.entity';
@@ -30,6 +37,7 @@ export class PredictionsController {
   constructor(private readonly predictionsService: PredictionsService) {}
 
   @Post()
+  @UseGuards(BanGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Submit a prediction on a market' })
   @ApiResponse({
@@ -61,5 +69,68 @@ export class PredictionsController {
     @CurrentUser() user: User,
   ): Promise<PaginatedMyPredictionsResponse> {
     return this.predictionsService.findMine(user, query);
+  }
+
+  @Get(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Get a single prediction by ID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Prediction with enriched status',
+    type: Prediction,
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Not authorized to view this prediction',
+  })
+  @ApiResponse({ status: 404, description: 'Prediction not found' })
+  async getPredictionById(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ): Promise<PredictionWithStatus> {
+    return this.predictionsService.findById(id, user.id);
+  }
+
+  @Patch(':id/note')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Update personal note on a prediction' })
+  @ApiResponse({
+    status: 200,
+    description: 'Prediction note updated',
+    type: Prediction,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Prediction not found or not owned by user',
+  })
+  async updateNote(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdatePredictionNoteDto,
+    @CurrentUser() user: User,
+  ): Promise<Prediction> {
+    return this.predictionsService.updateNote(id, dto, user);
+  }
+
+  @Post(':id/claim')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Claim payout for a winning prediction' })
+  @ApiResponse({
+    status: 200,
+    description: 'Payout claimed successfully',
+    type: Prediction,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Market not resolved, prediction lost, or already claimed',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Prediction not found or not owned by user',
+  })
+  async claimPayout(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ): Promise<Prediction> {
+    return this.predictionsService.claim(id, user);
   }
 }

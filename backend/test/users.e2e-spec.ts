@@ -1,15 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { User } from '../src/users/entities/user.entity';
 import { Repository } from 'typeorm';
+import { Prediction } from '../src/predictions/entities/prediction.entity';
+import { Market } from '../src/markets/entities/market.entity';
 
 describe('Users (e2e)', () => {
-  let app: INestApplication<App>;
+  let app: INestApplication;
   let usersRepository: Repository<User>;
+  let predictionsRepository: Repository<Prediction>;
+  let marketsRepository: Repository<Market>;
 
   const mockUser: User = {
     id: '123e4567-e89b-12d3-a456-426614174000',
@@ -35,11 +38,25 @@ describe('Users (e2e)', () => {
       .useValue({
         findOneBy: jest.fn(),
       })
+      .overrideProvider(getRepositoryToken(Prediction))
+      .useValue({
+        createQueryBuilder: jest.fn(),
+      })
+      .overrideProvider(getRepositoryToken(Market))
+      .useValue({
+        createQueryBuilder: jest.fn(),
+      })
       .compile();
 
     app = moduleFixture.createNestApplication();
     usersRepository = moduleFixture.get<Repository<User>>(
       getRepositoryToken(User),
+    );
+    predictionsRepository = moduleFixture.get<Repository<Prediction>>(
+      getRepositoryToken(Prediction),
+    );
+    marketsRepository = moduleFixture.get<Repository<Market>>(
+      getRepositoryToken(Market),
     );
     if (app) {
       await app.init();
@@ -164,6 +181,126 @@ describe('Users (e2e)', () => {
           expect(message).toContain(unknownAddress);
           expect(message).toContain('not found');
         });
+    });
+  });
+
+  describe('GET /users/:address/predictions', () => {
+    it('should return public predictions from resolved markets only', () => {
+      jest.spyOn(usersRepository, 'findOneBy').mockResolvedValue(mockUser);
+
+      const queryBuilder = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+
+      jest
+        .spyOn(predictionsRepository, 'createQueryBuilder')
+        .mockReturnValue(
+          queryBuilder as unknown as ReturnType<
+            Repository<Prediction>['createQueryBuilder']
+          >,
+        );
+
+      return request(app.getHttpServer())
+        .get(`/users/${mockUser.stellar_address}/predictions`)
+        .expect(200)
+        .expect((res: { body: { data: { data: unknown[] } } }) => {
+          expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+            'market.is_resolved = true',
+          );
+          expect(res.body.data.data).toEqual([]);
+        });
+    });
+  });
+
+  describe('GET /users/:address/markets', () => {
+    it('should return paginated markets for user address', () => {
+      jest.spyOn(usersRepository, 'findOneBy').mockResolvedValue(mockUser);
+
+      const queryBuilder = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+
+      jest
+        .spyOn(marketsRepository, 'createQueryBuilder')
+        .mockReturnValue(
+          queryBuilder as unknown as ReturnType<
+            Repository<Market>['createQueryBuilder']
+          >,
+        );
+
+      return request(app.getHttpServer())
+        .get(`/users/${mockUser.stellar_address}/markets`)
+        .expect(200)
+        .expect(
+          (res: { body: { data: { data: unknown[]; total: number } } }) => {
+            expect(queryBuilder.where).toHaveBeenCalledWith(
+              'market.creatorId = :userId',
+              { userId: mockUser.id },
+            );
+            expect(res.body.data.data).toEqual([]);
+            expect(res.body.data.total).toBe(0);
+          },
+        );
+    });
+
+    it('should apply status=active filter query', () => {
+      jest.spyOn(usersRepository, 'findOneBy').mockResolvedValue(mockUser);
+
+      const queryBuilder = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+
+      jest
+        .spyOn(marketsRepository, 'createQueryBuilder')
+        .mockReturnValue(queryBuilder as any);
+
+      return request(app.getHttpServer())
+        .get(`/users/${mockUser.stellar_address}/markets`)
+        .query({ status: 'active' })
+        .expect(200)
+        .expect(() => {
+          expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+            'market.is_resolved = false AND market.is_cancelled = false',
+          );
+        });
+    });
+
+    it('should be accessible without authentication', () => {
+      jest.spyOn(usersRepository, 'findOneBy').mockResolvedValue(mockUser);
+      const queryBuilder = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      jest
+        .spyOn(marketsRepository, 'createQueryBuilder')
+        .mockReturnValue(queryBuilder as any);
+
+      return request(app.getHttpServer())
+        .get(`/users/${mockUser.stellar_address}/markets`)
+        .expect(200);
     });
   });
 });

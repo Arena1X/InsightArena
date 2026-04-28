@@ -10,7 +10,10 @@ const stats = [
 
 export default function StatisticsSection() {
   return (
-    <section className="relative py-16 md:py-24 px-6" style={{ background: "none" }}>
+    <section
+      className="relative py-16 md:py-24 px-6"
+      style={{ background: "none" }}
+    >
       <div className="max-w-6xl mx-auto">
         <motion.div
           className="text-center space-y-4 mb-10 md:mb-16"
@@ -23,7 +26,8 @@ export default function StatisticsSection() {
             Compete for Real Rewards
           </h2>
           <p className="text-gray-300 text-base sm:text-lg max-w-3xl mx-auto">
-            Join thousands of players predicting the future and earning natively on Stellar.
+            Join thousands of players predicting the future and earning natively
+            on Stellar.
           </p>
         </motion.div>
 
@@ -37,8 +41,10 @@ export default function StatisticsSection() {
               viewport={{ once: true }}
               className="bg-gray-950/60 border border-[#1e2d45] rounded-xl px-8 py-7 flex flex-col min-h-[140px] justify-center items-center text-center gap-2"
             >
-              <stat.icon className="w-6 h-6 text-blue-400" />
-              <div className="text-3xl font-bold text-blue-400">{stat.value}</div>
+              <stat.icon className="w-6 h-6 text-orange-400" />
+              <div className="text-3xl font-bold text-orange-400">
+                {stat.value}
+              </div>
               <div className="text-gray-400 text-sm">{stat.label}</div>
             </motion.div>
           ))}

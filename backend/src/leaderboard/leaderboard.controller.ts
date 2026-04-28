@@ -1,10 +1,15 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query, Param } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { LeaderboardService } from './leaderboard.service';
 import {
   LeaderboardQueryDto,
   PaginatedLeaderboardResponse,
 } from './dto/leaderboard-query.dto';
+import {
+  LeaderboardHistoryQueryDto,
+  PaginatedLeaderboardHistoryResponse,
+} from './dto/leaderboard-history.dto';
+import { UserRankDto } from './dto/user-rank.dto';
 import { Public } from '../common/decorators/public.decorator';
 
 @ApiTags('Leaderboard')
@@ -32,5 +37,50 @@ export class LeaderboardController {
     @Query() query: LeaderboardQueryDto,
   ): Promise<PaginatedLeaderboardResponse> {
     return this.leaderboardService.getLeaderboard(query);
+  }
+
+  @Get('history')
+  @Public()
+  @ApiOperation({ summary: 'Get historical leaderboard rankings' })
+  @ApiQuery({ name: 'date', required: false, type: String })
+  @ApiQuery({ name: 'season_id', required: false, type: String })
+  @ApiQuery({ name: 'user_id', required: false, type: String })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiResponse({
+    status: 200,
+    description: 'Historical leaderboard with rank changes',
+    type: PaginatedLeaderboardHistoryResponse,
+  })
+  async getHistory(
+    @Query() query: LeaderboardHistoryQueryDto,
+  ): Promise<PaginatedLeaderboardHistoryResponse | any[]> {
+    if (query.address) {
+      return this.leaderboardService.getHistoryForAddress(
+        query.address,
+        query.days,
+      );
+    }
+    return this.leaderboardService.getHistory(query);
+  }
+
+  @Get(':address')
+  @Public()
+  @ApiOperation({
+    summary: 'Get user rank and stats by Stellar address (public)',
+    description:
+      'Returns rank, reputation_score, season_points, total_predictions, correct_predictions, accuracy_rate, and total_winnings_stroops for a user. Returns 404 if user has no leaderboard entry.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'User rank and leaderboard stats',
+    type: UserRankDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'User not found or has no leaderboard entry',
+  })
+  async getUserRank(@Param('address') address: string): Promise<UserRankDto> {
+    return this.leaderboardService.getUserRank(address);
   }
 }

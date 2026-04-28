@@ -3,6 +3,7 @@ import { NotFoundException } from '@nestjs/common';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 import { User } from './entities/user.entity';
+import { PublicPredictionOutcomeFilter } from './dto/list-user-predictions.dto';
 
 describe('UsersController', () => {
   let controller: UsersController;
@@ -32,6 +33,7 @@ describe('UsersController', () => {
           provide: UsersService,
           useValue: {
             findByAddress: jest.fn(),
+            findPublicPredictionsByAddress: jest.fn(),
           },
         },
       ],
@@ -99,6 +101,50 @@ describe('UsersController', () => {
       await expect(controller.getPublicProfile('NONEXISTENT')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('getPublicPredictions', () => {
+    it('should return paginated public predictions for a user', async () => {
+      const mockResult = {
+        data: [
+          {
+            id: 'pred-1',
+            chosen_outcome: 'YES',
+            stake_amount_stroops: '100',
+            payout_claimed: false,
+            payout_amount_stroops: '0',
+            tx_hash: null,
+            submitted_at: new Date('2024-01-02'),
+            outcome: PublicPredictionOutcomeFilter.Correct,
+            market: {
+              id: 'market-1',
+              title: 'BTC > $100k?',
+              end_time: new Date('2024-02-01'),
+              resolved_outcome: 'YES',
+              is_resolved: true,
+              is_cancelled: false,
+            },
+          },
+        ],
+        total: 1,
+        page: 1,
+        limit: 20,
+      };
+      jest
+        .spyOn(service, 'findPublicPredictionsByAddress')
+        .mockResolvedValue(mockResult);
+
+      const result = await controller.getPublicPredictions(
+        mockUser.stellar_address,
+        { page: 1, limit: 20 },
+      );
+
+      expect(service.findPublicPredictionsByAddress).toHaveBeenCalledWith(
+        mockUser.stellar_address,
+        { page: 1, limit: 20 },
+      );
+      expect(result).toEqual(mockResult);
     });
   });
 });

@@ -7,6 +7,7 @@ export enum CompetitionStatus {
   Active = 'active',
   Upcoming = 'upcoming',
   Ended = 'ended',
+  Cancelled = 'cancelled',
 }
 
 export class ListCompetitionsDto {

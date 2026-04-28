@@ -2,6 +2,7 @@ import {
   Injectable,
   ConflictException,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   Logger,
 } from '@nestjs/common';
@@ -9,6 +10,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Prediction } from './entities/prediction.entity';
 import { SubmitPredictionDto } from './dto/submit-prediction.dto';
+import { UpdatePredictionNoteDto } from './dto/update-prediction-note.dto';
 import {
   ListMyPredictionsDto,
   PredictionStatus,
@@ -154,6 +156,31 @@ export class PredictionsService {
     return { data: enriched, total, page, limit };
   }
 
+  /**
+   * Retrieve a single prediction by ID with authorization check.
+   * Only the prediction owner or admin can view.
+   * Returns prediction with enriched status.
+   */
+  async findById(id: string, userId: string): Promise<PredictionWithStatus> {
+    const prediction = await this.predictionsRepository.findOne({
+      where: { id },
+      relations: ['market', 'user'],
+    });
+
+    if (!prediction) {
+      throw new NotFoundException(`Prediction "${id}" not found`);
+    }
+
+    // Check authorization: only owner can view
+    if (prediction.user.id !== userId) {
+      throw new ForbiddenException(
+        'You do not have permission to view this prediction',
+      );
+    }
+
+    return this.enrichWithStatus(prediction);
+  }
+
   private enrichWithStatus(prediction: Prediction): PredictionWithStatus {
     const market = prediction.market;
     const status = this.computeStatus(prediction, market);
@@ -165,6 +192,7 @@ export class PredictionsService {
       payout_claimed: prediction.payout_claimed,
       payout_amount_stroops: prediction.payout_amount_stroops,
       tx_hash: prediction.tx_hash ?? null,
+      note: prediction.note ?? null,
       submitted_at: prediction.submitted_at,
       status,
       market: {
@@ -188,5 +216,65 @@ export class PredictionsService {
       return PredictionStatus.Won;
     }
     return PredictionStatus.Lost;
+  }
+
+  /**
+   * Update the personal note on a prediction.
+   * Only the prediction owner can update their note.
+   */
+  async updateNote(
+    predictionId: string,
+    dto: UpdatePredictionNoteDto,
+    user: User,
+  ): Promise<Prediction> {
+    const prediction = await this.predictionsRepository.findOne({
+      where: { id: predictionId, user: { id: user.id } },
+      relations: ['market'],
+    });
+
+    if (!prediction) {
+      throw new NotFoundException(`Prediction "${predictionId}" not found`);
+    }
+
+    prediction.note = dto.note;
+    return this.predictionsRepository.save(prediction);
+  }
+
+  /**
+   * Claim the payout for a winning prediction.
+   * Validates that the market is resolved, the user won, and hasn't already claimed.
+   */
+  async claim(predictionId: string, user: User): Promise<Prediction> {
+    const prediction = await this.predictionsRepository.findOne({
+      where: { id: predictionId, user: { id: user.id } },
+      relations: ['market'],
+    });
+
+    if (!prediction) {
+      throw new NotFoundException(`Prediction "${predictionId}" not found`);
+    }
+
+    if (prediction.payout_claimed) {
+      throw new ConflictException('Payout has already been claimed');
+    }
+
+    const market = prediction.market;
+    if (!market.is_resolved) {
+      throw new BadRequestException('Market is not yet resolved');
+    }
+
+    if (market.resolved_outcome !== prediction.chosen_outcome) {
+      throw new BadRequestException('You did not win this prediction');
+    }
+
+    const { tx_hash } = await this.sorobanService.claimPayout(
+      user.stellar_address,
+      market.on_chain_market_id,
+    );
+
+    prediction.payout_claimed = true;
+    prediction.tx_hash = tx_hash;
+
+    return this.predictionsRepository.save(prediction);
   }
 }
