@@ -4,43 +4,49 @@ import React from "react";
 import { Zap, UserPlus, Gift, Trophy } from "lucide-react";
 
 const QuickActions = () => {
-  // We put data in an array so the code is easy to read/update
   const actions = [
     {
       label: "Make Prediction",
-      icon: <Zap size={32} />,
-      color: "bg-orange-500",
+      icon: <Zap size={28} />,
+      bg: "bg-orange-500/10 border-orange-500/20 hover:bg-orange-500/15",
+      text: "text-orange-400",
     },
     {
       label: "Join With Invite Code",
-      icon: <UserPlus size={32} />,
-      color: "bg-[#6366F1]",
+      icon: <UserPlus size={28} />,
+      bg: "bg-white/5 border-white/10 hover:bg-white/10",
+      text: "text-gray-300",
     },
-    { label: "Claim Rewards", icon: <Gift size={32} />, color: "bg-[#EAB308]" },
+    {
+      label: "Claim Rewards",
+      icon: <Gift size={28} />,
+      bg: "bg-yellow-500/10 border-yellow-500/20 hover:bg-yellow-500/15",
+      text: "text-yellow-400",
+    },
     {
       label: "View Leaderboard",
-      icon: <Trophy size={32} />,
-      color: "bg-orange-500",
+      icon: <Trophy size={28} />,
+      bg: "bg-white/5 border-white/10 hover:bg-white/10",
+      text: "text-gray-300",
     },
   ];
 
   return (
     <section className="mt-10 mb-6 px-4">
-      {/* Requirement: Centered Header */}
       <h2 className="text-center text-white text-xl font-bold mb-6">
         Quick Actions
       </h2>
 
-      {/* Requirement: Responsive Grid. 2 columns on mobile, 4 on tablet/desktop */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-5xl mx-auto">
         {actions.map((item, index) => (
           <button
             key={index}
-            className={`${item.color} aspect-square rounded-2xl flex flex-col items-center justify-center p-4 shadow-lg hover:scale-105 transition-transform`}
+            className={`${item.bg} aspect-square rounded-2xl border flex flex-col items-center justify-center p-4 transition-colors`}
           >
-            {/* Centering the icon above the text */}
-            <div className="text-white mb-2">{item.icon}</div>
-            <span className="text-white text-sm font-semibold text-center leading-tight">
+            <div className={`${item.text} mb-2`}>{item.icon}</div>
+            <span
+              className={`${item.text} text-sm font-medium text-center leading-tight`}
+            >
               {item.label}
             </span>
           </button>

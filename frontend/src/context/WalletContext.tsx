@@ -129,7 +129,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
         setAddress(walletAddress);
         setToken(`mock_jwt_${btoa(signature).slice(0, 24)}`);
-        setUser({ username: walletAddress.slice(0, 6) });
+        setUser({ username: "Alex" });
         return true;
       } catch (error) {
         console.error("Wallet authentication failed:", error);
@@ -155,7 +155,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     (walletAddress: string, _jwt: string) => {
       setAddress(walletAddress);
       setToken(`wallet_${walletAddress}`);
-      setUser({ username: walletAddress.slice(0, 6) });
+      setUser({ username: "Alex" });
       setAuthError(null);
       setIsConnectModalOpen(false);
       router.push("/dashboard");

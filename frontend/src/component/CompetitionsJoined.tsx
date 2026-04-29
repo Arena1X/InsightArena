@@ -26,7 +26,7 @@ const mockCompetitions: Competition[] = [
     progressPercentage: 65,
   },
   {
-    id: "2", 
+    id: "2",
     title: "BTC Traders League",
     visibility: "Private",
     rank: 3,
@@ -38,7 +38,7 @@ const mockCompetitions: Competition[] = [
   {
     id: "3",
     title: "Friends Prediction Room",
-    visibility: "Private", 
+    visibility: "Private",
     rank: 1,
     totalParticipants: 12,
     prizePool: "$200 pool",
@@ -52,8 +52,10 @@ export default function CompetitionsJoined() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h2 className="text-white font-semibold text-xl">Competitions Joined</h2>
-        <button className="flex items-center gap-1 text-[#4FD1C5] text-sm font-medium hover:text-[#72ddd3] transition">
+        <h2 className="text-white font-semibold text-xl">
+          Competitions Joined
+        </h2>
+        <button className="flex items-center gap-1 text-orange-400 text-sm font-medium hover:text-orange-300 transition">
           View All Competitions
           <ChevronRight className="h-4 w-4" />
         </button>
@@ -64,7 +66,7 @@ export default function CompetitionsJoined() {
         {mockCompetitions.map((competition) => (
           <div
             key={competition.id}
-            className="bg-[#2a3441] rounded-2xl p-6 hover:bg-[#2f3a48] transition-colors cursor-pointer"
+            className="rounded-2xl border border-white/10 bg-white/5 p-6 hover:bg-white/[0.08] transition-colors cursor-pointer"
           >
             {/* Visibility Tag */}
             <div className="mb-4">
@@ -78,12 +80,12 @@ export default function CompetitionsJoined() {
               {competition.title}
             </h3>
 
-            {/* Rank Display - Huge Typography */}
+            {/* Rank Display */}
             <div className="flex items-baseline gap-2 mb-2">
-              <span className="text-5xl font-bold text-white">
+              <span className="text-5xl font-bold text-white/80">
                 #{competition.rank}
               </span>
-              <span className="text-lg text-gray-400 mb-2">
+              <span className="text-lg text-gray-500 mb-2">
                 of {competition.totalParticipants}
               </span>
             </div>
@@ -95,8 +97,8 @@ export default function CompetitionsJoined() {
 
             {/* Prize Pool with Trophy Icon */}
             <div className="flex items-center gap-2 mb-2">
-              <span className="text-yellow-500 text-lg">🏆</span>
-              <span className="text-yellow-500 text-sm font-medium">
+              <span className="text-base">🏆</span>
+              <span className="text-gray-300 text-sm font-medium">
                 {competition.prizePool}
               </span>
             </div>
@@ -107,9 +109,9 @@ export default function CompetitionsJoined() {
             </p>
 
             {/* Progress Bar */}
-            <div className="w-full bg-gray-600/30 rounded-full h-2">
+            <div className="w-full bg-white/5 rounded-full h-1.5">
               <div
-                className="bg-[#4FD1C5] h-2 rounded-full transition-all duration-300"
+                className="bg-white/20 h-1.5 rounded-full transition-all duration-300"
                 style={{ width: `${competition.progressPercentage}%` }}
               />
             </div>

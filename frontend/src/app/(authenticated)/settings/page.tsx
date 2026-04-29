@@ -1,7 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { User, Bell, Shield, AlertTriangle, Download, LogOut } from "lucide-react";
+import {
+  User,
+  Bell,
+  Shield,
+  AlertTriangle,
+  Download,
+  LogOut,
+} from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -18,16 +25,20 @@ function Toggle({ checked, onChange, label, description }: ToggleProps) {
   return (
     <label className="flex items-center justify-between gap-4 py-3 cursor-pointer group">
       <div>
-        <p className="text-sm text-gray-200 group-hover:text-white transition">{label}</p>
-        {description && <p className="text-xs text-gray-500 mt-0.5">{description}</p>}
+        <p className="text-sm text-gray-200 group-hover:text-white transition">
+          {label}
+        </p>
+        {description && (
+          <p className="text-xs text-gray-500 mt-0.5">{description}</p>
+        )}
       </div>
       <button
         type="button"
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className={`relative flex-shrink-0 h-6 w-11 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4FD1C5] ${
-          checked ? "bg-[#4FD1C5]" : "bg-white/10"
+        className={`relative flex-shrink-0 h-6 w-11 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 ${
+          checked ? "bg-orange-500" : "bg-white/10"
         }`}
       >
         <span
@@ -52,7 +63,10 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <section id={id} className="rounded-xl border border-white/10 bg-white/5 p-6 space-y-4 scroll-mt-6">
+    <section
+      id={id}
+      className="rounded-xl border border-white/10 bg-white/5 p-6 space-y-4 scroll-mt-6"
+    >
       <div className="flex items-center gap-3">
         <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-white/10 text-gray-300">
           <Icon className="h-4 w-4" />
@@ -86,23 +100,27 @@ function ProfileSettings() {
     <SectionCard id="profile" icon={User} title="Profile Settings">
       <form onSubmit={handleSave} className="space-y-4">
         <div className="space-y-1">
-          <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">Username</label>
+          <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+            Username
+          </label>
           <input
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            className="w-full rounded-lg bg-[#0f172a] border border-white/10 px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-[#4FD1C5]"
+            className="w-full rounded-lg bg-white/[0.03] border border-white/10 px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-orange-500"
           />
         </div>
         <div className="space-y-1">
-          <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">Avatar URL</label>
+          <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+            Avatar URL
+          </label>
           <div className="flex gap-3 items-center">
             <input
               type="url"
               value={avatarUrl}
               onChange={(e) => setAvatarUrl(e.target.value)}
               placeholder="https://..."
-              className="flex-1 rounded-lg bg-[#0f172a] border border-white/10 px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-[#4FD1C5]"
+              className="flex-1 rounded-lg bg-white/[0.03] border border-white/10 px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-orange-500"
             />
             {avatarUrl && (
               // eslint-disable-next-line @next/next/no-img-element
@@ -110,24 +128,28 @@ function ProfileSettings() {
                 src={avatarUrl}
                 alt="Avatar preview"
                 className="h-9 w-9 rounded-full object-cover border border-white/10 flex-shrink-0"
-                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = "none";
+                }}
               />
             )}
           </div>
         </div>
         <div className="space-y-1">
-          <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">Bio</label>
+          <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+            Bio
+          </label>
           <textarea
             value={bio}
             onChange={(e) => setBio(e.target.value)}
             rows={3}
             placeholder="Tell the community about yourself..."
-            className="w-full rounded-lg bg-[#0f172a] border border-white/10 px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-[#4FD1C5] resize-none"
+            className="w-full rounded-lg bg-white/[0.03] border border-white/10 px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-orange-500 resize-none"
           />
         </div>
         <button
           type="submit"
-          className="px-4 py-2 rounded-lg bg-[#4FD1C5] text-[#0f172a] text-sm font-semibold hover:bg-[#38b2ac] transition"
+          className="px-4 py-2 rounded-lg bg-orange-500 text-white text-sm font-semibold hover:bg-orange-600 transition"
         >
           {saved ? "Saved!" : "Save Changes"}
         </button>
@@ -150,13 +172,42 @@ function NotificationSettings() {
   }
 
   return (
-    <SectionCard id="notifications" icon={Bell} title="Notification Preferences">
+    <SectionCard
+      id="notifications"
+      icon={Bell}
+      title="Notification Preferences"
+    >
       <div className="divide-y divide-white/5">
-        <Toggle checked={prefs.marketResolution} onChange={() => toggle("marketResolution")} label="Market Resolution" description="Get notified when a market you participated in resolves" />
-        <Toggle checked={prefs.competition}      onChange={() => toggle("competition")}      label="Competition Updates" description="New competitions and results" />
-        <Toggle checked={prefs.leaderboard}      onChange={() => toggle("leaderboard")}      label="Leaderboard Updates" description="Weekly rank summaries" />
-        <Toggle checked={prefs.achievements}     onChange={() => toggle("achievements")}     label="Achievement Unlocks" description="When you earn a new badge" />
-        <Toggle checked={prefs.marketing}        onChange={() => toggle("marketing")}        label="Marketing Emails" description="Platform news and promotions" />
+        <Toggle
+          checked={prefs.marketResolution}
+          onChange={() => toggle("marketResolution")}
+          label="Market Resolution"
+          description="Get notified when a market you participated in resolves"
+        />
+        <Toggle
+          checked={prefs.competition}
+          onChange={() => toggle("competition")}
+          label="Competition Updates"
+          description="New competitions and results"
+        />
+        <Toggle
+          checked={prefs.leaderboard}
+          onChange={() => toggle("leaderboard")}
+          label="Leaderboard Updates"
+          description="Weekly rank summaries"
+        />
+        <Toggle
+          checked={prefs.achievements}
+          onChange={() => toggle("achievements")}
+          label="Achievement Unlocks"
+          description="When you earn a new badge"
+        />
+        <Toggle
+          checked={prefs.marketing}
+          onChange={() => toggle("marketing")}
+          label="Marketing Emails"
+          description="Platform news and promotions"
+        />
       </div>
       <button className="mt-2 px-4 py-2 rounded-lg border border-white/10 bg-white/5 text-sm font-medium text-gray-300 hover:bg-white/10 transition">
         Save Preferences
@@ -179,9 +230,24 @@ function PrivacySettings() {
   return (
     <SectionCard id="privacy" icon={Shield} title="Privacy Settings">
       <div className="divide-y divide-white/5">
-        <Toggle checked={prefs.showPredictions}    onChange={() => toggle("showPredictions")}    label="Show Predictions Publicly" description="Allow others to see your prediction history" />
-        <Toggle checked={prefs.showWinRate}        onChange={() => toggle("showWinRate")}        label="Show Win Rate Publicly" description="Display your win rate on your public profile" />
-        <Toggle checked={prefs.showOnLeaderboard}  onChange={() => toggle("showOnLeaderboard")}  label="Show on Leaderboard" description="Appear in the global rankings" />
+        <Toggle
+          checked={prefs.showPredictions}
+          onChange={() => toggle("showPredictions")}
+          label="Show Predictions Publicly"
+          description="Allow others to see your prediction history"
+        />
+        <Toggle
+          checked={prefs.showWinRate}
+          onChange={() => toggle("showWinRate")}
+          label="Show Win Rate Publicly"
+          description="Display your win rate on your public profile"
+        />
+        <Toggle
+          checked={prefs.showOnLeaderboard}
+          onChange={() => toggle("showOnLeaderboard")}
+          label="Show on Leaderboard"
+          description="Appear in the global rankings"
+        />
       </div>
     </SectionCard>
   );
@@ -191,7 +257,10 @@ function DangerZone() {
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
 
   return (
-    <section id="danger" className="rounded-xl border-2 border-red-500/30 bg-red-500/5 p-6 space-y-4 scroll-mt-6">
+    <section
+      id="danger"
+      className="rounded-xl border-2 border-red-500/30 bg-red-500/5 p-6 space-y-4 scroll-mt-6"
+    >
       <div className="flex items-center gap-3">
         <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-red-500/10 text-red-400">
           <AlertTriangle className="h-4 w-4" />
@@ -240,11 +309,15 @@ function DangerZone() {
 
 // ── Sidebar nav ───────────────────────────────────────────────────────────────
 
-const NAV_ITEMS: { id: string; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: "profile",       label: "Profile",       icon: User },
+const NAV_ITEMS: {
+  id: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
+  { id: "profile", label: "Profile", icon: User },
   { id: "notifications", label: "Notifications", icon: Bell },
-  { id: "privacy",       label: "Privacy",       icon: Shield },
-  { id: "danger",        label: "Danger Zone",   icon: AlertTriangle },
+  { id: "privacy", label: "Privacy", icon: Shield },
+  { id: "danger", label: "Danger Zone", icon: AlertTriangle },
 ];
 
 function SidebarNav({ active }: { active: string }) {
@@ -274,7 +347,9 @@ export default function SettingsPage() {
   return (
     <div className="space-y-2">
       <h1 className="text-white text-2xl font-bold">Settings</h1>
-      <p className="text-gray-400 text-sm">Manage your profile, preferences, and account.</p>
+      <p className="text-gray-400 text-sm">
+        Manage your profile, preferences, and account.
+      </p>
 
       <div className="pt-4 flex gap-8 items-start">
         {/* Sticky sidebar — desktop only */}
