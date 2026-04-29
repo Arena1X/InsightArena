@@ -20,10 +20,10 @@ export default function Header() {
 
   const navLinks = [
     { name: "Home", link: "/" },
+    { name: "Markets", link: "/markets" },
     { name: "Events", link: "/events" },
     { name: "Leaderboard", link: "/leaderboard" },
     { name: "Docs", link: "/docs" },
-    { name: "Profile", link: "/dashboard" },
   ];
 
   const isActive = (path: string) => {
@@ -47,8 +47,8 @@ export default function Header() {
 
       return Array.from(
         mobileMenuRef.current.querySelectorAll<HTMLElement>(
-          'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        )
+          'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
       );
     };
 
@@ -201,6 +201,24 @@ export default function Header() {
                 ☰
               </button>
 
+              {/* Profile link — desktop only, sits beside wallet button */}
+              <Link
+                href="/profile"
+                aria-current={isActive("/profile") ? "page" : undefined}
+                className={`relative hidden md:inline-flex transition-colors ${
+                  isActive("/profile")
+                    ? "text-white font-semibold"
+                    : "text-gray-200 hover:text-white"
+                }`}
+              >
+                Profile
+                <span
+                  className={`absolute left-0 right-0 -bottom-1 h-0.5 bg-orange-500 transition-opacity ${
+                    isActive("/profile") ? "opacity-100" : "opacity-0"
+                  }`}
+                />
+              </Link>
+
               {!isAuthenticated ? (
                 <button
                   type="button"
@@ -339,6 +357,18 @@ export default function Header() {
           })}
 
           <div className="mt-4 border-t border-white/10 pt-4">
+            <Link
+              href="/profile"
+              aria-current={isActive("/profile") ? "page" : undefined}
+              className={`mb-3 block rounded-md px-2 py-2 text-lg ${
+                isActive("/profile")
+                  ? "bg-orange-500 text-white"
+                  : "text-gray-200 hover:bg-zinc-900"
+              }`}
+              onClick={() => setIsMobileMenuOpen(false)}
+            >
+              Profile
+            </Link>
             {!isAuthenticated ? (
               <button
                 type="button"

@@ -181,7 +181,7 @@ export default function RewardsPage() {
     (currentSeasonPoints / (currentSeasonPoints + pointsToNextTier)) * 100;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-4 sm:p-6">
       {/* Rewards Summary */}
       <section className="grid grid-cols-1 gap-5 md:grid-cols-3">
         <div className="rounded-2xl border border-white/10 bg-white/5 p-6">

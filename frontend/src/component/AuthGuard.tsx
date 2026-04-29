@@ -8,6 +8,9 @@ interface AuthGuardProps {
   children: ReactNode;
 }
 
+// Routes that render their own unauthenticated gate instead of redirecting
+const SELF_GATED_ROUTES = ["/profile"];
+
 export function AuthGuard({ children }: AuthGuardProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -18,25 +21,25 @@ export function AuthGuard({ children }: AuthGuardProps) {
     setIsHydrated(true);
   }, []);
 
-  // Wait for client hydration
-  if (!isHydrated) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="h-10 w-10 animate-spin rounded-full border-4 border-white/10 border-t-orange-400" />
-      </div>
-    );
-  }
+  const isSelfGated = SELF_GATED_ROUTES.includes(pathname);
 
-  // Profile page is allowed through unauthenticated — it handles its own gate
-  if (!isAuthenticated && pathname === "/profile") {
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (!isAuthenticated && !isSelfGated) {
+      router.replace("/");
+    }
+  }, [isHydrated, isAuthenticated, isSelfGated, router]);
+
+  // Self-gated pages (e.g. /profile): always render immediately — they show
+  // their own "connect wallet" UI when unauthenticated
+  if (isSelfGated) {
     return <>{children}</>;
   }
 
-  // All other protected routes: redirect to home
-  if (!isAuthenticated) {
-    router.replace("/");
+  // All other protected routes: show spinner until hydrated and authenticated
+  if (!isHydrated || !isAuthenticated) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-gray-900 via-black to-gray-900">
         <div className="h-10 w-10 animate-spin rounded-full border-4 border-white/10 border-t-orange-400" />
       </div>
     );

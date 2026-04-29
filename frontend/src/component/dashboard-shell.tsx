@@ -30,7 +30,7 @@ function truncateAddress(address: string): string {
 
 const navigation = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { label: "Markets", href: "/markets", icon: BarChart3 },
+  { label: "My Markets", href: "/my-markets", icon: BarChart3 },
   { label: "My Predictions", href: "/my-predictions", icon: Sword },
   { label: "Competitions", href: "/competitions", icon: Trophy },
   { label: "Leaderboards", href: "/leaderboards", icon: BarChart3 },

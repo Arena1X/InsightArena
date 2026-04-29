@@ -345,7 +345,7 @@ function SidebarNav({ active }: { active: string }) {
 
 export default function SettingsPage() {
   return (
-    <div className="space-y-2">
+    <div className="space-y-6 p-4 sm:p-6">
       <h1 className="text-white text-2xl font-bold">Settings</h1>
       <p className="text-gray-400 text-sm">
         Manage your profile, preferences, and account.
