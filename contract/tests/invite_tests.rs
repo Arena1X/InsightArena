@@ -217,3 +217,81 @@ fn test_redeem_invite_code_duplicate_redemption() {
     let count = allowlist.iter().filter(|a| *a == invitee).count();
     assert_eq!(count, 1, "invitee should appear exactly once in allowlist");
 }
+
+#[test]
+fn test_invite_code_expiration_blocks_redemption() {
+    let env = Env::default();
+    let (creator, _, market_id, client) = setup_test(&env);
+    let invitee = Address::generate(&env);
+
+    // Create a code that expires in 100 seconds
+    let code = client.generate_invite_code(&creator, &market_id, &5, &100);
+
+    // Advance time past expiry
+    env.ledger().set_timestamp(env.ledger().timestamp() + 200);
+
+    let result = client.try_redeem_invite_code(&invitee, &code);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::InviteCodeExpired))
+    ));
+}
+
+#[test]
+fn test_invite_code_usage_limit_blocks_extra_redemptions() {
+    let env = Env::default();
+    let (creator, _, market_id, client) = setup_test(&env);
+
+    // Code allows exactly 2 uses
+    let code = client.generate_invite_code(&creator, &market_id, &2, &3600);
+
+    let invitee1 = Address::generate(&env);
+    let invitee2 = Address::generate(&env);
+    let invitee3 = Address::generate(&env);
+
+    client.redeem_invite_code(&invitee1, &code);
+    client.redeem_invite_code(&invitee2, &code);
+
+    // Third redemption must fail
+    let result = client.try_redeem_invite_code(&invitee3, &code);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::InviteCodeMaxUsed))
+    ));
+}
+
+#[test]
+fn test_multiple_invite_codes_per_market() {
+    let env = Env::default();
+    let (creator, _, market_id, client) = setup_test(&env);
+
+    let code1 = client.generate_invite_code(&creator, &market_id, &5, &3600);
+
+    // Advance time so hash differs
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1);
+
+    let code2 = client.generate_invite_code(&creator, &market_id, &3, &7200);
+
+    // Codes must be distinct
+    assert_ne!(code1, code2);
+
+    // Both codes are independently redeemable for the same market
+    let invitee1 = Address::generate(&env);
+    let invitee2 = Address::generate(&env);
+
+    let mid1 = client.redeem_invite_code(&invitee1, &code1);
+    let mid2 = client.redeem_invite_code(&invitee2, &code2);
+
+    assert_eq!(mid1, market_id);
+    assert_eq!(mid2, market_id);
+
+    // Both invitees are in the allowlist
+    let allowlist: Vec<Address> = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MarketAllowlist(market_id))
+            .unwrap()
+    });
+    assert!(allowlist.iter().any(|a| a == invitee1));
+    assert!(allowlist.iter().any(|a| a == invitee2));
+}

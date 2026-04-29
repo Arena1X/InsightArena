@@ -249,6 +249,156 @@ fn test_claim_payout_before_resolution() {
     ));
 }
 
+// ── batch_distribute_payouts tests ───────────────────────────────────────────
+
+#[test]
+fn test_batch_distribute_payouts_distributes_to_all_winners() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, oracle) = deploy(&env);
+
+    let winner1 = Address::generate(&env);
+    let winner2 = Address::generate(&env);
+    let loser = Address::generate(&env);
+    let stake = 50_000_000_i128;
+
+    let params = default_params(&env);
+    let market_id = client.create_market(&Address::generate(&env), &params);
+
+    fund(&env, &xlm_token, &winner1, stake);
+    fund(&env, &xlm_token, &winner2, stake);
+    fund(&env, &xlm_token, &loser, stake);
+
+    client.submit_prediction(&winner1, &market_id, &symbol_short!("yes"), &stake);
+    client.submit_prediction(&winner2, &market_id, &symbol_short!("yes"), &stake);
+    client.submit_prediction(&loser, &market_id, &symbol_short!("no"), &stake);
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = params.resolution_time + 1);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+
+    let processed = client.batch_distribute_payouts(&oracle, &market_id);
+    assert_eq!(processed, 2);
+
+    // Winners should have received payouts; verify by checking claimed state
+    assert!(matches!(
+        client.try_claim_payout(&winner1, &market_id),
+        Err(Ok(InsightArenaError::PayoutAlreadyClaimed))
+    ));
+    assert!(matches!(
+        client.try_claim_payout(&winner2, &market_id),
+        Err(Ok(InsightArenaError::PayoutAlreadyClaimed))
+    ));
+}
+
+#[test]
+fn test_batch_distribute_payouts_fails_for_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, oracle) = deploy(&env);
+
+    let winner = Address::generate(&env);
+    let random = Address::generate(&env);
+    let stake = 50_000_000_i128;
+
+    let params = default_params(&env);
+    let market_id = client.create_market(&Address::generate(&env), &params);
+
+    fund(&env, &xlm_token, &winner, stake);
+    client.submit_prediction(&winner, &market_id, &symbol_short!("yes"), &stake);
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = params.resolution_time + 1);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+
+    let result = client.try_batch_distribute_payouts(&random, &market_id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
+}
+
+#[test]
+fn test_batch_distribute_payouts_fails_on_unresolved_market() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, oracle) = deploy(&env);
+
+    let predictor = Address::generate(&env);
+    let stake = 50_000_000_i128;
+
+    let params = default_params(&env);
+    let market_id = client.create_market(&Address::generate(&env), &params);
+
+    fund(&env, &xlm_token, &predictor, stake);
+    client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
+
+    // Market is not yet resolved
+    let result = client.try_batch_distribute_payouts(&oracle, &market_id);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::MarketNotResolved))
+    ));
+}
+
+#[test]
+fn test_batch_distribute_payouts_respects_25_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, oracle) = deploy(&env);
+
+    let params = default_params(&env);
+    let market_id = client.create_market(&Address::generate(&env), &params);
+
+    // Submit 30 winning predictions
+    for _ in 0..30 {
+        let predictor = Address::generate(&env);
+        let stake = 10_000_000_i128;
+        fund(&env, &xlm_token, &predictor, stake);
+        client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
+    }
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = params.resolution_time + 1);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+
+    let processed = client.batch_distribute_payouts(&oracle, &market_id);
+    assert_eq!(processed, 25);
+}
+
+#[test]
+fn test_batch_distribute_payouts_skips_already_claimed() {
+    // Two winners on the same market. Run batch twice; the second run should
+    // process 0 predictions because all winning predictions were already claimed
+    // in the first run.
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, oracle) = deploy(&env);
+
+    // Only winners (no losers) so winning_pool stays non-zero on both runs.
+    let winner1 = Address::generate(&env);
+    let winner2 = Address::generate(&env);
+    let stake = 50_000_000_i128;
+
+    let params = default_params(&env);
+    let market_id = client.create_market(&Address::generate(&env), &params);
+
+    fund(&env, &xlm_token, &winner1, stake);
+    fund(&env, &xlm_token, &winner2, stake);
+
+    client.submit_prediction(&winner1, &market_id, &symbol_short!("yes"), &stake);
+    client.submit_prediction(&winner2, &market_id, &symbol_short!("yes"), &stake);
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = params.resolution_time + 1);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+
+    // First batch distributes to both winners
+    let first_run = client.batch_distribute_payouts(&oracle, &market_id);
+    assert_eq!(first_run, 2);
+
+    // Second batch: all winning predictions already claimed — skips them, returns 0
+    let second_run = client.batch_distribute_payouts(&oracle, &market_id);
+    assert_eq!(second_run, 0);
+}
+
 // ── payout_math tests ─────────────────────────────────────────────────────
 
 #[test]

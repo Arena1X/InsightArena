@@ -578,6 +578,39 @@ fn close_market_fails_when_already_resolved() {
 }
 
 #[test]
+fn test_close_market_fails_for_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle) = deploy_with_actors(&env);
+    let creator = Address::generate(&env);
+    let random = Address::generate(&env);
+
+    let id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1001);
+
+    let result = client.try_close_market(&random, &id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
+}
+
+#[test]
+fn test_close_market_sets_is_closed_flag() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, oracle) = deploy_with_actors(&env);
+    let creator = Address::generate(&env);
+
+    let id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1001);
+
+    client.close_market(&oracle, &id);
+
+    let market = client.get_market(&id);
+    assert!(market.is_closed);
+    assert!(!market.is_resolved);
+    assert!(!market.is_cancelled);
+}
+
+#[test]
 fn cancel_market_fails_for_non_admin() {
     let env = Env::default();
     env.mock_all_auths();
