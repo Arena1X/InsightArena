@@ -46,14 +46,14 @@ function Brand() {
       href="/dashboard"
       className="flex items-center gap-3 rounded-2xl px-6 py-6 text-white transition hover:bg-white/5"
     >
-      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#43c3be] text-xs font-bold text-[#111827] shadow-[0_0_0_6px_rgba(67,195,190,0.12)]">
+      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-500 text-xs font-bold text-white shadow-[0_0_0_6px_rgba(249,115,22,0.15)]">
         IA
       </span>
       <div className="min-w-0">
         <p className="truncate text-base font-semibold tracking-tight">
           InsightArena
         </p>
-        <p className="text-xs text-[#7f8aa3]">Prediction Markets</p>
+        <p className="text-xs text-gray-400">Prediction Markets</p>
       </div>
     </Link>
   );
@@ -86,8 +86,8 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
   };
 
   return (
-    <div className="flex h-full flex-col bg-[#171d2d] text-white">
-      <div className="border-b border-orange-500/30">
+    <div className="flex h-full flex-col bg-transparent text-white">
+      <div className="border-b border-white/10">
         <Brand />
       </div>
 
@@ -106,15 +106,15 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
               aria-current={isActive ? "page" : undefined}
               className={`group relative flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition ${
                 isActive
-                  ? "bg-[#232b3f] text-white shadow-[inset_3px_0_0_0_#39bdb8]"
-                  : "text-[#98a2b8] hover:bg-white/5 hover:text-white"
+                  ? "bg-white/10 text-white shadow-[inset_3px_0_0_0_#f97316]"
+                  : "text-gray-400 hover:bg-white/5 hover:text-white"
               }`}
             >
               <Icon
                 className={`h-4 w-4 ${
                   isActive
-                    ? "text-[#4fd1c5]"
-                    : "text-[#8f98ae] group-hover:text-white"
+                    ? "text-orange-400"
+                    : "text-gray-500 group-hover:text-white"
                 }`}
               />
               <span>{label}</span>
@@ -123,9 +123,9 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
         })}
       </nav>
 
-      <div className="border-t border-orange-500/30 px-4 py-4">
-        <div className="rounded-2xl border border-orange-500/30 bg-[#111726] px-4 py-4">
-          <p className="text-xs uppercase tracking-[0.24em] text-[#6f7891]">
+      <div className="border-t border-white/10 px-4 py-4">
+        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4">
+          <p className="text-xs uppercase tracking-[0.24em] text-gray-400">
             Connected
           </p>
           <div className="mt-2 flex items-center justify-between gap-2">
@@ -140,7 +140,7 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
                 type="button"
                 onClick={handleCopyAddress}
                 aria-label="Copy wallet address"
-                className="text-xs text-[#4fd1c5] hover:text-[#72ddd3] transition"
+                className="text-xs text-orange-400 hover:text-orange-300 transition"
                 title={copied ? "Copied!" : "Copy address"}
               >
                 {copied ? "✓" : "📋"}
@@ -151,7 +151,7 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
             type="button"
             onClick={handleDisconnect}
             aria-label="Disconnect wallet"
-            className="mt-3 text-sm font-medium text-[#4fd1c5] transition hover:text-[#72ddd3]"
+            className="mt-3 text-sm font-medium text-orange-400 transition hover:text-orange-300"
           >
             Disconnect
           </button>
@@ -163,11 +163,13 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
 
 function TopNavigation() {
   const { address, user } = useWallet();
-  const displayName = user?.username ?? (address ? truncateAddress(address) : "User");
+
+  const displayName = user?.username ?? "Alex";
 
   return (
-    <section className="border-b border-orange-500/30 px-6">
+    <section className="border-b border-white/10 px-6">
       <div className="flex items-center justify-between gap-6 py-4">
+        {/* Home button */}
         <Link
           href="/"
           className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-transparent p-3 text-white transition hover:bg-white/5 hover:border-orange-500/50 xl:self-start"
@@ -175,24 +177,26 @@ function TopNavigation() {
         >
           <Home className="h-5 w-5" />
         </Link>
-        <div className="text-center">
-          <h1 className="text-3xl font-semibold tracking-tight sm:text-[2.45rem]">
-            Welcome back, {displayName}
-          </h1>
-          <p className="mt-2 max-w-2xl text-sm text-[#97a0b5] sm:text-base"></p>
-        </div>
-        <div className="flex flex-col gap-3 sm:flex-row">
+
+        {/* Greeting — single line */}
+        <h1 className="text-xl font-semibold tracking-tight text-white sm:text-2xl">
+          Welcome back,{" "}
+          <span className="text-orange-400 font-bold">{displayName}</span>
+        </h1>
+
+        {/* Actions */}
+        <div className="flex items-center gap-3">
           <button
             type="button"
             aria-label="Make a prediction"
-            className="rounded-xl bg-orange-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-orange-600"
+            className="rounded-xl bg-orange-500/90 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-orange-500"
           >
             Make Prediction
           </button>
           <button
             type="button"
             aria-label="Create a competition"
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-transparent px-6 py-3 text-sm font-medium text-[#d6daea] transition hover:bg-white/5"
+            className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-transparent px-5 py-2.5 text-sm font-medium text-gray-400 transition hover:bg-white/5 hover:text-white"
           >
             Create Competition
             <ChevronDown className="h-4 w-4" />
@@ -216,16 +220,62 @@ export function DashboardShell({ children }: DashboardShellProps) {
   }, [pathname]);
 
   return (
-    <div className="dark min-h-screen bg-[#141824] text-white">
-      <div className="flex min-h-screen">
-        <aside className="hidden w-[280px] shrink-0 border-r border-orange-500/30 lg:fixed lg:inset-y-0 lg:flex">
+    <div className="dark relative min-h-screen overflow-x-hidden bg-gradient-to-br from-gray-900 via-black to-gray-900 text-white">
+      {/* Landing-page network lines background */}
+      <div className="pointer-events-none absolute inset-0 z-0 h-full w-full">
+        <svg
+          className="h-full w-full opacity-15"
+          viewBox="0 0 1000 1000"
+          preserveAspectRatio="xMidYMid slice"
+        >
+          <defs>
+            <linearGradient
+              id="dashLineGradient"
+              x1="0%"
+              y1="0%"
+              x2="100%"
+              y2="100%"
+            >
+              <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.2" />
+            </linearGradient>
+          </defs>
+          <path
+            d="M100,200 Q300,100 500,200 T900,200"
+            stroke="url(#dashLineGradient)"
+            strokeWidth="2"
+            fill="none"
+          />
+          <path
+            d="M200,400 Q400,300 600,400 T1000,400"
+            stroke="url(#dashLineGradient)"
+            strokeWidth="2"
+            fill="none"
+          />
+          <path
+            d="M50,600 Q250,500 450,600 T850,600"
+            stroke="url(#dashLineGradient)"
+            strokeWidth="2"
+            fill="none"
+          />
+          <path
+            d="M150,800 Q350,700 550,800 T950,800"
+            stroke="url(#dashLineGradient)"
+            strokeWidth="2"
+            fill="none"
+          />
+        </svg>
+      </div>
+
+      <div className="relative z-10 flex min-h-screen">
+        <aside className="hidden w-[280px] shrink-0 border-r border-white/10 lg:fixed lg:inset-y-0 lg:flex">
           <div className="w-full">
             <SidebarContent />
           </div>
         </aside>
 
         <div className="flex min-h-screen w-full flex-col lg:pl-[280px]">
-          <header className="sticky top-0 z-30 flex items-center justify-between border-b border-orange-500/30 bg-[#141824]/90 px-4 py-4 backdrop-blur lg:hidden">
+          <header className="sticky top-0 z-30 flex items-center justify-between border-b border-white/10 bg-gray-900/80 px-4 py-4 backdrop-blur lg:hidden">
             <Brand />
             <button
               type="button"
@@ -237,7 +287,7 @@ export function DashboardShell({ children }: DashboardShellProps) {
             </button>
           </header>
 
-          <div className="sticky top-[72px] z-20 bg-[#141824]/95 backdrop-blur lg:top-0">
+          <div className="sticky top-[72px] z-20 bg-gray-900/80 backdrop-blur lg:top-0">
             <TopNavigation />
           </div>
 
@@ -265,7 +315,7 @@ export function DashboardShell({ children }: DashboardShellProps) {
         <button
           type="button"
           aria-label="Close navigation overlay"
-          className={`absolute inset-0 bg-[#020617]/70 backdrop-blur-sm transition-opacity duration-300 ease-out ${
+          className={`absolute inset-0 bg-black/70 backdrop-blur-sm transition-opacity duration-300 ease-out ${
             mobileOpen ? "opacity-100" : "pointer-events-none opacity-0"
           }`}
           onClick={() => setMobileOpen(false)}

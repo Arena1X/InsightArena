@@ -55,30 +55,30 @@ const iconMap = {
 };
 
 const iconColorMap = {
-  trend: "text-[#4FD1C5]", // Teal/cyan color from design
-  trophy: "text-[#4FD1C5]", // Teal/cyan color from design  
-  gift: "text-[#F5C451]", // Gold color from design
-  users: "text-[#A78BFA]", // Purple color from design
+  trend: "text-orange-400",
+  trophy: "text-orange-400",
+  gift: "text-yellow-400",
+  users: "text-gray-300",
 };
 
 const iconBgMap = {
-  trend: "bg-[#4FD1C5]/10",
-  trophy: "bg-[#4FD1C5]/10", 
-  gift: "bg-[#F5C451]/10",
-  users: "bg-[#A78BFA]/10",
+  trend: "bg-orange-500/10",
+  trophy: "bg-orange-500/10",
+  gift: "bg-yellow-500/10",
+  users: "bg-white/10",
 };
 
 export default function NotificationsCard() {
-  const unreadCount = mockNotifications.filter(n => !n.isRead).length;
+  const unreadCount = mockNotifications.filter((n) => !n.isRead).length;
 
   return (
-    <div className="relative bg-[#1e293b] rounded-2xl p-6 w-full shadow-lg overflow-hidden border border-gray-700/30">
+    <div className="relative rounded-2xl border border-white/10 bg-white/5 p-6 w-full overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-white font-semibold text-lg">Notifications</h2>
         <div className="flex items-center gap-2">
           {unreadCount > 0 && (
-            <div className="w-2 h-2 bg-[#4FD1C5] rounded-full" />
+            <div className="w-2 h-2 bg-orange-400 rounded-full" />
           )}
           <div className="w-2 h-2 bg-red-500 rounded-full" />
         </div>
@@ -89,15 +89,19 @@ export default function NotificationsCard() {
         {mockNotifications.map((notification, index) => {
           const IconComponent = iconMap[notification.icon];
           const isLast = index === mockNotifications.length - 1;
-          
+
           return (
             <div key={notification.id}>
               <div className="flex items-start gap-4 py-4">
                 {/* Icon Box */}
-                <div className={`flex-shrink-0 w-10 h-10 rounded-xl ${iconBgMap[notification.icon]} flex items-center justify-center`}>
-                  <IconComponent className={`h-5 w-5 ${iconColorMap[notification.icon]}`} />
+                <div
+                  className={`flex-shrink-0 w-10 h-10 rounded-xl ${iconBgMap[notification.icon]} flex items-center justify-center`}
+                >
+                  <IconComponent
+                    className={`h-5 w-5 ${iconColorMap[notification.icon]}`}
+                  />
                 </div>
-                
+
                 {/* Content */}
                 <div className="flex-1 min-w-0">
                   <p className="text-gray-300 text-sm leading-relaxed mb-1">
@@ -108,11 +112,9 @@ export default function NotificationsCard() {
                   </span>
                 </div>
               </div>
-              
+
               {/* Divider line (subtle, matching Figma stroke color) */}
-              {!isLast && (
-                <div className="border-b border-gray-600/20 ml-14" />
-              )}
+              {!isLast && <div className="border-b border-white/5 ml-14" />}
             </div>
           );
         })}

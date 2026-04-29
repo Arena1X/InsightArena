@@ -98,18 +98,22 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
   const marketsCreated: MarketCreated[] = [
     { id: "mc-1", title: "Stellar TVL weekly change", status: "Open" },
     { id: "mc-2", title: "XLM quarterly close range", status: "Resolved" },
-    { id: "mc-3", title: "Top ecosystem announcement this month", status: "Open" },
+    {
+      id: "mc-3",
+      title: "Top ecosystem announcement this month",
+      status: "Open",
+    },
   ];
 
   const statusStyles: Record<MarketCreated["status"], string> = {
-    Open: "bg-emerald-500/10 text-emerald-200 border-emerald-500/30",
-    Resolved: "bg-sky-500/10 text-sky-200 border-sky-500/30",
-    Cancelled: "bg-rose-500/10 text-rose-200 border-rose-500/30",
+    Open: "bg-orange-500/10 text-orange-400 border-orange-500/30",
+    Resolved: "bg-yellow-500/10 text-yellow-400 border-yellow-500/30",
+    Cancelled: "bg-gray-500/10 text-gray-400 border-gray-500/30",
   };
 
   const predictionResultStyles: Record<PublicPrediction["result"], string> = {
-    Won: "text-emerald-300",
-    Lost: "text-rose-300",
+    Won: "text-orange-400",
+    Lost: "text-gray-400",
     Pending: "text-gray-300",
   };
 
@@ -118,26 +122,26 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
       <Header />
 
       <main className="mx-auto max-w-6xl px-6 pt-32 pb-20 text-white">
-        <section className="rounded-[2rem] border border-white/10 bg-[#111726]/85 p-8 shadow-[0_25px_80px_rgba(2,6,23,0.45)] backdrop-blur sm:p-12">
+        <section className="rounded-[2rem] border border-white/10 bg-gray-950/60 p-8 shadow-[0_25px_80px_rgba(0,0,0,0.45)] backdrop-blur sm:p-12">
           <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
             <div className="flex items-start gap-4">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-black/30 text-lg font-bold text-orange-200">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-orange-500/10 text-lg font-bold text-orange-400">
                 {initials}
               </div>
               <div className="space-y-2">
                 <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
                   {displayName}
                 </h1>
-                <p className="text-sm text-[#94a3b8]">Joined {joinedDate}</p>
+                <p className="text-sm text-gray-400">Joined {joinedDate}</p>
 
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <code className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-gray-200">
+                  <code className="rounded-xl border border-white/10 bg-gray-950/60 px-3 py-2 text-xs text-gray-300">
                     {address}
                   </code>
                   <button
                     type="button"
                     onClick={onCopy}
-                    className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-gray-200 transition hover:bg-white/10"
+                    className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-gray-300 transition hover:border-orange-500/50 hover:bg-white/10"
                   >
                     {copied ? "Copied" : "Copy"}
                   </button>
@@ -150,10 +154,10 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
             {stats.map((stat) => (
               <div
                 key={stat.label}
-                className="rounded-2xl border border-white/10 bg-black/20 p-6"
+                className="rounded-2xl border border-white/10 bg-gray-950/60 p-6 hover:border-orange-500/50 transition-colors"
               >
-                <p className="text-sm text-[#94a3b8]">{stat.label}</p>
-                <p className="mt-2 text-2xl font-bold text-orange-300">
+                <p className="text-sm text-gray-400">{stat.label}</p>
+                <p className="mt-2 text-2xl font-bold text-orange-400">
                   {stat.value}
                 </p>
               </div>
@@ -162,9 +166,9 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
         </section>
 
         <section className="mt-10 grid gap-6 lg:grid-cols-2">
-          <div className="rounded-[2rem] border border-white/10 bg-[#111726]/85 p-8 backdrop-blur sm:p-10">
+          <div className="rounded-[2rem] border border-white/10 bg-gray-950/60 p-8 backdrop-blur sm:p-10">
             <h2 className="text-2xl font-semibold">Achievement Badges</h2>
-            <p className="mt-2 text-sm text-[#94a3b8]">
+            <p className="mt-2 text-sm text-gray-400">
               Unlocked achievements show progress and community participation.
             </p>
             <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3">
@@ -172,9 +176,9 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
                 <div
                   key={achievement.label}
                   className={[
-                    "rounded-2xl border p-4 text-center text-sm font-semibold",
+                    "rounded-2xl border p-4 text-center text-sm font-semibold transition-colors",
                     achievement.unlocked
-                      ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-200"
+                      ? "border-orange-500/30 bg-orange-500/10 text-orange-400"
                       : "border-white/10 bg-white/5 text-gray-500",
                   ].join(" ")}
                 >
@@ -184,9 +188,9 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
             </div>
           </div>
 
-          <div className="rounded-[2rem] border border-white/10 bg-[#111726]/85 p-8 backdrop-blur sm:p-10">
+          <div className="rounded-[2rem] border border-white/10 bg-gray-950/60 p-8 backdrop-blur sm:p-10">
             <h2 className="text-2xl font-semibold">Markets Created</h2>
-            <p className="mt-2 text-sm text-[#94a3b8]">
+            <p className="mt-2 text-sm text-gray-400">
               Public markets created by this address (placeholder data).
             </p>
 
@@ -194,7 +198,7 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
               {marketsCreated.map((market) => (
                 <div
                   key={market.id}
-                  className="flex flex-col gap-2 rounded-2xl border border-white/10 bg-black/20 p-4 sm:flex-row sm:items-center sm:justify-between"
+                  className="flex flex-col gap-2 rounded-2xl border border-white/10 bg-gray-950/60 p-4 hover:border-orange-500/50 transition-colors sm:flex-row sm:items-center sm:justify-between"
                 >
                   <p className="text-sm font-medium text-white">
                     {market.title}
@@ -213,15 +217,15 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
           </div>
         </section>
 
-        <section className="mt-10 rounded-[2rem] border border-white/10 bg-[#111726]/85 p-8 backdrop-blur sm:p-10">
+        <section className="mt-10 rounded-[2rem] border border-white/10 bg-gray-950/60 p-8 backdrop-blur sm:p-10">
           <h2 className="text-2xl font-semibold">Recent Predictions</h2>
-          <p className="mt-2 text-sm text-[#94a3b8]">
+          <p className="mt-2 text-sm text-gray-400">
             The latest 10 public predictions (showing sample rows).
           </p>
 
           <div className="mt-6 overflow-x-auto rounded-2xl border border-white/10">
             <table className="min-w-full divide-y divide-white/10 text-left text-sm">
-              <thead className="bg-black/20 text-xs uppercase tracking-wide text-[#94a3b8]">
+              <thead className="bg-gray-950/60 text-xs uppercase tracking-wide text-gray-400">
                 <tr>
                   <th scope="col" className="px-5 py-4">
                     Market
@@ -237,14 +241,16 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/10 bg-[#0b1020]/40">
+              <tbody className="divide-y divide-white/10 bg-gray-950/40">
                 {predictions.map((prediction) => (
                   <tr key={prediction.id} className="hover:bg-white/5">
-                    <td className="px-5 py-4 text-white">{prediction.market}</td>
-                    <td className="px-5 py-4 text-gray-200">
+                    <td className="px-5 py-4 text-white">
+                      {prediction.market}
+                    </td>
+                    <td className="px-5 py-4 text-gray-300">
                       {prediction.outcome}
                     </td>
-                    <td className="px-5 py-4 text-gray-200">
+                    <td className="px-5 py-4 text-gray-300">
                       {prediction.stake}
                     </td>
                     <td
@@ -267,4 +273,3 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
     </PageBackground>
   );
 }
-

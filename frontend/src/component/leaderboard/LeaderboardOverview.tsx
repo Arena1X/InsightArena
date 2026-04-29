@@ -85,14 +85,14 @@ const DEFAULT_STATS: StatCardProps[] = [
     value: "2,847",
     supportingText: "+134 this week",
     icon: <UsersIcon />,
-    valueColor: "text-[#4FD1C5]",
+    valueColor: "text-orange-400",
   },
   {
     label: "Top Performer",
     value: "0xArena_Pro",
     supportingText: "9,840 pts · #1 overall",
     icon: <TrophyIcon />,
-    valueColor: "text-[#F5C451]",
+    valueColor: "text-yellow-400",
   },
   {
     label: "Active Competitions",
@@ -106,7 +106,7 @@ const DEFAULT_STATS: StatCardProps[] = [
     value: "#142",
     supportingText: "Top 5% of all predictors",
     icon: <ChartBarIcon />,
-    valueColor: "text-[#A78BFA]",
+    valueColor: "text-gray-300",
   },
 ];
 

@@ -13,12 +13,8 @@ import {
   Wallet,
 } from "lucide-react";
 import StatCard from "@/component/rewards/StatCard";
-import {
-  Tabs,
-  TabsList,
-  TabsTrigger,
-  TabsContent,
-} from "@/component/ui/tabs";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/component/ui/tabs";
+import { useWallet } from "@/context/WalletContext";
 
 // ── Placeholder data ──────────────────────────────────────────────────────────
 
@@ -30,33 +26,125 @@ const USER = {
 };
 
 const STATS = [
-  { label: "Total Predictions", value: "118",       supportingText: "+6 this week",    icon: <BarChart2 className="h-4 w-4" />, valueColor: "text-white" },
-  { label: "Win Rate",          value: "61%",        supportingText: "Above average",   icon: <TrendingUp className="h-4 w-4" />, valueColor: "text-emerald-300" },
-  { label: "Reputation Score",  value: "3,540",      supportingText: "Top 15%",         icon: <Star className="h-4 w-4" />, valueColor: "text-[#F5C451]" },
-  { label: "Total Winnings",    value: "1,125 XLM",  supportingText: "All time",        icon: <Wallet className="h-4 w-4" />, valueColor: "text-[#4FD1C5]" },
-  { label: "Season Rank",       value: "#10",        supportingText: "Current season",  icon: <Award className="h-4 w-4" />, valueColor: "text-[#A78BFA]" },
+  {
+    label: "Total Predictions",
+    value: "118",
+    supportingText: "+6 this week",
+    icon: <BarChart2 className="h-4 w-4" />,
+    valueColor: "text-white",
+  },
+  {
+    label: "Win Rate",
+    value: "61%",
+    supportingText: "Above average",
+    icon: <TrendingUp className="h-4 w-4" />,
+    valueColor: "text-emerald-300",
+  },
+  {
+    label: "Reputation Score",
+    value: "3,540",
+    supportingText: "Top 15%",
+    icon: <Star className="h-4 w-4" />,
+    valueColor: "text-[#F5C451]",
+  },
+  {
+    label: "Total Winnings",
+    value: "1,125 XLM",
+    supportingText: "All time",
+    icon: <Wallet className="h-4 w-4" />,
+    valueColor: "text-orange-400",
+  },
+  {
+    label: "Season Rank",
+    value: "#10",
+    supportingText: "Current season",
+    icon: <Award className="h-4 w-4" />,
+    valueColor: "text-gray-400",
+  },
 ];
 
 const ACHIEVEMENTS = [
-  { id: "ach-1", name: "First Blood",      description: "Submit your first prediction",   icon: "🎯", unlocked: true },
-  { id: "ach-2", name: "On a Roll",        description: "Win 5 predictions in a row",     icon: "🔥", unlocked: true },
-  { id: "ach-3", name: "Market Maker",     description: "Create your first market",       icon: "🏗️",  unlocked: true },
-  { id: "ach-4", name: "Diamond Hands",    description: "Hold a prediction for 30+ days", icon: "💎", unlocked: false },
+  {
+    id: "ach-1",
+    name: "First Blood",
+    description: "Submit your first prediction",
+    icon: "🎯",
+    unlocked: true,
+  },
+  {
+    id: "ach-2",
+    name: "On a Roll",
+    description: "Win 5 predictions in a row",
+    icon: "🔥",
+    unlocked: true,
+  },
+  {
+    id: "ach-3",
+    name: "Market Maker",
+    description: "Create your first market",
+    icon: "🏗️",
+    unlocked: true,
+  },
+  {
+    id: "ach-4",
+    name: "Diamond Hands",
+    description: "Hold a prediction for 30+ days",
+    icon: "💎",
+    unlocked: false,
+  },
 ];
 
 const ACTIVE_PREDICTIONS = [
-  { id: "p1", title: "Will XLM close above $0.20 this week?", outcome: "Yes",  stake: "50 XLM",  result: "—",          payout: "—" },
-  { id: "p2", title: "Bitcoin price above $100k by year end?",  outcome: "No",   stake: "25 XLM",  result: "—",          payout: "—" },
+  {
+    id: "p1",
+    title: "Will XLM close above $0.20 this week?",
+    outcome: "Yes",
+    stake: "50 XLM",
+    result: "—",
+    payout: "—",
+  },
+  {
+    id: "p2",
+    title: "Bitcoin price above $100k by year end?",
+    outcome: "No",
+    stake: "25 XLM",
+    result: "—",
+    payout: "—",
+  },
 ];
 
 const COMPLETED_PREDICTIONS = [
-  { id: "p3", title: "Ethereum ETF approval by end of month",    outcome: "Yes",  stake: "75 XLM",  result: "Won",        payout: "142.50 XLM" },
-  { id: "p4", title: "Will top 10 DeFi TVL increase this week?", outcome: "Yes",  stake: "30 XLM",  result: "Lost",       payout: "—" },
+  {
+    id: "p3",
+    title: "Ethereum ETF approval by end of month",
+    outcome: "Yes",
+    stake: "75 XLM",
+    result: "Won",
+    payout: "142.50 XLM",
+  },
+  {
+    id: "p4",
+    title: "Will top 10 DeFi TVL increase this week?",
+    outcome: "Yes",
+    stake: "30 XLM",
+    result: "Lost",
+    payout: "—",
+  },
 ];
 
 const MARKETS_CREATED = [
-  { id: "m1", title: "Will BTC dominate in Q2 2026?", status: "Active",   participants: 34 },
-  { id: "m2", title: "XLM price above $0.50 in 2026?", status: "Resolved", participants: 71 },
+  {
+    id: "m1",
+    title: "Will BTC dominate in Q2 2026?",
+    status: "Active",
+    participants: 34,
+  },
+  {
+    id: "m2",
+    title: "XLM price above $0.50 in 2026?",
+    status: "Resolved",
+    participants: 71,
+  },
 ];
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -87,13 +175,13 @@ function CopyAddress({ address }: { address: string }) {
 function ProfileHeader() {
   return (
     <div className="rounded-xl border border-white/10 bg-white/5 p-6 flex flex-col sm:flex-row sm:items-center gap-5">
-      <span className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-[#1e293b] border border-white/10 text-2xl font-extrabold text-[#4FD1C5] flex-shrink-0">
+      <span className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-white/10 border border-white/10 text-2xl font-extrabold text-orange-400 flex-shrink-0">
         {USER.username.slice(0, 2).toUpperCase()}
       </span>
       <div className="flex-1 min-w-0 space-y-1">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-white text-xl font-bold">{USER.username}</h1>
-          <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-[#A78BFA]/20 text-[#A78BFA] border border-[#A78BFA]/30">
+          <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-white/10 text-gray-300 border border-white/20">
             {USER.tier} Tier
           </span>
         </div>
@@ -116,7 +204,10 @@ function AchievementShowcase() {
     <div className="rounded-xl border border-white/10 bg-white/5 p-5 space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="text-white font-semibold text-sm">Achievements</h2>
-        <Link href="/rewards" className="text-xs text-[#A78BFA] hover:text-[#c4b5fd] underline underline-offset-2">
+        <Link
+          href="/rewards"
+          className="text-xs text-gray-400 hover:text-gray-300 underline underline-offset-2"
+        >
           View All
         </Link>
       </div>
@@ -124,7 +215,7 @@ function AchievementShowcase() {
         {unlocked.map((ach) => (
           <div
             key={ach.id}
-            className="flex items-center gap-3 rounded-lg bg-[#0f172a] border border-white/5 p-3"
+            className="flex items-center gap-3 rounded-lg bg-white/[0.03] border border-white/5 p-3"
           >
             <span className="text-2xl">{ach.icon}</span>
             <div>
@@ -152,14 +243,22 @@ function PredictionRow({
   payout: string;
 }) {
   const resultColor =
-    result === "Won" ? "text-emerald-400" : result === "Lost" ? "text-red-400" : "text-gray-400";
+    result === "Won"
+      ? "text-emerald-400"
+      : result === "Lost"
+        ? "text-red-400"
+        : "text-gray-400";
   return (
     <tr className="border-b border-white/5 hover:bg-white/[0.02] transition">
-      <td className="px-4 py-3 text-sm text-gray-300 max-w-[220px] truncate">{title}</td>
+      <td className="px-4 py-3 text-sm text-gray-300 max-w-[220px] truncate">
+        {title}
+      </td>
       <td className="px-4 py-3 text-sm text-white">{outcome}</td>
       <td className="px-4 py-3 text-sm text-gray-400">{stake}</td>
-      <td className={`px-4 py-3 text-sm font-medium ${resultColor}`}>{result}</td>
-      <td className="px-4 py-3 text-sm text-[#4FD1C5]">{payout}</td>
+      <td className={`px-4 py-3 text-sm font-medium ${resultColor}`}>
+        {result}
+      </td>
+      <td className="px-4 py-3 text-sm text-orange-400">{payout}</td>
     </tr>
   );
 }
@@ -226,7 +325,9 @@ function StatusBadge({ status }: { status: string }) {
       ? "bg-emerald-400/10 text-emerald-400 border-emerald-400/20"
       : "bg-gray-400/10 text-gray-400 border-gray-400/20";
   return (
-    <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${colors}`}>
+    <span
+      className={`px-2 py-0.5 rounded-full text-xs font-medium border ${colors}`}
+    >
       {status}
     </span>
   );
@@ -240,7 +341,7 @@ function MarketsCreated() {
         {MARKETS_CREATED.map((m) => (
           <div
             key={m.id}
-            className="flex items-center justify-between rounded-lg bg-[#0f172a] border border-white/5 px-4 py-3 gap-3"
+            className="flex items-center justify-between rounded-lg bg-white/[0.03] border border-white/5 px-4 py-3 gap-3"
           >
             <p className="text-sm text-gray-300 truncate">{m.title}</p>
             <div className="flex items-center gap-3 flex-shrink-0">
@@ -263,13 +364,17 @@ function SocialStats() {
         <div className="space-y-0.5">
           <p className="text-white font-bold text-xl">48</p>
           <p className="text-gray-500 text-xs">Followers</p>
-          <a href="#" className="text-xs text-[#A78BFA] hover:underline">View Followers</a>
+          <a href="#" className="text-xs text-gray-400 hover:underline">
+            View Followers
+          </a>
         </div>
         <div className="w-px h-10 bg-white/10" />
         <div className="space-y-0.5">
           <p className="text-white font-bold text-xl">31</p>
           <p className="text-gray-500 text-xs">Following</p>
-          <a href="#" className="text-xs text-[#A78BFA] hover:underline">View Following</a>
+          <a href="#" className="text-xs text-gray-400 hover:underline">
+            View Following
+          </a>
         </div>
       </div>
     </div>
@@ -279,6 +384,33 @@ function SocialStats() {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function ProfilePage() {
+  const { isAuthenticated, openConnectModal } = useWallet();
+
+  // Not connected — show gate card
+  if (!isAuthenticated) {
+    return (
+      <div className="flex min-h-[70vh] items-center justify-center px-6">
+        <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/5 p-10 text-center backdrop-blur">
+          <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full border border-white/10 bg-white/5">
+            <Wallet className="h-7 w-7 text-orange-400" />
+          </div>
+          <h2 className="text-xl font-bold text-white">Connect your wallet</h2>
+          <p className="mt-3 text-sm leading-relaxed text-gray-400">
+            Please connect your wallet to view your profile, predictions, and
+            achievements.
+          </p>
+          <button
+            type="button"
+            onClick={openConnectModal}
+            className="mt-8 w-full rounded-xl bg-orange-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-orange-600"
+          >
+            Connect Wallet
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <ProfileHeader />

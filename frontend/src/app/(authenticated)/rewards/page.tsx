@@ -184,25 +184,27 @@ export default function RewardsPage() {
     <div className="space-y-6">
       {/* Rewards Summary */}
       <section className="grid grid-cols-1 gap-5 md:grid-cols-3">
-        <div className="rounded-2xl border border-white/10 bg-[#121633] p-6">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
           <h3 className="text-sm font-medium text-white/90">Total XLM Won</h3>
-          <p className="mt-3 text-3xl font-bold text-sky-300">{totalXLMWon}</p>
+          <p className="mt-3 text-3xl font-bold text-orange-400">
+            {totalXLMWon}
+          </p>
           <p className="mt-2 text-xs text-gray-400">All time earnings</p>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-[#121633] p-6">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
           <h3 className="text-sm font-medium text-white/90">
             Current Season Points
           </h3>
-          <p className="mt-3 text-3xl font-bold text-emerald-300">
+          <p className="mt-3 text-3xl font-bold text-white">
             {currentSeasonPoints}
           </p>
           <p className="mt-2 text-xs text-gray-400">Season 2 • Spring 2026</p>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-[#121633] p-6">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
           <h3 className="text-sm font-medium text-white/90">
             Current Season Rank
           </h3>
-          <p className="mt-3 text-3xl font-bold text-orange-300">
+          <p className="mt-3 text-3xl font-bold text-orange-400">
             #{currentSeasonRank}
           </p>
           <p className="mt-2 text-xs text-gray-400">
@@ -212,7 +214,7 @@ export default function RewardsPage() {
       </section>
 
       {/* Achievements Grid */}
-      <section className="rounded-2xl border border-white/10 bg-[#121633] p-6">
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
         <h2 className="mb-5 text-lg font-semibold text-white">Achievements</h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {ACHIEVEMENTS.map((achievement) => (
@@ -220,14 +222,14 @@ export default function RewardsPage() {
               key={achievement.id}
               className={`rounded-2xl border p-5 transition-all ${
                 achievement.isUnlocked
-                  ? "border-amber-500/50 bg-gradient-to-br from-amber-500/10 to-amber-600/5 shadow-[0_0_20px_rgba(245,158,11,0.15)]"
-                  : "border-white/10 bg-black/20 opacity-60 grayscale"
+                  ? "border-white/20 bg-white/5"
+                  : "border-white/5 bg-white/[0.02] opacity-50 grayscale"
               }`}
             >
               <div
                 className={`mb-3 flex h-12 w-12 items-center justify-center rounded-xl ${
                   achievement.isUnlocked
-                    ? "bg-amber-500/20 text-amber-300"
+                    ? "bg-orange-500/10 text-orange-400"
                     : "bg-white/5 text-gray-500"
                 }`}
               >
@@ -244,7 +246,7 @@ export default function RewardsPage() {
                 {achievement.description}
               </p>
               {achievement.isUnlocked && achievement.unlockedDate && (
-                <p className="mt-2 text-xs font-medium text-amber-400">
+                <p className="mt-2 text-xs font-medium text-orange-400">
                   Unlocked{" "}
                   {new Date(achievement.unlockedDate).toLocaleDateString(
                     "en-US",
@@ -262,7 +264,7 @@ export default function RewardsPage() {
       </section>
 
       {/* Season Standings */}
-      <section className="rounded-2xl border border-white/10 bg-[#121633] p-6">
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
         <h2 className="mb-5 text-lg font-semibold text-white">
           Season Standings
         </h2>
@@ -276,24 +278,24 @@ export default function RewardsPage() {
             </div>
             <div className="text-right">
               <p className="text-sm text-gray-400">Your Rank</p>
-              <p className="text-xl font-bold text-orange-300">
+              <p className="text-xl font-bold text-orange-400">
                 #{currentSeasonRank}
               </p>
             </div>
           </div>
-          <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
             <div className="mb-2 flex items-center justify-between text-sm">
               <span className="text-gray-300">
                 {currentSeasonPoints} points • {pointsToNextTier} to{" "}
                 {nextTierName}
               </span>
-              <span className="font-semibold text-emerald-300">
+              <span className="font-semibold text-orange-400">
                 {Math.round(progressPercentage)}%
               </span>
             </div>
             <div className="h-3 overflow-hidden rounded-full bg-white/10">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-500"
+                className="h-full rounded-full bg-orange-500/60 transition-all duration-500"
                 style={{ width: `${progressPercentage}%` }}
               />
             </div>
@@ -302,13 +304,13 @@ export default function RewardsPage() {
       </section>
 
       {/* Pending Rewards */}
-      <section className="rounded-2xl border border-orange-500/40 bg-gradient-to-br from-orange-500/10 to-orange-600/5 p-6">
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-white">
               Pending Rewards
             </h2>
-            <p className="mt-1 text-sm text-gray-300">
+            <p className="mt-1 text-sm text-gray-400">
               You have unclaimed payouts ready
             </p>
           </div>
@@ -320,19 +322,17 @@ export default function RewardsPage() {
           </button>
         </div>
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
             <p className="text-xs text-gray-400">Prediction Payout</p>
-            <p className="mt-1 text-xl font-bold text-emerald-300">
-              142.50 XLM
-            </p>
+            <p className="mt-1 text-xl font-bold text-orange-400">142.50 XLM</p>
           </div>
-          <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
             <p className="text-xs text-gray-400">Competition Reward</p>
-            <p className="mt-1 text-xl font-bold text-emerald-300">108 XLM</p>
+            <p className="mt-1 text-xl font-bold text-orange-400">108 XLM</p>
           </div>
-          <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
             <p className="text-xs text-gray-400">Achievement Bonus</p>
-            <p className="mt-1 text-xl font-bold text-emerald-300">25 XLM</p>
+            <p className="mt-1 text-xl font-bold text-orange-400">25 XLM</p>
           </div>
         </div>
       </section>

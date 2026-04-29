@@ -214,13 +214,13 @@ export default function MyPredictionsPage() {
     <div className="space-y-6">
       {/* Summary Stats Row */}
       <section className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-2xl border border-white/10 bg-[#121633] p-6">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
           <h3 className="text-sm font-medium text-white/90">
             Total Predictions
           </h3>
           <p className="mt-3 text-3xl font-bold text-white">{stats.total}</p>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-[#121633] p-6">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
           <h3 className="text-sm font-medium text-white/90">Won</h3>
           <div className="mt-3 flex items-baseline gap-2">
             <p className="text-3xl font-bold text-emerald-300">{stats.won}</p>
@@ -229,7 +229,7 @@ export default function MyPredictionsPage() {
             </span>
           </div>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-[#121633] p-6">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
           <h3 className="text-sm font-medium text-white/90">Lost</h3>
           <div className="mt-3 flex items-baseline gap-2">
             <p className="text-3xl font-bold text-red-300">{stats.lost}</p>
@@ -238,7 +238,7 @@ export default function MyPredictionsPage() {
             </span>
           </div>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-[#121633] p-6">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
           <h3 className="text-sm font-medium text-white/90">Pending</h3>
           <div className="mt-3 flex items-baseline gap-2">
             <p className="text-3xl font-bold text-yellow-300">
@@ -252,7 +252,7 @@ export default function MyPredictionsPage() {
       </section>
 
       {/* Filter Tabs */}
-      <section className="rounded-2xl border border-white/10 bg-[#121633] p-6">
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
         <div className="flex flex-wrap gap-2">
           {(["All", "Active", "Won", "Lost", "Pending"] as FilterTab[]).map(
             (filter) => (
@@ -282,7 +282,7 @@ export default function MyPredictionsPage() {
       </section>
 
       {/* Predictions List */}
-      <section className="rounded-2xl border border-white/10 bg-[#121633] p-6">
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
         <h2 className="mb-5 text-lg font-semibold text-white">
           Your Predictions
         </h2>
@@ -312,7 +312,7 @@ export default function MyPredictionsPage() {
             {paginatedPredictions.map((prediction) => (
               <div
                 key={prediction.id}
-                className="rounded-2xl border border-white/10 bg-black/20 p-5 transition-colors hover:border-orange-500/40"
+                className="rounded-2xl border border-white/10 bg-white/[0.03] p-5 transition-colors hover:border-orange-500/40"
               >
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                   <div className="flex-1 space-y-3">

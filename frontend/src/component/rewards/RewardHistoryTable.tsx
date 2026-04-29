@@ -29,9 +29,9 @@ export default function RewardHistoryTable({
   isLoading = false,
 }: RewardHistoryTableProps) {
   return (
-    <div className="bg-[#0f172a] rounded-2xl border border-gray-700/30 overflow-hidden">
+    <div className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden">
       {/* Section heading */}
-      <div className="px-6 py-5 border-b border-gray-700/30">
+      <div className="px-6 py-5 border-b border-white/10">
         <h2 className="text-white font-semibold text-lg">Reward History</h2>
         <p className="text-gray-400 text-sm mt-0.5">
           Your previously earned rewards and payout states
@@ -42,7 +42,7 @@ export default function RewardHistoryTable({
       <div className="overflow-x-auto">
         <table className="w-full min-w-[600px]">
           <thead>
-            <tr className="border-b border-gray-700/30">
+            <tr className="border-b border-white/10">
               {columns.map((col) => (
                 <th
                   key={col}
@@ -53,7 +53,7 @@ export default function RewardHistoryTable({
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-700/20">
+          <tbody className="divide-y divide-white/5">
             {entries.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-6 py-16 text-center">
@@ -72,7 +72,7 @@ export default function RewardHistoryTable({
                   {/* Source */}
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
-                      <div className="h-8 w-8 rounded-full bg-gray-700/50 flex items-center justify-center text-base flex-shrink-0">
+                      <div className="h-8 w-8 rounded-full bg-white/10 flex items-center justify-center text-base flex-shrink-0">
                         {entry.sourceIcon}
                       </div>
                       <span className="text-gray-200 text-sm font-medium whitespace-nowrap">
@@ -88,7 +88,7 @@ export default function RewardHistoryTable({
 
                   {/* Amount */}
                   <td className="px-6 py-4">
-                    <span className="text-[#F5C451] font-semibold text-sm">
+                    <span className="text-yellow-400 font-semibold text-sm">
                       {entry.amount}
                     </span>
                   </td>
@@ -113,13 +113,13 @@ export default function RewardHistoryTable({
 
       {/* Load More */}
       {(hasMore || entries.length > 0) && (
-        <div className="px-6 py-5 border-t border-gray-700/30 flex justify-center">
+        <div className="px-6 py-5 border-t border-white/10 flex justify-center">
           <button
             onClick={onLoadMore}
             disabled={isLoading || !hasMore}
-            className="px-6 py-2 rounded-lg border border-gray-600 text-gray-300 text-sm font-medium
-              hover:border-[#4FD1C5] hover:text-[#4FD1C5] transition-colors duration-200
-              disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-gray-600 disabled:hover:text-gray-300"
+            className="px-6 py-2 rounded-lg border border-white/10 bg-white/5 text-gray-300 text-sm font-medium
+              hover:border-orange-500/50 hover:text-orange-400 transition-colors duration-200
+              disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-white/10 disabled:hover:text-gray-300"
           >
             {isLoading ? "Loading..." : "Load More"}
           </button>

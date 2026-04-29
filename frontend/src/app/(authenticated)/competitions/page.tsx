@@ -116,12 +116,14 @@ export default function CompetitionsPage() {
 
   const matchesSearch = (competition: Competition) => {
     if (!search.trim()) return true;
-    return competition.title.toLowerCase().includes(search.trim().toLowerCase());
+    return competition.title
+      .toLowerCase()
+      .includes(search.trim().toLowerCase());
   };
 
   const filtered = useMemo(
     () => competitions.filter((c) => matchesTab(c) && matchesSearch(c)),
-    [competitions, activeTab, search]
+    [competitions, activeTab, search],
   );
 
   const tabCounts = useMemo(() => {
@@ -162,7 +164,7 @@ export default function CompetitionsPage() {
 
   const onJoinToggle = (id: string, joined: boolean) => {
     setCompetitions((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, joined } : c))
+      prev.map((c) => (c.id === id ? { ...c, joined } : c)),
     );
   };
 
@@ -205,10 +207,10 @@ export default function CompetitionsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-[#111726]/70 p-6 backdrop-blur md:flex-row md:items-center md:justify-between">
+      <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur md:flex-row md:items-center md:justify-between">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold text-white">Competitions</h1>
-          <p className="text-sm text-[#94a3b8]">
+          <p className="text-sm text-gray-400">
             Browse competitions, track status, and join leagues to compete for
             XLM rewards.
           </p>
@@ -222,7 +224,7 @@ export default function CompetitionsPage() {
         </button>
       </div>
 
-      <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-[#111726]/70 p-4 backdrop-blur md:flex-row md:items-center md:justify-between">
+      <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur md:flex-row md:items-center md:justify-between">
         <div className="flex flex-wrap gap-2">
           {tabs.map((tab) => {
             const isActive = tab.label === activeTab;
@@ -239,7 +241,7 @@ export default function CompetitionsPage() {
                 ].join(" ")}
               >
                 <span>{tab.label}</span>
-                <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-xs text-[#94a3b8]">
+                <span className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-0.5 text-xs text-gray-400">
                   {tab.count}
                 </span>
               </button>
@@ -256,15 +258,15 @@ export default function CompetitionsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search competitions…"
-            className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-2 text-sm text-white placeholder:text-[#64748b] outline-none focus:border-orange-500/50"
+            className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-white placeholder:text-gray-500 outline-none focus:border-orange-500/50"
           />
         </div>
       </div>
 
       {activeTab === "My Competitions" && filtered.length === 0 ? (
-        <div className="rounded-2xl border border-white/10 bg-[#111726]/70 p-10 text-center text-white backdrop-blur">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-10 text-center text-white backdrop-blur">
           <h2 className="text-xl font-semibold">No competitions yet</h2>
-          <p className="mt-2 text-sm text-[#94a3b8]">
+          <p className="mt-2 text-sm text-gray-400">
             Join a competition to track your performance and climb the
             leaderboard.
           </p>
@@ -288,14 +290,14 @@ export default function CompetitionsPage() {
               return (
                 <article
                   key={competition.id}
-                  className="rounded-2xl border border-white/10 bg-[#111726]/70 p-5 backdrop-blur transition hover:border-orange-500/30"
+                  className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur transition hover:border-orange-500/30"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="space-y-2">
                       <h3 className="text-lg font-semibold text-white">
                         {competition.title}
                       </h3>
-                      <p className="text-sm text-[#94a3b8]">
+                      <p className="text-sm text-gray-400">
                         {truncate(competition.description)}
                       </p>
                     </div>
@@ -310,32 +312,32 @@ export default function CompetitionsPage() {
                   </div>
 
                   <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                      <dt className="text-xs uppercase tracking-wide text-[#64748b]">
+                    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                      <dt className="text-xs uppercase tracking-wide text-gray-500">
                         Prize Pool
                       </dt>
                       <dd className="mt-1 font-semibold text-white">
                         {competition.prizePoolXlm.toLocaleString()} XLM
                       </dd>
                     </div>
-                    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                      <dt className="text-xs uppercase tracking-wide text-[#64748b]">
+                    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                      <dt className="text-xs uppercase tracking-wide text-gray-500">
                         Participants
                       </dt>
                       <dd className="mt-1 font-semibold text-white">
                         {competition.participants}/{competition.maxParticipants}
                       </dd>
                     </div>
-                    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                      <dt className="text-xs uppercase tracking-wide text-[#64748b]">
+                    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                      <dt className="text-xs uppercase tracking-wide text-gray-500">
                         Dates
                       </dt>
                       <dd className="mt-1 font-medium text-white">
                         {competition.startDate} → {competition.endDate}
                       </dd>
                     </div>
-                    <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                      <dt className="text-xs uppercase tracking-wide text-[#64748b]">
+                    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                      <dt className="text-xs uppercase tracking-wide text-gray-500">
                         Visibility
                       </dt>
                       <dd className="mt-2">
@@ -390,13 +392,11 @@ export default function CompetitionsPage() {
             })}
           </div>
 
-          <div className="flex flex-col items-center justify-between gap-3 rounded-2xl border border-white/10 bg-[#111726]/70 p-4 text-sm text-[#94a3b8] backdrop-blur sm:flex-row">
+          <div className="flex flex-col items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-gray-400 backdrop-blur sm:flex-row">
             <div>
               Showing{" "}
               <span className="font-semibold text-gray-200">
-                {filtered.length === 0
-                  ? 0
-                  : (page - 1) * pageSize + 1}
+                {filtered.length === 0 ? 0 : (page - 1) * pageSize + 1}
               </span>{" "}
               to{" "}
               <span className="font-semibold text-gray-200">
@@ -418,7 +418,7 @@ export default function CompetitionsPage() {
               >
                 Prev
               </button>
-              <span className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-gray-200">
+              <span className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-gray-200">
                 Page {page} of {pageCount}
               </span>
               <button
@@ -440,11 +440,11 @@ export default function CompetitionsPage() {
           role="dialog"
           aria-modal="true"
         >
-          <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-[#0b1020] p-6 text-white shadow-[0_25px_80px_rgba(2,6,23,0.6)]">
+          <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-white/5 p-6 text-white shadow-[0_25px_80px_rgba(2,6,23,0.6)]">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-xl font-semibold">Create Competition</h2>
-                <p className="mt-1 text-sm text-[#94a3b8]">
+                <p className="mt-1 text-sm text-gray-400">
                   This is a local mock to preview UI. Hook it up to the backend
                   when competition creation is available.
                 </p>
@@ -467,9 +467,12 @@ export default function CompetitionsPage() {
                   id="create-title"
                   value={createForm.title}
                   onChange={(e) =>
-                    setCreateForm((prev) => ({ ...prev, title: e.target.value }))
+                    setCreateForm((prev) => ({
+                      ...prev,
+                      title: e.target.value,
+                    }))
                   }
-                  className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-2 text-sm text-white outline-none focus:border-orange-500/50"
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-white outline-none focus:border-orange-500/50"
                   placeholder="e.g. Summer Sprint"
                 />
               </div>
@@ -490,7 +493,7 @@ export default function CompetitionsPage() {
                       description: e.target.value,
                     }))
                   }
-                  className="min-h-[100px] w-full resize-none rounded-xl border border-white/10 bg-black/30 px-4 py-2 text-sm text-white outline-none focus:border-orange-500/50"
+                  className="min-h-[100px] w-full resize-none rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-white outline-none focus:border-orange-500/50"
                   placeholder="Short description"
                 />
               </div>
@@ -510,15 +513,12 @@ export default function CompetitionsPage() {
                         maxParticipants: Number(e.target.value),
                       }))
                     }
-                    className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-2 text-sm text-white outline-none focus:border-orange-500/50"
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-white outline-none focus:border-orange-500/50"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <label
-                    className="text-sm font-medium"
-                    htmlFor="create-prize"
-                  >
+                  <label className="text-sm font-medium" htmlFor="create-prize">
                     Prize Pool (XLM)
                   </label>
                   <input
@@ -531,7 +531,7 @@ export default function CompetitionsPage() {
                         prizePoolXlm: Number(e.target.value),
                       }))
                     }
-                    className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-2 text-sm text-white outline-none focus:border-orange-500/50"
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-white outline-none focus:border-orange-500/50"
                   />
                 </div>
               </div>
@@ -549,7 +549,7 @@ export default function CompetitionsPage() {
                       visibility: e.target.value as CompetitionVisibility,
                     }))
                   }
-                  className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-2 text-sm text-white outline-none focus:border-orange-500/50"
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-sm text-white outline-none focus:border-orange-500/50"
                 >
                   <option value="Public">Public</option>
                   <option value="Private">Private</option>
