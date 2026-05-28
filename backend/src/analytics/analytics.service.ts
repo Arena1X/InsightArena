@@ -538,7 +538,7 @@ export class AnalyticsService {
     activity_timeline: Array<{ date: string; prediction_count: number }>;
   }> {
     const user = await this.usersRepository.findOne({
-      where: { address: address.toLowerCase() },
+      where: { stellar_address: address.toLowerCase() },
     });
     if (!user) {
       throw new NotFoundException('User not found');
