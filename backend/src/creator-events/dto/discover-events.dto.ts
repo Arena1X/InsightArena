@@ -43,7 +43,10 @@ export class DiscoveredEventDto {
   @ApiProperty()
   is_active: boolean;
 
-  @ApiProperty({ example: 'trending', enum: ['similar', 'trending', 'new', 'popular'] })
+  @ApiProperty({
+    example: 'trending',
+    enum: ['similar', 'trending', 'new', 'popular'],
+  })
   discovery_reason: string;
 
   @ApiProperty()

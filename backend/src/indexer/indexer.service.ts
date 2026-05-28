@@ -535,9 +535,7 @@ export class IndexerService implements OnModuleInit {
       case 'EventCancelled': {
         await this.handleEventCancelled(data);
         const eventId = String(data.event_id);
-        await this.cacheInvalidationService.invalidateOnEventCancelled(
-          eventId,
-        );
+        await this.cacheInvalidationService.invalidateOnEventCancelled(eventId);
         break;
       }
       case 'FeeUpdated':

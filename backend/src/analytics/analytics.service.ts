@@ -570,7 +570,10 @@ export class AnalyticsService {
       const eventId = p.market?.id || '';
 
       eventMap.set(eventId, true);
-      outcomeCount.set(p.chosen_outcome, (outcomeCount.get(p.chosen_outcome) || 0) + 1);
+      outcomeCount.set(
+        p.chosen_outcome,
+        (outcomeCount.get(p.chosen_outcome) || 0) + 1,
+      );
 
       if (!eventCategoryMap.has(eventId)) {
         eventCategoryMap.set(eventId, category);
@@ -604,7 +607,7 @@ export class AnalyticsService {
 
     const accuracy =
       predictions.length > 0
-        ? (totalCorrect / predictions.length * 100).toFixed(1)
+        ? ((totalCorrect / predictions.length) * 100).toFixed(1)
         : '0.0';
 
     const totalEvents = eventMap.size;
@@ -620,19 +623,22 @@ export class AnalyticsService {
       .getCount();
 
     const winRate =
-      totalEvents > 0 ? ((perfectScoreEvents / totalEvents) * 100).toFixed(1) : '0.0';
+      totalEvents > 0
+        ? ((perfectScoreEvents / totalEvents) * 100).toFixed(1)
+        : '0.0';
 
     return {
-      address: user.address,
+      address: user.stellar_address,
       total_events_joined: totalEvents,
-      total_events_created: user.events_created || 0,
+      total_events_created: 0,
       total_predictions_made: predictions.length,
       total_correct_predictions: totalCorrect,
       overall_accuracy_percentage: accuracy,
       total_wins: perfectScoreEvents,
       win_rate: winRate,
       most_predicted_outcome: mostPredicted?.[0] || 'N/A',
-      average_predictions_per_event: Math.round(avgPredictionsPerEvent * 10) / 10,
+      average_predictions_per_event:
+        Math.round(avgPredictionsPerEvent * 10) / 10,
       favorite_event_categories: categories,
       activity_timeline: activityTimeline,
     };

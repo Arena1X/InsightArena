@@ -13,6 +13,7 @@ import { CreatorEvent } from '../matches/entities/creator-event.entity';
 import { Match } from '../matches/entities/match.entity';
 import { MatchPrediction } from '../matches/entities/match-prediction.entity';
 import { User } from '../users/entities/user.entity';
+import { CacheInvalidationService } from '../cache/cache-invalidation.service';
 
 describe('IndexerService', () => {
   let service: IndexerService;
@@ -124,7 +125,7 @@ describe('IndexerService', () => {
         IndexerService,
         { provide: ConfigService, useValue: configService },
         {
-          provide: 'CacheInvalidationService',
+          provide: CacheInvalidationService,
           useValue: cacheInvalidationService,
         },
         {

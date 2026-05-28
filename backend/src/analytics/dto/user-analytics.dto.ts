@@ -22,7 +22,10 @@ export class UserAnalyticsDto {
   @ApiProperty({ example: 12 })
   total_wins: number;
 
-  @ApiProperty({ example: '7.7', description: 'Perfect score events percentage' })
+  @ApiProperty({
+    example: '7.7',
+    description: 'Perfect score events percentage',
+  })
   win_rate: string;
 
   @ApiProperty({ example: 'Team A', description: 'Most predicted outcome' })

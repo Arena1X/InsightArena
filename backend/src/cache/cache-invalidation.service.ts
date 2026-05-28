@@ -18,7 +18,10 @@ export class CacheInvalidationService {
     await this.invalidateKeys(keys);
   }
 
-  async invalidateOnMatchAdded(eventId: string, matchId: string): Promise<void> {
+  async invalidateOnMatchAdded(
+    eventId: string,
+    matchId: string,
+  ): Promise<void> {
     const keys = [
       `creator-events:${eventId}`,
       `creator-events:${eventId}:matches`,
