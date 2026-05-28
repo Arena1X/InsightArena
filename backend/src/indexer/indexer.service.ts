@@ -17,6 +17,7 @@ import {
   PredictedOutcome,
 } from '../matches/entities/match-prediction.entity';
 import { User } from '../users/entities/user.entity';
+import { CacheInvalidationService } from '../cache/cache-invalidation.service';
 
 const CHECKPOINT_LEDGER_KEY = 'indexer:last_processed_ledger';
 const CHECKPOINT_LEDGER_KEY_LATEST = 'indexer:latest_contract_ledger';
@@ -35,6 +36,7 @@ export class IndexerService implements OnModuleInit {
 
   constructor(
     private readonly configService: ConfigService,
+    private readonly cacheInvalidationService: CacheInvalidationService,
 
     @InjectRepository(ContractEvent)
     private readonly contractEventRepository: Repository<ContractEvent>,
@@ -476,24 +478,60 @@ export class IndexerService implements OnModuleInit {
     switch (eventType) {
       case 'EventCreated':
         await this.handleEventCreated(data);
+        const eventId1 = String(data.event_id);
+        await this.cacheInvalidationService.invalidateOnEventCreated(eventId1);
         break;
       case 'MatchAdded':
         await this.handleMatchAdded(data);
+        const eventId2 = String(data.event_id);
+        const matchId2 = String(data.match_id);
+        await this.cacheInvalidationService.invalidateOnMatchAdded(
+          eventId2,
+          matchId2,
+        );
         break;
       case 'UserJoinedEvent':
         await this.handleUserJoinedEvent(data);
+        const eventId3 = String(data.event_id);
+        const userId3 = String(data.user);
+        await this.cacheInvalidationService.invalidateOnUserJoinedEvent(
+          eventId3,
+          userId3,
+        );
         break;
       case 'PredictionSubmitted':
         await this.handlePredictionSubmitted(data);
+        const matchId4 = String(data.match_id);
+        const eventId4 = String(data.event_id);
+        const userId4 = String(data.user);
+        await this.cacheInvalidationService.invalidateOnPredictionSubmitted(
+          matchId4,
+          eventId4,
+          userId4,
+        );
         break;
       case 'MatchResultSubmitted':
         await this.handleMatchResultSubmitted(data);
+        const matchId5 = String(data.match_id);
+        const eventId5 = String(data.event_id);
+        await this.cacheInvalidationService.invalidateOnMatchResultSubmitted(
+          matchId5,
+          eventId5,
+        );
         break;
       case 'WinnersVerified':
         this.handleWinnersVerified(data);
+        const eventId6 = String(data.event_id);
+        await this.cacheInvalidationService.invalidateOnWinnersVerified(
+          eventId6,
+        );
         break;
       case 'EventCancelled':
         await this.handleEventCancelled(data);
+        const eventId7 = String(data.event_id);
+        await this.cacheInvalidationService.invalidateOnEventCancelled(
+          eventId7,
+        );
         break;
       case 'FeeUpdated':
         await this.handleFeeUpdated(data);

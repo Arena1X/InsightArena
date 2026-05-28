@@ -524,4 +524,46 @@ export class CreatorEventsService {
   private escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
+
+  async discoverEvents(
+    userAddress?: string,
+    limit: number = 20,
+    excludeJoined: boolean = false,
+  ): Promise<any> {
+    const events = await this.creatorEventRepository
+      .createQueryBuilder('event')
+      .where('event.is_active = true')
+      .andWhere('event.is_cancelled = false')
+      .orderBy('event.participant_count', 'DESC')
+      .addOrderBy('event.match_count', 'DESC')
+      .addOrderBy('event.created_at', 'DESC')
+      .take(limit)
+      .getMany();
+
+    const result = events.map((event) => ({
+      id: event.id,
+      on_chain_event_id: event.on_chain_event_id,
+      title: event.title,
+      description: event.description,
+      creator_address: event.creator_address,
+      participant_count: event.participant_count,
+      match_count: event.match_count,
+      is_active: event.is_active,
+      discovery_reason: this.getDiscoveryReason(event),
+      created_at: event.on_chain_created_at,
+    }));
+
+    return {
+      data: result,
+      total: result.length,
+      limit,
+    };
+  }
+
+  private getDiscoveryReason(event: CreatorEvent): string {
+    if (event.participant_count === 0) return 'new';
+    if (event.participant_count > 50) return 'popular';
+    if (event.match_count > 10) return 'trending';
+    return 'similar';
+  }
 }

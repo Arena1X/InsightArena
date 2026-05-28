@@ -34,6 +34,36 @@ export class CreatorEventsController {
   constructor(private readonly creatorEventsService: CreatorEventsService) {}
 
   /**
+   * GET /api/creator-events/discover
+   * #759 - Discover events based on user preferences and behavior.
+   */
+  @Get('discover')
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(300) // 5 minutes
+  @ApiOperation({ summary: 'Discover events based on user preferences' })
+  @ApiQuery({ name: 'limit', required: false, example: 20 })
+  @ApiQuery({
+    name: 'excludeJoined',
+    required: false,
+    type: Boolean,
+    example: false,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Discovered events with diverse recommendations',
+  })
+  async discoverEvents(
+    @Query('limit') limit?: number,
+    @Query('excludeJoined') excludeJoined?: boolean,
+  ) {
+    return this.creatorEventsService.discoverEvents(
+      undefined,
+      limit || 20,
+      excludeJoined || false,
+    );
+  }
+
+  /**
    * GET /api/creator-events/search
    * #757 - Search creator events with relevance ranking and highlights.
    */

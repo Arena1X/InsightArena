@@ -518,4 +518,110 @@ export class AnalyticsService {
     const activeRatio = active / total;
     return activeRatio > 0.5;
   }
+
+  async getUserAnalytics(
+    address: string,
+    from?: string,
+    to?: string,
+  ): Promise<any> {
+    const user = await this.usersRepository.findOne({
+      where: { address: address.toLowerCase() },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const fromDate = from ? new Date(from) : new Date(0);
+    const toDate = to ? new Date(to) : new Date();
+
+    const predictionsQuery = this.predictionsRepository
+      .createQueryBuilder('prediction')
+      .innerJoinAndSelect('prediction.market', 'market')
+      .where('prediction.userId = :userId', { userId: user.id })
+      .andWhere('prediction.submitted_at >= :fromDate', { fromDate })
+      .andWhere('prediction.submitted_at <= :toDate', { toDate });
+
+    const predictions = await predictionsQuery.getMany();
+
+    const totalCorrect = predictions.filter(
+      (p) => p.market?.resolved_outcome === p.chosen_outcome,
+    ).length;
+
+    const marketCategoryMap = new Map<string, number>();
+    const eventMap = new Map<string, boolean>();
+    const outcomeCount = new Map<string, number>();
+    const eventCategoryMap = new Map<string, string>();
+
+    predictions.forEach((p) => {
+      const category = p.market?.category || 'Unknown';
+      const eventId = p.market?.id || '';
+
+      eventMap.set(eventId, true);
+      outcomeCount.set(p.chosen_outcome, (outcomeCount.get(p.chosen_outcome) || 0) + 1);
+
+      if (!eventCategoryMap.has(eventId)) {
+        eventCategoryMap.set(eventId, category);
+      }
+      if (!marketCategoryMap.has(category)) {
+        marketCategoryMap.set(category, 0);
+      }
+      marketCategoryMap.set(category, marketCategoryMap.get(category)! + 1);
+    });
+
+    const categories = Array.from(marketCategoryMap.entries())
+      .map(([cat, count]) => ({ category: cat, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+      .map((c) => c.category);
+
+    const mostPredicted = Array.from(outcomeCount.entries()).sort(
+      (a, b) => b[1] - a[1],
+    )[0];
+
+    const activityMap = new Map<string, number>();
+    predictions.forEach((p) => {
+      const dateStr = new Date(p.submitted_at).toISOString().split('T')[0];
+      activityMap.set(dateStr, (activityMap.get(dateStr) || 0) + 1);
+    });
+
+    const activityTimeline = Array.from(activityMap.entries())
+      .map(([date, count]) => ({ date, prediction_count: count }))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 30);
+
+    const accuracy =
+      predictions.length > 0
+        ? (totalCorrect / predictions.length * 100).toFixed(1)
+        : '0.0';
+
+    const totalEvents = eventMap.size;
+    const avgPredictionsPerEvent =
+      totalEvents > 0 ? predictions.length / totalEvents : 0;
+
+    const perfectScoreEvents = await this.predictionsRepository
+      .createQueryBuilder('prediction')
+      .innerJoinAndSelect('prediction.market', 'market')
+      .where('prediction.userId = :userId', { userId: user.id })
+      .andWhere('market.resolved_outcome = prediction.chosen_outcome')
+      .andWhere('market.is_resolved = true')
+      .getCount();
+
+    const winRate =
+      totalEvents > 0 ? ((perfectScoreEvents / totalEvents) * 100).toFixed(1) : '0.0';
+
+    return {
+      address: user.address,
+      total_events_joined: totalEvents,
+      total_events_created: user.events_created || 0,
+      total_predictions_made: predictions.length,
+      total_correct_predictions: totalCorrect,
+      overall_accuracy_percentage: accuracy,
+      total_wins: perfectScoreEvents,
+      win_rate: winRate,
+      most_predicted_outcome: mostPredicted?.[0] || 'N/A',
+      average_predictions_per_event: Math.round(avgPredictionsPerEvent * 10) / 10,
+      favorite_event_categories: categories,
+      activity_timeline: activityTimeline,
+    };
+  }
 }

@@ -16,6 +16,7 @@ import { MarketAnalyticsDto } from './dto/market-analytics.dto';
 import { MarketHistoryResponseDto } from './dto/market-history.dto';
 import { UserTrendsDto } from './dto/user-trends.dto';
 import { CategoryAnalyticsResponseDto } from './dto/category-analytics.dto';
+import { UserAnalyticsDto } from './dto/user-analytics.dto';
 
 @ApiTags('Analytics')
 @Controller('analytics')
@@ -125,5 +126,36 @@ export class AnalyticsController {
   })
   async getCategoryAnalytics(): Promise<CategoryAnalyticsResponseDto> {
     return this.analyticsService.getCategoryAnalytics();
+  }
+
+  @Get('user/:address')
+  @Public()
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(300) // 5 minutes
+  @ApiOperation({ summary: 'Get comprehensive user analytics' })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    type: String,
+    description: 'Start date (ISO string)',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    type: String,
+    description: 'End date (ISO string)',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Comprehensive user analytics including events, predictions, and accuracy',
+  })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  async getUserAnalytics(
+    @Param('address') address: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ): Promise<any> {
+    return this.analyticsService.getUserAnalytics(address, from, to);
   }
 }
