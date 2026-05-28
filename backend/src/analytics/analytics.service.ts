@@ -523,7 +523,20 @@ export class AnalyticsService {
     address: string,
     from?: string,
     to?: string,
-  ): Promise<any> {
+  ): Promise<{
+    address: string;
+    total_events_joined: number;
+    total_events_created: number;
+    total_predictions_made: number;
+    total_correct_predictions: number;
+    overall_accuracy_percentage: string;
+    total_wins: number;
+    win_rate: string;
+    most_predicted_outcome: string;
+    average_predictions_per_event: number;
+    favorite_event_categories: string[];
+    activity_timeline: Array<{ date: string; prediction_count: number }>;
+  }> {
     const user = await this.usersRepository.findOne({
       where: { address: address.toLowerCase() },
     });

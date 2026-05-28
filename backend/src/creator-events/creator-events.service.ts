@@ -530,10 +530,19 @@ export class CreatorEventsService {
     limit: number = 20,
     excludeJoined: boolean = false,
   ): Promise<any> {
-    const events = await this.creatorEventRepository
+    const query = this.creatorEventRepository
       .createQueryBuilder('event')
       .where('event.is_active = true')
-      .andWhere('event.is_cancelled = false')
+      .andWhere('event.is_cancelled = false');
+
+    if (excludeJoined && userAddress) {
+      query.andWhere(
+        'event.id NOT IN (SELECT DISTINCT ce.id FROM creator_events ce INNER JOIN event_matches em ON em.event_id = ce.id INNER JOIN match_predictions mp ON mp.match_id = em.id WHERE mp.user_address = :userAddress)',
+        { userAddress },
+      );
+    }
+
+    const events = await query
       .orderBy('event.participant_count', 'DESC')
       .addOrderBy('event.match_count', 'DESC')
       .addOrderBy('event.created_at', 'DESC')

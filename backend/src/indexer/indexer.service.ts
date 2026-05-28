@@ -476,63 +476,70 @@ export class IndexerService implements OnModuleInit {
     data: Record<string, unknown>,
   ): Promise<void> {
     switch (eventType) {
-      case 'EventCreated':
+      case 'EventCreated': {
         await this.handleEventCreated(data);
-        const eventId1 = String(data.event_id);
-        await this.cacheInvalidationService.invalidateOnEventCreated(eventId1);
+        const eventId = String(data.event_id);
+        await this.cacheInvalidationService.invalidateOnEventCreated(eventId);
         break;
-      case 'MatchAdded':
+      }
+      case 'MatchAdded': {
         await this.handleMatchAdded(data);
-        const eventId2 = String(data.event_id);
-        const matchId2 = String(data.match_id);
+        const eventId = String(data.event_id);
+        const matchId = String(data.match_id);
         await this.cacheInvalidationService.invalidateOnMatchAdded(
-          eventId2,
-          matchId2,
+          eventId,
+          matchId,
         );
         break;
-      case 'UserJoinedEvent':
+      }
+      case 'UserJoinedEvent': {
         await this.handleUserJoinedEvent(data);
-        const eventId3 = String(data.event_id);
-        const userId3 = String(data.user);
+        const eventId = String(data.event_id);
+        const userId = String(data.user);
         await this.cacheInvalidationService.invalidateOnUserJoinedEvent(
-          eventId3,
-          userId3,
+          eventId,
+          userId,
         );
         break;
-      case 'PredictionSubmitted':
+      }
+      case 'PredictionSubmitted': {
         await this.handlePredictionSubmitted(data);
-        const matchId4 = String(data.match_id);
-        const eventId4 = String(data.event_id);
-        const userId4 = String(data.user);
+        const matchId = String(data.match_id);
+        const eventId = String(data.event_id);
+        const userId = String(data.user);
         await this.cacheInvalidationService.invalidateOnPredictionSubmitted(
-          matchId4,
-          eventId4,
-          userId4,
+          matchId,
+          eventId,
+          userId,
         );
         break;
-      case 'MatchResultSubmitted':
+      }
+      case 'MatchResultSubmitted': {
         await this.handleMatchResultSubmitted(data);
-        const matchId5 = String(data.match_id);
-        const eventId5 = String(data.event_id);
+        const matchId = String(data.match_id);
+        const eventId = String(data.event_id);
         await this.cacheInvalidationService.invalidateOnMatchResultSubmitted(
-          matchId5,
-          eventId5,
+          matchId,
+          eventId,
         );
         break;
-      case 'WinnersVerified':
+      }
+      case 'WinnersVerified': {
         this.handleWinnersVerified(data);
-        const eventId6 = String(data.event_id);
+        const eventId = String(data.event_id);
         await this.cacheInvalidationService.invalidateOnWinnersVerified(
-          eventId6,
+          eventId,
         );
         break;
-      case 'EventCancelled':
+      }
+      case 'EventCancelled': {
         await this.handleEventCancelled(data);
-        const eventId7 = String(data.event_id);
+        const eventId = String(data.event_id);
         await this.cacheInvalidationService.invalidateOnEventCancelled(
-          eventId7,
+          eventId,
         );
         break;
+      }
       case 'FeeUpdated':
         await this.handleFeeUpdated(data);
         break;

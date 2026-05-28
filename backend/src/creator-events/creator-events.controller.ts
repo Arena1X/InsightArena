@@ -55,7 +55,7 @@ export class CreatorEventsController {
   async discoverEvents(
     @Query('limit') limit?: number,
     @Query('excludeJoined') excludeJoined?: boolean,
-  ) {
+  ): Promise<any> {
     return this.creatorEventsService.discoverEvents(
       undefined,
       limit || 20,

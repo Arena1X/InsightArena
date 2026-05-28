@@ -16,7 +16,6 @@ import { MarketAnalyticsDto } from './dto/market-analytics.dto';
 import { MarketHistoryResponseDto } from './dto/market-history.dto';
 import { UserTrendsDto } from './dto/user-trends.dto';
 import { CategoryAnalyticsResponseDto } from './dto/category-analytics.dto';
-import { UserAnalyticsDto } from './dto/user-analytics.dto';
 
 @ApiTags('Analytics')
 @Controller('analytics')

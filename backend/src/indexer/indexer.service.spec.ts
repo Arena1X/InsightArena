@@ -108,10 +108,25 @@ describe('IndexerService', () => {
       get: jest.fn(),
     };
 
+    const cacheInvalidationService = {
+      invalidateOnEventCreated: jest.fn(),
+      invalidateOnMatchAdded: jest.fn(),
+      invalidateOnUserJoinedEvent: jest.fn(),
+      invalidateOnPredictionSubmitted: jest.fn(),
+      invalidateOnMatchResultSubmitted: jest.fn(),
+      invalidateOnWinnersVerified: jest.fn(),
+      invalidateOnEventCancelled: jest.fn(),
+      invalidateCategoryCache: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         IndexerService,
         { provide: ConfigService, useValue: configService },
+        {
+          provide: 'CacheInvalidationService',
+          useValue: cacheInvalidationService,
+        },
         {
           provide: getRepositoryToken(ContractEvent),
           useValue: contractEventRepository,
