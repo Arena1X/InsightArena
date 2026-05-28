@@ -1,5 +1,8 @@
 use soroban_sdk::{token::Client as TokenClient, Address, Env, String, Symbol, Vec};
 
+/// Maximum number of events returned per page.
+const MAX_LIST_LIMIT: u32 = 50;
+
 use crate::admin;
 use crate::invite::{self, InviteError};
 use crate::storage::{self, TTL_LEDGERS};
@@ -157,6 +160,57 @@ pub fn create_event(
 /// Returns [`EventError::EventNotFound`] when the ID does not exist.
 pub fn get_event(env: &Env, event_id: u64) -> Result<Event, EventError> {
     storage::get_event(env, event_id).map_err(|_| EventError::EventNotFound)
+}
+
+// ---------------------------------------------------------------------------
+// get_event_by_code (#797)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// list_events (#799)
+// ---------------------------------------------------------------------------
+
+/// Return a paginated slice of all events.
+///
+/// `start` is a **0-based offset** into the ordered sequence of events (sorted
+/// by creation order, i.e. ascending event_id).  `limit` is capped at 50 to
+/// bound gas usage per call.
+///
+/// # Pagination behaviour
+/// * Events are stored with IDs `1 … total_count`.
+/// * Offset `start = 0` returns events 1 … limit.
+/// * Offset `start = N` returns events N+1 … N+limit (clamped to total_count).
+/// * When `start >= total_count` **or** when no events have been created yet,
+///   an empty `Vec` is returned (not an error) so callers can detect the end of
+///   the list without special-casing the first page.
+pub fn list_events(env: &Env, start: u64, limit: u32) -> Vec<Event> {
+    let total_count = storage::get_event_count(env);
+
+    // Cap limit to prevent gas exhaustion.
+    let limit = if limit > MAX_LIST_LIMIT {
+        MAX_LIST_LIMIT
+    } else {
+        limit
+    } as u64;
+
+    let mut events = Vec::new(env);
+
+    // Out-of-bounds or empty store — return empty list.
+    if total_count == 0 || start >= total_count || limit == 0 {
+        return events;
+    }
+
+    let end = (start + limit).min(total_count);
+
+    // Event IDs are 1-indexed; offset i maps to event_id i+1.
+    for i in start..end {
+        let event_id = i + 1;
+        if let Ok(event) = storage::get_event(env, event_id) {
+            events.push_back(event);
+        }
+    }
+
+    events
 }
 
 // ---------------------------------------------------------------------------

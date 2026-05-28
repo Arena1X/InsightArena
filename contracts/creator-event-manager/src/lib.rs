@@ -6,12 +6,14 @@ pub mod storage_types;
 pub mod verification;
 mod event;
 mod invite;
+mod matches;
 mod token;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Symbol, Vec};
 
 use admin::AdminError;
 use event::EventError;
+use matches::MatchError;
 use storage_types::Event;
 use verification::VerificationError;
 
@@ -291,6 +293,55 @@ impl CreatorEventManagerContract {
             Err(EventError::InvalidInviteCode) => panic!("invalid_invite_code"),
             Err(EventError::EventNotFound) => panic!("event_not_found"),
             Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Return a paginated list of all events ordered by creation time.
+    ///
+    /// `start` is a 0-based offset (0 = first event ever created).
+    /// `limit` is capped at 50 per call to bound gas usage.
+    /// Returns an empty `Vec` when no events exist or `start` is out of range.
+    pub fn list_events(env: Env, start: u64, limit: u32) -> Vec<Event> {
+        event::list_events(&env, start, limit)
+    }
+
+    // =========================================================================
+    // Match management (#800)
+    // =========================================================================
+
+    /// Add a prediction match to an existing event.
+    ///
+    /// Only the event creator may call this.  The event must not be cancelled,
+    /// both team names must be 1–100 characters and distinct, and `match_time`
+    /// must be strictly in the future.
+    ///
+    /// Returns the new `match_id`.
+    ///
+    /// # Panics
+    /// * `"contract_paused"` — contract is paused.
+    /// * `"event_not_found"` — no event exists with the given ID.
+    /// * `"unauthorized"` — caller is not the event creator.
+    /// * `"event_cancelled"` — event has been cancelled.
+    /// * `"invalid_team_name"` — a team name is empty or exceeds 100 chars.
+    /// * `"duplicate_team"` — both team names are identical.
+    /// * `"invalid_match_time"` — match_time is not in the future.
+    pub fn add_match(
+        env: Env,
+        creator: Address,
+        event_id: u64,
+        team_a: String,
+        team_b: String,
+        match_time: u64,
+    ) -> u64 {
+        match matches::add_match(&env, creator, event_id, team_a, team_b, match_time) {
+            Ok(match_id) => match_id,
+            Err(MatchError::Paused) => panic!("contract_paused"),
+            Err(MatchError::Unauthorized) => panic!("unauthorized"),
+            Err(MatchError::EventNotFound) => panic!("event_not_found"),
+            Err(MatchError::EventCancelled) => panic!("event_cancelled"),
+            Err(MatchError::InvalidTeamName) => panic!("invalid_team_name"),
+            Err(MatchError::DuplicateTeam) => panic!("duplicate_team"),
+            Err(MatchError::InvalidMatchTime) => panic!("invalid_match_time"),
         }
     }
 }

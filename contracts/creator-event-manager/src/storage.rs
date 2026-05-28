@@ -115,6 +115,15 @@ pub fn set_prediction(env: &Env, prediction_id: u64, prediction: &Prediction) {
 // Counter helpers
 // ---------------------------------------------------------------------------
 
+/// Return the current total event count without incrementing the counter.
+pub fn get_event_count(env: &Env) -> u64 {
+    let key = DataKey::EventCounter(0);
+    env.storage()
+        .instance()
+        .get::<DataKey, u64>(&key)
+        .unwrap_or(0)
+}
+
 /// Increment the global event counter and return the new value (starts at 1).
 pub fn next_event_id(env: &Env) -> u64 {
     let key = DataKey::EventCounter(0);
