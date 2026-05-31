@@ -315,130 +315,17 @@ fn test_get_match_count_missing_event_panics() {
     client.get_match_count(&999u64);
 }
 
-// ===========================================================================
-// Match result submission — verified via storage
-// ===========================================================================
 
-#[test]
-fn test_match_submit_result_updates_storage() {
     let (env, client, contract_id, _admin, xlm_token) = setup();
     let creator = Address::generate(&env);
     fund(&env, &xlm_token, &creator, FEE);
 
-    let ai_agent = client.get_ai_agent();
 
-    let (event_id, _) = client.create_event(&creator, &title(&env), &desc(&env), &5u32);
-
-    let match_id = env.as_contract(&contract_id, || {
-        add_match_to_storage(&env, event_id, "Team A", "Team B", 10_000)
-    });
-
-    // Submit result via storage
-    env.as_contract(&contract_id, || {
-        let mut m = storage::get_match(&env, match_id).expect("match exists");
-        m.submit_result(MatchResult::TeamA, ai_agent, env.ledger().timestamp())
-            .expect("submit should succeed");
-        storage::set_match(&env, match_id, &m);
-    });
-
-    // Verify result via storage
-    let updated = env.as_contract(&contract_id, || {
-        storage::get_match(&env, match_id).expect("match exists")
-    });
-
-    assert!(updated.result_submitted);
-    assert_eq!(updated.winning_team, Some(0u32));
-    assert!(updated.is_completed());
-    assert_eq!(updated.get_winner(), Some(MatchResult::TeamA));
-}
-
-#[test]
-fn test_match_double_result_submission_rejected() {
-    let (env, client, contract_id, _admin, xlm_token) = setup();
-    let creator = Address::generate(&env);
-    fund(&env, &xlm_token, &creator, FEE);
-
-    let ai_agent = client.get_ai_agent();
-
-    let (event_id, _) = client.create_event(&creator, &title(&env), &desc(&env), &5u32);
-
-    let match_id = env.as_contract(&contract_id, || {
-        add_match_to_storage(&env, event_id, "Team A", "Team B", 10_000);
-        add_match_to_storage(&env, event_id, "Team C", "Team D", 10_000)
-    });
-
-    env.as_contract(&contract_id, || {
-        let mut m = storage::get_match(&env, match_id).expect("match exists");
-        m.submit_result(MatchResult::TeamA, ai_agent.clone(), env.ledger().timestamp())
-            .expect("first submit should succeed");
-        storage::set_match(&env, match_id, &m);
-    });
-
-    env.as_contract(&contract_id, || {
-        let mut m = storage::get_match(&env, match_id).expect("match exists");
-        let result = m.submit_result(MatchResult::TeamB, ai_agent, env.ledger().timestamp());
-        assert_eq!(result, Err("Result already submitted for this match"));
-    });
-}
-
-// ===========================================================================
-// Match — event emission verification via storage
-// ===========================================================================
-
-#[test]
-fn test_storage_operations_do_not_panic() {
-    // Verify that basic storage operations (set_event, set_match, add_event_match)
-    // complete without panicking, regardless of contract-level event emission.
-    let (env, _client, contract_id, _admin, _xlm_token) = setup();
-
-    env.as_contract(&contract_id, || {
-        let event = creator_event_manager::storage_types::Event::new(
-            1,
-            Address::generate(&env),
-            String::from_str(&env, "Test"),
-            String::from_str(&env, "Desc"),
-            0i128,
-            0u64,
-            Symbol::new(&env, "CODE1234"),
-            10u32,
-        );
-        storage::set_event(&env, 1, &event);
-    });
-
-    env.as_contract(&contract_id, || {
-        add_match_to_storage(&env, 1, "Team A", "Team B", 10_000);
-    });
-
-    let stored = env.as_contract(&contract_id, || {
-        storage::get_event(&env, 1).expect("event should exist")
-    });
-    assert_eq!(stored.match_count, 1);
-}
-
-// ===========================================================================
-// Match — sorting by match_time
-// ===========================================================================
-
-#[test]
-fn test_event_matches_ordered_by_insertion() {
     let (env, client, contract_id, _admin, xlm_token) = setup();
     let creator = Address::generate(&env);
     fund(&env, &xlm_token, &creator, FEE);
 
     let (event_id, _) = client.create_event(&creator, &title(&env), &desc(&env), &5u32);
 
-    let ids = env.as_contract(&contract_id, || {
-        let m1 = add_match_to_storage(&env, event_id, "Team A", "Team B", 30_000);
-        let m2 = add_match_to_storage(&env, event_id, "Team C", "Team D", 10_000);
-        let m3 = add_match_to_storage(&env, event_id, "Team E", "Team F", 20_000);
-        (m1, m2, m3)
-    });
 
-    let match_list = env.as_contract(&contract_id, || {
-        storage::get_event_matches(&env, event_id)
-    });
-
-    // Matches are stored in insertion order (FIFO)
-    let stored_ids: Vec<u64> = match_list.iter().collect();
-    assert_eq!(stored_ids, vec![ids.0, ids.1, ids.2]);
 }

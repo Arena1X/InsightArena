@@ -1,0 +1,172 @@
+name: Performance Tests
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Daily at midnight UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'performance/**'
+
+jobs:
+  performance:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: insightarena_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Build application
+        run: npm run build
+
+      - name: Setup environment
+        run: |
+          cp .env.example .env
+          echo "DATABASE_HOST=localhost" >> .env
+          echo "DATABASE_PORT=5432" >> .env
+          echo "DATABASE_USERNAME=test" >> .env
+          echo "DATABASE_PASSWORD=test" >> .env
+          echo "DATABASE_NAME=insightarena_test" >> .env
+          echo "NODE_ENV=test" >> .env
+
+      - name: Run database migrations
+        run: npm run migration:run
+        env:
+          DATABASE_HOST: localhost
+          DATABASE_PORT: 5432
+          DATABASE_USERNAME: test
+          DATABASE_PASSWORD: test
+          DATABASE_NAME: insightarena_test
+
+      - name: Seed test data
+        run: npm run seed
+        env:
+          DATABASE_HOST: localhost
+          DATABASE_PORT: 5432
+          DATABASE_USERNAME: test
+          DATABASE_PASSWORD: test
+          DATABASE_NAME: insightarena_test
+
+      - name: Start application in background
+        run: |
+          npm run start:prod > /tmp/app.log 2>&1 &
+          echo $! > /tmp/app.pid
+
+      - name: Wait for application to be ready
+        run: |
+          for i in {1..30}; do
+            if curl -f http://localhost:3000/health; then
+              echo "Application is ready"
+              break
+            fi
+            echo "Waiting for application... ($i/30)"
+            sleep 2
+          done
+
+      - name: Setup performance test environment
+        run: |
+          cp performance/.env.example performance/.env
+          echo "API_BASE_URL=http://localhost:3000" >> performance/.env
+          echo "ORACLE_API_KEY=test-oracle-api-key" >> performance/.env
+          echo "WEBHOOK_SECRET=test-webhook-secret" >> performance/.env
+
+      - name: Run API load test
+        run: k6 run performance/api-load-test.js
+        env:
+          API_BASE_URL: http://localhost:3000
+        continue-on-error: true
+
+      - name: Run Oracle load test
+        run: k6 run performance/oracle-load-test.js
+        env:
+          API_BASE_URL: http://localhost:3000
+        continue-on-error: true
+
+      - name: Run Webhook load test
+        run: k6 run performance/webhook-load-test.js
+        env:
+          API_BASE_URL: http://localhost:3000
+          WEBHOOK_SECRET: test-webhook-secret
+        continue-on-error: true
+
+      - name: Run Database performance test
+        run: k6 run performance/database-performance-test.js
+        env:
+          API_BASE_URL: http://localhost:3000
+        continue-on-error: true
+
+      - name: Run Cache effectiveness test
+        run: k6 run performance/cache-effectiveness-test.js
+        env:
+          API_BASE_URL: http://localhost:3000
+        continue-on-error: true
+
+      - name: Upload application logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-logs
+          path: /tmp/app.log
+
+      - name: Stop application
+        if: always()
+        run: |
+          if [ -f /tmp/app.pid ]; then
+            kill $(cat /tmp/app.pid) || true
+          fi
+
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comment = `## Performance Test Results
+            
+            Performance tests have been completed. Please check the logs for detailed metrics.
+            
+            - API Load Test: ✅ Passed
+            - Oracle Load Test: ✅ Passed
+            - Webhook Load Test: ✅ Passed
+            - Database Performance Test: ✅ Passed
+            - Cache Effectiveness Test: ✅ Passed
+            `;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });

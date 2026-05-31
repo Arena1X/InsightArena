@@ -93,6 +93,72 @@ fn add_prediction(env: &Env, event_id: u64, match_id: u64, predictor: &Address) 
 }
 
 #[test]
+fn test_get_event_participants_returns_all_participants() {
+    let (env, client, _contract_id, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let user_one = Address::generate(&env);
+    let user_two = Address::generate(&env);
+    let user_three = Address::generate(&env);
+    fund(&env, &xlm_token, &creator, FEE);
+
+    let (event_id, invite_code) = client.create_event(&creator, &title(&env), &desc(&env), &5u32);
+    client.join_event(&user_one, &invite_code);
+    client.join_event(&user_two, &invite_code);
+    client.join_event(&user_three, &invite_code);
+
+    let participants = client.get_event_participants(&event_id);
+
+    assert_eq!(participants.len(), 3);
+    assert_eq!(participants.get(0).unwrap(), user_one);
+    assert_eq!(participants.get(1).unwrap(), user_two);
+    assert_eq!(participants.get(2).unwrap(), user_three);
+}
+
+#[test]
+fn test_get_event_participants_empty_for_new_event() {
+    let (env, client, _contract_id, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    fund(&env, &xlm_token, &creator, FEE);
+
+    let (event_id, _) = client.create_event(&creator, &title(&env), &desc(&env), &5u32);
+
+    let participants = client.get_event_participants(&event_id);
+    assert_eq!(participants.len(), 0);
+}
+
+#[test]
+fn test_get_event_participants_updates_as_participants_join() {
+    let (env, client, _contract_id, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let user_one = Address::generate(&env);
+    let user_two = Address::generate(&env);
+    fund(&env, &xlm_token, &creator, FEE);
+
+    let (event_id, invite_code) = client.create_event(&creator, &title(&env), &desc(&env), &5u32);
+
+    let initial_participants = client.get_event_participants(&event_id);
+    assert_eq!(initial_participants.len(), 0);
+
+    client.join_event(&user_one, &invite_code);
+    let one_participant = client.get_event_participants(&event_id);
+    assert_eq!(one_participant.len(), 1);
+    assert_eq!(one_participant.get(0).unwrap(), user_one);
+
+    client.join_event(&user_two, &invite_code);
+    let two_participants = client.get_event_participants(&event_id);
+    assert_eq!(two_participants.len(), 2);
+    assert_eq!(two_participants.get(0).unwrap(), user_one);
+    assert_eq!(two_participants.get(1).unwrap(), user_two);
+}
+
+#[test]
+#[should_panic(expected = "event_not_found")]
+fn test_get_event_participants_missing_event_panics() {
+    let (_env, client, _contract_id, _xlm_token) = setup();
+    client.get_event_participants(&999u64);
+}
+
+#[test]
 fn test_event_statistics_are_accurate() {
     let (env, client, contract_id, xlm_token) = setup();
     let creator = Address::generate(&env);

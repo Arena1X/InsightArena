@@ -5,8 +5,11 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   Index,
+  OneToOne,
+  JoinColumn,
 } from 'typeorm';
 import { IsString, IsOptional, IsNumber, Min, IsIn } from 'class-validator';
+import { UserPreferences } from './user-preferences.entity';
 
 @Entity('users')
 export class User {
@@ -75,6 +78,10 @@ export class User {
   @IsOptional()
   @IsString()
   banned_by: string | null;
+
+  @OneToOne(() => UserPreferences, { cascade: true, onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'preferences_id' })
+  preferences?: UserPreferences;
 
   @CreateDateColumn()
   created_at: Date;

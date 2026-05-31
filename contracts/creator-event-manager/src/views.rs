@@ -4,10 +4,10 @@
 //! paths so callers can inspect an event's participation, prediction volume,
 //! and completion state in a single contract view.
 
-use soroban_sdk::{contracttype, Env, Vec, Address};
 use crate::event::{self, EventError};
 use crate::storage;
 use crate::storage_types::DataKey;
+use soroban_sdk::{contracttype, Address, Env, Vec};
 
 /// Aggregate statistics for one creator event.
 ///
@@ -44,6 +44,16 @@ pub struct Config {
     pub xlm_token: Address,
     pub creation_fee: i128,
     pub paused: bool,
+}
+
+/// Return all participant addresses for an existing event.
+///
+/// This view validates that `event_id` points to a stored event, then returns
+/// the `EventParticipants(event_id)` storage index. Newly created events return
+/// an empty `Vec` until users join through `join_event`.
+pub fn get_event_participants(env: &Env, event_id: u64) -> Result<Vec<Address>, EventError> {
+    event::get_event(env, event_id)?;
+    Ok(storage::get_event_participants(env, event_id))
 }
 
 /// Build aggregate statistics for an existing event.
@@ -125,7 +135,9 @@ pub fn get_config(env: &Env) -> Result<Config, &'static str> {
 pub fn get_user_events(env: &Env, user: Address) -> Vec<u64> {
     // Read the current event counter (instance storage)
     let instance = env.storage().instance();
-    let max_id: u64 = instance.get::<DataKey, u64>(&DataKey::EventCounter(0)).unwrap_or(0);
+    let max_id: u64 = instance
+        .get::<DataKey, u64>(&DataKey::EventCounter(0))
+        .unwrap_or(0);
 
     let mut out = Vec::new(env);
     for id in 1..=max_id {

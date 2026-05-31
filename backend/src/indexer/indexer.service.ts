@@ -17,6 +17,8 @@ import {
   PredictedOutcome,
 } from '../matches/entities/match-prediction.entity';
 import { User } from '../users/entities/user.entity';
+import { NotificationGeneratorService } from '../notifications/notification-generator.service';
+import { BroadcasterService } from '../websocket/broadcaster.service';
 
 const CHECKPOINT_LEDGER_KEY = 'indexer:last_processed_ledger';
 const CHECKPOINT_LEDGER_KEY_LATEST = 'indexer:latest_contract_ledger';
@@ -57,6 +59,9 @@ export class IndexerService implements OnModuleInit {
 
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+
+    private readonly notificationGeneratorService: NotificationGeneratorService,
+    private readonly broadcasterService: BroadcasterService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -492,7 +497,7 @@ export class IndexerService implements OnModuleInit {
         await this.handleMatchResultSubmitted(data);
         break;
       case 'WinnersVerified':
-        this.handleWinnersVerified(data);
+        void this.handleWinnersVerified(data);
         break;
       case 'EventCancelled':
         await this.handleEventCancelled(data);
@@ -544,6 +549,10 @@ export class IndexerService implements OnModuleInit {
 
     await this.creatorEventRepository.save(creatorEvent);
     this.logger.log(`Indexed EventCreated: event_id=${onChainEventId}`);
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleEventCreated(data);
+    this.broadcasterService.broadcastEventCreated(data);
   }
 
   private async handleMatchAdded(data: Record<string, unknown>): Promise<void> {
@@ -588,6 +597,10 @@ export class IndexerService implements OnModuleInit {
     this.logger.log(
       `Indexed MatchAdded: match_id=${onChainMatchId} event_id=${onChainEventId}`,
     );
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleMatchAdded(data);
+    this.broadcasterService.broadcastMatchAdded(data);
   }
 
   private async handleUserJoinedEvent(
@@ -612,6 +625,10 @@ export class IndexerService implements OnModuleInit {
 
     event.participant_count += 1;
     await this.creatorEventRepository.save(event);
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleUserJoinedEvent(data);
+    this.broadcasterService.broadcastUserJoined(data);
   }
 
   private async handlePredictionSubmitted(
@@ -678,6 +695,10 @@ export class IndexerService implements OnModuleInit {
     this.logger.log(
       `Indexed PredictionSubmitted: match=${matchId} user=${predictorAddress}`,
     );
+
+    // Trigger notification
+    await this.notificationGeneratorService.handlePredictionSubmitted(data);
+    this.broadcasterService.broadcastPredictionSubmitted(data);
   }
 
   private async handleMatchResultSubmitted(
@@ -729,6 +750,10 @@ export class IndexerService implements OnModuleInit {
     this.logger.log(
       `Indexed MatchResultSubmitted: match=${matchId} winner=${winningTeam}`,
     );
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleMatchResultSubmitted(data);
+    this.broadcasterService.broadcastMatchResolved(data);
   }
 
   private async gradePredictions(
@@ -749,10 +774,16 @@ export class IndexerService implements OnModuleInit {
     }
   }
 
-  private handleWinnersVerified(data: Record<string, unknown>): void {
+  private async handleWinnersVerified(
+    data: Record<string, unknown>,
+  ): Promise<void> {
     this.logger.log(
       `WinnersVerified event received for event_id=${String(data.event_id)}`,
     );
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleWinnersVerified(data);
+    this.broadcasterService.broadcastWinnersVerified(data);
   }
 
   private async handleEventCancelled(
@@ -778,6 +809,10 @@ export class IndexerService implements OnModuleInit {
     event.is_cancelled = true;
     await this.creatorEventRepository.save(event);
     this.logger.log(`Indexed EventCancelled: event_id=${onChainEventId}`);
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleEventCancelled(data);
+    this.broadcasterService.broadcastEventCancelled(data);
   }
 
   private async handleFeeUpdated(data: Record<string, unknown>): Promise<void> {

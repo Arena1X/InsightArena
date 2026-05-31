@@ -3,6 +3,7 @@ import { Suspense } from "react";
 
 import { StandardPageLoadingSkeleton } from "@/component/loading-route-skeletons";
 import { WalletProvider } from "@/context/WalletContext";
+import { CreatorEventsProvider } from "@/context/CreatorEventsContext";
 
 import "./globals.css";
 
@@ -88,14 +89,16 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className="font-sans antialiased bg-[#141824] text-white">
         <WalletProvider>
-          <a href="#main-content" className="skip-link">
-            Skip to main content
-          </a>
-          <div id="main-content" tabIndex={-1}>
-            <Suspense fallback={<StandardPageLoadingSkeleton />}>
-              {children}
-            </Suspense>
-          </div>
+          <CreatorEventsProvider>
+            <a href="#main-content" className="skip-link">
+              Skip to main content
+            </a>
+            <div id="main-content" tabIndex={-1}>
+              <Suspense fallback={<StandardPageLoadingSkeleton />}>
+                {children}
+              </Suspense>
+            </div>
+          </CreatorEventsProvider>
         </WalletProvider>
       </body>
     </html>

@@ -12,6 +12,8 @@ import { CreatorEvent } from '../matches/entities/creator-event.entity';
 import { Match } from '../matches/entities/match.entity';
 import { MatchPrediction } from '../matches/entities/match-prediction.entity';
 import { User } from '../users/entities/user.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { WebsocketModule } from '../websocket/websocket.module';
 
 @Module({
   imports: [
@@ -25,6 +27,8 @@ import { User } from '../users/entities/user.entity';
       User,
     ]),
     CacheModule.register(),
+    NotificationsModule,
+    WebsocketModule,
   ],
   controllers: [IndexerController, IndexerHealthController],
   providers: [IndexerService, IndexerHealthService],

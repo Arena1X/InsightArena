@@ -137,6 +137,9 @@ Get match statistics: `(has_started, result_submitted, time_until_start, time_si
 #### `get_match_count()` / `validate_match(match_id)`
 Get total match count and validate match data consistency.
 
+#### `get_event_participants(event_id)`
+Return the full `Vec<Address>` of users who have joined an event. Newly created events return an empty vector, and unknown event IDs fail with `event_not_found`.
+
 #### `join_event(user, invite_code)`
 Join an event using its invite code before submitting predictions.
 

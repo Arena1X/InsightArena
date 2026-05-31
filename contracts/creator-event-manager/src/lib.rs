@@ -17,7 +17,7 @@ use soroban_sdk::{contract, contractimpl, Address, Env, String, Symbol, Vec};
 
 use admin::AdminError;
 use event::EventError;
-use storage_types::{Event, Prediction, Winner};
+use storage_types::{Event, Match, Prediction, Winner};
 use verification::VerificationError;
 use views::EventStatistics;
 
@@ -300,6 +300,21 @@ impl CreatorEventManagerContract {
         }
     }
 
+    /// Return all participant addresses for an event.
+    ///
+    /// Reads the `EventParticipants(event_id)` storage index after validating
+    /// that the event exists. A newly created event returns an empty vector.
+    ///
+    /// # Panics
+    /// * `"event_not_found"` — no event exists with the given ID.
+    pub fn get_event_participants(env: Env, event_id: u64) -> Vec<Address> {
+        match views::get_event_participants(&env, event_id) {
+            Ok(participants) => participants,
+            Err(EventError::EventNotFound) => panic!("event_not_found"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
     /// Return aggregate statistics for an event.
     ///
     /// The returned [`EventStatistics`] summarizes participant count, match
@@ -323,6 +338,22 @@ impl CreatorEventManagerContract {
     pub fn get_match_count(env: Env, event_id: u64) -> u32 {
         match r#match::get_match_count(&env, event_id) {
             Ok(count) => count,
+            Err(EventError::EventNotFound) => panic!("event_not_found"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Retrieve all matches for an event, sorted by `match_time` ascending.
+    ///
+    /// Returns a `Vec<Match>` containing every match that belongs to the given
+    /// event, ordered from earliest to latest scheduled start time.  Returns an
+    /// empty `Vec` when the event exists but has no matches.
+    ///
+    /// # Panics
+    /// * `"event_not_found"` — no event exists with the given ID.
+    pub fn list_event_matches(env: Env, event_id: u64) -> Vec<Match> {
+        match r#match::list_event_matches(&env, event_id) {
+            Ok(matches) => matches,
             Err(EventError::EventNotFound) => panic!("event_not_found"),
             Err(_) => panic!("unexpected_error"),
         }
