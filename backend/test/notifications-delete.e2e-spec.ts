@@ -79,7 +79,6 @@ describe('DELETE /notifications/:id (E2E)', () => {
       .delete(`/notifications/${mockNotification.id}`)
       .expect(HttpStatus.NO_CONTENT);
 
-    // eslint-disable-next-line @typescript-eslint/unbound-method
     expect(notificationsService.remove).toHaveBeenCalledWith(
       mockNotification.id,
       mockUser.id,

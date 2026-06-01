@@ -58,7 +58,7 @@ describe('Markets (e2e)', () => {
     resolution_time: new Date('2025-01-01T12:00:00Z'),
     is_public: true,
     is_resolved: false,
-    resolved_outcome: null as any, // eslint-disable-line @typescript-eslint/no-unsafe-assignment
+    resolved_outcome: null as any,
     is_cancelled: false,
     total_pool_stroops: '0',
     participant_count: 0,

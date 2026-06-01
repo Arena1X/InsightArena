@@ -1,4 +1,5 @@
 mod admin_tests;
+mod data_structures_test;
 mod event_tests;
 mod match_tests;
 mod oracle_tests;
