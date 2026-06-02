@@ -1,10 +1,13 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, MoreThan, Between } from 'typeorm';
 import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.entity';
 import { Market } from '../markets/entities/market.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { User } from '../users/entities/user.entity';
+import { CreatorEvent } from '../matches/entities/creator-event.entity';
+import { Match } from '../matches/entities/match.entity';
+import { MatchPrediction } from '../matches/entities/match-prediction.entity';
 import { ActivityLog } from './entities/activity-log.entity';
 import { MarketHistory } from './entities/market-history.entity';
 import { DashboardKpisDto } from './dto/dashboard-kpis.dto';
@@ -22,6 +25,10 @@ import {
   CategoryStatsDto,
   CategoryAnalyticsResponseDto,
 } from './dto/category-analytics.dto';
+import {
+  TrendingEventDto,
+  TrendingEventsResponseDto,
+} from './dto/trending-events.dto';
 
 /** Tier thresholds: Bronze < 200, Silver < 500, Gold < 1000, Platinum ≥ 1000 */
 export function predictorTierFromReputation(reputationScore: number): string {
@@ -53,6 +60,12 @@ export class AnalyticsService {
     private readonly activityLogsRepository: Repository<ActivityLog>,
     @InjectRepository(MarketHistory)
     private readonly marketHistoryRepository: Repository<MarketHistory>,
+    @InjectRepository(CreatorEvent)
+    private readonly creatorEventRepository: Repository<CreatorEvent>,
+    @InjectRepository(Match)
+    private readonly matchRepository: Repository<Match>,
+    @InjectRepository(MatchPrediction)
+    private readonly matchPredictionRepository: Repository<MatchPrediction>,
   ) {}
 
   async logActivity(
@@ -517,5 +530,122 @@ export class AnalyticsService {
     if (total === 0) return false;
     const activeRatio = active / total;
     return activeRatio > 0.5;
+  }
+
+  async getTrendingEvents(
+    limit: number = 10,
+    timeWindow: '24h' | '7d' | '30d' = '24h',
+  ): Promise<TrendingEventsResponseDto> {
+    limit = Math.min(Math.max(limit, 1), 50);
+
+    const timeOffsetMs = this.getTimeWindowMs(timeWindow);
+    const cutoffTime = new Date(Date.now() - timeOffsetMs);
+
+    const events = await this.creatorEventRepository
+      .createQueryBuilder('event')
+      .where('event.is_active = true')
+      .andWhere('event.is_cancelled = false')
+      .andWhere('event.created_at >= :cutoffTime', { cutoffTime })
+      .leftJoinAndSelect('event.matches', 'match')
+      .getMany();
+
+    const eventTrendingData: Array<{
+      event: CreatorEvent;
+      recentJoins: number;
+      recentPredictions: number;
+    }> = [];
+
+    for (const event of events) {
+      const recentJoins = event.participant_count;
+
+      const recentPredictions = await this.matchPredictionRepository
+        .createQueryBuilder('pred')
+        .innerJoin('pred.match', 'match')
+        .where('match.event_id = :eventId', { eventId: event.id })
+        .andWhere('pred.predicted_at >= :cutoffTime', { cutoffTime })
+        .getCount();
+
+      eventTrendingData.push({
+        event,
+        recentJoins,
+        recentPredictions,
+      });
+    }
+
+    const trendingEvents = eventTrendingData
+      .map((data) => {
+        const now = new Date();
+        const eventCreatedTime = new Date(data.event.created_at);
+        const eventAgeMs = now.getTime() - eventCreatedTime.getTime();
+        const eventAgeDays = Math.max(eventAgeMs / (1000 * 60 * 60 * 24), 1);
+
+        const recentJoinsScore = data.recentJoins * 10;
+        const recentPredictionsScore = data.recentPredictions * 15;
+        const participantScore = data.event.participant_count * 5;
+        const matchScore = data.event.match_count * 8;
+
+        const timeRemainingMs = this.getTimeRemainingForEvent(
+          data.event.created_at,
+        );
+        const timeRemainingScore = Math.max(
+          (timeRemainingMs / (1000 * 60 * 60)) * 2,
+          0,
+        );
+
+        const trendingScore =
+          recentJoinsScore +
+          recentPredictionsScore +
+          participantScore +
+          matchScore +
+          timeRemainingScore;
+
+        const participantGrowthRate = eventAgeDays > 0
+          ? data.recentJoins / eventAgeDays / Math.max(data.event.participant_count, 1)
+          : 0;
+
+        return {
+          event: {
+            id: data.event.id,
+            on_chain_event_id: data.event.on_chain_event_id,
+            title: data.event.title,
+            description: data.event.description,
+            on_chain_created_at: data.event.on_chain_created_at.toISOString(),
+            creator_address: data.event.creator_address,
+            is_active: data.event.is_active,
+            is_cancelled: data.event.is_cancelled,
+            participant_count: data.event.participant_count,
+            match_count: data.event.match_count,
+          },
+          trending_score: Math.round(trendingScore * 100) / 100,
+          recent_activity_count: data.recentJoins + data.recentPredictions,
+          participant_growth_rate:
+            Math.round(participantGrowthRate * 10000) / 10000,
+        };
+      })
+      .sort((a, b) => b.trending_score - a.trending_score)
+      .slice(0, limit);
+
+    return {
+      events: trendingEvents,
+      limit,
+      timeWindow,
+      generated_at: new Date().toISOString(),
+    };
+  }
+
+  private getTimeWindowMs(timeWindow: string): number {
+    const windowMap: Record<string, number> = {
+      '24h': 24 * 60 * 60 * 1000,
+      '7d': 7 * 24 * 60 * 60 * 1000,
+      '30d': 30 * 24 * 60 * 60 * 1000,
+    };
+    return windowMap[timeWindow] || 24 * 60 * 60 * 1000;
+  }
+
+  private getTimeRemainingForEvent(createdAt: Date): number {
+    const eventCreatedMs = new Date(createdAt).getTime();
+    const oneMonthMs = 30 * 24 * 60 * 60 * 1000;
+    const eventExpiryMs = eventCreatedMs + oneMonthMs;
+    return Math.max(0, eventExpiryMs - Date.now());
   }
 }

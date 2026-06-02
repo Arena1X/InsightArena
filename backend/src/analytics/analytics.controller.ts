@@ -16,6 +16,7 @@ import { MarketAnalyticsDto } from './dto/market-analytics.dto';
 import { MarketHistoryResponseDto } from './dto/market-history.dto';
 import { UserTrendsDto } from './dto/user-trends.dto';
 import { CategoryAnalyticsResponseDto } from './dto/category-analytics.dto';
+import { TrendingEventsResponseDto } from './dto/trending-events.dto';
 
 @ApiTags('Analytics')
 @Controller('analytics')
@@ -125,5 +126,36 @@ export class AnalyticsController {
   })
   async getCategoryAnalytics(): Promise<CategoryAnalyticsResponseDto> {
     return this.analyticsService.getCategoryAnalytics();
+  }
+
+  @Get('trending')
+  @Public()
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(600) // 10 minutes
+  @ApiOperation({ summary: 'Get trending events based on recent activity' })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Number of events to return (default: 10, max: 50)',
+  })
+  @ApiQuery({
+    name: 'timeWindow',
+    required: false,
+    type: String,
+    description: 'Time window for trending calculation (24h, 7d, 30d)',
+    enum: ['24h', '7d', '30d'],
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Trending events with score, activity count, and growth metrics',
+    type: TrendingEventsResponseDto,
+  })
+  async getTrendingEvents(
+    @Query('limit') limit?: number,
+    @Query('timeWindow') timeWindow?: '24h' | '7d' | '30d',
+  ): Promise<TrendingEventsResponseDto> {
+    return this.analyticsService.getTrendingEvents(limit || 10, timeWindow || '24h');
   }
 }
