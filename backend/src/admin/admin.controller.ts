@@ -34,6 +34,7 @@ import { ReportQueryDto, ReportFormat } from './dto/report-query.dto';
 import { ResolveMarketDto } from './dto/resolve-market.dto';
 import { StatsResponseDto } from './dto/stats-response.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
+import { PlatformStatsDto } from './dto/platform-stats.dto';
 
 type RequestUser = Request & { user: { id: string } };
 
@@ -65,6 +66,24 @@ export class AdminController {
     @Query() query: DateRangeQueryDto,
   ): Promise<FeeStatsResponseDto> {
     return this.adminService.getFeeStats(query);
+  }
+
+  @Get('creator-events/stats')
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(600) // 10 minutes
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get platform-wide statistics for creator events',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Platform statistics',
+    type: PlatformStatsDto,
+  })
+  async getPlatformStats(
+    @Query() query: DateRangeQueryDto,
+  ): Promise<PlatformStatsDto> {
+    return this.adminService.getPlatformStats(query);
   }
 
   @Delete('competitions/:id')

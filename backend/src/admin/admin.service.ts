@@ -24,6 +24,8 @@ import { Prediction } from '../predictions/entities/prediction.entity';
 import { SorobanService } from '../soroban/soroban.service';
 import { User } from '../users/entities/user.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
+import { Match } from '../matches/entities/match.entity';
+import { MatchPrediction } from '../matches/entities/match-prediction.entity';
 import { VerifiedAddress } from './entities/verified-address.entity';
 import { FeeHistory } from '../indexer/entities/fee-history.entity';
 import { ActivityLogQueryDto } from './dto/activity-log-query.dto';
@@ -39,6 +41,7 @@ import {
 import { ResolveMarketDto } from './dto/resolve-market.dto';
 import { StatsResponseDto } from './dto/stats-response.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
+import { PlatformStatsDto } from './dto/platform-stats.dto';
 
 @Injectable()
 export class AdminService {
@@ -63,6 +66,10 @@ export class AdminService {
     private readonly flagsRepository: Repository<Flag>,
     @InjectRepository(CreatorEvent)
     private readonly creatorEventRepository: Repository<CreatorEvent>,
+    @InjectRepository(Match)
+    private readonly matchRepository: Repository<Match>,
+    @InjectRepository(MatchPrediction)
+    private readonly matchPredictionRepository: Repository<MatchPrediction>,
     @InjectRepository(VerifiedAddress)
     private readonly verifiedAddressesRepository: Repository<VerifiedAddress>,
     @InjectRepository(FeeHistory)
@@ -849,6 +856,172 @@ export class AdminService {
       total,
       page: page,
       limit: take,
+    };
+  }
+
+  async getPlatformStats(range: DateRangeQueryDto): Promise<PlatformStatsDto> {
+    const startDate = range.start_date
+      ? new Date(range.start_date)
+      : new Date(0);
+    const endDate = range.end_date ? new Date(range.end_date) : new Date();
+
+    const totalEventsCreated = range.start_date
+      ? await this.creatorEventRepository.count({
+          where: { created_at: Between(startDate, endDate) },
+        })
+      : await this.creatorEventRepository.count();
+
+    const activeEventsCount = range.start_date
+      ? await this.creatorEventRepository.count({
+          where: {
+            is_active: true,
+            is_cancelled: false,
+            created_at: Between(startDate, endDate),
+          },
+        })
+      : await this.creatorEventRepository.count({
+          where: { is_active: true, is_cancelled: false },
+        });
+
+    const completedEventsCount = await this.creatorEventRepository
+      .createQueryBuilder('event')
+      .innerJoinAndSelect(
+        'event.matches',
+        'match',
+        'match.result_submitted = true',
+      )
+      .distinct(true)
+      .getCount();
+
+    const cancelledEventsCount = range.start_date
+      ? await this.creatorEventRepository.count({
+          where: {
+            is_cancelled: true,
+            created_at: Between(startDate, endDate),
+          },
+        })
+      : await this.creatorEventRepository.count({
+          where: { is_cancelled: true },
+        });
+
+    const uniqueParticipants = await this.matchPredictionRepository
+      .createQueryBuilder('pred')
+      .select('COUNT(DISTINCT pred.user_id)', 'count')
+      .getRawOne();
+    const totalUniqueParticipants = parseInt(uniqueParticipants?.count || '0');
+
+    const totalMatchesCreated = range.start_date
+      ? await this.matchRepository.count({
+          where: { created_at: Between(startDate, endDate) },
+        })
+      : await this.matchRepository.count();
+
+    const totalPredictionsSubmitted = range.start_date
+      ? await this.matchPredictionRepository.count({
+          where: { predicted_at: Between(startDate, endDate) },
+        })
+      : await this.matchPredictionRepository.count();
+
+    const totalFeesCollected = range.start_date
+      ? await this.creatorEventRepository
+          .createQueryBuilder('event')
+          .select('SUM(CAST(event.creation_fee_paid AS DECIMAL))', 'total')
+          .where('event.created_at >= :startDate', { startDate })
+          .andWhere('event.created_at <= :endDate', { endDate })
+          .getRawOne()
+      : await this.creatorEventRepository
+          .createQueryBuilder('event')
+          .select('SUM(CAST(event.creation_fee_paid AS DECIMAL))', 'total')
+          .getRawOne();
+    const totalFeesCollectedStroops = totalFeesCollected?.total
+      ? totalFeesCollected.total.split('.')[0]
+      : '0';
+
+    const avgParticipantsPerEvent =
+      totalEventsCreated > 0
+        ? Math.round(totalUniqueParticipants / totalEventsCreated)
+        : 0;
+
+    const avgMatchesPerEvent =
+      totalEventsCreated > 0
+        ? Math.round(totalMatchesCreated / totalEventsCreated)
+        : 0;
+
+    const avgPredictionsPerUser =
+      totalUniqueParticipants > 0
+        ? Math.round(
+            (totalPredictionsSubmitted / totalUniqueParticipants) * 100,
+          ) / 100
+        : 0;
+
+    const mostActiveCtor = await this.creatorEventRepository
+      .createQueryBuilder('event')
+      .select('event.creator_address', 'creator_address')
+      .addSelect('COUNT(*)', 'event_count')
+      .where(
+        range.start_date
+          ? 'event.created_at >= :startDate'
+          : '1=1',
+        range.start_date ? { startDate } : {},
+      )
+      .andWhere(
+        range.end_date
+          ? 'event.created_at <= :endDate'
+          : '1=1',
+        range.end_date ? { endDate } : {},
+      )
+      .groupBy('event.creator_address')
+      .orderBy('event_count', 'DESC')
+      .limit(1)
+      .getRawOne();
+
+    const mostPopularEventData = await this.creatorEventRepository
+      .createQueryBuilder('event')
+      .select('event.title', 'title')
+      .addSelect('event.creator_address', 'creator_address')
+      .addSelect('event.participant_count', 'participant_count')
+      .where(
+        range.start_date
+          ? 'event.created_at >= :startDate'
+          : '1=1',
+        range.start_date ? { startDate } : {},
+      )
+      .andWhere(
+        range.end_date
+          ? 'event.created_at <= :endDate'
+          : '1=1',
+        range.end_date ? { endDate } : {},
+      )
+      .orderBy('event.participant_count', 'DESC')
+      .limit(1)
+      .getRawOne();
+
+    return {
+      total_events_created: totalEventsCreated,
+      active_events_count: activeEventsCount,
+      completed_events_count: completedEventsCount,
+      cancelled_events_count: cancelledEventsCount,
+      total_unique_participants: totalUniqueParticipants,
+      total_matches_created: totalMatchesCreated,
+      total_predictions_submitted: totalPredictionsSubmitted,
+      total_fees_collected_stroops: totalFeesCollectedStroops,
+      avg_participants_per_event: avgParticipantsPerEvent,
+      avg_matches_per_event: avgMatchesPerEvent,
+      avg_predictions_per_user: avgPredictionsPerUser,
+      most_active_creator: mostActiveCtor
+        ? {
+            creator_address: mostActiveCtor.creator_address,
+            event_count: parseInt(mostActiveCtor.event_count),
+          }
+        : null,
+      most_popular_event: mostPopularEventData
+        ? {
+            title: mostPopularEventData.title,
+            creator_address: mostPopularEventData.creator_address,
+            participant_count: mostPopularEventData.participant_count,
+          }
+        : null,
+      generated_at: new Date().toISOString(),
     };
   }
 }
