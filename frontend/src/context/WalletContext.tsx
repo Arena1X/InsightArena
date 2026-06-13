@@ -149,7 +149,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setAuthError(null);
     setIsConnectModalOpen(false);
     router.push("/");
-  }, []);
+  }, [router]);
 
   const handleModalSuccess = useCallback(
     (walletAddress: string, _jwt: string) => {
@@ -158,9 +158,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setUser({ username: "Alex" });
       setAuthError(null);
       setIsConnectModalOpen(false);
-      router.push("/dashboard");
     },
-    [router],
+    [],
   );
 
   const value = useMemo<WalletContextValue>(

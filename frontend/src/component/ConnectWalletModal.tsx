@@ -254,7 +254,7 @@ export default function ConnectWalletModal({
                 {connectedAddress.slice(0, 6)}...{connectedAddress.slice(-4)}
               </p>
               <p className="mt-4 text-xs text-[#9aa4bc]">
-                Redirecting to dashboard...
+                You can continue from this page or open the dashboard from the header.
               </p>
             </div>
           </div>
