@@ -12,6 +12,14 @@ import {
   xdr,
 } from '@stellar/stellar-sdk';
 
+export interface RewardDistribution {
+  rank1: number;
+  rank2: number;
+  rank3: number;
+  rank4?: number;
+  rank5?: number;
+}
+
 export interface ContractEvent {
   eventId: string;
   inviteCode: string;
@@ -23,6 +31,11 @@ export interface ContractEvent {
   maxParticipants: number;
   participantCount: number;
   isActive: boolean;
+  prizePool?: string;
+  entryFee?: string;
+  category?: string;
+  bannerUrl?: string;
+  rewardDistribution?: RewardDistribution;
 }
 
 export interface ContractMatch {

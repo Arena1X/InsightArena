@@ -48,4 +48,12 @@ export class SearchEventsQueryDto {
   @IsOptional()
   @IsString()
   creator?: string;
+
+  @ApiPropertyOptional({
+    description: 'Filter results by event category.',
+    example: 'football',
+  })
+  @IsOptional()
+  @IsString()
+  category?: string;
 }

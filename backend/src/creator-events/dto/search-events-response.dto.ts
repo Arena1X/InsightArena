@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class SearchHighlightsDto {
   @ApiProperty({ required: false })
@@ -44,6 +44,9 @@ export class SearchEventResultDto {
 
   @ApiProperty({ type: SearchHighlightsDto })
   highlights: SearchHighlightsDto;
+
+  @ApiPropertyOptional({ description: 'Event category' })
+  category?: string;
 }
 
 export class SearchEventsResponseDto {

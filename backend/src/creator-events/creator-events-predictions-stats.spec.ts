@@ -33,6 +33,17 @@ describe('CreatorEventsService predictions and stats', () => {
     maxParticipants: 100,
     participantCount: 3,
     isActive: true,
+    prizePool: '5000000000',
+    entryFee: '100000000',
+    category: 'Sports',
+    bannerUrl: 'https://example.com/banner.jpg',
+    rewardDistribution: {
+      rank1: 40,
+      rank2: 30,
+      rank3: 20,
+      rank4: 5,
+      rank5: 5,
+    },
   };
 
   const mockMatches = [
@@ -41,6 +52,8 @@ describe('CreatorEventsService predictions and stats', () => {
       eventId: '1',
       homeTeam: 'Alpha',
       awayTeam: 'Beta',
+      homeScore: 1,
+      awayScore: 0,
       startTime: 1_100_000,
       resolved: true,
       outcome: 'TEAM_A',
@@ -50,6 +63,8 @@ describe('CreatorEventsService predictions and stats', () => {
       eventId: '1',
       homeTeam: 'Gamma',
       awayTeam: 'Delta',
+      homeScore: null,
+      awayScore: null,
       startTime: 1_200_000,
       resolved: false,
       outcome: null,
@@ -165,6 +180,14 @@ describe('CreatorEventsService predictions and stats', () => {
       expect(result.averagePredictionsPerUser).toBe(1.67);
       expect(result.completionRate).toBe(67);
       expect(result.winnersVerified).toBe(false);
+      expect(result.prizePool).toBe('5000000000');
+      expect(result.rewardDistribution).toEqual({
+        rank1: 40,
+        rank2: 30,
+        rank3: 20,
+        rank4: 5,
+        rank5: 5,
+      });
     });
 
     it('throws when event is not found', async () => {
@@ -173,6 +196,36 @@ describe('CreatorEventsService predictions and stats', () => {
       await expect(service.getEventStats('999')).rejects.toThrow(
         NotFoundException,
       );
+    });
+
+    it('includes prizePool and rewardDistribution in stats response', async () => {
+      contractService.getEvent.mockResolvedValue(mockEvent);
+      contractService.getEventStatistics.mockResolvedValue({
+        eventId: '1',
+        participantCount: 1,
+        matchCount: 1,
+        totalPredictions: 1,
+        allMatchesResolved: false,
+        winnersVerified: false,
+        winnerCount: 0,
+      });
+      contractService.getEventParticipants.mockResolvedValue([]);
+      contractService.getPredictionDistribution.mockResolvedValue({
+        teamA: 0,
+        teamB: 0,
+        draw: 0,
+      });
+
+      const result = await service.getEventStats('1');
+
+      expect(result.prizePool).toBe('5000000000');
+      expect(result.rewardDistribution).toEqual({
+        rank1: 40,
+        rank2: 30,
+        rank3: 20,
+        rank4: 5,
+        rank5: 5,
+      });
     });
   });
 });

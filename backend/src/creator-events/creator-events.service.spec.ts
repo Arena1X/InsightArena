@@ -169,10 +169,14 @@ describe('CreatorEventsService searchEvents', () => {
     await service.searchEvents({
       q: 'league',
       status: CreatorEventSearchStatus.Cancelled,
+      page: 1,
+      limit: 20,
     });
     await service.searchEvents({
       q: 'league',
       status: CreatorEventSearchStatus.Inactive,
+      page: 1,
+      limit: 20,
     });
 
     expect(queryBuilder.andWhere).toHaveBeenCalledWith(

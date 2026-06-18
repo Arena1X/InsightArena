@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class MatchPredictionDistributionDto {
   @ApiProperty({ description: 'Match identifier' })
@@ -21,6 +21,23 @@ export class MatchPredictionDistributionDto {
 
   @ApiProperty({ description: 'Total predictions for this match' })
   total: number;
+}
+
+export class RewardDistributionDto {
+  @ApiProperty({ description: 'Rank 1 percentage' })
+  rank1: number;
+
+  @ApiProperty({ description: 'Rank 2 percentage' })
+  rank2: number;
+
+  @ApiProperty({ description: 'Rank 3 percentage' })
+  rank3: number;
+
+  @ApiPropertyOptional({ description: 'Rank 4 percentage' })
+  rank4?: number;
+
+  @ApiPropertyOptional({ description: 'Rank 5 percentage' })
+  rank5?: number;
 }
 
 export class EventStatsResponseDto {
@@ -65,4 +82,15 @@ export class EventStatsResponseDto {
     description: 'Percentage of participants who predicted all matches (0-100)',
   })
   completionRate: number;
+
+  @ApiPropertyOptional({
+    description: 'Prize pool amount in stroops (smallest unit)',
+  })
+  prizePool?: string;
+
+  @ApiPropertyOptional({
+    description: 'Reward distribution percentages by rank',
+    type: RewardDistributionDto,
+  })
+  rewardDistribution?: RewardDistributionDto;
 }

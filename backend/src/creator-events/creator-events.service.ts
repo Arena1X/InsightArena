@@ -40,8 +40,8 @@ import {
   normalizeContractPrediction,
   resolveCorrectness,
 } from './utils/prediction.util';
+import { toRewardDistributionDto } from './utils/reward-distribution.util';
 
-// Type definitions - exported for use in controllers
 export interface ParticipantWithStats {
   address: string;
   joinedAt: number;
@@ -311,6 +311,11 @@ export class CreatorEventsService {
       matchPreview,
       startTime: event.startTime,
       endTime: event.endTime,
+      prizePool: event.prizePool,
+      entryFee: event.entryFee,
+      category: event.category,
+      bannerUrl: event.bannerUrl,
+      rewardDistribution: toRewardDistributionDto(event.rewardDistribution),
     };
   }
 
@@ -462,6 +467,8 @@ export class CreatorEventsService {
       winnerCount: statistics?.winnerCount ?? 0,
       averagePredictionsPerUser,
       completionRate,
+      prizePool: event.prizePool,
+      rewardDistribution: toRewardDistributionDto(event.rewardDistribution),
     };
   }
 
@@ -626,6 +633,7 @@ export class CreatorEventsService {
       match_count: event.match_count,
       rank: Number(rank ?? 0),
       highlights: this.buildHighlights(event, searchTerm),
+      category: (event as CreatorEvent & { category?: string }).category,
     };
   }
 

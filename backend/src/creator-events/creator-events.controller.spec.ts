@@ -66,6 +66,8 @@ describe('CreatorEventsController', () => {
           eventId: 'event-1',
           homeTeam: 'Team A',
           awayTeam: 'Team B',
+          homeScore: 0,
+          awayScore: 0,
           startTime: 1100000,
           resolved: false,
           outcome: null,
@@ -218,6 +220,17 @@ describe('PublicCreatorEventsController', () => {
         matchPreview: [],
         startTime: 1000000,
         endTime: 2000000,
+        prizePool: '5000000000',
+        entryFee: '100000000',
+        category: 'Sports',
+        bannerUrl: 'https://example.com/banner.jpg',
+        rewardDistribution: {
+          rank1: 40,
+          rank2: 30,
+          rank3: 20,
+          rank4: 5,
+          rank5: 5,
+        },
       };
 
       service.getEventByInviteCode.mockResolvedValue(mockEvent);
@@ -247,6 +260,17 @@ describe('PublicCreatorEventsController', () => {
         ],
         startTime: 1000000,
         endTime: 2000000,
+        prizePool: '5000000000',
+        entryFee: '100000000',
+        category: 'Sports',
+        bannerUrl: 'https://example.com/banner.jpg',
+        rewardDistribution: {
+          rank1: 40,
+          rank2: 30,
+          rank3: 20,
+          rank4: 5,
+          rank5: 5,
+        },
       };
 
       service.getEventByInviteCode.mockResolvedValue(mockEvent);
