@@ -32,10 +32,11 @@ export interface ContractEvent {
   participantCount: number;
   isActive: boolean;
   prizePool?: string;
+  rewardDistribution?: number[];
   entryFee?: string;
   category?: string;
-  bannerUrl?: string;
-  rewardDistribution?: RewardDistribution;
+  bannerUrl?: string | null;
+  isFinalized?: boolean;
 }
 
 export interface ContractMatch {
@@ -96,6 +97,16 @@ export interface ContractWinner {
   address: string;
   totalStake: string;
   payout: string;
+}
+
+export interface ContractLeaderboardEntry {
+  rank: number;
+  address: string;
+  total_predictions: number;
+  correct_predictions: number;
+  accuracy_percentage: number;
+  is_winner: boolean;
+  completion_time: string | null;
 }
 
 export interface ContractConfig {
@@ -194,6 +205,25 @@ export class ContractService {
       nativeToScVal(eventId, { type: 'string' }),
     ]);
     return result ?? [];
+  }
+
+  async getEventLeaderboard(
+    eventId: string,
+  ): Promise<ContractLeaderboardEntry[]> {
+    const result = await this.viewCall<ContractLeaderboardEntry[]>(
+      'get_event_leaderboard',
+      [nativeToScVal(eventId, { type: 'string' })],
+    );
+    if (!result || !Array.isArray(result)) return [];
+    return result.map((entry, i) => ({
+      rank: entry.rank ?? i + 1,
+      address: entry.address,
+      total_predictions: Number(entry.total_predictions ?? 0),
+      correct_predictions: Number(entry.correct_predictions ?? 0),
+      accuracy_percentage: Number(entry.accuracy_percentage ?? 0),
+      is_winner: Boolean(entry.is_winner ?? false),
+      completion_time: entry.completion_time ?? null,
+    }));
   }
 
   async getConfig(): Promise<ContractConfig | null> {

@@ -6,6 +6,7 @@ import {
   ContractService,
 } from '../contract/contract.service';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
+import { CreatorEventLeaderboardEntry } from '../matches/entities/creator-event-leaderboard-entry.entity';
 import { CreatorEventsService } from './creator-events.service';
 
 describe('CreatorEventsService predictions and stats', () => {
@@ -88,6 +89,10 @@ describe('CreatorEventsService predictions and stats', () => {
         {
           provide: getRepositoryToken(CreatorEvent),
           useValue: { createQueryBuilder: jest.fn() },
+        },
+        {
+          provide: getRepositoryToken(CreatorEventLeaderboardEntry),
+          useValue: {},
         },
       ],
     }).compile();

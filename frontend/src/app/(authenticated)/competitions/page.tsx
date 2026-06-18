@@ -1,6 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import PrizePoolSummary from "@/component/PrizePoolSummary";
+import { useWallet } from "@/context/WalletContext";
+import {
+  claimPayout,
+  finalizeEvent,
+  getUserPayout,
+  type UserPayout,
+} from "@/lib/eventRewards";
 
 export default function CompetitionsPage() {
   type CompetitionStatus = "Active" | "Upcoming" | "Ended" | "Cancelled";
@@ -18,6 +26,8 @@ export default function CompetitionsPage() {
     endDate: string;
     visibility: CompetitionVisibility;
     joined: boolean;
+    isFinalized: boolean;
+    rewardBreakdown: { label: string; amountXlm: number; percentage: number }[];
   };
 
   const [activeTab, setActiveTab] = useState<
@@ -26,6 +36,11 @@ export default function CompetitionsPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const { address } = useWallet();
+  const [userPayouts, setUserPayouts] = useState<
+    Record<string, UserPayout | null>
+  >({});
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
 
   const [createForm, setCreateForm] = useState({
     title: "",
@@ -49,6 +64,12 @@ export default function CompetitionsPage() {
       endDate: "2026-04-30",
       visibility: "Public",
       joined: true,
+      isFinalized: false,
+      rewardBreakdown: [
+        { label: "1st place", amountXlm: 1250, percentage: 50 },
+        { label: "2nd place", amountXlm: 750, percentage: 30 },
+        { label: "3rd place", amountXlm: 500, percentage: 20 },
+      ],
     },
     {
       id: "comp-2",
@@ -63,6 +84,12 @@ export default function CompetitionsPage() {
       endDate: "2026-05-20",
       visibility: "Public",
       joined: false,
+      isFinalized: false,
+      rewardBreakdown: [
+        { label: "1st place", amountXlm: 600, percentage: 50 },
+        { label: "2nd place", amountXlm: 360, percentage: 30 },
+        { label: "3rd place", amountXlm: 240, percentage: 20 },
+      ],
     },
     {
       id: "comp-3",
@@ -77,6 +104,12 @@ export default function CompetitionsPage() {
       endDate: "2026-05-10",
       visibility: "Private",
       joined: false,
+      isFinalized: false,
+      rewardBreakdown: [
+        { label: "1st place", amountXlm: 2500, percentage: 50 },
+        { label: "2nd place", amountXlm: 1500, percentage: 30 },
+        { label: "3rd place", amountXlm: 1000, percentage: 20 },
+      ],
     },
     {
       id: "comp-4",
@@ -91,6 +124,12 @@ export default function CompetitionsPage() {
       endDate: "2026-03-31",
       visibility: "Public",
       joined: true,
+      isFinalized: false,
+      rewardBreakdown: [
+        { label: "1st place", amountXlm: 4000, percentage: 50 },
+        { label: "2nd place", amountXlm: 2400, percentage: 30 },
+        { label: "3rd place", amountXlm: 1600, percentage: 20 },
+      ],
     },
     {
       id: "comp-5",
@@ -105,6 +144,8 @@ export default function CompetitionsPage() {
       endDate: "2026-04-25",
       visibility: "Public",
       joined: false,
+      isFinalized: true,
+      rewardBreakdown: [],
     },
   ]);
 
@@ -190,11 +231,85 @@ export default function CompetitionsPage() {
       endDate,
       visibility: createForm.visibility,
       joined: true,
+      isFinalized: false,
+      rewardBreakdown: [
+        {
+          label: "1st place",
+          amountXlm: Math.round(
+            (Math.max(0, Number(createForm.prizePoolXlm) || 0) * 50) / 100,
+          ),
+          percentage: 50,
+        },
+        {
+          label: "2nd place",
+          amountXlm: Math.round(
+            (Math.max(0, Number(createForm.prizePoolXlm) || 0) * 30) / 100,
+          ),
+          percentage: 30,
+        },
+        {
+          label: "3rd place",
+          amountXlm: Math.round(
+            (Math.max(0, Number(createForm.prizePoolXlm) || 0) * 20) / 100,
+          ),
+          percentage: 20,
+        },
+      ],
     };
 
     setCompetitions((prev) => [newCompetition, ...prev]);
     setIsCreateOpen(false);
     setCreateForm((prev) => ({ ...prev, title: "", description: "" }));
+  };
+
+  useEffect(() => {
+    if (!address) {
+      setUserPayouts({});
+      return;
+    }
+
+    competitions
+      .filter((competition) => competition.isFinalized)
+      .forEach((competition) => {
+        getUserPayout(competition.id, address)
+          .then((payout) => {
+            setUserPayouts((prev) => ({ ...prev, [competition.id]: payout }));
+          })
+          .catch(() => {
+            setUserPayouts((prev) => ({ ...prev, [competition.id]: null }));
+          });
+      });
+  }, [address, competitions]);
+
+  const onFinalizeEvent = async (id: string) => {
+    setPendingAction(`finalize-${id}`);
+    try {
+      await finalizeEvent(id);
+      setCompetitions((prev) =>
+        prev.map((competition) =>
+          competition.id === id
+            ? { ...competition, isFinalized: true, status: "Ended" }
+            : competition,
+        ),
+      );
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const onClaimPrize = async (id: string) => {
+    if (!address) return;
+
+    setPendingAction(`claim-${id}`);
+    try {
+      const payout = await claimPayout(id, address);
+      setUserPayouts((prev) => ({
+        ...prev,
+        [id]: { ...payout, claimed: true },
+      }));
+    } finally {
+      setPendingAction(null);
+    }
   };
 
   const tabs = [
@@ -284,6 +399,15 @@ export default function CompetitionsPage() {
             {paged.map((competition) => {
               const isEnded = competition.status === "Ended";
               const isCancelled = competition.status === "Cancelled";
+              const endsAtHasPassed =
+                new Date(competition.endDate).getTime() <= Date.now();
+              const canFinalize =
+                !competition.isFinalized && endsAtHasPassed && !isCancelled;
+              const userPayout = userPayouts[competition.id];
+              const canClaimPrize =
+                competition.isFinalized &&
+                Boolean(userPayout) &&
+                !userPayout?.claimed;
               const canJoin = !competition.joined && !isEnded && !isCancelled;
               const canLeave = competition.joined && !isEnded && !isCancelled;
 
@@ -353,8 +477,39 @@ export default function CompetitionsPage() {
                     </div>
                   </dl>
 
-                  <div className="mt-5 flex items-center justify-between gap-3">
-                    {isEnded ? (
+                  <div className="mt-5">
+                    <PrizePoolSummary
+                      prizePoolXlm={competition.prizePoolXlm}
+                      rewardBreakdown={competition.rewardBreakdown}
+                    />
+                  </div>
+
+                  <div className="mt-5 flex flex-col items-center justify-between gap-3">
+                    {canFinalize ? (
+                      <button
+                        type="button"
+                        onClick={() => onFinalizeEvent(competition.id)}
+                        disabled={
+                          pendingAction === `finalize-${competition.id}`
+                        }
+                        className="w-full rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-orange-500/90 disabled:cursor-wait disabled:opacity-70"
+                      >
+                        {pendingAction === `finalize-${competition.id}`
+                          ? "Finalizing…"
+                          : "Finalize Event"}
+                      </button>
+                    ) : canClaimPrize ? (
+                      <button
+                        type="button"
+                        onClick={() => onClaimPrize(competition.id)}
+                        disabled={pendingAction === `claim-${competition.id}`}
+                        className="w-full rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500/90 disabled:cursor-wait disabled:opacity-70"
+                      >
+                        {pendingAction === `claim-${competition.id}`
+                          ? "Claiming…"
+                          : `Claim Prize${userPayout?.amountXlm ? ` · ${userPayout.amountXlm.toLocaleString()} XLM` : ""}`}
+                      </button>
+                    ) : isEnded ? (
                       <button
                         type="button"
                         className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-gray-200 transition hover:bg-white/10"

@@ -8,7 +8,7 @@ export class LeaderboardQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  page?: number = 1;
+  page: number = 1;
 
   @ApiPropertyOptional({
     description: 'Results per page (max 100)',
@@ -20,17 +20,7 @@ export class LeaderboardQueryDto {
   @IsInt()
   @Min(1)
   @Max(100)
-  limit?: number = 20;
-
-  @ApiPropertyOptional({
-    description: 'Minimum number of predictions to be included',
-    default: 1,
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  minPredictions?: number = 0;
+  limit: number = 20;
 }
 
 export interface LeaderboardEntryResponse {
@@ -48,4 +38,6 @@ export interface PaginatedLeaderboardResponse {
   total: number;
   page: number;
   limit: number;
+  totalPages: number;
+  source: 'contract' | 'cache';
 }

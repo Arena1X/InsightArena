@@ -16,6 +16,8 @@ import { Button } from "@/component/ui/button";
 import { useWallet } from "@/context/WalletContext";
 import AddMatchForm, { type MatchFormData } from "@/component/creator-events/AddMatchForm";
 import BulkMatchUpload from "@/component/creator-events/BulkMatchUpload";
+import SubmitResultForm from "@/component/creator-events/SubmitResultForm";
+import { type MatchOutcome, useCreatorEvents } from "@/hooks/useCreatorEvents";
 
 type MatchStatus = "upcoming" | "started" | "resolved";
 
@@ -94,15 +96,26 @@ function statusBadge(status: MatchStatus) {
   );
 }
 
+function deriveOutcomeFromScore(
+  homeScore: number,
+  awayScore: number,
+): MatchOutcome {
+  if (homeScore > awayScore) return "TeamA";
+  if (awayScore > homeScore) return "TeamB";
+  return "Draw";
+}
+
 export default function MatchManagementPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { address } = useWallet();
+  const { submitMatchResult } = useCreatorEvents();
 
   const [eventMeta] = useState<EventMeta>(MOCK_EVENT);
   const [matches, setMatches] = useState<Match[]>(MOCK_MATCHES);
   const [isCreator, setIsCreator] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [activeSubmitMatchId, setActiveSubmitMatchId] = useState<string | null>(null);
 
   useEffect(() => {
     setHydrated(true);
@@ -214,54 +227,99 @@ export default function MatchManagementPage() {
               {matches.map((match) => (
                 <div
                   key={match.id}
-                  className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-slate-900/80 p-5 sm:flex-row sm:items-center sm:justify-between"
+                  className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-slate-900/80 p-5"
                 >
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-3">
-                      {statusBadge(match.status)}
-                      {match.result && (
-                        <span className="text-xs text-slate-400">
-                          Winner: {match.result}
-                        </span>
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-3">
+                        {statusBadge(match.status)}
+                        {match.result && (
+                          <span className="text-xs text-slate-400">
+                            Winner: {match.result}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-lg font-semibold text-white">
+                        {match.teamA}{" "}
+                        <span className="text-slate-400">vs</span> {match.teamB}
+                      </p>
+                      <p className="flex items-center gap-1.5 text-xs text-slate-400">
+                        <Clock className="h-3.5 w-3.5" />
+                        {new Date(match.matchTime).toLocaleString()}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {(match.status === "started" || match.status === "resolved") && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="border-emerald-500/20 text-emerald-400 hover:border-emerald-500/40 hover:bg-emerald-500/10"
+                          onClick={() => setActiveSubmitMatchId(match.id)}
+                          title="Submit result"
+                        >
+                          <CheckCircle className="h-4 w-4" />
+                          Submit Result
+                        </Button>
+                      )}
+                      {match.status === "upcoming" && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="border-white/10 text-slate-300 hover:border-white/30"
+                          title="Edit match"
+                        >
+                          <Edit2 className="h-4 w-4" />
+                          Edit
+                        </Button>
+                      )}
+                      {!match.hasPredictions && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="border-rose-500/20 text-rose-400 hover:border-rose-500/40 hover:bg-rose-500/10"
+                          onClick={() => handleDeleteMatch(match.id)}
+                          title="Delete match"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Delete
+                        </Button>
                       )}
                     </div>
-                    <p className="text-lg font-semibold text-white">
-                      {match.teamA}{" "}
-                      <span className="text-slate-400">vs</span> {match.teamB}
-                    </p>
-                    <p className="flex items-center gap-1.5 text-xs text-slate-400">
-                      <Clock className="h-3.5 w-3.5" />
-                      {new Date(match.matchTime).toLocaleString()}
-                    </p>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    {match.status === "upcoming" && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="border-white/10 text-slate-300 hover:border-white/30"
-                        title="Edit match"
-                      >
-                        <Edit2 className="h-4 w-4" />
-                        Edit
-                      </Button>
-                    )}
-                    {!match.hasPredictions && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="border-rose-500/20 text-rose-400 hover:border-rose-500/40 hover:bg-rose-500/10"
-                        onClick={() => handleDeleteMatch(match.id)}
-                        title="Delete match"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        Delete
-                      </Button>
-                    )}
-                  </div>
+                  {activeSubmitMatchId === match.id && (
+                    <div className="mt-2 border-t border-white/5 pt-4">
+                      <SubmitResultForm
+                        teamA={match.teamA}
+                        teamB={match.teamB}
+                        initialResult={match.result}
+                        onSubmit={async (homeScore, awayScore) => {
+                          await submitMatchResult(
+                            match.id,
+                            deriveOutcomeFromScore(homeScore, awayScore),
+                            { homeScore, awayScore },
+                          );
+                          setMatches((prev) =>
+                            prev.map((m) =>
+                              m.id === match.id
+                                ? {
+                                    ...m,
+                                    status: "resolved" as const,
+                                    result: `${homeScore}-${awayScore}`,
+                                  }
+                                : m
+                            )
+                          );
+                          setActiveSubmitMatchId(null);
+                        }}
+                        onCancel={() => setActiveSubmitMatchId(null)}
+                      />
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

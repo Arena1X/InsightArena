@@ -232,6 +232,290 @@ describe('IndexerService', () => {
     });
   });
 
+  describe('EventCreated campaign metadata', () => {
+    beforeEach(() => {
+      creatorEventRepository.findOne.mockResolvedValue(null);
+      (creatorEventRepository.create as jest.Mock).mockImplementation(
+        (event: unknown) => event as CreatorEvent,
+      );
+      (creatorEventRepository.save as jest.Mock).mockImplementation(
+        async (event: unknown) => event as CreatorEvent,
+      );
+    });
+
+    it('recognizes canonical contract event.created topics', () => {
+      expect((service as any).detectEventType(['event', 'created'], {})).toBe(
+        'EventCreated',
+      );
+    });
+
+    it('reads wrapped Soroban topic values', () => {
+      expect(
+        (service as any).readTopic([
+          { value: { symbol: 'event' } },
+          { sym: 'created' },
+        ]),
+      ).toEqual(['event', 'created']);
+    });
+
+    it('requests JSON-formatted event payloads from Soroban RPC', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_RPC_URL') return 'https://rpc.example';
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+      const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({ result: { events: [], latestLedger: 100 } }),
+      } as unknown as Response);
+
+      try {
+        await (service as any).fetchEventsFromContract(50);
+
+        expect(fetchMock).toHaveBeenCalledWith(
+          'https://rpc.example',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.any(String),
+          }),
+        );
+        const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        if (typeof init.body !== 'string') {
+          throw new Error('Expected Soroban RPC request body to be a string');
+        }
+        const body = JSON.parse(init.body) as {
+          params: { xdrFormat?: string };
+        };
+        expect(body.params.xdrFormat).toBe('json');
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('extracts legacy positional EventCreated tuple payloads', () => {
+      const data = (service as any).extractEventData('EventCreated', [
+        '45',
+        'GCREATOR',
+        'ABC12345',
+      ]);
+
+      expect(data).toMatchObject({
+        event_id: '45',
+        creator: 'GCREATOR',
+        title: '',
+        description: '',
+        creation_fee_paid: '0',
+        invite_code: 'ABC12345',
+        prize_pool: '0',
+        reward_distribution: [],
+        entry_fee: '0',
+        category: 'general',
+        banner_url: null,
+        is_finalized: false,
+      });
+    });
+
+    it('extracts old positional EventCreated payloads that predate campaign fields', () => {
+      const data = (service as any).extractEventData('EventCreated', [
+        '45',
+        'GCREATOR',
+        'Legacy Cup',
+        'Predict the winner',
+        '10000000',
+        1710000000,
+        'ABC12345',
+        250,
+      ]);
+
+      expect(data).toMatchObject({
+        event_id: '45',
+        creator: 'GCREATOR',
+        title: 'Legacy Cup',
+        description: 'Predict the winner',
+        creation_fee_paid: '10000000',
+        created_at: 1710000000,
+        invite_code: 'ABC12345',
+        max_participants: 250,
+        start_time: null,
+        end_time: null,
+        prize_pool: '0',
+        reward_distribution: [],
+        entry_fee: '0',
+        category: 'general',
+        banner_url: null,
+        is_finalized: false,
+      });
+    });
+
+    it('extracts extended positional EventCreated tuple payloads', () => {
+      const data = (service as any).extractEventData('EventCreated', {
+        vec: [
+          '46',
+          { address: 'GCREATOR' },
+          'World Cup',
+          'Predict the bracket',
+          '10000000',
+          1710000000,
+          1710003600,
+          1710086400,
+          'ZXCVBN12',
+          '500',
+          '7500000000',
+          { vec: [60, '30', 10] },
+          '2500000',
+          'International Football',
+          'https://example.com/world-cup.png',
+          1,
+        ],
+      });
+
+      expect(data).toMatchObject({
+        event_id: '46',
+        creator: 'GCREATOR',
+        title: 'World Cup',
+        description: 'Predict the bracket',
+        creation_fee_paid: '10000000',
+        created_at: 1710000000,
+        start_time: 1710003600,
+        end_time: 1710086400,
+        invite_code: 'ZXCVBN12',
+        max_participants: 500,
+        prize_pool: '7500000000',
+        reward_distribution: [60, 30, 10],
+        entry_fee: '2500000',
+        category: 'international-football',
+        banner_url: 'https://example.com/world-cup.png',
+        is_finalized: true,
+      });
+    });
+
+    it('extracts the extended campaign fields from EventCreated payloads', () => {
+      const data = (service as any).extractEventData('EventCreated', {
+        event_id: '42',
+        creator: 'GCREATOR',
+        title: 'Champions League',
+        description: 'Predict every knockout match',
+        creation_fee_paid: '10000000',
+        created_at: 1710000000,
+        start_time: '1710003600',
+        end_time: 1710086400,
+        invite_code: 'ABC12345',
+        max_participants: '250',
+        prize_pool: '5000000000',
+        reward_distribution: '[50, 30, 20]',
+        entry_fee: '2500000',
+        category: ' Football ',
+        banner_url: 'https://example.com/banner.png',
+        is_finalized: 'true',
+      });
+
+      expect(data).toMatchObject({
+        event_id: '42',
+        start_time: 1710003600,
+        end_time: 1710086400,
+        prize_pool: '5000000000',
+        reward_distribution: [50, 30, 20],
+        entry_fee: '2500000',
+        category: 'football',
+        banner_url: 'https://example.com/banner.png',
+        is_finalized: true,
+      });
+    });
+
+    it('persists extended campaign fields when present', async () => {
+      await (service as any).handleEventCreated({
+        event_id: '42',
+        creator: 'GCREATOR',
+        title: 'Champions League',
+        description: 'Predict every knockout match',
+        creation_fee_paid: '10000000',
+        created_at: 1710000000,
+        start_time: 1710003600,
+        end_time: 1710086400,
+        invite_code: 'ABC12345',
+        max_participants: 250,
+        prize_pool: '5000000000',
+        reward_distribution: [50, '30', 20],
+        entry_fee: '2500000',
+        category: 'football',
+        banner_url: 'https://example.com/banner.png',
+        is_finalized: true,
+      });
+
+      expect(creatorEventRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          on_chain_event_id: 42,
+          start_time: new Date(1710003600 * 1000),
+          end_time: new Date(1710086400 * 1000),
+          prize_pool: '5000000000',
+          reward_distribution: [50, 30, 20],
+          entry_fee: '2500000',
+          category: 'football',
+          banner_url: 'https://example.com/banner.png',
+          is_finalized: true,
+        }),
+      );
+    });
+
+    it('applies sensible defaults for legacy EventCreated payloads', async () => {
+      await (service as any).handleEventCreated({
+        event_id: '43',
+        creator: 'GCREATOR',
+        title: 'Legacy Event',
+        description: 'Old contract payload',
+        creation_fee_paid: '10000000',
+        created_at: 1710000000,
+      });
+
+      expect(creatorEventRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          on_chain_event_id: 43,
+          start_time: new Date(1710000000 * 1000),
+          end_time: new Date((1710000000 + 90 * 24 * 60 * 60) * 1000),
+          prize_pool: '0',
+          reward_distribution: [],
+          entry_fee: '0',
+          category: 'general',
+          banner_url: null,
+          is_finalized: false,
+        }),
+      );
+    });
+
+    it('guards malformed optional campaign metadata without dropping the event', async () => {
+      await (service as any).handleEventCreated({
+        event_id: '44',
+        creator: 'GCREATOR',
+        title: 'Malformed Metadata Event',
+        description: 'Payload with optional-field edge cases',
+        creation_fee_paid: '10000000',
+        created_at: 1710000000,
+        start_time: 1710003600,
+        end_time: 1700000000,
+        prize_pool: '-1',
+        reward_distribution: [50, -5, 30.5, '20', ''],
+        entry_fee: 'not-a-number',
+        category: ' Formula 1 / Racing ',
+        banner_url: '   ',
+        is_finalized: 2,
+      });
+
+      expect(creatorEventRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          on_chain_event_id: 44,
+          start_time: new Date(1710003600 * 1000),
+          end_time: new Date((1710003600 + 90 * 24 * 60 * 60) * 1000),
+          prize_pool: '0',
+          reward_distribution: [50, 20],
+          entry_fee: '0',
+          category: 'formula-1-racing',
+          banner_url: null,
+          is_finalized: false,
+        }),
+      );
+    });
+  });
+
   describe('retryFailedEvents', () => {
     it('should retry failed events', async () => {
       const failedEvent = {

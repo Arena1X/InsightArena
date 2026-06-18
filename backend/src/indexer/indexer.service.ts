@@ -25,6 +25,9 @@ const CHECKPOINT_LEDGER_KEY_LATEST = 'indexer:latest_contract_ledger';
 const MAX_RETRIES = 5;
 const DLQ_THRESHOLD = 5;
 const BATCH_SIZE = 100;
+const DEFAULT_CREATOR_EVENT_CATEGORY = 'general';
+// Matches MAX_EVENT_DURATION_SECONDS in contracts/creator-event-manager.
+const DEFAULT_EVENT_DURATION_SECONDS = 7_776_000;
 
 @Injectable()
 export class IndexerService implements OnModuleInit {
@@ -191,6 +194,7 @@ export class IndexerService implements OnModuleInit {
           params: {
             startLedger: fromLedger,
             filters: [{ type: 'contract', contractIds: [contractId] }],
+            xdrFormat: 'json',
             limit: BATCH_SIZE,
           },
         }),
@@ -283,12 +287,8 @@ export class IndexerService implements OnModuleInit {
     if (!Array.isArray(value)) return [];
     return value
       .map((item) => {
-        if (typeof item === 'string') return item;
-        if (item && typeof item === 'object') {
-          const obj = item as Record<string, unknown>;
-          if (typeof obj.symbol === 'string') return obj.symbol;
-          if (typeof obj.value === 'string') return obj.value;
-        }
+        const unwrapped = this.unwrapIndexerValue(item);
+        if (typeof unwrapped === 'string') return unwrapped;
         return null;
       })
       .filter((item): item is string => item !== null);
@@ -300,28 +300,47 @@ export class IndexerService implements OnModuleInit {
   ): string | null {
     const lowerTopics = topic.map((t) => t.toLowerCase());
 
+    const explicitTypeCandidate = this.unwrapIndexerValue(
+      value.event ?? value.event_type,
+    );
     const explicitType =
-      typeof value.event === 'string'
-        ? value.event
-        : typeof value.event_type === 'string'
-          ? value.event_type
-          : null;
+      typeof explicitTypeCandidate === 'string' ? explicitTypeCandidate : null;
 
     if (explicitType) return explicitType;
 
     const topicStr = lowerTopics.join('.');
+    const hasTopicPair = (domain: string, action: string): boolean =>
+      lowerTopics.some(
+        (topic, index) => topic === domain && lowerTopics[index + 1] === action,
+      );
 
-    if (topicStr.includes('eventcreated')) return 'EventCreated';
-    if (topicStr.includes('matchadded')) return 'MatchAdded';
-    if (topicStr.includes('userjoined')) return 'UserJoinedEvent';
-    if (topicStr.includes('predictionsubmitted')) return 'PredictionSubmitted';
+    if (topicStr.includes('eventcreated') || hasTopicPair('event', 'created'))
+      return 'EventCreated';
+    if (topicStr.includes('matchadded') || hasTopicPair('match', 'created'))
+      return 'MatchAdded';
+    if (topicStr.includes('userjoined') || hasTopicPair('event', 'joined'))
+      return 'UserJoinedEvent';
+    if (
+      topicStr.includes('predictionsubmitted') ||
+      hasTopicPair('prediction', 'submitted')
+    )
+      return 'PredictionSubmitted';
     if (
       topicStr.includes('matchresultsubmitted') ||
-      topicStr.includes('reslvd')
+      topicStr.includes('reslvd') ||
+      hasTopicPair('match', 'result_submitted')
     )
       return 'MatchResultSubmitted';
-    if (topicStr.includes('winnersverified')) return 'WinnersVerified';
-    if (topicStr.includes('eventcancelled')) return 'EventCancelled';
+    if (
+      topicStr.includes('winnersverified') ||
+      hasTopicPair('event', 'winners_verified')
+    )
+      return 'WinnersVerified';
+    if (
+      topicStr.includes('eventcancelled') ||
+      hasTopicPair('event', 'cancelled')
+    )
+      return 'EventCancelled';
     if (topicStr.includes('feeupdated')) return 'FeeUpdated';
     if (topicStr.includes('addressverified')) return 'AddressVerified';
     if (topicStr.includes('addressunverified')) return 'AddressUnverified';
@@ -343,17 +362,36 @@ export class IndexerService implements OnModuleInit {
     const base = { ...rawValue };
 
     switch (eventType) {
-      case 'EventCreated':
+      case 'EventCreated': {
+        const eventCreated = this.readEventCreatedPayload(rawValue);
+
         return {
-          event_id: this.readBigInt(base, 'event_id'),
-          creator: this.readStr(base, 'creator'),
-          title: this.readStr(base, 'title'),
-          description: this.readStr(base, 'description'),
-          creation_fee_paid: this.readBigInt(base, 'creation_fee_paid'),
-          created_at: this.readNum(base, 'created_at'),
-          invite_code: this.readStr(base, 'invite_code'),
-          max_participants: this.readNum(base, 'max_participants'),
+          event_id: this.readBigInt(eventCreated, 'event_id'),
+          creator: this.readStr(eventCreated, 'creator'),
+          title: this.readStr(eventCreated, 'title'),
+          description: this.readStr(eventCreated, 'description'),
+          creation_fee_paid: this.readBigInt(eventCreated, 'creation_fee_paid'),
+          created_at: this.readNum(eventCreated, 'created_at'),
+          start_time: this.readNum(eventCreated, 'start_time'),
+          end_time: this.readNum(eventCreated, 'end_time'),
+          invite_code: this.readStr(eventCreated, 'invite_code'),
+          max_participants: this.readNum(eventCreated, 'max_participants'),
+          prize_pool: this.readUnsignedBigInt(eventCreated, 'prize_pool'),
+          reward_distribution: this.readNumberArray(
+            eventCreated,
+            'reward_distribution',
+          ),
+          entry_fee: this.readUnsignedBigInt(eventCreated, 'entry_fee'),
+          category: this.normalizeCategory(
+            this.readStr(eventCreated, 'category'),
+          ),
+          banner_url: this.normalizeNullableString(
+            this.readStr(eventCreated, 'banner_url'),
+            2048,
+          ),
+          is_finalized: this.readBool(eventCreated, 'is_finalized') ?? false,
         };
+      }
       case 'MatchAdded':
         return {
           match_id: this.readBigInt(base, 'match_id'),
@@ -533,19 +571,36 @@ export class IndexerService implements OnModuleInit {
     });
     if (existing) return;
 
+    const createdAt = this.readUnixTimestamp(data, 'created_at') ?? new Date();
+    const startTime = this.readUnixTimestamp(data, 'start_time') ?? createdAt;
+    const parsedEndTime = this.readUnixTimestamp(data, 'end_time');
+    const endTime =
+      parsedEndTime && parsedEndTime.getTime() > startTime.getTime()
+        ? parsedEndTime
+        : new Date(startTime.getTime() + DEFAULT_EVENT_DURATION_SECONDS * 1000);
+
     const creatorEvent = this.creatorEventRepository.create({
       on_chain_event_id: onChainEventId,
       creator_address: this.readStr(data, 'creator'),
       title: this.readStr(data, 'title') || `Event ${onChainEventId}`,
       description: this.readStr(data, 'description'),
-      creation_fee_paid: this.readStr(data, 'creation_fee_paid') || '0',
-      on_chain_created_at: data.created_at
-        ? new Date(Number(data.created_at) * 1000)
-        : new Date(),
+      creation_fee_paid: this.readUnsignedBigInt(data, 'creation_fee_paid'),
+      on_chain_created_at: createdAt,
+      start_time: startTime,
+      end_time: endTime,
+      prize_pool: this.readUnsignedBigInt(data, 'prize_pool'),
+      reward_distribution: this.readNumberArray(data, 'reward_distribution'),
+      entry_fee: this.readUnsignedBigInt(data, 'entry_fee'),
+      category: this.normalizeCategory(this.readStr(data, 'category')),
+      banner_url: this.normalizeNullableString(
+        this.readStr(data, 'banner_url'),
+        2048,
+      ),
+      is_finalized: this.readBool(data, 'is_finalized') ?? false,
       is_active: true,
       is_cancelled: false,
       invite_code: this.readStr(data, 'invite_code') || null,
-      max_participants: Number(data.max_participants ?? 0),
+      max_participants: this.readNum(data, 'max_participants') ?? 0,
       participant_count: 0,
       match_count: 0,
     });
@@ -1035,11 +1090,187 @@ export class IndexerService implements OnModuleInit {
     await this.checkpointRepository.upsert({ key, value, meta: null }, ['key']);
   }
 
+  private readEventCreatedPayload(rawValue: unknown): Record<string, unknown> {
+    const base =
+      rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)
+        ? { ...(rawValue as Record<string, unknown>) }
+        : {};
+    const positional = this.readPositionalValues(rawValue);
+
+    const readValue = (key: string, positionalIndex: number): unknown => {
+      if (base[key] !== undefined) return base[key];
+      return positional[positionalIndex];
+    };
+
+    if (positional.length > 0 && positional.length <= 3) {
+      return {
+        ...base,
+        event_id: readValue('event_id', 0),
+        creator: readValue('creator', 1),
+        invite_code: readValue('invite_code', 2),
+      };
+    }
+
+    if (positional.length > 0 && positional.length <= 8) {
+      return {
+        ...base,
+        event_id: readValue('event_id', 0),
+        creator: readValue('creator', 1),
+        title: readValue('title', 2),
+        description: readValue('description', 3),
+        creation_fee_paid: readValue('creation_fee_paid', 4),
+        created_at: readValue('created_at', 5),
+        invite_code: readValue('invite_code', 6),
+        max_participants: readValue('max_participants', 7),
+      };
+    }
+
+    return {
+      ...base,
+      event_id: readValue('event_id', 0),
+      creator: readValue('creator', 1),
+      title: readValue('title', 2),
+      description: readValue('description', 3),
+      creation_fee_paid: readValue('creation_fee_paid', 4),
+      created_at: readValue('created_at', 5),
+      start_time: readValue('start_time', 6),
+      end_time: readValue('end_time', 7),
+      invite_code: readValue('invite_code', 8),
+      max_participants: readValue('max_participants', 9),
+      prize_pool: readValue('prize_pool', 10),
+      reward_distribution: readValue('reward_distribution', 11),
+      entry_fee: readValue('entry_fee', 12),
+      category: readValue('category', 13),
+      banner_url: readValue('banner_url', 14),
+      is_finalized: readValue('is_finalized', 15),
+    };
+  }
+
+  private readPositionalValues(rawValue: unknown): unknown[] {
+    const value = this.unwrapIndexerValue(rawValue);
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      if (Array.isArray(record.vec)) return record.vec;
+      if (Array.isArray(record.values)) return record.values;
+    }
+    return [];
+  }
+
+  private readBool(data: Record<string, unknown>, key: string): boolean | null {
+    const val = this.unwrapIndexerValue(data[key]);
+    if (val === null || val === undefined) return null;
+    if (typeof val === 'boolean') return val;
+    if (typeof val === 'number') {
+      if (val === 1) return true;
+      if (val === 0) return false;
+      return null;
+    }
+    if (typeof val === 'bigint') {
+      if (val === 1n) return true;
+      if (val === 0n) return false;
+      return null;
+    }
+    if (typeof val === 'string') {
+      const normalized = val.trim().toLowerCase();
+      if (['true', '1', 'yes'].includes(normalized)) return true;
+      if (['false', '0', 'no'].includes(normalized)) return false;
+    }
+    return null;
+  }
+
+  private readNumberArray(
+    data: Record<string, unknown>,
+    key: string,
+  ): number[] {
+    const unwrapped = this.unwrapIndexerValue(data[key]);
+    const val =
+      unwrapped &&
+      typeof unwrapped === 'object' &&
+      !Array.isArray(unwrapped) &&
+      Array.isArray((unwrapped as Record<string, unknown>).vec)
+        ? (unwrapped as Record<string, unknown>).vec
+        : unwrapped;
+
+    if (Array.isArray(val)) return this.normalizeNumberArray(val);
+    if (typeof val === 'string') {
+      const trimmed = val.trim();
+      if (!trimmed) return [];
+
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (Array.isArray(parsed)) return this.normalizeNumberArray(parsed);
+      } catch {
+        // Fall through to comma-separated parsing for legacy/manual payloads.
+      }
+
+      return this.normalizeNumberArray(trimmed.split(','));
+    }
+
+    return [];
+  }
+
+  private normalizeNumberArray(values: unknown[]): number[] {
+    return values
+      .map((item) => this.toNumber(item))
+      .filter(
+        (item): item is number =>
+          item !== null && Number.isSafeInteger(item) && item >= 0,
+      );
+  }
+
+  private readUnixTimestamp(
+    data: Record<string, unknown>,
+    key: string,
+  ): Date | null {
+    const seconds = this.readNum(data, key);
+    if (seconds === null || seconds <= 0 || !Number.isSafeInteger(seconds)) {
+      return null;
+    }
+
+    const milliseconds = seconds * 1000;
+    if (!Number.isFinite(milliseconds)) return null;
+
+    const date = new Date(milliseconds);
+    return Number.isFinite(date.getTime()) ? date : null;
+  }
+
+  private readUnsignedBigInt(
+    data: Record<string, unknown>,
+    key: string,
+  ): string {
+    const normalized = this.readBigInt(data, key);
+    return normalized.startsWith('-') ? '0' : normalized;
+  }
+
+  private normalizeCategory(category: string): string {
+    const normalized = category
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 100)
+      .replace(/^-+|-+$/g, '');
+
+    return normalized || DEFAULT_CREATOR_EVENT_CATEGORY;
+  }
+
+  private normalizeNullableString(
+    value: string,
+    maxLength: number,
+  ): string | null {
+    const normalized = value.trim();
+    if (!normalized) return null;
+    return normalized.slice(0, maxLength);
+  }
+
   private readStr(data: Record<string, unknown>, key: string): string {
-    const val = data[key];
+    const val = this.unwrapIndexerValue(data[key]);
     if (val === null || val === undefined) return '';
     if (typeof val === 'string') return val;
     if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+    if (typeof val === 'bigint' || typeof val === 'symbol') return String(val);
     if (typeof val === 'object') {
       try {
         return JSON.stringify(val);
@@ -1047,42 +1278,78 @@ export class IndexerService implements OnModuleInit {
         return '';
       }
     }
-    if (typeof val === 'symbol' || typeof val === 'bigint') {
-      return String(val);
-    }
     return '';
   }
 
   private readNum(data: Record<string, unknown>, key: string): number | null {
-    const val = data[key];
-    if (typeof val === 'number' && Number.isFinite(val)) return val;
-    if (typeof val === 'string') {
-      const n = Number(val);
-      return Number.isFinite(n) ? n : null;
-    }
-    return null;
+    return this.toNumber(data[key]);
   }
 
   private readBigInt(data: Record<string, unknown>, key: string): string {
-    const val = data[key];
-    if (val == null) return '0';
+    const val = this.unwrapIndexerValue(data[key]);
+    if (val === null || val === undefined || val === '') return '0';
+
+    if (typeof val === 'bigint') return val.toString();
+    if (typeof val === 'number') {
+      if (!Number.isSafeInteger(val)) return '0';
+      return BigInt(val).toString();
+    }
     if (typeof val === 'string') {
+      const trimmed = val.trim();
+      if (!trimmed) return '0';
+
       try {
-        return BigInt(val).toString();
+        return BigInt(trimmed).toString();
       } catch {
         return '0';
       }
     }
-    if (typeof val === 'number') return BigInt(val).toString();
+
     return '0';
   }
 
   private toNumber(value: unknown): number | null {
-    if (typeof value === 'number' && Number.isFinite(value)) return value;
-    if (typeof value === 'string') {
-      const parsed = Number(value);
+    const val = this.unwrapIndexerValue(value);
+    if (typeof val === 'number' && Number.isFinite(val)) return val;
+    if (typeof val === 'bigint') {
+      const parsed = Number(val);
+      return Number.isSafeInteger(parsed) ? parsed : null;
+    }
+    if (typeof val === 'string') {
+      const trimmed = val.trim();
+      if (!trimmed) return null;
+      const parsed = Number(trimmed);
       return Number.isFinite(parsed) ? parsed : null;
     }
     return null;
+  }
+
+  private unwrapIndexerValue(value: unknown): unknown {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return value;
+    }
+
+    const record = value as Record<string, unknown>;
+    if ('value' in record) return this.unwrapIndexerValue(record.value);
+
+    for (const key of [
+      'symbol',
+      'sym',
+      'string',
+      'str',
+      'address',
+      'u64',
+      'i64',
+      'u32',
+      'i32',
+      'u128',
+      'i128',
+      'bool',
+      'boolean',
+    ]) {
+      if (key in record) return this.unwrapIndexerValue(record[key]);
+    }
+
+    return value;
   }
 }

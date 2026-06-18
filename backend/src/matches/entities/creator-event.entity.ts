@@ -16,6 +16,13 @@ import { Match } from './match.entity';
 @Index(['creator_address', 'created_at'])
 @Index(['participant_count'])
 @Index(['match_count'])
+@Index('IDX_creator_events_category', ['category'])
+@Index('IDX_creator_events_campaign_window', [
+  'is_active',
+  'is_cancelled',
+  'start_time',
+  'end_time',
+])
 @Index(['is_finalized'])
 @Index(['end_time'])
 export class CreatorEvent {
@@ -40,8 +47,26 @@ export class CreatorEvent {
   @Column({ type: 'timestamptz' })
   on_chain_created_at: Date;
 
-  @Column({ type: 'timestamptz', nullable: true })
-  end_time: Date | null;
+  @Column({ type: 'timestamptz' })
+  start_time: Date;
+
+  @Column({ type: 'timestamptz' })
+  end_time: Date;
+
+  @Column({ type: 'bigint', default: '0' })
+  prize_pool: string;
+
+  @Column({ type: 'integer', array: true, default: () => "'{}'::integer[]" })
+  reward_distribution: number[];
+
+  @Column({ type: 'bigint', default: '0' })
+  entry_fee: string;
+
+  @Column({ type: 'varchar', length: 100, default: 'general' })
+  category: string;
+
+  @Column({ type: 'varchar', length: 2048, nullable: true })
+  banner_url: string | null;
 
   @Column({ default: true })
   is_active: boolean;

@@ -24,6 +24,7 @@ import { CreatorEventsService } from './creator-events.service';
 import { EventByCodeResponseDto } from './dto/event-by-code-response.dto';
 import { ListMatchesQueryDto } from './dto/list-matches-query.dto';
 import { ListParticipantsQueryDto } from './dto/list-participants-query.dto';
+import { LeaderboardQueryDto } from './dto/leaderboard-query.dto';
 import { SearchEventsQueryDto } from './dto/search-events-query.dto';
 import { SearchEventsResponseDto } from './dto/search-events-response.dto';
 import { UserScoreResponseDto } from './dto/user-score-response.dto';
@@ -99,6 +100,27 @@ export class CreatorEventsController {
     @Query() query: ListParticipantsQueryDto,
   ) {
     return this.creatorEventsService.getParticipants(id, query);
+  }
+
+  /**
+   * GET /api/creator-events/:id/leaderboard
+   * Ranked event leaderboard. Reads from DB cache for finalized events,
+   * falls back to live contract view otherwise.
+   */
+  @Get(':id/leaderboard')
+  @UseInterceptors(CacheInterceptor)
+  @CacheTTL(30) // 30 seconds
+  @ApiOperation({ summary: 'Get ranked leaderboard for an event' })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'limit', required: false, example: 20 })
+  @ApiResponse({ status: 200, description: 'Paginated leaderboard entries' })
+  @ApiResponse({ status: 404, description: 'Event not found' })
+  getLeaderboard(
+    @Param('id') id: string,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: LeaderboardQueryDto,
+  ) {
+    return this.creatorEventsService.getLeaderboard(id, query);
   }
 
   /**

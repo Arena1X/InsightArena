@@ -9,6 +9,7 @@ import {
   ContractMatch,
 } from '../contract/contract.service';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
+import { CreatorEventLeaderboardEntry } from '../matches/entities/creator-event-leaderboard-entry.entity';
 import {
   EventByCodeResponseDto,
   MatchPreviewDto,
@@ -36,6 +37,11 @@ import {
 import { UserScoreResponseDto } from './dto/user-score-response.dto';
 import { UserPredictionsResponseDto } from './dto/user-predictions-response.dto';
 import { EventStatsResponseDto } from './dto/event-stats-response.dto';
+import {
+  LeaderboardQueryDto,
+  LeaderboardEntryResponse,
+  PaginatedLeaderboardResponse,
+} from './dto/leaderboard-query.dto';
 import {
   normalizeContractPrediction,
   resolveCorrectness,
@@ -74,6 +80,8 @@ export class CreatorEventsService {
     private readonly contractService: ContractService,
     @InjectRepository(CreatorEvent)
     private readonly creatorEventRepository: Repository<CreatorEvent>,
+    @InjectRepository(CreatorEventLeaderboardEntry)
+    private readonly leaderboardEntryRepository: Repository<CreatorEventLeaderboardEntry>,
   ) {}
 
   async searchEvents(
@@ -695,5 +703,71 @@ export class CreatorEventsService {
 
   private escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  async getLeaderboard(
+    eventId: string,
+    query: LeaderboardQueryDto,
+  ): Promise<PaginatedLeaderboardResponse> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+
+    // Check if event is finalized via DB cache
+    const cachedEvent = await this.creatorEventRepository.findOne({
+      where: { on_chain_event_id: Number(eventId) as unknown as number },
+      select: ['is_finalized'],
+    });
+
+    if (cachedEvent?.is_finalized) {
+      const [entries, total] = await this.leaderboardEntryRepository.findAndCount({
+        where: { event_id: eventId },
+        order: { rank: 'ASC' },
+        skip: (page - 1) * limit,
+        take: limit,
+      });
+
+      return {
+        data: entries.map((e) => ({
+          rank: e.rank,
+          user_address: e.user_address,
+          total_predictions: e.total_predictions,
+          correct_predictions: e.correct_predictions,
+          accuracy_percentage: Number(e.accuracy_percentage),
+          is_winner: e.is_winner,
+          completion_time: e.completion_time
+            ? e.completion_time.toISOString()
+            : null,
+        })),
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        source: 'cache',
+      };
+    }
+
+    // Live read from contract
+    const all = await this.contractService.getEventLeaderboard(eventId);
+    const total = all.length;
+    const slice = all.slice((page - 1) * limit, page * limit);
+
+    const data: LeaderboardEntryResponse[] = slice.map((e) => ({
+      rank: e.rank,
+      user_address: e.address,
+      total_predictions: e.total_predictions,
+      correct_predictions: e.correct_predictions,
+      accuracy_percentage: e.accuracy_percentage,
+      is_winner: e.is_winner,
+      completion_time: e.completion_time ?? null,
+    }));
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+      source: 'contract',
+    };
   }
 }

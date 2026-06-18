@@ -378,6 +378,8 @@ export default function CreatorEventDetailPage() {
           maxParticipants={event.maxParticipants}
           createdAt={event.createdAt}
           inviteCode={isCreator ? event.inviteCode : undefined}
+          category={event.category}
+          bannerUrl={event.bannerUrl}
         />
 
         <section className="rounded-3xl border border-white/10 bg-slate-900/80 p-5">

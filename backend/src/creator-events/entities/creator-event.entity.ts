@@ -60,6 +60,38 @@ export class CreatorEvent {
   @ApiPropertyOptional()
   on_chain_created_at?: Date;
 
+  @Column({ type: 'timestamptz' })
+  @ApiProperty({ description: 'Campaign start time indexed from chain data' })
+  start_time: Date;
+
+  @Column({ type: 'timestamptz' })
+  @ApiProperty({ description: 'Campaign end time indexed from chain data' })
+  end_time: Date;
+
+  @Column({ type: 'bigint', default: '0' })
+  @ApiProperty({ description: 'Total campaign prize pool in stroops' })
+  prize_pool: string;
+
+  @Column({ type: 'integer', array: true, default: () => "'{}'::integer[]" })
+  @ApiProperty({ type: [Number], description: 'Reward split percentages' })
+  reward_distribution: number[];
+
+  @Column({ type: 'bigint', default: '0' })
+  @ApiProperty({ description: 'Entry fee in stroops' })
+  entry_fee: string;
+
+  @Column({ type: 'varchar', length: 100, default: 'general' })
+  @ApiProperty({ description: 'Normalized campaign category slug' })
+  category: string;
+
+  @Column({ type: 'varchar', length: 2048, nullable: true })
+  @ApiPropertyOptional({ description: 'Optional campaign banner URL' })
+  banner_url?: string | null;
+
+  @Column({ type: 'boolean', default: false })
+  @ApiProperty({ description: 'Whether the campaign has been finalized' })
+  is_finalized: boolean;
+
   @Column({ type: 'int', default: 0 })
   @ApiProperty()
   max_participants: number;
