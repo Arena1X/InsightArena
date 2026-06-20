@@ -66,9 +66,13 @@ export interface CreatorEventMatch {
   teamB: string;
   matchTime: string;
   outcome: MatchOutcome;
+<<<<<<< Updated upstream
   homeScore: number | null;
   awayScore: number | null;
   pointsMultiplier: number;
+=======
+  multiplier?: 1 | 2 | 3;
+>>>>>>> Stashed changes
 }
 
 export interface Participant {
@@ -179,11 +183,19 @@ export interface CreatorEventsContextValue {
   ) => Promise<{ eventId: string; inviteCode: string }>;
   joinEvent: (inviteCode: string) => Promise<boolean>;
   addMatch: (
+<<<<<<< Updated upstream
     input: AddMatchInput | string,
     teamA?: string,
     teamB?: string,
     matchTime?: string,
     details?: Partial<AddMatchInput>,
+=======
+    eventId: string,
+    teamA: string,
+    teamB: string,
+    matchTime: string,
+    multiplier: 1 | 2 | 3,
+>>>>>>> Stashed changes
   ) => Promise<string>;
   submitPrediction: (
     input: SubmitPredictionInput | string,
@@ -997,6 +1009,7 @@ export function CreatorEventsProvider({
       );
       if (!event || event.participants >= event.maxParticipants) return false;
 
+<<<<<<< Updated upstream
       updateEvent(event.id, {
         joined: true,
         participants: event.participants + 1,
@@ -1017,6 +1030,48 @@ export function CreatorEventsProvider({
           },
         ],
       }));
+=======
+  const addMatch = useCallback(
+    async (
+      eventId: string,
+      teamA: string,
+      teamB: string,
+      matchTime: string,
+      multiplier: 1 | 2 | 3,
+    ): Promise<string> => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const matchId = `match-${Date.now()}`;
+        const newMatch: CreatorEventMatch = {
+          id: matchId,
+          eventId,
+          teamA,
+          teamB,
+          matchTime,
+          outcome: "Pending",
+          multiplier,
+        };
+        setMatchesCache((prev) => ({
+          ...prev,
+          [eventId]: [...(prev[eventId] ?? []), newMatch],
+        }));
+        setEventCache((prev) => {
+          const event = prev[eventId];
+          if (!event) return prev;
+          return {
+            ...prev,
+            [eventId]: { ...event, matchesCount: event.matchesCount + 1 },
+          };
+        });
+        return matchId;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [],
+  );
+>>>>>>> Stashed changes
 
       return true;
     },

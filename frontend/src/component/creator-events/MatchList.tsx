@@ -86,6 +86,11 @@ export default function MatchList({ matches, userJoined, onPredict }: MatchListP
                       Winner: {winner}
                     </span>
                   ) : null}
+                  {match.multiplier && match.multiplier > 1 ? (
+                    <span className="inline-flex items-center gap-2 rounded-full bg-amber-400/10 px-3 py-1 text-amber-200">
+                      ⚡ {match.multiplier}x Points
+                    </span>
+                  ) : null}
                 </div>
               </div>
 

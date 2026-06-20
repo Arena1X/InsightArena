@@ -29,6 +29,7 @@ interface Match {
   status: MatchStatus;
   hasPredictions: boolean;
   result?: string;
+  multiplier: 1 | 2 | 3;
 }
 
 interface EventMeta {
@@ -53,6 +54,7 @@ const MOCK_MATCHES: Match[] = [
     matchTime: new Date(Date.now() + 86400 * 1000).toISOString(),
     status: "upcoming",
     hasPredictions: false,
+    multiplier: 1,
   },
   {
     id: "match-002",
@@ -61,6 +63,7 @@ const MOCK_MATCHES: Match[] = [
     matchTime: new Date(Date.now() - 3600 * 1000).toISOString(),
     status: "started",
     hasPredictions: true,
+    multiplier: 1,
   },
   {
     id: "match-003",
@@ -70,6 +73,7 @@ const MOCK_MATCHES: Match[] = [
     status: "resolved",
     hasPredictions: true,
     result: "Team Sigma",
+    multiplier: 1,
   },
 ];
 
@@ -150,6 +154,7 @@ export default function MatchManagementPage() {
       matchTime: data.matchTime,
       status: "upcoming",
       hasPredictions: false,
+      multiplier: data.multiplier,
     };
     setMatches((prev) => [...prev, newMatch]);
   }
@@ -162,6 +167,7 @@ export default function MatchManagementPage() {
       matchTime: m.matchTime,
       status: "upcoming",
       hasPredictions: false,
+      multiplier: m.multiplier,
     }));
     setMatches((prev) => [...prev, ...newMatches]);
   }

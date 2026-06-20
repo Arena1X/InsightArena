@@ -8,6 +8,7 @@ export interface MatchFormData {
   teamA: string;
   teamB: string;
   matchTime: string;
+  multiplier: 1 | 2 | 3;
 }
 
 interface AddMatchFormProps {
@@ -25,6 +26,7 @@ export default function AddMatchForm({ onAddMatch }: AddMatchFormProps) {
   const [teamA, setTeamA] = useState("");
   const [teamB, setTeamB] = useState("");
   const [matchTime, setMatchTime] = useState(nowPlusOneHour());
+  const [multiplier, setMultiplier] = useState<MatchFormData["multiplier"]>(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errors, setErrors] = useState<Partial<MatchFormData & { form: string }>>({});
 
@@ -50,6 +52,10 @@ export default function AddMatchForm({ onAddMatch }: AddMatchFormProps) {
       errs.matchTime = "Match time must be in the future.";
     }
 
+    if (![1, 2, 3].includes(multiplier)) {
+      errs.multiplier = "Please select a valid bonus multiplier.";
+    }
+
     setErrors(errs);
     return Object.keys(errs).length === 0;
   }
@@ -64,10 +70,12 @@ export default function AddMatchForm({ onAddMatch }: AddMatchFormProps) {
         teamA: teamA.trim(),
         teamB: teamB.trim(),
         matchTime,
+        multiplier,
       });
       setTeamA("");
       setTeamB("");
       setMatchTime(nowPlusOneHour());
+      setMultiplier(1);
       setErrors({});
     } catch {
       setErrors({ form: "Failed to add match. Please try again." });
@@ -150,6 +158,30 @@ export default function AddMatchForm({ onAddMatch }: AddMatchFormProps) {
         />
         {errors.matchTime && (
           <p className="text-xs text-rose-400">{errors.matchTime}</p>
+        )}
+      </div>
+
+      <div className="space-y-1">
+        <label
+          htmlFor="match-multiplier"
+          className="block text-sm font-medium text-slate-300"
+        >
+          Bonus Multiplier
+        </label>
+        <select
+          id="match-multiplier"
+          value={multiplier}
+          onChange={(e) =>
+            setMultiplier(Number(e.target.value) as MatchFormData["multiplier"])
+          }
+          className="w-full rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 text-sm text-white outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20"
+        >
+          <option value={1}>1× Normal points</option>
+          <option value={2}>2× Bonus points</option>
+          <option value={3}>3× Bonus points</option>
+        </select>
+        {errors.multiplier && (
+          <p className="text-xs text-rose-400">{errors.multiplier}</p>
         )}
       </div>
 

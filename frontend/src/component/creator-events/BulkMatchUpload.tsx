@@ -9,6 +9,7 @@ interface ParsedRow {
   teamA: string;
   teamB: string;
   matchTime: string;
+  multiplier: 1 | 2 | 3;
   error?: string;
 }
 
@@ -26,8 +27,12 @@ function parseCSV(raw: string): ParsedRow[] {
 
   return lines.map((line, idx) => {
     const cols = line.split(",").map((c) => c.trim());
-    const [teamA = "", teamB = "", matchTime = ""] = cols;
+    const [teamA = "", teamB = "", matchTime = "", multiplierValue = "1"] = cols;
     const errors: string[] = [];
+    const parsedMultiplier = Number(multiplierValue);
+    const multiplier = [1, 2, 3].includes(parsedMultiplier)
+      ? (parsedMultiplier as 1 | 2 | 3)
+      : 1;
 
     if (!teamA) errors.push("Team A is empty");
     if (!teamB) errors.push("Team B is empty");
@@ -40,11 +45,15 @@ function parseCSV(raw: string): ParsedRow[] {
       if (isNaN(dt.getTime())) errors.push("Invalid ISO 8601 date");
       else if (dt <= new Date()) errors.push("Match time must be in the future");
     }
+    if (multiplierValue && !["1", "2", "3"].includes(multiplierValue)) {
+      errors.push("Multiplier must be 1, 2, or 3");
+    }
 
     return {
       teamA,
       teamB,
       matchTime,
+      multiplier,
       error: errors.length > 0 ? errors.join("; ") : undefined,
     };
   });
@@ -113,6 +122,7 @@ export default function BulkMatchUpload({
           teamA: r.teamA,
           teamB: r.teamB,
           matchTime: r.matchTime,
+          multiplier: r.multiplier,
         })),
       );
       setImportSuccess(true);
@@ -146,7 +156,7 @@ export default function BulkMatchUpload({
       <p className="text-sm text-slate-400">
         Upload a CSV with columns:{" "}
         <code className="rounded bg-white/10 px-1.5 py-0.5 text-xs text-amber-300">
-          Team A, Team B, Match Time (ISO 8601)
+          Team A, Team B, Match Time (ISO 8601), Multiplier (optional)
         </code>
       </p>
 
@@ -203,6 +213,7 @@ export default function BulkMatchUpload({
                   <th className="px-4 py-2">Team A</th>
                   <th className="px-4 py-2">Team B</th>
                   <th className="px-4 py-2">Match Time</th>
+                  <th className="px-4 py-2">Multiplier</th>
                   <th className="px-4 py-2">Status</th>
                 </tr>
               </thead>
@@ -222,6 +233,9 @@ export default function BulkMatchUpload({
                     </td>
                     <td className="px-4 py-2 font-mono text-xs text-slate-300">
                       {row.matchTime || <span className="text-slate-500">—</span>}
+                    </td>
+                    <td className="px-4 py-2 text-slate-300">
+                      {row.multiplier}×
                     </td>
                     <td className="px-4 py-2">
                       {row.error ? (
