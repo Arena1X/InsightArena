@@ -781,12 +781,23 @@ fn test_collect_lp_fees_resets_fees_to_zero() {
     );
 
     let position_before = client.get_lp_position(&provider, &market_id);
-    assert!(position_before.fees_earned > 0);
+    let expected_fees = position_before.fees_earned;
+    assert!(expected_fees > 0);
 
-    client.collect_lp_fees(&provider, &market_id);
+    let balance_before = token.balance(&provider);
+
+    let collected = client.collect_lp_fees(&provider, &market_id);
+    assert!(collected > 0);
+    assert_eq!(collected, expected_fees);
+
+    let balance_after = token.balance(&provider);
+    assert_eq!(balance_after, balance_before + collected);
 
     let position_after = client.get_lp_position(&provider, &market_id);
     assert_eq!(position_after.fees_earned, 0);
+
+    let second_collected = client.collect_lp_fees(&provider, &market_id);
+    assert_eq!(second_collected, 0);
 }
 
 #[test]
