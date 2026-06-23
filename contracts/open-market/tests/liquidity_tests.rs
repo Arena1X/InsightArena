@@ -780,6 +780,9 @@ fn test_collect_lp_fees_resets_fees_to_zero() {
         &0_i128,
     );
 
+    let position_before = client.get_lp_position(&provider, &market_id);
+    assert!(position_before.fees_earned > 0);
+
     client.collect_lp_fees(&provider, &market_id);
 
     let position_after = client.get_lp_position(&provider, &market_id);
