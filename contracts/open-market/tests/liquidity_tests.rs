@@ -809,6 +809,90 @@ fn test_collect_lp_fees_fails_when_no_fees_earned() {
     assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
 }
 
+// ── collect_lp_fees End-to-End Lifecycle (Issue #1047) ───────────────────────
+
+/// Full lifecycle for `collect_lp_fees`: accrue fees through swaps, collect them
+/// once, and confirm the stored `LPPosition.fees_earned` is cleared to zero and
+/// the provider is paid the exact amount.
+///
+/// Note on idempotency: the issue describes the second collection as "returns 0",
+/// but `collect_lp_fees` rejects a zero-fee collection with `InvalidInput` rather
+/// than returning 0 (see `liquidity::collect_lp_fees`). The double-collect step
+/// therefore asserts an error and that no extra payout occurs.
+#[test]
+fn test_collect_lp_fees_clears_fees_earned_end_to_end() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+
+    let creator = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let trader = Address::generate(&env);
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let market_id = client.create_market(&creator, &lp_market_params(&env));
+
+    // 1. Add liquidity as the sole provider so all fees accrue to this position.
+    let liquidity = 100_000_i128;
+    sa.mint(&provider, &liquidity);
+    token.approve(&provider, &client.address, &liquidity, &9999);
+    client.add_liquidity(&provider, &market_id, &liquidity);
+
+    // 2. Perform swaps (both directions) so trading fees accumulate.
+    let swap_amount = 10_000_i128;
+    sa.mint(&trader, &(swap_amount * 2));
+    token.approve(&trader, &client.address, &(swap_amount * 2), &9999);
+    client.swap_outcome(
+        &trader,
+        &market_id,
+        &symbol_short!("yes"),
+        &symbol_short!("no"),
+        &swap_amount,
+        &0_i128,
+    );
+    client.swap_outcome(
+        &trader,
+        &market_id,
+        &symbol_short!("no"),
+        &symbol_short!("yes"),
+        &swap_amount,
+        &0_i128,
+    );
+
+    // 3. The stored position must show non-zero accrued fees before collection.
+    let position_before = client.get_lp_position(&provider, &market_id);
+    assert!(
+        position_before.fees_earned > 0,
+        "fees should accrue to the provider after swaps"
+    );
+
+    // 4. Collecting returns exactly the accrued fees.
+    let balance_before = token.balance(&provider);
+    let collected = client.collect_lp_fees(&provider, &market_id);
+    let balance_after = token.balance(&provider);
+
+    assert!(collected > 0);
+    assert_eq!(collected, position_before.fees_earned);
+
+    // 5. `fees_earned` is reset to zero in the stored LPPosition.
+    let position_after = client.get_lp_position(&provider, &market_id);
+    assert_eq!(position_after.fees_earned, 0);
+
+    // 6. The provider's XLM balance increased by exactly the collected amount.
+    assert_eq!(balance_after, balance_before + collected);
+
+    // 7. A second collection finds no fees: the contract rejects it with
+    //    `InvalidInput`, the position stays at zero, and no extra payout occurs.
+    let second = client.try_collect_lp_fees(&provider, &market_id);
+    assert!(matches!(second, Err(Ok(InsightArenaError::InvalidInput))));
+
+    let position_final = client.get_lp_position(&provider, &market_id);
+    assert_eq!(position_final.fees_earned, 0);
+    assert_eq!(token.balance(&provider), balance_after);
+}
+
 #[test]
 fn test_get_all_lp_providers_empty_before_any_liquidity() {
     let env = Env::default();
