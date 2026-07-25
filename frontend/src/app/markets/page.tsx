@@ -1,6 +1,13 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Header from "@/component/Header";
 import Footer from "@/component/Footer";
@@ -8,7 +15,7 @@ import PageBackground from "@/component/PageBackground";
 import MarketCard from "@/component/MarketCard";
 import { useWallet } from "@/context/WalletContext";
 import { useDebounce } from "@/hooks/useDebounce";
-import { env } from "@/lib/env";
+import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
 
 type Market = {
   id: string;
@@ -28,18 +35,15 @@ function MarketsContent() {
   const [markets, setMarkets] = useState<Market[]>([]);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState(searchParams.get("q") || "");
-  const [category, setCategory] = useState(searchParams.get("category") || "All");
+  const [category, setCategory] = useState(
+    searchParams.get("category") || "All",
+  );
   const [status, setStatus] = useState("All");
   const [sort, setSort] = useState("newest");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /**
-   * Monotonically-increasing counter used as a generation token.
-   * Each time the fetch effect fires it increments this counter and captures the
-   * current value; if the value has changed by the time the response arrives a
-   * newer request is in-flight and this response is discarded (stale-response
-   * guard).
-   */
+  // Preserve scroll position on back navigation
+  const scrollKeyRef = useRef<string>("markets-scroll");
   const fetchGenRef = useRef(0);
 
   const loadMarkets = useCallback(() => {
@@ -73,7 +77,9 @@ function MarketsContent() {
             category: "Crypto",
             probability: 0.42,
             totalStaked: 124.5,
-            closeAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 10).toISOString(),
+            closeAt: new Date(
+              Date.now() + 1000 * 60 * 60 * 24 * 10,
+            ).toISOString(),
             status: "active",
           },
           {
@@ -82,7 +88,9 @@ function MarketsContent() {
             category: "Sports",
             probability: 0.66,
             totalStaked: 52.1,
-            closeAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 3).toISOString(),
+            closeAt: new Date(
+              Date.now() + 1000 * 60 * 60 * 24 * 3,
+            ).toISOString(),
             status: "active",
           },
           {
@@ -91,7 +99,9 @@ function MarketsContent() {
             category: "Economics",
             probability: 0.28,
             totalStaked: 18.0,
-            closeAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 60).toISOString(),
+            closeAt: new Date(
+              Date.now() + 1000 * 60 * 60 * 24 * 60,
+            ).toISOString(),
             status: "upcoming",
           },
         ]);
@@ -115,9 +125,13 @@ function MarketsContent() {
       if (cat !== "All") params.set("category", cat);
       const qs = params.toString();
       const currentQs = window.location.search;
-      const currentRaw = currentQs.startsWith("?") ? currentQs.slice(1) : currentQs;
+      const currentRaw = currentQs.startsWith("?")
+        ? currentQs.slice(1)
+        : currentQs;
       if (qs !== currentRaw) {
-        router.replace(qs ? `?${qs}` : window.location.pathname, { scroll: false });
+        router.replace(qs ? `?${qs}` : window.location.pathname, {
+          scroll: false,
+        });
       }
     },
     [router],
@@ -161,16 +175,40 @@ function MarketsContent() {
       list = list.filter((m) => m.title.toLowerCase().includes(s));
     }
     if (category !== "All") list = list.filter((m) => m.category === category);
-    if (status !== "All") list = list.filter((m) => m.status === status.toLowerCase());
+    if (status !== "All")
+      list = list.filter((m) => m.status === status.toLowerCase());
 
-    if (sort === "newest") list.sort((a, b) => +new Date(b.closeAt) - +new Date(a.closeAt));
+    if (sort === "newest")
+      list.sort((a, b) => +new Date(b.closeAt) - +new Date(a.closeAt));
     if (sort === "popular") list.sort((a, b) => b.totalStaked - a.totalStaked);
-    if (sort === "closing") list.sort((a, b) => +new Date(a.closeAt) - +new Date(b.closeAt));
+    if (sort === "closing")
+      list.sort((a, b) => +new Date(a.closeAt) - +new Date(b.closeAt));
 
     return list;
   }, [markets, debouncedSearch, category, status, sort]);
 
   const paged = filtered.slice(0, page * PAGE_SIZE);
+  const hasMore = paged.length < filtered.length;
+
+  const loadMore = useCallback(() => {
+    if (!loading && hasMore) setPage((p) => p + 1);
+  }, [loading, hasMore]);
+
+  // Restore scroll position on back navigation
+  useEffect(() => {
+    const saved = sessionStorage.getItem(scrollKeyRef.current);
+    if (saved) window.scrollTo(0, parseInt(saved, 10));
+    const onScroll = () =>
+      sessionStorage.setItem(scrollKeyRef.current, String(window.scrollY));
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  const sentinelRef = useInfiniteScroll({
+    onLoadMore: loadMore,
+    hasMore,
+    loading,
+  });
 
   const { isAuthenticated, openConnectModal } = useWallet();
 
@@ -191,7 +229,11 @@ function MarketsContent() {
     setPage(1);
   }
 
-  const hasActiveFilters = search.trim() !== "" || category !== "All" || status !== "All" || sort !== "newest";
+  const hasActiveFilters =
+    search.trim() !== "" ||
+    category !== "All" ||
+    status !== "All" ||
+    sort !== "newest";
 
   return (
     <PageBackground>
@@ -202,7 +244,9 @@ function MarketsContent() {
           <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h1 className="text-3xl font-bold text-white">Markets</h1>
-              <p className="mt-1 text-sm text-gray-400">Browse live prediction markets and compete.</p>
+              <p className="mt-1 text-sm text-gray-400">
+                Browse live prediction markets and compete.
+              </p>
             </div>
 
             <div className="flex w-full max-w-lg items-center gap-2">
@@ -250,7 +294,9 @@ function MarketsContent() {
               <option value="closing">Closing Soon</option>
             </select>
 
-            <div className="ml-auto text-sm text-gray-400">{filtered.length} results</div>
+            <div className="ml-auto text-sm text-gray-400">
+              {filtered.length} results
+            </div>
           </div>
 
           {error && (
@@ -268,7 +314,11 @@ function MarketsContent() {
             </div>
           )}
 
-          {loading && <div className="py-12 text-center text-gray-400">Loading markets...</div>}
+          {loading && paged.length === 0 && (
+            <div className="py-12 text-center text-gray-400">
+              Loading markets...
+            </div>
+          )}
 
           {!loading && paged.length === 0 && (
             <div className="rounded-md border border-white/6 bg-white/3 p-8 text-center text-gray-300">
@@ -290,19 +340,33 @@ function MarketsContent() {
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {paged.map((m) => (
-              <MarketCard key={m.id} market={m} onPredict={() => handlePredict(m)} />
+              <MarketCard
+                key={m.id}
+                market={m}
+                onPredict={() => handlePredict(m)}
+              />
             ))}
           </div>
 
-          {paged.length < filtered.length && (
-            <div className="mt-6 flex justify-center">
-              <button
-                className="rounded-md bg-white/5 px-5 py-2 text-sm font-semibold text-white hover:bg-white/10"
-                onClick={() => setPage((p) => p + 1)}
-              >
-                Load more
-              </button>
+          {/* Infinite scroll sentinel */}
+          <div ref={sentinelRef} aria-hidden="true" />
+
+          {/* Loading next page */}
+          {loading && paged.length > 0 && (
+            <div
+              className="mt-6 flex justify-center py-4"
+              aria-live="polite"
+              aria-label="Loading more markets"
+            >
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-white/20 border-t-orange-400" />
             </div>
+          )}
+
+          {/* End of list */}
+          {!hasMore && paged.length > 0 && (
+            <p className="mt-6 text-center text-xs text-gray-600">
+              All {filtered.length} markets loaded
+            </p>
           )}
         </div>
       </main>
