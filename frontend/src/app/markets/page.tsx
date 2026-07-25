@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 import {
   Suspense,
@@ -17,14 +17,21 @@ import { useWallet } from "@/context/WalletContext";
 import { useDebounce } from "@/hooks/useDebounce";
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
 
-// Assuming a Market type exists, adjust according to your actual types
 interface Market {
   id: string;
-  name: string;
-  // ...other properties
+  title: string;
+  category: string;
+  probability: number; // 0..1
+  totalStaked: number; // in XLM
+  closeAt: string; // ISO date
+  status: "active" | "resolved" | "upcoming";
 }
 
-export default function MarketsPage() {
+const PAGE_SIZE = 8;
+
+function MarketsContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [markets, setMarkets] = useState<Market[]>([]);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState(searchParams.get("q") || "");
@@ -139,39 +146,20 @@ export default function MarketsPage() {
   }, [searchParams]);
 
   useEffect(() => {
-    const abortController = new AbortController();
+    if (!initialUrlSynced.current) return;
+    syncUrl(debouncedSearch, category);
+  }, [debouncedSearch, category, syncUrl]);
 
-    const fetchMarkets = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const data = await apiClient.get<Market[]>('/markets', {
-          signal: abortController.signal,
-        });
-        setMarkets(data);
-      } catch (err) {
-        if (err instanceof ApiError) {
-          // Ignore abort errors silently
-          if (err.kind !== 'network' || err.message !== 'Network error: The user aborted a request.') {
-             setError(err.message);
-          }
-        } else if (err instanceof Error && err.name === 'AbortError') {
-          // Native fetch AbortError fallback
-          // Ignore
-        } else {
-          setError('An unexpected error occurred');
-        }
-      } finally {
-        if (!abortController.signal.aborted) {
-          setLoading(false);
-        }
-      }
-    };
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, category, status, sort]);
 
-    fetchMarkets();
-
+  useEffect(() => {
+    const controller = loadMarkets();
+    // Cleanup: abort the in-flight request on unmount or before the next run.
+    // The resulting AbortError is caught and ignored above.
     return () => {
-      abortController.abort();
+      controller.abort();
     };
   }, [loadMarkets]);
 
@@ -383,17 +371,15 @@ export default function MarketsPage() {
         </div>
       </main>
 
-  if (loading) return <div>Loading markets...</div>;
-  if (error) return <div>Error: {error}</div>;
+      <Footer />
+    </PageBackground>
+  );
+}
 
+export default function MarketsPage() {
   return (
-    <div>
-      <h1>Markets</h1>
-      <ul>
-        {markets.map((market) => (
-          <li key={market.id}>{market.name}</li>
-        ))}
-      </ul>
-    </div>
+    <Suspense fallback={<div>Loading...</div>}>
+      <MarketsContent />
+    </Suspense>
   );
 }
