@@ -12,6 +12,12 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { Button } from "@/component/ui/button";
+import { useFormValidation } from "@/hooks/useFormValidation";
+import {
+  FieldError,
+  FormLabel,
+  inputCls as sharedInputCls,
+} from "@/component/ui/form-field";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,7 +25,7 @@ type Step = 1 | 2 | 3 | 4 | 5;
 
 type OutcomeMode = "binary" | "multi";
 
-interface MarketDraft {
+interface MarketDraft extends Record<string, unknown> {
   title: string;
   category: string;
   description: string;
@@ -116,7 +122,11 @@ function StepIndicator({ current }: { current: number }) {
               </div>
               <span
                 className={`hidden text-[10px] sm:block ${
-                  active ? "text-orange-400" : done ? "text-slate-400" : "text-slate-600"
+                  active
+                    ? "text-orange-400"
+                    : done
+                      ? "text-slate-400"
+                      : "text-slate-600"
                 }`}
               >
                 {label}
@@ -136,23 +146,9 @@ function StepIndicator({ current }: { current: number }) {
   );
 }
 
-// ── Field helpers ─────────────────────────────────────────────────────────────
-
-function FieldError({ msg, id }: { msg?: string; id?: string }) {
-  if (!msg) return null;
-  return <p id={id} className="text-xs text-rose-400">{msg}</p>;
-}
-
-function Label({ htmlFor, children }: { htmlFor: string; children: React.ReactNode }) {
-  return (
-    <label htmlFor={htmlFor} className="block text-sm font-medium text-slate-300">
-      {children}
-    </label>
-  );
-}
-
-const inputCls =
-  "w-full rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 text-sm text-white outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-400/20 placeholder:text-slate-600";
+// ── Field helpers — using shared form-field primitives ────────────────────────
+const Label = FormLabel;
+const inputCls = (hasError = false) => sharedInputCls(hasError);
 
 // ── Main form ─────────────────────────────────────────────────────────────────
 
@@ -161,12 +157,22 @@ export default function CreateMarketForm() {
 
   const [step, setStep] = useState<Step>(1);
   const [draft, setDraft] = useState<MarketDraft>(defaultDraft());
-  const [errors, setErrors] = useState<Record<string, string>>({});
   const [outcomeInput, setOutcomeInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
   const [createdMarketId, setCreatedMarketId] = useState("");
   const [hasDraftBanner, setHasDraftBanner] = useState(false);
+
+  // Shared inline validation — errors cleared on field change, set on blur/submit
+  const {
+    errors,
+    clearError,
+    setError: setFieldError,
+    clearAll: clearAllErrors,
+  } = useFormValidation<MarketDraft>({});
+
+  // Keep a mutable errors ref so step validators can read latest errors
+  // (step validators call setFieldError directly on each failed field)
 
   useEffect(() => {
     const saved = loadDraft();
@@ -177,35 +183,38 @@ export default function CreateMarketForm() {
 
   function patch(partial: Partial<MarketDraft>) {
     setDraft((prev) => ({ ...prev, ...partial }));
-    setErrors((prev) => {
-      const next = { ...prev };
-      for (const key of Object.keys(partial)) {
-        delete next[key];
-      }
-      return next;
-    });
+    // Clear errors for changed fields using shared hook
+    for (const key of Object.keys(partial) as Array<keyof MarketDraft>) {
+      clearError(key);
+    }
   }
 
   function validateField(field: string): string {
     switch (field) {
       case "title":
         if (!draft.title.trim()) return "Title is required.";
-        if (draft.title.trim().length > MAX_TITLE) return `Title must be at most ${MAX_TITLE} characters.`;
+        if (draft.title.trim().length > MAX_TITLE)
+          return `Title must be at most ${MAX_TITLE} characters.`;
         return "";
       case "endDate":
       case "endClock": {
         const endDt = draft.endDate ? `${draft.endDate}T${draft.endClock}` : "";
         if (!draft.endDate) return "Market close date is required.";
         if (!draft.endClock) return "Market close time is required.";
-        if (new Date(endDt) <= new Date()) return "Close date must be strictly in the future.";
+        if (new Date(endDt) <= new Date())
+          return "Close date must be strictly in the future.";
         return "";
       }
       case "outcomes": {
         if (draft.outcomeMode === "multi") {
           if (draft.outcomes.length < 2) return "Add at least 2 outcomes.";
-          if (new Set(draft.outcomes.map((o) => o.trim().toLowerCase())).size !== draft.outcomes.length)
+          if (
+            new Set(draft.outcomes.map((o) => o.trim().toLowerCase())).size !==
+            draft.outcomes.length
+          )
             return "Outcomes must be distinct.";
-          if (draft.outcomes.some((o) => !o.trim())) return "Outcomes cannot be empty.";
+          if (draft.outcomes.some((o) => !o.trim()))
+            return "Outcomes cannot be empty.";
         }
         return "";
       }
@@ -228,57 +237,73 @@ export default function CreateMarketForm() {
   // ── Validation ──────────────────────────────────────────────────────────────
 
   function validateStep1(): boolean {
-    const errs: Record<string, string> = {};
+    clearAllErrors();
+    const errs: Partial<Record<keyof MarketDraft, string>> = {};
     if (!draft.title.trim()) errs.title = "Title is required.";
-    else if (draft.title.length < 5) errs.title = "Title must be at least 5 characters.";
+    else if (draft.title.length < 5)
+      errs.title = "Title must be at least 5 characters.";
     if (!draft.category) errs.category = "Please select a category.";
-    if (!draft.description.trim()) errs.description = "Description is required.";
-    else if (draft.description.length < 10) errs.description = "Description must be at least 10 characters.";
-    setErrors(errs);
+    if (!draft.description.trim())
+      errs.description = "Description is required.";
+    else if (draft.description.length < 10)
+      errs.description = "Description must be at least 10 characters.";
+    for (const [k, v] of Object.entries(errs))
+      setFieldError(k as keyof MarketDraft, v!);
     return Object.keys(errs).length === 0;
   }
 
   function validateStep2(): boolean {
-    const errs: Record<string, string> = {};
+    clearAllErrors();
+    const errs: Partial<Record<keyof MarketDraft, string>> = {};
     const now = new Date();
     const endDt = draft.endDate ? `${draft.endDate}T${draft.endClock}` : "";
-    const resDt = draft.resolutionDate ? `${draft.resolutionDate}T${draft.resolutionClock}` : "";
-
-    if (!draft.endDate) {
-      errs.endDate = "Market close date is required.";
-    } else if (new Date(endDt) <= now) {
+    const resDt = draft.resolutionDate
+      ? `${draft.resolutionDate}T${draft.resolutionClock}`
+      : "";
+    if (!draft.endDate) errs.endDate = "Market close date is required.";
+    else if (new Date(endDt) <= now)
       errs.endDate = "Close date must be in the future.";
-    }
-    if (!draft.resolutionDate) {
+    if (!draft.resolutionDate)
       errs.resolutionDate = "Resolution date is required.";
-    } else if (endDt && new Date(resDt) < new Date(endDt)) {
-      errs.resolutionDate = "Resolution date must be on or after the close date.";
-    }
-    if (draft.outcomeMode === "multi" && draft.outcomes.length < 2) {
+    else if (endDt && new Date(resDt) < new Date(endDt))
+      errs.resolutionDate =
+        "Resolution date must be on or after the close date.";
+    if (draft.outcomeMode === "multi" && draft.outcomes.length < 2)
       errs.outcomes = "Add at least 2 outcomes.";
-    }
-    setErrors(errs);
+    for (const [k, v] of Object.entries(errs))
+      setFieldError(k as keyof MarketDraft, v!);
     return Object.keys(errs).length === 0;
   }
 
   function validateStep3(): boolean {
-    const errs: Record<string, string> = {};
+    clearAllErrors();
+    const errs: Partial<Record<keyof MarketDraft, string>> = {};
     const min = parseFloat(draft.minStakeXlm);
     const max = parseFloat(draft.maxStakeXlm);
-    if (isNaN(min) || min <= 0) errs.minStakeXlm = "Minimum stake must be greater than 0.";
-    if (isNaN(max) || max <= 0) errs.maxStakeXlm = "Maximum stake must be greater than 0.";
-    if (!isNaN(min) && !isNaN(max) && max < min) errs.maxStakeXlm = "Maximum stake must be ≥ minimum stake.";
+    if (isNaN(min) || min <= 0)
+      errs.minStakeXlm = "Minimum stake must be greater than 0.";
+    if (isNaN(max) || max <= 0)
+      errs.maxStakeXlm = "Maximum stake must be greater than 0.";
+    if (!isNaN(min) && !isNaN(max) && max < min)
+      errs.maxStakeXlm = "Maximum stake must be ≥ minimum stake.";
     const seed = parseFloat(draft.creatorLiquiditySeed);
-    if (isNaN(seed) || seed < 0) errs.creatorLiquiditySeed = "Liquidity seed cannot be negative.";
-    setErrors(errs);
+    if (isNaN(seed) || seed < 0)
+      errs.creatorLiquiditySeed = "Liquidity seed cannot be negative.";
+    for (const [k, v] of Object.entries(errs))
+      setFieldError(k as keyof MarketDraft, v!);
+
     return Object.keys(errs).length === 0;
   }
 
   function goNext() {
     const valid =
-      step === 1 ? validateStep1() :
-      step === 2 ? validateStep2() :
-      step === 3 ? validateStep3() : true;
+      step === 1
+        ? validateStep1()
+        : step === 2
+          ? validateStep2()
+          : step === 3
+            ? validateStep3()
+            : true;
     if (valid) {
       saveDraft(draft);
       setStep((s) => (s + 1) as Step);
@@ -286,7 +311,7 @@ export default function CreateMarketForm() {
   }
 
   function goBack() {
-    setErrors({});
+    clearAllErrors();
     setStep((s) => (s - 1) as Step);
   }
 
@@ -294,15 +319,16 @@ export default function CreateMarketForm() {
 
   function addOutcome() {
     const val = outcomeInput.trim();
-    if (!val || draft.outcomes.includes(val) || draft.outcomes.length >= 10) return;
+    if (!val || draft.outcomes.includes(val) || draft.outcomes.length >= 10)
+      return;
     patch({ outcomes: [...draft.outcomes, val] });
     setOutcomeInput("");
-    setErrors((prev) => ({ ...prev, outcomes: "" }));
+    clearError("outcomes");
   }
 
   function removeOutcome(idx: number) {
     patch({ outcomes: draft.outcomes.filter((_, i) => i !== idx) });
-    setErrors((prev) => ({ ...prev, outcomes: "" }));
+    clearError("outcomes");
   }
 
   // ── Submit (mock) ───────────────────────────────────────────────────────────
@@ -374,8 +400,12 @@ export default function CreateMarketForm() {
       {step === 1 && (
         <div className="space-y-6 rounded-3xl border border-white/10 bg-slate-900/80 p-8">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-orange-400/80">Step 1 of 4</p>
-            <h2 className="mt-2 text-2xl font-semibold text-white">Market Details</h2>
+            <p className="text-xs uppercase tracking-[0.3em] text-orange-400/80">
+              Step 1 of 4
+            </p>
+            <h2 className="mt-2 text-2xl font-semibold text-white">
+              Market Details
+            </h2>
           </div>
 
           {/* Title */}
@@ -386,16 +416,22 @@ export default function CreateMarketForm() {
               type="text"
               value={draft.title}
               onChange={(e) => patch({ title: e.target.value })}
-              onBlur={() => setErrors((prev) => ({ ...prev, title: validateField("title") }))}
+              onBlur={() => {
+                const msg = validateField("title");
+                if (msg) setFieldError("title", msg);
+                else clearError("title");
+              }}
               maxLength={MAX_TITLE}
               placeholder="e.g. Will BTC reach $100k by end of 2026?"
-              className={inputCls}
+              className={inputCls(!!errors.title)}
               aria-invalid={!!errors.title}
               aria-describedby={errors.title ? "title-error" : undefined}
             />
             <div className="flex justify-between">
               <FieldError msg={errors.title} id="title-error" />
-              <p className="ml-auto text-xs text-slate-500">{draft.title.length}/{MAX_TITLE}</p>
+              <p className="ml-auto text-xs text-slate-500">
+                {draft.title.length}/{MAX_TITLE}
+              </p>
             </div>
           </div>
 
@@ -406,7 +442,7 @@ export default function CreateMarketForm() {
               id="market-category"
               value={draft.category}
               onChange={(e) => patch({ category: e.target.value })}
-              className={`${inputCls} appearance-none`}
+              className={`${inputCls(!!errors.category)} appearance-none`}
             >
               <option value="" disabled className="bg-slate-950">
                 Select a category…
@@ -424,7 +460,9 @@ export default function CreateMarketForm() {
           <div className="space-y-2">
             <Label htmlFor="market-description">
               Description / Resolution Criteria{" "}
-              <span className="text-slate-500 font-normal">(markdown supported)</span>
+              <span className="text-slate-500 font-normal">
+                (markdown supported)
+              </span>
             </Label>
             <textarea
               id="market-description"
@@ -433,11 +471,13 @@ export default function CreateMarketForm() {
               maxLength={MAX_DESCRIPTION}
               rows={5}
               placeholder="Describe the market and explain exactly how it will be resolved…"
-              className={`${inputCls} resize-none`}
+              className={`${inputCls(!!errors.description)} resize-none`}
             />
             <div className="flex justify-between">
               <FieldError msg={errors.description} />
-              <p className="ml-auto text-xs text-slate-500">{draft.description.length}/{MAX_DESCRIPTION}</p>
+              <p className="ml-auto text-xs text-slate-500">
+                {draft.description.length}/{MAX_DESCRIPTION}
+              </p>
             </div>
           </div>
 
@@ -445,7 +485,9 @@ export default function CreateMarketForm() {
           <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
             <div>
               <p className="text-sm font-medium text-white">Public Market</p>
-              <p className="text-xs text-slate-500">Visible to all users on the platform</p>
+              <p className="text-xs text-slate-500">
+                Visible to all users on the platform
+              </p>
             </div>
             <button
               type="button"
@@ -469,7 +511,9 @@ export default function CreateMarketForm() {
               type="button"
               variant="outline"
               className="border-white/10 text-slate-300 hover:border-white/30"
-              onClick={() => { saveDraft(draft); }}
+              onClick={() => {
+                saveDraft(draft);
+              }}
             >
               Save Draft
             </Button>
@@ -489,8 +533,12 @@ export default function CreateMarketForm() {
       {step === 2 && (
         <div className="space-y-6 rounded-3xl border border-white/10 bg-slate-900/80 p-8">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-orange-400/80">Step 2 of 4</p>
-            <h2 className="mt-2 text-2xl font-semibold text-white">Resolution</h2>
+            <p className="text-xs uppercase tracking-[0.3em] text-orange-400/80">
+              Step 2 of 4
+            </p>
+            <h2 className="mt-2 text-2xl font-semibold text-white">
+              Resolution
+            </h2>
           </div>
 
           {/* End date + time */}
@@ -503,8 +551,12 @@ export default function CreateMarketForm() {
                 value={draft.endDate}
                 min={todayStr}
                 onChange={(e) => patch({ endDate: e.target.value })}
-                onBlur={() => setErrors((prev) => ({ ...prev, endDate: validateField("endDate") }))}
-                className={inputCls}
+                onBlur={() => {
+                  const msg = validateField("endDate");
+                  if (msg) setFieldError("endDate", msg);
+                  else clearError("endDate");
+                }}
+                className={inputCls(!!errors.endDate)}
                 aria-invalid={!!errors.endDate}
                 aria-describedby={errors.endDate ? "endDate-error" : undefined}
               />
@@ -513,8 +565,12 @@ export default function CreateMarketForm() {
                 type="time"
                 value={draft.endClock}
                 onChange={(e) => patch({ endClock: e.target.value })}
-                onBlur={() => setErrors((prev) => ({ ...prev, endDate: validateField("endDate") }))}
-                className={inputCls}
+                onBlur={() => {
+                  const msg = validateField("endDate");
+                  if (msg) setFieldError("endDate", msg);
+                  else clearError("endDate");
+                }}
+                className={inputCls(!!errors.endDate)}
                 aria-invalid={!!errors.endDate}
                 aria-describedby={errors.endDate ? "endDate-error" : undefined}
               />
@@ -532,18 +588,19 @@ export default function CreateMarketForm() {
                 value={draft.resolutionDate}
                 min={draft.endDate || todayStr}
                 onChange={(e) => patch({ resolutionDate: e.target.value })}
-                className={inputCls}
+                className={inputCls(!!errors.resolutionDate)}
               />
               <input
                 id="resolution-clock"
                 type="time"
                 value={draft.resolutionClock}
                 onChange={(e) => patch({ resolutionClock: e.target.value })}
-                className={inputCls}
+                className={inputCls()}
               />
             </div>
             <p className="text-xs text-slate-500">
-              Must be on or after the close date. This is when the result is officially settled.
+              Must be on or after the close date. This is when the result is
+              officially settled.
             </p>
             <FieldError msg={errors.resolutionDate} />
           </div>
@@ -552,7 +609,9 @@ export default function CreateMarketForm() {
           <div className="space-y-2">
             <Label htmlFor="resolution-source">
               Resolution Source{" "}
-              <span className="text-slate-500 font-normal">(URL or oracle address, optional)</span>
+              <span className="text-slate-500 font-normal">
+                (URL or oracle address, optional)
+              </span>
             </Label>
             <input
               id="resolution-source"
@@ -560,7 +619,7 @@ export default function CreateMarketForm() {
               value={draft.resolutionSource}
               onChange={(e) => patch({ resolutionSource: e.target.value })}
               placeholder="https://example.com/results or oracle address"
-              className={inputCls}
+              className={inputCls()}
             />
           </div>
 
@@ -577,7 +636,7 @@ export default function CreateMarketForm() {
                       outcomeMode: mode,
                       outcomes: mode === "binary" ? ["Yes", "No"] : [],
                     });
-                    setErrors((prev) => ({ ...prev, outcomes: "" }));
+                    clearError("outcomes");
                   }}
                   className={`flex-1 rounded-2xl border px-4 py-3 text-sm font-medium transition ${
                     draft.outcomeMode === mode
@@ -632,12 +691,20 @@ export default function CreateMarketForm() {
                       type="text"
                       value={outcomeInput}
                       onChange={(e) => setOutcomeInput(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addOutcome())}
-                      onBlur={() => setErrors((prev) => ({ ...prev, outcomes: validateField("outcomes") }))}
+                      onKeyDown={(e) =>
+                        e.key === "Enter" && (e.preventDefault(), addOutcome())
+                      }
+                      onBlur={() => {
+                        const msg = validateField("outcomes");
+                        if (msg) setFieldError("outcomes", msg);
+                        else clearError("outcomes");
+                      }}
                       placeholder="Type an outcome…"
                       className="flex-1 rounded-xl border border-white/10 bg-slate-950/90 px-3 py-2 text-sm text-white outline-none focus:border-orange-400"
                       aria-invalid={!!errors.outcomes}
-                      aria-describedby={errors.outcomes ? "outcomes-error" : undefined}
+                      aria-describedby={
+                        errors.outcomes ? "outcomes-error" : undefined
+                      }
                     />
                     <button
                       type="button"
@@ -682,7 +749,9 @@ export default function CreateMarketForm() {
       {step === 3 && (
         <div className="space-y-6 rounded-3xl border border-white/10 bg-slate-900/80 p-8">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-orange-400/80">Step 3 of 4</p>
+            <p className="text-xs uppercase tracking-[0.3em] text-orange-400/80">
+              Step 3 of 4
+            </p>
             <h2 className="mt-2 text-2xl font-semibold text-white">Staking</h2>
           </div>
 
@@ -697,7 +766,7 @@ export default function CreateMarketForm() {
                 step="0.01"
                 value={draft.minStakeXlm}
                 onChange={(e) => patch({ minStakeXlm: e.target.value })}
-                className={inputCls}
+                className={inputCls(!!errors.minStakeXlm)}
               />
               <FieldError msg={errors.minStakeXlm} />
             </div>
@@ -710,7 +779,7 @@ export default function CreateMarketForm() {
                 step="0.01"
                 value={draft.maxStakeXlm}
                 onChange={(e) => patch({ maxStakeXlm: e.target.value })}
-                className={inputCls}
+                className={inputCls(!!errors.maxStakeXlm)}
               />
               <FieldError msg={errors.maxStakeXlm} />
             </div>
@@ -726,7 +795,7 @@ export default function CreateMarketForm() {
               step="0.01"
               value={draft.creatorLiquiditySeed}
               onChange={(e) => patch({ creatorLiquiditySeed: e.target.value })}
-              className={inputCls}
+              className={inputCls(!!errors.creatorLiquiditySeed)}
             />
             <p className="text-xs text-slate-500">
               Initial XLM you deposit to bootstrap market liquidity.
@@ -749,7 +818,9 @@ export default function CreateMarketForm() {
               max={MAX_CREATOR_FEE_PCT}
               step="0.1"
               value={draft.creatorFeePct}
-              onChange={(e) => patch({ creatorFeePct: parseFloat(e.target.value) })}
+              onChange={(e) =>
+                patch({ creatorFeePct: parseFloat(e.target.value) })
+              }
               className="w-full accent-orange-500"
             />
             <div className="flex justify-between text-xs text-slate-500">
@@ -758,8 +829,14 @@ export default function CreateMarketForm() {
             </div>
             <div className="rounded-2xl border border-orange-400/20 bg-orange-400/5 px-4 py-3">
               <p className="text-xs text-orange-300/80">
-                At <span className="font-semibold">{draft.creatorFeePct.toFixed(1)}%</span> on a 1,000 XLM pool you earn{" "}
-                <span className="font-semibold">{(1000 * draft.creatorFeePct / 100).toFixed(2)} XLM</span>
+                At{" "}
+                <span className="font-semibold">
+                  {draft.creatorFeePct.toFixed(1)}%
+                </span>{" "}
+                on a 1,000 XLM pool you earn{" "}
+                <span className="font-semibold">
+                  {((1000 * draft.creatorFeePct) / 100).toFixed(2)} XLM
+                </span>
               </p>
             </div>
           </div>
@@ -789,8 +866,12 @@ export default function CreateMarketForm() {
       {step === 4 && (
         <div className="space-y-6 rounded-3xl border border-white/10 bg-slate-900/80 p-8">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-orange-400/80">Step 4 of 4</p>
-            <h2 className="mt-2 text-2xl font-semibold text-white">Review & Submit</h2>
+            <p className="text-xs uppercase tracking-[0.3em] text-orange-400/80">
+              Step 4 of 4
+            </p>
+            <h2 className="mt-2 text-2xl font-semibold text-white">
+              Review & Submit
+            </h2>
           </div>
 
           {/* Summary table */}
@@ -798,9 +879,21 @@ export default function CreateMarketForm() {
             {[
               { label: "Title", value: draft.title },
               { label: "Category", value: draft.category },
-              { label: "Visibility", value: draft.isPublic ? "Public" : "Private" },
-              { label: "Closes At", value: formatDatetime(draft.endDate, draft.endClock) },
-              { label: "Resolves At", value: formatDatetime(draft.resolutionDate, draft.resolutionClock) },
+              {
+                label: "Visibility",
+                value: draft.isPublic ? "Public" : "Private",
+              },
+              {
+                label: "Closes At",
+                value: formatDatetime(draft.endDate, draft.endClock),
+              },
+              {
+                label: "Resolves At",
+                value: formatDatetime(
+                  draft.resolutionDate,
+                  draft.resolutionClock,
+                ),
+              },
               {
                 label: "Resolution Source",
                 value: draft.resolutionSource || "—",
@@ -811,11 +904,19 @@ export default function CreateMarketForm() {
                 label: "Liquidity Seed",
                 value: `${draft.creatorLiquiditySeed} XLM`,
               },
-              { label: "Creator Fee", value: `${draft.creatorFeePct.toFixed(1)}%` },
+              {
+                label: "Creator Fee",
+                value: `${draft.creatorFeePct.toFixed(1)}%`,
+              },
             ].map(({ label, value }) => (
-              <div key={label} className="flex justify-between gap-4 py-2 border-b border-white/5 last:border-0">
+              <div
+                key={label}
+                className="flex justify-between gap-4 py-2 border-b border-white/5 last:border-0"
+              >
                 <span className="text-slate-500">{label}</span>
-                <span className="font-medium text-white text-right max-w-[55%] break-words">{value}</span>
+                <span className="font-medium text-white text-right max-w-[55%] break-words">
+                  {value}
+                </span>
               </div>
             ))}
 
@@ -889,14 +990,18 @@ export default function CreateMarketForm() {
           </div>
 
           <div className="space-y-2">
-            <h2 className="text-2xl font-semibold text-white">Market Created!</h2>
+            <h2 className="text-2xl font-semibold text-white">
+              Market Created!
+            </h2>
             <p className="text-slate-400">
               Your prediction market is live and ready for participants.
             </p>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Market ID</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+              Market ID
+            </p>
             <p className="mt-2 font-mono text-lg font-semibold text-orange-300">
               {createdMarketId}
             </p>
@@ -916,7 +1021,7 @@ export default function CreateMarketForm() {
               variant="outline"
               onClick={() => {
                 setDraft(defaultDraft());
-                setErrors({});
+                clearAllErrors();
                 setTxError(null);
                 setStep(1);
               }}

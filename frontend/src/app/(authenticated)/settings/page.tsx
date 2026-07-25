@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import {
   User,
   Bell,
@@ -9,6 +9,8 @@ import {
   Download,
   LogOut,
 } from "lucide-react";
+import { useFormValidation } from "@/hooks/useFormValidation";
+import { FieldError } from "@/component/ui/form-field";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -84,45 +86,123 @@ function Divider() {
 
 // ── Sections ──────────────────────────────────────────────────────────────────
 
+interface ProfileFields extends Record<string, unknown> {
+  username: string;
+  avatarUrl: string;
+  bio: string;
+}
+
 function ProfileSettings() {
   const [username, setUsername] = useState("You_Arena");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [bio, setBio] = useState("");
   const [saved, setSaved] = useState(false);
 
+  const { errors, validateField, validateAll, clearError } =
+    useFormValidation<ProfileFields>({
+      username: (v: unknown) => {
+        const val = String(v ?? "");
+        if (!val.trim()) return "Username is required.";
+        if (val.trim().length < 3)
+          return "Username must be at least 3 characters.";
+        if (val.trim().length > 30)
+          return "Username must be at most 30 characters.";
+        return "";
+      },
+      avatarUrl: (v: unknown) => {
+        const val = String(v ?? "");
+        if (!val) return "";
+        try {
+          new URL(val);
+          return "";
+        } catch {
+          return "Please enter a valid URL.";
+        }
+      },
+      bio: (v: unknown) => {
+        if (String(v ?? "").length > 200)
+          return "Bio must be at most 200 characters.";
+        return "";
+      },
+    });
+
   function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    const valid = validateAll({ username, avatarUrl, bio });
+    if (!valid) return;
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
 
   return (
     <SectionCard id="profile" icon={User} title="Profile Settings">
-      <form onSubmit={handleSave} className="space-y-4">
+      <form onSubmit={handleSave} className="space-y-4" noValidate>
         <div className="space-y-1">
-          <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+          <label
+            htmlFor="settings-username"
+            className="text-xs font-medium text-gray-400 uppercase tracking-wider"
+          >
             Username
           </label>
           <input
+            id="settings-username"
             type="text"
             value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            className="w-full rounded-lg bg-white/[0.03] border border-white/10 px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-orange-500"
+            onChange={(e) => {
+              setUsername(e.target.value);
+              clearError("username");
+            }}
+            onBlur={() =>
+              validateField("username", username, { username, avatarUrl, bio })
+            }
+            className={`w-full rounded-lg bg-white/[0.03] border px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 transition ${
+              errors.username
+                ? "border-rose-500 focus:ring-rose-500"
+                : "border-white/10 focus:ring-orange-500"
+            }`}
+            aria-invalid={!!errors.username}
+            aria-describedby={
+              errors.username ? "settings-username-error" : undefined
+            }
           />
+          <FieldError msg={errors.username} id="settings-username-error" />
         </div>
+
         <div className="space-y-1">
-          <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+          <label
+            htmlFor="settings-avatar"
+            className="text-xs font-medium text-gray-400 uppercase tracking-wider"
+          >
             Avatar URL
           </label>
           <div className="flex gap-3 items-center">
             <input
+              id="settings-avatar"
               type="url"
               value={avatarUrl}
-              onChange={(e) => setAvatarUrl(e.target.value)}
+              onChange={(e) => {
+                setAvatarUrl(e.target.value);
+                clearError("avatarUrl");
+              }}
+              onBlur={() =>
+                validateField("avatarUrl", avatarUrl, {
+                  username,
+                  avatarUrl,
+                  bio,
+                })
+              }
               placeholder="https://..."
-              className="flex-1 rounded-lg bg-white/[0.03] border border-white/10 px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-orange-500"
+              className={`flex-1 rounded-lg bg-white/[0.03] border px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 transition ${
+                errors.avatarUrl
+                  ? "border-rose-500 focus:ring-rose-500"
+                  : "border-white/10 focus:ring-orange-500"
+              }`}
+              aria-invalid={!!errors.avatarUrl}
+              aria-describedby={
+                errors.avatarUrl ? "settings-avatar-error" : undefined
+              }
             />
-            {avatarUrl && (
+            {avatarUrl && !errors.avatarUrl && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={avatarUrl}
@@ -134,19 +214,42 @@ function ProfileSettings() {
               />
             )}
           </div>
+          <FieldError msg={errors.avatarUrl} id="settings-avatar-error" />
         </div>
+
         <div className="space-y-1">
-          <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+          <label
+            htmlFor="settings-bio"
+            className="text-xs font-medium text-gray-400 uppercase tracking-wider"
+          >
             Bio
           </label>
           <textarea
+            id="settings-bio"
             value={bio}
-            onChange={(e) => setBio(e.target.value)}
+            onChange={(e) => {
+              setBio(e.target.value);
+              clearError("bio");
+            }}
+            onBlur={() =>
+              validateField("bio", bio, { username, avatarUrl, bio })
+            }
             rows={3}
             placeholder="Tell the community about yourself..."
-            className="w-full rounded-lg bg-white/[0.03] border border-white/10 px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-orange-500 resize-none"
+            className={`w-full rounded-lg bg-white/[0.03] border px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 transition resize-none ${
+              errors.bio
+                ? "border-rose-500 focus:ring-rose-500"
+                : "border-white/10 focus:ring-orange-500"
+            }`}
+            aria-invalid={!!errors.bio}
+            aria-describedby={errors.bio ? "settings-bio-error" : undefined}
           />
+          <div className="flex justify-between">
+            <FieldError msg={errors.bio} id="settings-bio-error" />
+            <p className="ml-auto text-xs text-gray-500">{bio.length}/200</p>
+          </div>
         </div>
+
         <button
           type="submit"
           className="px-4 py-2 rounded-lg bg-orange-500 text-white text-sm font-semibold hover:bg-orange-600 transition"
