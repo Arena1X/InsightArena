@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { ChevronDown, Copy, Bell } from "lucide-react";
 import { useWallet } from "@/context/WalletContext";
+import WalletBalanceBadge from "@/component/header/WalletBalanceBadge";
 
 export default function Header() {
   const pathname = usePathname();
@@ -230,6 +231,8 @@ export default function Header() {
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-500" />
                 </span>
               </Link>
+
+              <WalletBalanceBadge />
 
               {isRestoring && !isAuthenticated ? (
                 <div className="hidden md:inline-flex items-center gap-2 rounded-lg border border-white/10 bg-[#111726] px-6 py-2 text-sm font-semibold text-gray-400">
