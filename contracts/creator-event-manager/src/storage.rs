@@ -379,3 +379,33 @@ pub fn set_claim_deadline(env: &Env, event_id: u64, deadline: u64) {
         .persistent()
         .extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
 }
+
+// ---------------------------------------------------------------------------
+// M-of-N event verification helpers (#1358)
+// ---------------------------------------------------------------------------
+
+/// Return the list of distinct verifier signers who have submitted
+/// verification for an event, or an empty Vec if none have yet.
+pub fn get_event_verification_signers(env: &Env, event_id: u64) -> Vec<Address> {
+    let key = DataKey::EventVerificationSigners(event_id);
+    match env.storage().persistent().get::<DataKey, Vec<Address>>(&key) {
+        Some(list) => {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+            list
+        }
+        None => Vec::new(env),
+    }
+}
+
+/// Append a verifier signer to an event's verification list and set the TTL.
+pub fn add_event_verification_signer(env: &Env, event_id: u64, signer: &Address) {
+    let key = DataKey::EventVerificationSigners(event_id);
+    let mut list = get_event_verification_signers(env, event_id);
+    list.push_back(signer.clone());
+    env.storage().persistent().set(&key, &list);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+}

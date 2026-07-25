@@ -5,6 +5,9 @@ import RewardHistoryTable, {
   RewardHistoryEntry,
 } from "@/component/rewards/RewardHistoryTable";
 import UpcomingRewards from "@/component/rewards/UpcomingRewards";
+import RewardStatusBadge from "@/component/rewards/RewardStatusBadge";
+import { useWallet } from "@/context/WalletContext";
+import { useRewards } from "@/hooks/useRewards";
 import {
   Trophy,
   Star,
@@ -16,6 +19,8 @@ import {
   Flame,
   Medal,
   Gift,
+  Loader2,
+  AlertCircle,
 } from "lucide-react";
 
 const MOCK_ENTRIES: RewardHistoryEntry[] = [
@@ -159,6 +164,19 @@ export default function RewardsPage() {
   const [isLoading, setIsLoading] = useState(false);
   const hasMore = entries.length < MOCK_ENTRIES.length;
 
+  const { address, openConnectModal } = useWallet();
+  const {
+    summary: rewardsSummary,
+    isLoading: isRewardsLoading,
+    error: rewardsError,
+    refetch: refetchRewards,
+    claim: claimRewards,
+    claimStatus,
+    claimError,
+    hasClaimableRewards,
+    isEmpty: hasNoRewards,
+  } = useRewards();
+
   function handleLoadMore() {
     setIsLoading(true);
     setTimeout(() => {
@@ -166,11 +184,6 @@ export default function RewardsPage() {
       setIsLoading(false);
     }, 800);
   }
-
-  const handleClaimAll = () => {
-    console.log("Claiming all pending rewards");
-    // TODO: Implement actual claim logic
-  };
 
   const totalXLMWon = "1,125 XLM";
   const currentSeasonPoints = 1240;
@@ -303,38 +316,135 @@ export default function RewardsPage() {
         </div>
       </section>
 
-      {/* Pending Rewards */}
+      {/* Claimable & Vesting Rewards */}
       <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-white">
-              Pending Rewards
+              Claimable & Vesting Rewards
             </h2>
             <p className="mt-1 text-sm text-gray-400">
-              You have unclaimed payouts ready
+              Rewards earned from predictions, competitions and bonuses
             </p>
           </div>
-          <button
-            onClick={handleClaimAll}
-            className="inline-flex rounded-xl bg-orange-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-orange-600"
+
+          {address && !isRewardsLoading && !rewardsError && (
+            <button
+              onClick={claimRewards}
+              disabled={!hasClaimableRewards || claimStatus === "pending"}
+              className="inline-flex items-center gap-2 rounded-xl bg-orange-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {claimStatus === "pending" && (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              )}
+              {claimStatus === "pending"
+                ? "Claiming…"
+                : hasClaimableRewards
+                  ? "Claim All"
+                  : "Nothing to Claim"}
+            </button>
+          )}
+        </div>
+
+        {/* Not connected */}
+        {!address && (
+          <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-gray-400">
+            Connect your wallet to view and claim your rewards.
+            <button
+              onClick={openConnectModal}
+              className="ml-2 font-semibold text-orange-400 hover:text-orange-300 transition"
+            >
+              Connect Wallet
+            </button>
+          </div>
+        )}
+
+        {/* Loading */}
+        {address && isRewardsLoading && (
+          <div
+            className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 animate-pulse"
+            aria-busy="true"
           >
-            Claim All
-          </button>
-        </div>
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
-            <p className="text-xs text-gray-400">Prediction Payout</p>
-            <p className="mt-1 text-xl font-bold text-orange-400">142.50 XLM</p>
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="h-20 rounded-xl border border-white/10 bg-white/[0.03]"
+              />
+            ))}
           </div>
-          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
-            <p className="text-xs text-gray-400">Competition Reward</p>
-            <p className="mt-1 text-xl font-bold text-orange-400">108 XLM</p>
+        )}
+
+        {/* Error */}
+        {address && !isRewardsLoading && rewardsError && (
+          <div className="mt-4 flex items-center justify-between gap-4 rounded-xl border border-rose-500/20 bg-rose-500/10 p-4 text-sm text-rose-300">
+            <span className="flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              {rewardsError}
+            </span>
+            <button
+              onClick={refetchRewards}
+              className="font-semibold text-rose-200 hover:text-white transition"
+            >
+              Retry
+            </button>
           </div>
-          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
-            <p className="text-xs text-gray-400">Achievement Bonus</p>
-            <p className="mt-1 text-xl font-bold text-orange-400">25 XLM</p>
+        )}
+
+        {/* Empty */}
+        {address && !isRewardsLoading && !rewardsError && hasNoRewards && (
+          <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.03] p-4 text-sm text-gray-400">
+            No rewards yet. Rewards from predictions, competitions and
+            referrals will show up here.
           </div>
-        </div>
+        )}
+
+        {/* Loaded */}
+        {address && !isRewardsLoading && !rewardsError && rewardsSummary && !hasNoRewards && (
+          <>
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-xs text-gray-400">Claimable</p>
+                <p className="mt-1 text-xl font-bold text-orange-400">
+                  {rewardsSummary.claimableXlm.toLocaleString()} XLM
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-xs text-gray-400">Vesting</p>
+                <p className="mt-1 text-xl font-bold text-white">
+                  {rewardsSummary.vestingXlm.toLocaleString()} XLM
+                </p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-xs text-gray-400">Total Earned</p>
+                <p className="mt-1 text-xl font-bold text-orange-400">
+                  {rewardsSummary.totalEarnedXlm.toLocaleString()} XLM
+                </p>
+              </div>
+            </div>
+
+            {claimStatus !== "idle" && (
+              <div className="mt-4 flex items-center gap-3">
+                <RewardStatusBadge
+                  status={
+                    claimStatus === "pending"
+                      ? "processing"
+                      : claimStatus === "success"
+                        ? "claimed"
+                        : "failed"
+                  }
+                />
+                {claimStatus === "error" && claimError && (
+                  <span className="text-xs text-rose-300">{claimError}</span>
+                )}
+                {claimStatus === "success" && (
+                  <span className="text-xs text-emerald-300">
+                    Rewards claimed successfully.
+                  </span>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </section>
 
       {/* Reward History */}

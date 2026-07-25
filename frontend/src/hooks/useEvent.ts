@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useCreatorEvents } from "@/context/CreatorEventsContext";
 import type { CreatorEvent, CreatorEventMatch } from "@/context/CreatorEventsContext";
+import { logHookError } from "./useHookErrorMessage";
 
 export interface UseEventReturn {
   event: CreatorEvent | null;
@@ -27,8 +28,14 @@ export function useEvent(eventId: string): UseEventReturn {
         setError("Event not found.");
       }
       setEvent(result);
-    } catch {
-      setError("Failed to load event.");
+    } catch (err) {
+      setError(
+        logHookError(err, {
+          fallbackMessage: "Failed to load event.",
+          hookName: "useEvent",
+          id: eventId,
+        }),
+      );
     } finally {
       setIsLoading(false);
     }
@@ -61,8 +68,14 @@ export function useEventMatches(eventId: string): UseEventMatchesReturn {
     try {
       const result = await getEventMatches(eventId);
       setMatches(result);
-    } catch {
-      setError("Failed to load matches.");
+    } catch (err) {
+      setError(
+        logHookError(err, {
+          fallbackMessage: "Failed to load matches.",
+          hookName: "useEventMatches",
+          id: eventId,
+        }),
+      );
     } finally {
       setIsLoading(false);
     }

@@ -110,6 +110,19 @@ export class SubmissionResponse {
   @ApiPropertyOptional()
   submission_time_ms?: number;
 
+  @ApiProperty({
+    description: 'Whether anomaly detection flagged this submission (#1364)',
+  })
+  is_anomaly: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Absolute z-score against the data source baseline',
+  })
+  anomaly_score?: number;
+
+  @ApiProperty({ description: 'Manual-review lifecycle status' })
+  review_status: string;
+
   @ApiProperty()
   created_at: string;
 }

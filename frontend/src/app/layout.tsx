@@ -2,8 +2,12 @@ import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
 
 import { StandardPageLoadingSkeleton } from "@/component/loading-route-skeletons";
+import { PwaManager } from "@/component/PwaManager";
+import { RouteProgress } from "@/component/RouteProgress";
 import { WalletProvider } from "@/context/WalletContext";
 import { CreatorEventsProvider } from "@/context/CreatorEventsContext";
+import { ToastProvider } from "@/context/ToastContext";
+import { ConfirmProvider } from "@/context/ConfirmContext";
 
 import "./globals.css";
 
@@ -66,12 +70,7 @@ export const metadata: Metadata = {
       "max-snippet": -1,
     },
   },
-  icons: {
-    icon: "/favicon.ico",
-    shortcut: "/favicon-16x16.png",
-    apple: "/apple-touch-icon.png",
-  },
-  manifest: "/site.webmanifest",
+  manifest: "/manifest.webmanifest",
 };
 
 export const viewport: Viewport = {
@@ -90,14 +89,22 @@ export default function RootLayout({
       <body className="font-sans antialiased bg-[#141824] text-white">
         <WalletProvider>
           <CreatorEventsProvider>
-            <a href="#main-content" className="skip-link">
-              Skip to main content
-            </a>
-            <div id="main-content" tabIndex={-1}>
-              <Suspense fallback={<StandardPageLoadingSkeleton />}>
-                {children}
-              </Suspense>
-            </div>
+            <ToastProvider>
+              <ConfirmProvider>
+                <Suspense fallback={null}>
+                  <RouteProgress />
+                </Suspense>
+                <PwaManager />
+                <a href="#main-content" className="skip-link">
+                  Skip to main content
+                </a>
+                <div id="main-content" tabIndex={-1}>
+                  <Suspense fallback={<StandardPageLoadingSkeleton />}>
+                    {children}
+                  </Suspense>
+                </div>
+              </ConfirmProvider>
+            </ToastProvider>
           </CreatorEventsProvider>
         </WalletProvider>
       </body>

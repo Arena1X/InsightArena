@@ -1,20 +1,8 @@
-import { IsOptional, IsNumber, Min, Max } from 'class-validator';
-import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
-export class ListCommentsDto {
-  @ApiPropertyOptional({ description: 'Page number', default: 1 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @Min(1)
-  page?: number = 1;
-
-  @ApiPropertyOptional({ description: 'Items per page (max 50)', default: 20 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @Min(1)
-  @Max(50)
-  limit?: number = 20;
-}
+/**
+ * Query DTO for GET /markets/:id/comments.
+ * Inherits page (default 1, min 1) and limit (default 20, min 1, max 100)
+ * from the shared PaginationQueryDto.
+ */
+export class ListCommentsDto extends PaginationQueryDto {}

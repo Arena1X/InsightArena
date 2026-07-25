@@ -2,12 +2,18 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { WebhookService } from './webhook.service';
 import { CreatorEventMatch } from '../creator-events/entities/creator-event-match.entity';
-import { OracleSubmission } from './entities/oracle-submission.entity';
+import {
+  OracleSubmission,
+  SubmissionReviewStatus,
+  SubmissionStatus,
+} from './entities/oracle-submission.entity';
 import { ConfigService } from '@nestjs/config';
+import { SubmissionHistoryService } from './submission-history.service';
 import {
   WebhookMatchResultDto,
   WinningTeam,
 } from './dto/webhook-match-result.dto';
+import { ReviewDecision } from './dto/anomaly-detection.dto';
 import { NotFoundException, ConflictException } from '@nestjs/common';
 
 describe('WebhookService', () => {
@@ -32,13 +38,31 @@ describe('WebhookService', () => {
 
   const mockSubmissionRepository = {
     create: jest.fn().mockReturnValue({}),
-    save: jest.fn().mockResolvedValue({}),
+    save: jest.fn().mockImplementation((s) => Promise.resolve(s)),
     findOne: jest.fn().mockResolvedValue(null),
     find: jest.fn().mockResolvedValue([]),
     findAndCount: jest.fn().mockResolvedValue([[], 0]),
   };
 
+  // Default screening: nothing flagged, nothing held. Individual tests override.
+  const mockSubmissionHistoryService = {
+    screenSubmission: jest.fn().mockResolvedValue({
+      flagged: false,
+      held: false,
+      evaluation: {},
+    }),
+  };
+
   beforeEach(async () => {
+    mockSubmissionHistoryService.screenSubmission.mockResolvedValue({
+      flagged: false,
+      held: false,
+      evaluation: {},
+    });
+    mockSubmissionRepository.create.mockReturnValue({});
+    mockSubmissionRepository.save.mockImplementation((s) => Promise.resolve(s));
+    mockMatchRepository.findOne.mockResolvedValue(mockMatch);
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WebhookService,
@@ -58,6 +82,10 @@ describe('WebhookService', () => {
               return null;
             }),
           },
+        },
+        {
+          provide: SubmissionHistoryService,
+          useValue: mockSubmissionHistoryService,
         },
       ],
     }).compile();
@@ -254,6 +282,134 @@ describe('WebhookService', () => {
     it('should return null for non-existent job ID', () => {
       const job = service.getJobStatus('non-existent-job-id');
       expect(job).toBeNull();
+    });
+  });
+
+  // ── Anomaly hold & review (#1364) ─────────────────────────────────────────
+
+  describe('anomaly screening on intake', () => {
+    it('holds a flagged submission instead of submitting it', async () => {
+      const dto: WebhookMatchResultDto = {
+        match_id: '123',
+        winning_team: WinningTeam.TEAM_A,
+        confidence_score: 5,
+        data_source: 'https://api.example.com/match/123',
+        timestamp: new Date().toISOString(),
+      };
+
+      mockSubmissionRepository.save.mockResolvedValue({
+        id: 'sub-held',
+        review_status: SubmissionReviewStatus.NOT_REQUIRED,
+      });
+      mockSubmissionHistoryService.screenSubmission.mockResolvedValue({
+        flagged: true,
+        held: true,
+        evaluation: {},
+      });
+      const submitSpy = jest
+        .spyOn(service as any, 'simulateOracleSubmission')
+        .mockResolvedValue(undefined);
+
+      const result = await service.processMatchResult(dto);
+
+      expect(result.status).toBe('held');
+      expect(submitSpy).not.toHaveBeenCalled();
+      // A held submission is not left in the retry queue.
+      expect(service.getJobStatus(result.job_id)).toBeNull();
+    });
+
+    it('submits a flagged-but-not-held submission normally', async () => {
+      const dto: WebhookMatchResultDto = {
+        match_id: '123',
+        winning_team: WinningTeam.TEAM_A,
+        confidence_score: 5,
+        data_source: 'https://api.example.com/match/123',
+        timestamp: new Date().toISOString(),
+      };
+
+      mockSubmissionRepository.save.mockResolvedValue({ id: 'sub-flag-only' });
+      mockSubmissionHistoryService.screenSubmission.mockResolvedValue({
+        flagged: true,
+        held: false,
+        evaluation: {},
+      });
+      jest
+        .spyOn(service as any, 'simulateOracleSubmission')
+        .mockResolvedValue(undefined);
+
+      const result = await service.processMatchResult(dto);
+
+      expect(result.status).toBe('accepted');
+    });
+  });
+
+  describe('reviewSubmission', () => {
+    const heldSubmission = {
+      id: 'sub-held',
+      match_id: '123',
+      winning_team: WinningTeam.TEAM_A,
+      confidence_score: 5,
+      data_source: 'https://api.example.com/match/123',
+      result_timestamp: new Date(),
+      metadata: null,
+      status: SubmissionStatus.PENDING,
+      review_status: SubmissionReviewStatus.HELD,
+    };
+
+    it('approves a held submission and queues it for on-chain use', async () => {
+      mockSubmissionRepository.findOne.mockResolvedValue({ ...heldSubmission });
+      const submitSpy = jest
+        .spyOn(service as any, 'simulateOracleSubmission')
+        .mockResolvedValue(undefined);
+
+      const result = await service.reviewSubmission('sub-held', {
+        decision: ReviewDecision.APPROVE,
+        reviewer: 'admin-1',
+      });
+
+      expect(result.review_status).toBe(SubmissionReviewStatus.APPROVED);
+      expect(result.submitted).toBe(true);
+      expect(submitSpy).toHaveBeenCalled();
+    });
+
+    it('rejects a held submission without submitting it', async () => {
+      mockSubmissionRepository.findOne.mockResolvedValue({ ...heldSubmission });
+      const submitSpy = jest
+        .spyOn(service as any, 'simulateOracleSubmission')
+        .mockResolvedValue(undefined);
+
+      const result = await service.reviewSubmission('sub-held', {
+        decision: ReviewDecision.REJECT,
+        reviewer: 'admin-1',
+        note: 'value looks wrong',
+      });
+
+      expect(result.review_status).toBe(SubmissionReviewStatus.REJECTED);
+      expect(result.submitted).toBe(false);
+      expect(submitSpy).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFound for an unknown submission', async () => {
+      mockSubmissionRepository.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.reviewSubmission('missing', {
+          decision: ReviewDecision.APPROVE,
+        }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('throws Conflict when the submission is not held', async () => {
+      mockSubmissionRepository.findOne.mockResolvedValue({
+        ...heldSubmission,
+        review_status: SubmissionReviewStatus.NOT_REQUIRED,
+      });
+
+      await expect(
+        service.reviewSubmission('sub-held', {
+          decision: ReviewDecision.APPROVE,
+        }),
+      ).rejects.toThrow(ConflictException);
     });
   });
 });

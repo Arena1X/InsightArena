@@ -4,7 +4,9 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { AdminService } from './admin.service';
 import { VerifiedAddress } from './entities/verified-address.entity';
+import { UserFlag } from './entities/user-flag.entity';
 import { ListVerifiedAddressesQueryDto } from './dto/list-verified-addresses-query.dto';
+import { BulkUserAction } from './dto/bulk-user-action.dto';
 
 describe('AdminService (Verified Addresses)', () => {
   let service: AdminService;
@@ -266,6 +268,124 @@ describe('AdminService (Verified Addresses)', () => {
       userRepository.findOne.mockResolvedValue({ id: 'u1', is_banned: false });
       await expect(service.unbanUser('u1', 'admin')).rejects.toThrow(
         'User is not banned',
+      );
+    });
+  });
+
+  describe('bulkUserAction', () => {
+    let userRepository: any;
+    let mockManager: any;
+
+    beforeEach(() => {
+      userRepository = service['usersRepository'];
+      mockManager = {
+        findOne: jest.fn(),
+        save: jest
+          .fn()
+          .mockImplementation((a: any, b: any) => Promise.resolve(b ?? a)),
+        create: jest.fn().mockImplementation((_entity: any, obj: any) => obj),
+      };
+      userRepository.manager = {
+        transaction: jest.fn((cb: any) => cb(mockManager)),
+      };
+    });
+
+    it('bans all users and reports success for each', async () => {
+      mockManager.findOne.mockImplementation(
+        (_entity: any, opts: any) =>
+          Promise.resolve({ id: opts.where.id, is_banned: false }) as any,
+      );
+
+      const result = await service.bulkUserAction(
+        { user_ids: ['u1', 'u2'], action: BulkUserAction.Ban, reason: 'spam' },
+        'admin-1',
+      );
+
+      expect(result.succeeded).toBe(2);
+      expect(result.failed).toBe(0);
+      expect(result.results).toEqual([
+        { user_id: 'u1', success: true },
+        { user_id: 'u2', success: true },
+      ]);
+    });
+
+    it('reports a per-item failure without failing the whole batch', async () => {
+      mockManager.findOne.mockImplementation((_entity: any, opts: any) => {
+        if (opts.where.id === 'missing') return Promise.resolve(null);
+        return Promise.resolve({ id: opts.where.id, is_banned: false });
+      });
+
+      const result = await service.bulkUserAction(
+        {
+          user_ids: ['u1', 'missing'],
+          action: BulkUserAction.Ban,
+          reason: 'spam',
+        },
+        'admin-1',
+      );
+
+      expect(result.succeeded).toBe(1);
+      expect(result.failed).toBe(1);
+      expect(result.results).toEqual([
+        { user_id: 'u1', success: true },
+        {
+          user_id: 'missing',
+          success: false,
+          error: 'User "missing" not found',
+        },
+      ]);
+    });
+
+    it('reports failure when banning an already-banned user', async () => {
+      mockManager.findOne.mockResolvedValue({ id: 'u1', is_banned: true });
+
+      const result = await service.bulkUserAction(
+        { user_ids: ['u1'], action: BulkUserAction.Ban, reason: 'spam' },
+        'admin-1',
+      );
+
+      expect(result.results[0]).toEqual({
+        user_id: 'u1',
+        success: false,
+        error: 'User is already banned',
+      });
+    });
+
+    it('reports failure when unbanning a user who is not banned', async () => {
+      mockManager.findOne.mockResolvedValue({ id: 'u1', is_banned: false });
+
+      const result = await service.bulkUserAction(
+        { user_ids: ['u1'], action: BulkUserAction.Unban },
+        'admin-1',
+      );
+
+      expect(result.results[0]).toEqual({
+        user_id: 'u1',
+        success: false,
+        error: 'User is not banned',
+      });
+    });
+
+    it('creates a UserFlag record for the flag action', async () => {
+      mockManager.findOne.mockResolvedValue({ id: 'u1', is_banned: false });
+
+      const result = await service.bulkUserAction(
+        {
+          user_ids: ['u1'],
+          action: BulkUserAction.Flag,
+          reason: 'suspicious activity',
+        },
+        'admin-1',
+      );
+
+      expect(result.results[0]).toEqual({ user_id: 'u1', success: true });
+      expect(mockManager.create).toHaveBeenCalledWith(
+        UserFlag,
+        expect.objectContaining({
+          user_id: 'u1',
+          reason: 'suspicious activity',
+          flagged_by: 'admin-1',
+        }),
       );
     });
   });

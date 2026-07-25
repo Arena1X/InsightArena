@@ -55,6 +55,29 @@ export class AnalyticsService {
     @InjectRepository(MarketHistory)
     private readonly marketHistoryRepository: Repository<MarketHistory>,
   ) {}
+  private readonly activeSessions = new Map<string, number>();
+  private readonly IDLE_WINDOW_MS = parseInt(process.env.ACTIVE_USERS_IDLE_WINDOW_MS || '300000', 10);
+
+  trackActiveSession(sessionId: string) {
+    this.activeSessions.set(sessionId, Date.now());
+  }
+
+  removeActiveSession(sessionId: string) {
+    this.activeSessions.delete(sessionId);
+  }
+
+  getActiveUsersCount(): number {
+    const now = Date.now();
+    let count = 0;
+    for (const [sessionId, lastActive] of this.activeSessions.entries()) {
+      if (now - lastActive > this.IDLE_WINDOW_MS) {
+        this.activeSessions.delete(sessionId);
+      } else {
+        count++;
+      }
+    }
+    return count;
+  }
 
   async logActivity(
     userId: string,

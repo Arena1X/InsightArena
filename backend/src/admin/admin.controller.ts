@@ -24,6 +24,7 @@ import { ResolveFlagDto } from '../flags/dto/resolve-flag.dto';
 import { AdminService } from './admin.service';
 import { ActivityLogQueryDto } from './dto/activity-log-query.dto';
 import { BanUserDto } from './dto/ban-user.dto';
+import { BulkUserActionDto } from './dto/bulk-user-action.dto';
 import { DateRangeQueryDto } from './dto/date-range-query.dto';
 import { FeeStatsResponseDto } from './dto/fee-stats-response.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
@@ -141,6 +142,26 @@ export class AdminController {
   async unbanUser(@Param('id') id: string, @Request() req: any) {
     return this.adminService.unbanUser(
       id,
+      (req as { user: { id: string } }).user.id,
+    );
+  }
+
+  @Post('users/bulk-action')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Apply a moderation action (ban/unban/flag) to multiple users',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Per-user result report for the bulk action',
+  })
+  @ApiResponse({ status: 403, description: 'Forbidden' })
+  async bulkUserAction(
+    @Body() dto: BulkUserActionDto,
+    @Request() req: RequestUser,
+  ) {
+    return this.adminService.bulkUserAction(
+      dto,
       (req as { user: { id: string } }).user.id,
     );
   }

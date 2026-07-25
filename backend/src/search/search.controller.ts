@@ -14,6 +14,7 @@ import {
   SuggestionsResponseDto,
 } from './dto/global-search.dto';
 import { SearchQueryDto } from './dto/search-query.dto';
+import { SuggestQueryDto, SuggestResponseDto } from './dto/suggest-query.dto';
 import { SearchService } from './search.service';
 
 @ApiTags('Search')
@@ -42,6 +43,27 @@ export class SearchController {
     @Query() { query }: SearchQueryDto,
   ): Promise<SuggestionsResponseDto> {
     return this.searchService.getSuggestions(query);
+  }
+
+  @Public()
+  @Get('suggest')
+  @UsePipes(
+    new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: true,
+    }),
+  )
+  @ApiOperation({
+    summary: 'Ranked type-ahead suggestions for a prefix (public)',
+    description:
+      'Returns a capped, ranked list of { id, label, type } suggestions for markets, ' +
+      'users, and/or competitions matching the given prefix. Results for popular prefixes ' +
+      'are cached briefly. Empty or short (<2 char) prefixes return an empty list.',
+  })
+  @ApiResponse({ status: 200, type: SuggestResponseDto })
+  async suggest(@Query() query: SuggestQueryDto): Promise<SuggestResponseDto> {
+    return this.searchService.suggest(query);
   }
 
   @Public()

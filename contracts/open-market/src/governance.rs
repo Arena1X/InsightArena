@@ -3,9 +3,17 @@ use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol, Vec};
 use crate::config;
 use crate::errors::InsightArenaError;
 use crate::market;
-use crate::storage_types::DataKey;
+use crate::reputation;
+use crate::storage_types::{DataKey, ProposalState};
 use crate::Config;
 
+/// Parameter changes a passed governance proposal may apply.
+///
+/// Notably absent: anything touching `Config::timelock_delay` or
+/// `Config::guardian`. Those are intentionally admin-only (see
+/// `config::set_timelock_delay` / `config::set_guardian`) so that no
+/// proposal can ever vote itself a shorter timelock or a friendlier
+/// guardian to bypass the veto safety net.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProposalType {
@@ -13,6 +21,15 @@ pub enum ProposalType {
     UpdateOracle(Address),
     UpdateMinStake(i128),
     AddSupportedCategory(Symbol),
+    /// Governance-timelocked update of `Config::min_creator_reputation`, the
+    /// minimum score required to create a market (0-1000).
+    UpdateMinReputation(u32),
+    /// Governance-timelocked addition of an address to the trusted-creator
+    /// allowlist, exempting it from the minimum-reputation gate.
+    AddTrustedCreator(Address),
+    /// Governance-timelocked removal of an address from the trusted-creator
+    /// allowlist.
+    RemoveTrustedCreator(Address),
 }
 
 #[contracttype]
@@ -27,6 +44,11 @@ pub struct Proposal {
     pub voting_end: u64,
     pub executed: bool,
     pub cancelled: bool,
+    /// Set once voting has passed quorum/majority: `now + timelock_delay` at
+    /// that moment. `None` while still voting (or if it never passed).
+    pub ready_at: Option<u64>,
+    /// Set by the guardian during the timelock window; blocks execution.
+    pub vetoed: bool,
 }
 
 
@@ -88,6 +110,18 @@ fn emit_proposal_cancelled(env: &Env, proposal_id: u32) {
     );
 }
 
+fn emit_proposal_queued(env: &Env, proposal_id: u32, ready_at: u64) {
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("queued")),
+        (proposal_id, ready_at),
+    );
+}
+
+fn emit_proposal_vetoed(env: &Env, proposal_id: u32) {
+    env.events()
+        .publish((symbol_short!("gov"), symbol_short!("vetoed")), proposal_id);
+}
+
 pub fn create_proposal(
     env: &Env,
     proposer: Address,
@@ -124,6 +158,8 @@ pub fn create_proposal(
         voting_end,
         executed: false,
         cancelled: false,
+        ready_at: None,
+        vetoed: false,
     };
 
 
@@ -172,6 +208,17 @@ pub fn vote(
     Ok(())
 }
 
+/// Execute a passed proposal, subject to the governance timelock.
+///
+/// A contract call that returns `Err` reverts every write it made, so
+/// "queue" and "execute" cannot share one call the way a single fallthrough
+/// function would suggest: this needs two separate calls to `execute_proposal`.
+/// The first call after voting ends does the "queueing": if quorum and
+/// majority were met, it records `ready_at = now + timelock_delay` and
+/// returns `Ok(())`, persisting the queued state. Any call made before
+/// `ready_at` (including a queued proposal's own queuing check re-run) then
+/// returns `TimelockNotElapsed`. Once `ready_at` is reached, a further call
+/// actually applies the effect.
 pub fn execute_proposal(
     env: &Env,
     executor: Address,
@@ -181,20 +228,45 @@ pub fn execute_proposal(
     executor.require_auth();
 
     let mut proposal = load_proposal(env, proposal_id)?;
-    if proposal.executed || env.ledger().timestamp() < proposal.voting_end {
+
+    if proposal.executed || proposal.cancelled || proposal.vetoed {
         return Err(InsightArenaError::InvalidInput);
     }
 
-    let users = load_registered_users(env);
-    let total_users = users.len();
-    let total_votes = proposal
-        .votes_for
-        .checked_add(proposal.votes_against)
-        .ok_or(InsightArenaError::Overflow)?;
+    let now = env.ledger().timestamp();
 
-    let quorum = proposal_quorum(total_users);
-    if total_votes < quorum || proposal.votes_for <= proposal.votes_against {
-        return Err(InsightArenaError::Unauthorized);
+    if proposal.ready_at.is_none() {
+        if now < proposal.voting_end {
+            return Err(InsightArenaError::InvalidInput);
+        }
+
+        let users = load_registered_users(env);
+        let total_users = users.len();
+        let total_votes = proposal
+            .votes_for
+            .checked_add(proposal.votes_against)
+            .ok_or(InsightArenaError::Overflow)?;
+
+        let quorum = proposal_quorum(total_users);
+        if total_votes < quorum || proposal.votes_for <= proposal.votes_against {
+            return Err(InsightArenaError::Unauthorized);
+        }
+
+        let cfg = config::get_config(env)?;
+        let ready_at = now
+            .checked_add(cfg.timelock_delay)
+            .ok_or(InsightArenaError::Overflow)?;
+        proposal.ready_at = Some(ready_at);
+        store_proposal(env, &proposal);
+        emit_proposal_queued(env, proposal_id, ready_at);
+
+        // Persist the queued state now — a subsequent call re-checks readiness.
+        return Ok(());
+    }
+
+    let ready_at = proposal.ready_at.unwrap();
+    if now < ready_at {
+        return Err(InsightArenaError::TimelockNotElapsed);
     }
 
     let summary = match proposal.proposal_type.clone() {
@@ -227,6 +299,18 @@ pub fn execute_proposal(
             }
             symbol_short!("cat")
         }
+        ProposalType::UpdateMinReputation(threshold) => {
+            config::update_min_reputation_from_governance(env, threshold)?;
+            symbol_short!("minrep")
+        }
+        ProposalType::AddTrustedCreator(addr) => {
+            reputation::add_trusted_creator_from_governance(env, addr)?;
+            symbol_short!("trstadd")
+        }
+        ProposalType::RemoveTrustedCreator(addr) => {
+            reputation::remove_trusted_creator_from_governance(env, addr)?;
+            symbol_short!("trstrem")
+        }
     };
 
     proposal.executed = true;
@@ -238,7 +322,7 @@ pub fn execute_proposal(
 /// Cancel a proposal before it is executed.
 ///
 /// Only the original proposer or the platform admin may cancel. Proposals that
-/// have already been executed cannot be cancelled.
+/// have already been executed, vetoed, or cancelled cannot be cancelled again.
 pub fn cancel_proposal(
     env: &Env,
     caller: Address,
@@ -248,7 +332,7 @@ pub fn cancel_proposal(
 
     let mut proposal = load_proposal(env, proposal_id)?;
 
-    if proposal.executed || proposal.cancelled {
+    if proposal.executed || proposal.cancelled || proposal.vetoed {
         return Err(InsightArenaError::InvalidInput);
     }
 
@@ -265,6 +349,66 @@ pub fn cancel_proposal(
 
 
     Ok(())
+}
+
+/// Guardian-only veto of a queued proposal, valid any time between it entering
+/// the queue (`ready_at` set) and it actually being executed. Once executed,
+/// cancelled, or already vetoed, this errors rather than re-applying the veto.
+pub fn veto_proposal(
+    env: &Env,
+    guardian: Address,
+    proposal_id: u32,
+) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(env)?;
+    guardian.require_auth();
+
+    let cfg = config::get_config(env)?;
+    if guardian != cfg.guardian {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    let mut proposal = load_proposal(env, proposal_id)?;
+
+    if proposal.executed || proposal.cancelled || proposal.vetoed {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
+    // Nothing queued yet — vetoing only applies to the timelock window.
+    if proposal.ready_at.is_none() {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
+    proposal.vetoed = true;
+    store_proposal(env, &proposal);
+
+    emit_proposal_vetoed(env, proposal_id);
+
+    Ok(())
+}
+
+/// Derive the current lifecycle state of a proposal from its stored flags and
+/// the ledger clock. See [`ProposalState`] for the full transition diagram.
+pub fn get_proposal_state(
+    env: &Env,
+    proposal_id: u32,
+) -> Result<ProposalState, InsightArenaError> {
+    let proposal = load_proposal(env, proposal_id)?;
+
+    if proposal.executed {
+        return Ok(ProposalState::Executed);
+    }
+    if proposal.vetoed {
+        return Ok(ProposalState::Vetoed);
+    }
+    if proposal.cancelled {
+        return Ok(ProposalState::Cancelled);
+    }
+
+    Ok(match proposal.ready_at {
+        Some(ready_at) if env.ledger().timestamp() >= ready_at => ProposalState::Executable,
+        Some(_) => ProposalState::Queued,
+        None => ProposalState::Voting,
+    })
 }
 
 /// Return a single proposal by ID, extending its TTL on read.

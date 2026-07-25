@@ -77,6 +77,15 @@ export class MarketSearchResult {
   @ApiProperty() is_public: boolean;
   @ApiProperty() participant_count: number;
   @ApiProperty() created_at: Date;
+  @ApiProperty({
+    description: 'Combined relevance score (FTS rank + trigram similarity)',
+  })
+  relevance_score: number;
+  @ApiProperty({
+    description:
+      'Highlighted snippet showing the matched term in context (HTML <b> tags)',
+  })
+  highlight: string;
 }
 
 export class UserSearchResult {
@@ -86,6 +95,15 @@ export class UserSearchResult {
   @ApiProperty() avatar_url: string | null;
   @ApiProperty() reputation_score: number;
   @ApiProperty() total_predictions: number;
+  @ApiProperty({
+    description: 'Combined relevance score (FTS rank + trigram similarity)',
+  })
+  relevance_score: number;
+  @ApiProperty({
+    description:
+      'Highlighted snippet showing the matched term in context (HTML <b> tags)',
+  })
+  highlight: string;
 }
 
 export class CompetitionSearchResult {
@@ -96,6 +114,15 @@ export class CompetitionSearchResult {
   @ApiProperty() end_time: Date;
   @ApiProperty() participant_count: number;
   @ApiProperty() visibility: string;
+  @ApiProperty({
+    description: 'Combined relevance score (FTS rank + trigram similarity)',
+  })
+  relevance_score: number;
+  @ApiProperty({
+    description:
+      'Highlighted snippet showing the matched term in context (HTML <b> tags)',
+  })
+  highlight: string;
 }
 
 export class SuggestionsResponseDto {

@@ -33,7 +33,7 @@ fn ensure_not_paused_err_when_paused() {
     let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
     client.initialize(&admin, &oracle, &200_u32, &register_token(&env));
-    client.set_paused(&true);
+    client.set_paused(&true, &1u32);
     let result = client.try_get_config();
     assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
 }
@@ -55,8 +55,8 @@ fn ensure_not_paused_ok_after_unpause() {
     let admin = Address::generate(&env);
     let oracle = Address::generate(&env);
     client.initialize(&admin, &oracle, &200_u32, &register_token(&env));
-    client.set_paused(&true);
-    client.set_paused(&false);
+    client.set_paused(&true, &1u32);
+    client.set_paused(&false, &0u32);
     client.get_config();
 }
 
@@ -90,11 +90,11 @@ fn test_pause_and_unpause_contract() {
     let result_before = client.try_get_config();
     assert!(result_before.is_ok());
 
-    client.set_paused(&true);
+    client.set_paused(&true, &1u32);
     let result_paused = client.try_get_config();
     assert!(matches!(result_paused, Err(Ok(InsightArenaError::Paused))));
 
-    client.set_paused(&false);
+    client.set_paused(&false, &0u32);
     let result_after = client.try_get_config();
     assert!(result_after.is_ok());
 }
@@ -129,7 +129,7 @@ fn test_config_update_unauthorized() {
 
     client.initialize(&admin, &oracle, &200_u32, &register_token(&env));
 
-    let _ = env.as_contract(&client.address, || config::set_paused(&env, true));
+    let _ = env.as_contract(&client.address, || config::set_paused(&env, true, 1u32));
 }
 
 #[test]

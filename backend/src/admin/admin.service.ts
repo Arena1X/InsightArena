@@ -24,9 +24,16 @@ import { Prediction } from '../predictions/entities/prediction.entity';
 import { SorobanService } from '../soroban/soroban.service';
 import { User } from '../users/entities/user.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
+import { UserFlag } from './entities/user-flag.entity';
 import { VerifiedAddress } from './entities/verified-address.entity';
 import { FeeHistory } from '../indexer/entities/fee-history.entity';
 import { ActivityLogQueryDto } from './dto/activity-log-query.dto';
+import {
+  BulkUserAction,
+  BulkUserActionDto,
+  BulkUserActionResponseDto,
+  BulkUserActionResultDto,
+} from './dto/bulk-user-action.dto';
 import { DateRangeQueryDto } from './dto/date-range-query.dto';
 import { FeeStatsResponseDto } from './dto/fee-stats-response.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
@@ -322,6 +329,93 @@ export class AdminService {
     });
 
     return user;
+  }
+
+  async bulkUserAction(
+    dto: BulkUserActionDto,
+    adminId: string,
+  ): Promise<BulkUserActionResponseDto> {
+    const results: BulkUserActionResultDto[] = [];
+
+    for (const userId of dto.user_ids) {
+      try {
+        await this.usersRepository.manager.transaction(async (manager) => {
+          const user = await manager.findOne(User, { where: { id: userId } });
+          if (!user) {
+            throw new NotFoundException(`User "${userId}" not found`);
+          }
+
+          switch (dto.action) {
+            case BulkUserAction.Ban:
+              if (user.is_banned) {
+                throw new ConflictException('User is already banned');
+              }
+              user.is_banned = true;
+              user.ban_reason = dto.reason ?? null;
+              user.banned_at = new Date();
+              user.banned_by = adminId;
+              await manager.save(user);
+              break;
+
+            case BulkUserAction.Unban:
+              if (!user.is_banned) {
+                throw new BadRequestException('User is not banned');
+              }
+              user.is_banned = false;
+              user.ban_reason = null;
+              user.banned_at = null;
+              user.banned_by = null;
+              await manager.save(user);
+              break;
+
+            case BulkUserAction.Flag:
+              await manager.save(
+                UserFlag,
+                manager.create(UserFlag, {
+                  user_id: user.id,
+                  reason: dto.reason ?? null,
+                  flagged_by: adminId,
+                }),
+              );
+              break;
+          }
+
+          await manager.save(
+            ActivityLog,
+            manager.create(ActivityLog, {
+              userId: user.id,
+              actionType: `USER_BULK_${dto.action.toUpperCase()}`,
+              actionDetails: {
+                admin_id: adminId,
+                reason: dto.reason ?? null,
+              },
+            }),
+          );
+        });
+
+        results.push({ user_id: userId, success: true });
+      } catch (err) {
+        results.push({
+          user_id: userId,
+          success: false,
+          error: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
+    }
+
+    const succeeded = results.filter((r) => r.success).length;
+
+    this.logger.log(
+      `Admin ${adminId} performed bulk "${dto.action}" on ${dto.user_ids.length} users: ${succeeded} succeeded, ${
+        results.length - succeeded
+      } failed`,
+    );
+
+    return {
+      results,
+      succeeded,
+      failed: results.length - succeeded,
+    };
   }
 
   async updateUserRole(

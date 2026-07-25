@@ -1,4 +1,12 @@
-use soroban_sdk::{contracttype, Address, Map, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Env, Map, String, Symbol, Vec};
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchPredictionRequest {
+    pub market_id: u64,
+    pub chosen_outcome: Symbol,
+    pub stake_amount: i128,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -70,6 +78,10 @@ pub enum DataKey {
     SwapHistory(u64),
     /// Keyed by market_id. Stores rolling 24h pool volume.
     PoolVolume(u64),
+    /// Keyed by market_id. Stores the rolling volatility measure used to derive the dynamic swap fee tier.
+    VolatilityState(u64),
+    /// Singleton. Admin-configurable thresholds and fee rates for the volatility-tiered swap fee schedule.
+    FeeTierConfig,
 
     // Conditional Market keys
     ConditionalMarket(u64),   // market_id -> ConditionalMarket
@@ -100,6 +112,27 @@ pub enum DataKey {
     Winners(u64),
     /// Singleton. Treasury balance separate from protocol fees.
     TreasuryBalance,
+}
+
+/// Lifecycle state of a governance proposal, derived from its stored flags and
+/// the current ledger time rather than persisted directly.
+///
+/// `Voting -> Queued -> Executable -> (Executed | Vetoed | Cancelled)`
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProposalState {
+    /// Voting window is still open.
+    Voting,
+    /// Voting passed and `ready_at` has been recorded, but the timelock has not elapsed.
+    Queued,
+    /// The timelock has elapsed; the proposal may now be executed.
+    Executable,
+    /// The proposal's effect has been applied.
+    Executed,
+    /// The proposer or admin withdrew the proposal before execution.
+    Cancelled,
+    /// The guardian vetoed the proposal during the timelock window.
+    Vetoed,
 }
 
 #[contracttype]
@@ -297,10 +330,15 @@ pub struct LiquidityPool {
     pub lp_token_supply: i128,
     pub fee_bps: u32,
     pub created_at: u64,
+    /// Per-outcome TWAP price accumulators. Kept on the pool itself (rather than
+    /// a separate storage key) so a single `save_pool` persists both the reserve
+    /// update and its price observation atomically. See [`PriceAccumulator`].
+    pub price_accumulators: Map<Symbol, PriceAccumulator>,
 }
 
 impl LiquidityPool {
     pub fn new(
+        env: &Env,
         market_id: u64,
         initial_reserves: Map<Symbol, i128>,
         fee_bps: u32,
@@ -315,6 +353,7 @@ impl LiquidityPool {
             lp_token_supply: 0,
             fee_bps,
             created_at,
+            price_accumulators: Map::new(env),
         }
     }
 }
@@ -383,6 +422,158 @@ impl SwapRecord {
             amount_out,
             fee_paid,
             timestamp,
+        }
+    }
+}
+
+// ── Dynamic Fee / Volatility Types ────────────────────────────────────────────
+
+/// Rolling record of recent price movement for a single market's AMM pool.
+/// Updated on every swap; used to derive the current [`FeeTier`].
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VolatilityState {
+    pub market_id: u64,
+    /// Exponentially-weighted moving average of recent per-swap price moves,
+    /// expressed in bps of the traded pair's reserve ratio (0-10000).
+    pub ema_bps: u32,
+    /// The traded-pair reserve ratio (in bps) observed after the most recent swap.
+    /// Used as the reference point to measure the next swap's price delta.
+    pub last_price_bps: u32,
+    /// Ledger timestamp of the most recent update.
+    pub last_updated: u64,
+    /// Total number of swaps that have contributed to this rolling measure.
+    /// Zero means no swap has occurred yet, so `ema_bps`/`last_price_bps` are not yet meaningful.
+    pub sample_count: u32,
+}
+
+impl VolatilityState {
+    pub fn empty(market_id: u64) -> Self {
+        Self {
+            market_id,
+            ema_bps: 0,
+            last_price_bps: 0,
+            last_updated: 0,
+            sample_count: 0,
+        }
+    }
+}
+
+/// The current dynamic-fee tier for a market, derived from its rolling volatility measure.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FeeTier {
+    Calm,
+    Normal,
+    Volatile,
+}
+
+/// Admin-configurable thresholds and per-tier fee rates driving the dynamic swap fee,
+/// plus the split of every collected fee between liquidity providers and the protocol treasury.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeTierConfig {
+    /// Inclusive upper bound (bps) of rolling volatility for the "calm" tier.
+    pub calm_threshold_bps: u32,
+    /// Inclusive upper bound (bps) of rolling volatility for the "normal" tier.
+    /// Anything above this threshold is classified "volatile". Must be strictly
+    /// greater than `calm_threshold_bps`.
+    pub volatile_threshold_bps: u32,
+    /// Swap fee (bps) applied while in the "calm" tier.
+    pub calm_fee_bps: u32,
+    /// Swap fee (bps) applied while in the "normal" tier.
+    pub normal_fee_bps: u32,
+    /// Swap fee (bps) applied while in the "volatile" tier.
+    pub volatile_fee_bps: u32,
+    /// Share of every collected swap fee routed to the protocol treasury, in bps
+    /// of the fee itself (0-10000). The remainder is credited to liquidity providers.
+    pub protocol_share_bps: u32,
+}
+
+impl FeeTierConfig {
+    /// Sensible defaults used whenever no admin-configured schedule has been stored yet.
+    pub fn default_config() -> Self {
+        Self {
+            calm_threshold_bps: 50,
+            volatile_threshold_bps: 200,
+            calm_fee_bps: 15,
+            normal_fee_bps: 30,
+            volatile_fee_bps: 100,
+            protocol_share_bps: 2000,
+        }
+    }
+}
+
+/// Read-only view of a market's current dynamic fee state, returned by `get_market_fee_info`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MarketFeeInfo {
+    pub market_id: u64,
+    pub tier: FeeTier,
+    pub effective_fee_bps: u32,
+    pub volatility_ema_bps: u32,
+}
+
+// ── TWAP Price Oracle Types ───────────────────────────────────────────────────
+
+/// A single recorded price sample for one outcome, kept in the [`PriceAccumulator`]
+/// ring buffer.
+///
+/// `price_cumulative` is the value of the running price integral (sum of
+/// `price * elapsed_seconds` over the outcome's whole history) *as of*
+/// `timestamp`, i.e. immediately before `price` itself takes effect. This lets
+/// `get_twap` reconstruct the integral at any timestamp `t >= observations[0].timestamp`
+/// by locating the latest observation at or before `t` and extrapolating with
+/// its `price` for the remaining `t - timestamp` seconds.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PriceObservation {
+    /// Ledger timestamp this observation was recorded at.
+    pub timestamp: u64,
+    /// Instantaneous outcome price (pool reserve) that became active at `timestamp`.
+    pub price: i128,
+    /// Cumulative price integral as of `timestamp`, not yet including `price` itself.
+    pub price_cumulative: i128,
+}
+
+/// Per-(market, outcome) TWAP state: a cumulative price accumulator plus a
+/// fixed-capacity ring buffer of historical observations used to answer
+/// windowed `get_twap` queries. Updated on every operation that changes the
+/// outcome's reserve (pool creation, swaps).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PriceAccumulator {
+    pub market_id: u64,
+    pub outcome: Symbol,
+    /// Fixed-capacity ring buffer of the most recent observations. Once full,
+    /// new observations overwrite the oldest slot (see `next_index`).
+    pub observations: Vec<PriceObservation>,
+    /// Index in `observations` that the next write will occupy (wraps modulo capacity).
+    pub next_index: u32,
+    /// Total number of observations ever recorded for this outcome (monotonic;
+    /// may exceed `observations.len()` once the buffer has wrapped).
+    pub total_count: u64,
+    /// The price active since `last_timestamp`, used to extrapolate the
+    /// cumulative integral forward to "now" without a storage write.
+    pub last_price: i128,
+    /// Ledger timestamp of the most recent observation.
+    pub last_timestamp: u64,
+    /// Cumulative price integral as of `last_timestamp` (mirrors the most
+    /// recent observation's `price_cumulative`).
+    pub cumulative: i128,
+}
+
+impl PriceAccumulator {
+    pub fn empty(env: &Env, market_id: u64, outcome: Symbol) -> Self {
+        Self {
+            market_id,
+            outcome,
+            observations: Vec::new(env),
+            next_index: 0,
+            total_count: 0,
+            last_price: 0,
+            last_timestamp: 0,
+            cumulative: 0,
         }
     }
 }
@@ -602,6 +793,23 @@ impl ConditionalMarket {
 pub struct ConditionalChain {
     pub market_ids: Vec<u64>,
     pub depth: u32,
+}
+
+/// Read-only view of a market's conditional-dependency status, returned by
+/// `get_dependency_status`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DependencyStatus {
+    pub market_id: u64,
+    /// True if this market has a `ConditionalParent` entry (i.e. it was
+    /// created via `create_conditional_market`).
+    pub is_conditional: bool,
+    /// The immediate parent's market_id, if any.
+    pub parent_market_id: Option<u64>,
+    /// True when there is no parent, or when the parent has resolved.
+    /// `resolve_market` on this market is blocked with `ParentNotResolved`
+    /// while this is false.
+    pub parent_resolved: bool,
 }
 
 // ── Creator Event Types ───────────────────────────────────────────────────────

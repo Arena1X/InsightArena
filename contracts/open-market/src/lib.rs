@@ -22,13 +22,16 @@ pub mod storage_types;
 pub use crate::config::Config;
 pub use crate::errors::InsightArenaError;
 pub use crate::governance::{Proposal, ProposalType};
+pub use crate::storage_types::ProposalState;
 pub use crate::liquidity::{calculate_liquidity_value, calculate_lp_tokens, calculate_swap_output};
 pub use crate::market::CreateMarketParams;
 pub use crate::storage_types::{
-    ConditionalChain, ConditionalMarket, CreatorLeaderboardEntry, CreatorStats, DataKey, Dispute,
-    Event, EventMatch, EventPrediction, InviteCode, LPPosition, LeaderboardEntry,
-    LeaderboardSnapshot, LiquidityPool, Market, MarketStats, PlatformStats, Prediction, Season,
-    SwapRecord, UserProfile, Winner,
+    BatchPredictionRequest,
+    ConditionalChain, ConditionalMarket, CreatorLeaderboardEntry, CreatorStats, DataKey,
+    DependencyStatus, Dispute, Event, EventMatch, EventPrediction, FeeTier, FeeTierConfig,
+    InviteCode, LPPosition, LeaderboardEntry, LeaderboardSnapshot, LiquidityPool, Market,
+    MarketFeeInfo, MarketStats, PlatformStats, Prediction, PriceAccumulator, PriceObservation,
+    Season, SwapRecord, UserProfile, VolatilityState, Winner,
 };
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
@@ -79,8 +82,9 @@ impl InsightArenaContract {
     }
 
     /// Pause or resume the contract. Caller must be the stored admin.
-    pub fn set_paused(env: Env, paused: bool) -> Result<(), InsightArenaError> {
-        config::set_paused(&env, paused)
+    /// `reason_code` is recorded on the emitted event for auditing.
+    pub fn set_paused(env: Env, paused: bool, reason_code: u32) -> Result<(), InsightArenaError> {
+        config::set_paused(&env, paused, reason_code)
     }
 
     /// Transfer admin rights to `new_admin`. Caller must be the current admin.
@@ -95,6 +99,17 @@ impl InsightArenaContract {
         new_oracle: Address,
     ) -> Result<(), InsightArenaError> {
         config::update_oracle(&env, admin, new_oracle)
+    }
+
+    /// Update the minimum creator reputation required to create a market.
+    /// Caller must be the current admin. See `ProposalType::UpdateMinReputation`
+    /// for the timelocked governance path.
+    pub fn set_min_creator_reputation(
+        env: Env,
+        admin: Address,
+        new_threshold: u32,
+    ) -> Result<(), InsightArenaError> {
+        config::set_min_creator_reputation(&env, admin, new_threshold)
     }
 
     // ── Market ────────────────────────────────────────────────────────────────
@@ -232,6 +247,16 @@ impl InsightArenaContract {
         market::calculate_conditional_depth(&env, market_id)
     }
 
+    /// Return a market's conditional-dependency status: whether it is a
+    /// conditional child, its immediate parent (if any), and whether that
+    /// parent has resolved. `resolve_market` blocks on an unresolved parent.
+    pub fn get_dependency_status(
+        env: Env,
+        market_id: u64,
+    ) -> Result<crate::storage_types::DependencyStatus, InsightArenaError> {
+        market::get_dependency_status(&env, market_id)
+    }
+
     // ── Dispute ───────────────────────────────────────────────────────────────
 
     /// Return the active dispute for a market. Extends TTL on read.
@@ -285,6 +310,27 @@ impl InsightArenaContract {
         prediction::submit_prediction(&env, predictor, market_id, chosen_outcome, stake_amount)
     }
 
+    /// Submit a batch of predictions atomically.
+    pub fn submit_predictions_batch(
+        env: Env,
+        predictor: Address,
+        requests: Vec<BatchPredictionRequest>,
+    ) -> Result<Vec<()>, InsightArenaError> {
+        prediction::submit_predictions_batch(&env, predictor, requests)
+    }
+
+    /// Transfer part or all of a prediction position from `from` to `to` while
+    /// the market is still open. Pure accounting move — no token transfer.
+    pub fn transfer_prediction(
+        env: Env,
+        market_id: u64,
+        from: Address,
+        to: Address,
+        shares: i128,
+    ) -> Result<(), InsightArenaError> {
+        prediction::transfer_prediction(&env, market_id, from, to, shares)
+    }
+
     /// Return the stored [`Prediction`] for a given `(market_id, predictor)` pair.
     pub fn get_prediction(
         env: Env,
@@ -316,6 +362,21 @@ impl InsightArenaContract {
         market_id: u64,
     ) -> Result<i128, InsightArenaError> {
         prediction::claim_payout(&env, predictor, market_id)
+    }
+
+    /// Pull-based cancellation refund: transfer the caller's full staked amount
+    /// back to them from escrow.
+    ///
+    /// The market must be cancelled. Each participant calls this once for
+    /// themselves; a second call reverts with `RefundAlreadyClaimed`.
+    /// A caller with no stake in the market reverts with `NotAParticipant`.
+    /// Returns the refund amount in stroops.
+    pub fn claim_cancel_refund(
+        env: Env,
+        predictor: Address,
+        market_id: u64,
+    ) -> Result<i128, InsightArenaError> {
+        prediction::claim_cancel_refund(&env, predictor, market_id)
     }
 
     /// Return the current XLM balance held by the contract escrow in stroops.
@@ -381,6 +442,41 @@ impl InsightArenaContract {
         proposal_id: u32,
     ) -> Result<(), InsightArenaError> {
         governance::cancel_proposal(&env, caller, proposal_id)
+    }
+
+    /// Guardian-only veto of a queued proposal during its timelock window.
+    pub fn veto_proposal(
+        env: Env,
+        guardian: Address,
+        proposal_id: u32,
+    ) -> Result<(), InsightArenaError> {
+        governance::veto_proposal(&env, guardian, proposal_id)
+    }
+
+    /// Return the current lifecycle state of a proposal (Voting/Queued/Executable/Executed/Cancelled/Vetoed).
+    pub fn get_proposal_state(
+        env: Env,
+        proposal_id: u32,
+    ) -> Result<ProposalState, InsightArenaError> {
+        governance::get_proposal_state(&env, proposal_id)
+    }
+
+    /// Update the governance timelock delay (seconds). Caller must be the current admin.
+    pub fn set_timelock_delay(
+        env: Env,
+        admin: Address,
+        new_delay: u64,
+    ) -> Result<(), InsightArenaError> {
+        config::set_timelock_delay(&env, admin, new_delay)
+    }
+
+    /// Update the governance guardian address. Caller must be the current admin.
+    pub fn set_guardian(
+        env: Env,
+        admin: Address,
+        new_guardian: Address,
+    ) -> Result<(), InsightArenaError> {
+        config::set_guardian(&env, admin, new_guardian)
     }
 
     /// Return the total protocol fees accumulated in the treasury.
@@ -545,6 +641,41 @@ impl InsightArenaContract {
         reputation::reset_creator_stats(&env, admin, creator)
     }
 
+    /// Return `creator`'s current reputation score (0-1000). Pure read, no
+    /// storage mutation.
+    pub fn get_reputation_score(env: Env, creator: Address) -> u32 {
+        reputation::get_reputation_score(&env, &creator)
+    }
+
+    /// `true` if `creator` is exempt from the minimum-reputation gate on
+    /// market creation.
+    pub fn is_trusted_creator(env: Env, creator: Address) -> bool {
+        reputation::is_trusted_creator(&env, &creator)
+    }
+
+    /// Add `creator` to the trusted-creator allowlist, exempting them from the
+    /// minimum-reputation gate on market creation. Caller must be the current
+    /// admin. See `ProposalType::AddTrustedCreator` for the timelocked
+    /// governance path.
+    pub fn add_trusted_creator(
+        env: Env,
+        admin: Address,
+        creator: Address,
+    ) -> Result<(), InsightArenaError> {
+        reputation::add_trusted_creator(&env, admin, creator)
+    }
+
+    /// Remove `creator` from the trusted-creator allowlist. Caller must be the
+    /// current admin. See `ProposalType::RemoveTrustedCreator` for the
+    /// timelocked governance path.
+    pub fn remove_trusted_creator(
+        env: Env,
+        admin: Address,
+        creator: Address,
+    ) -> Result<(), InsightArenaError> {
+        reputation::remove_trusted_creator(&env, admin, creator)
+    }
+
     // ── Analytics ─────────────────────────────────────────────────────────────
 
     /// Return aggregated stats for a single market.
@@ -653,5 +784,41 @@ impl InsightArenaContract {
         market_id: u64,
     ) -> Result<i128, InsightArenaError> {
         liquidity::collect_lp_fees(&env, provider, market_id)
+    }
+
+    /// Compute the time-weighted average price of `outcome` over the trailing
+    /// `window` seconds. See `liquidity::TWAP_RING_BUFFER_CAPACITY` for the
+    /// maximum window the ring buffer can currently honor.
+    pub fn get_twap(
+        env: Env,
+        market_id: u64,
+        outcome: Symbol,
+        window: u64,
+    ) -> Result<i128, InsightArenaError> {
+        liquidity::get_twap(&env, market_id, outcome, window)
+    }
+
+    // ── Dynamic Swap Fee ──────────────────────────────────────────────────────
+
+    /// Return the current dynamic fee tier and effective swap fee for a market.
+    pub fn get_market_fee_info(
+        env: Env,
+        market_id: u64,
+    ) -> Result<crate::storage_types::MarketFeeInfo, InsightArenaError> {
+        liquidity::get_market_fee_info(&env, market_id)
+    }
+
+    /// Return the current admin-configured volatility fee tier schedule.
+    pub fn get_fee_tier_config(env: Env) -> crate::storage_types::FeeTierConfig {
+        liquidity::get_fee_tier_config(&env)
+    }
+
+    /// Update the volatility fee tier schedule. Caller must be the platform admin.
+    pub fn update_fee_tier_config(
+        env: Env,
+        admin: Address,
+        new_config: crate::storage_types::FeeTierConfig,
+    ) -> Result<(), InsightArenaError> {
+        liquidity::set_fee_tier_config(&env, admin, new_config)
     }
 }

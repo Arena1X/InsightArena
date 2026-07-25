@@ -19,8 +19,10 @@ import { Role } from '../common/enums/role.enum';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { IndexerService } from './indexer.service';
+import { ReconciliationService } from './reconciliation.service';
 import { ReindexDto, ReindexQueryDto } from './dto/reindex.dto';
 import { IndexerMetricsDto } from './dto/indexer-metrics.dto';
+import { ReorgEvent } from './entities/reorg-event.entity';
 
 @ApiTags('Indexer')
 @Controller('admin/indexer')
@@ -28,7 +30,10 @@ import { IndexerMetricsDto } from './dto/indexer-metrics.dto';
 @Roles(Role.Admin)
 @ApiBearerAuth()
 export class IndexerController {
-  constructor(private readonly indexerService: IndexerService) {}
+  constructor(
+    private readonly indexerService: IndexerService,
+    private readonly reconciliationService: ReconciliationService,
+  ) {}
 
   @Post('reindex')
   @ApiOperation({ summary: 'Trigger reindexing from a specific ledger' })
@@ -74,5 +79,23 @@ export class IndexerController {
   async retryFailed(): Promise<{ retried: number }> {
     const count = await this.indexerService.retryFailedEvents();
     return { retried: count };
+  }
+
+  @Get('reorgs')
+  @ApiOperation({ summary: 'List detected chain reorg occurrences' })
+  @ApiResponse({
+    status: 200,
+    description: 'Reorg events, most recent first',
+    type: [ReorgEvent],
+  })
+  async getReorgs(
+    @Query('contract_id') contractId?: string,
+    @Query('limit') limit?: number | string,
+  ): Promise<ReorgEvent[]> {
+    const parsedLimit = limit !== undefined ? Number(limit) : undefined;
+    return this.reconciliationService.getReorgEvents(
+      contractId,
+      parsedLimit && parsedLimit > 0 ? parsedLimit : 50,
+    );
   }
 }

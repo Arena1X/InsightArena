@@ -221,7 +221,7 @@ export default function EventDetailsPage({
                 >
                   {pendingAction === "claim"
                     ? "Claiming…"
-                    : `Claim Prize · ${userPayout?.amountXlm.toLocaleString()} XLM`}
+                    : `Claim Prize · ${userPayout?.amountXlm == null ? "0" : typeof userPayout.amountXlm === "number" ? userPayout.amountXlm.toLocaleString() : userPayout.amountXlm} XLM`}
                 </button>
               ) : null}
             </div>

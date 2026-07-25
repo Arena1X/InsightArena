@@ -28,6 +28,116 @@ export interface QueuedEmail {
 const DEFAULT_RATE_LIMIT = 30;
 const QUEUE_PROCESS_INTERVAL_MS = 2000;
 
+/** Default maximum send attempts (1 initial + 2 retries = 3 total). */
+const DEFAULT_RETRY_MAX_ATTEMPTS = 3;
+
+/**
+ * Default base delay in milliseconds for exponential backoff.
+ * Delay formula: baseDelay * 4^attempt  →  1 s, 4 s, 16 s for attempts 0, 1, 2.
+ */
+const DEFAULT_RETRY_BASE_DELAY_MS = 1000;
+
+/**
+ * Jitter factor: each computed delay is randomised by ±20 % to avoid
+ * thundering-herd retries when multiple emails fail simultaneously.
+ */
+const JITTER_FACTOR = 0.2;
+
+// ---------------------------------------------------------------------------
+// Error-classification helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when the error originates from a network-layer failure
+ * (connection refused, DNS lookup failure, TCP reset, request abort/timeout).
+ * These are always transient — the send can be retried.
+ *
+ * With Node's built-in `fetch` (>= 18), network errors surface as a
+ * `TypeError` whose `.cause` may carry a `NodeJS.ErrnoException`.
+ */
+export function isNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+
+  // Fetch/network-level TypeErrors are transient (e.g. "fetch failed",
+  // "terminated", "network socket disconnected").
+  if (error instanceof TypeError) return true;
+
+  // Errors with a cause that has a transient errno code.
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause && typeof cause === 'object') {
+    const code = (cause as { code?: unknown }).code;
+    if (
+      typeof code === 'string' &&
+      ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND',
+       'EPIPE', 'EHOSTUNREACH', 'EAI_AGAIN'].includes(code)
+    ) {
+      return true;
+    }
+  }
+
+  // Abort / timeout signals (AbortError name set by fetch AbortController).
+  if (error.name === 'AbortError') return true;
+
+  return false;
+}
+
+/**
+ * Returns true when the HTTP response status code is transient.
+ * 5xx responses from SendGrid (server errors, rate-limit 429 treated as
+ * transient) should be retried.  4xx responses (invalid recipient 550-style
+ * errors reflected as HTTP 4xx) are permanent and must not be retried.
+ *
+ * SendGrid wraps errors as: `"SendGrid error (STATUS): body"`
+ */
+export function isTransientHttpStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+/**
+ * Classifies a thrown error as transient (eligible for retry) or permanent.
+ *
+ * Transient:
+ *  - Network-level failures (TypeError, errno codes, AbortError)
+ *  - HTTP 5xx and HTTP 429 (rate-limit / server unavailable)
+ *
+ * Permanent:
+ *  - HTTP 4xx (except 429): invalid address, auth failure, bad request, etc.
+ *  - Any other non-network, non-HTTP error (unexpected shape)
+ */
+export function isTransientError(error: unknown): boolean {
+  if (isNetworkError(error)) return true;
+
+  if (error instanceof Error) {
+    // Parse the status code embedded by deliverEmail: "SendGrid error (STATUS): ..."
+    const match = /SendGrid error \((\d{3})\)/.exec(error.message);
+    if (match) {
+      const status = parseInt(match[1], 10);
+      return isTransientHttpStatus(status);
+    }
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Backoff delay helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes the delay before attempt `attemptIndex` (0-based).
+ *
+ * Formula: baseDelayMs * 4^attemptIndex  →  1 s, 4 s, 16 s
+ * Jitter:  ±JITTER_FACTOR of the computed delay (uniform distribution)
+ */
+export function computeBackoffDelay(
+  baseDelayMs: number,
+  attemptIndex: number,
+): number {
+  const exponential = baseDelayMs * Math.pow(4, attemptIndex);
+  const jitter = exponential * JITTER_FACTOR * (Math.random() * 2 - 1);
+  return Math.max(0, Math.round(exponential + jitter));
+}
+
 @Injectable()
 export class EmailService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(EmailService.name);
@@ -171,7 +281,7 @@ export class EmailService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      await this.deliverEmail(email);
+      await this.deliverEmailWithRetry(email);
       this.sentTimestamps.push(Date.now());
     } catch (error) {
       this.logger.error(
@@ -191,6 +301,67 @@ export class EmailService implements OnModuleInit, OnModuleDestroy {
     const recent = this.sentTimestamps.filter((t) => t >= cutoff);
     this.sentTimestamps.splice(0, this.sentTimestamps.length, ...recent);
     return recent.length < limit;
+  }
+
+  /**
+   * Wraps `deliverEmail` with an exponential-backoff retry policy.
+   *
+   * - Max attempts: EMAIL_RETRY_MAX_ATTEMPTS (default 3)
+   * - Delay formula: EMAIL_RETRY_BASE_DELAY_MS * 4^attemptIndex  →  1 s, 4 s, 16 s
+   * - Jitter: ±20 % of the computed delay
+   * - Only transient errors (network failures, HTTP 5xx/429) are retried.
+   * - Permanent errors (HTTP 4xx) throw immediately without retry.
+   */
+  async deliverEmailWithRetry(email: QueuedEmail): Promise<void> {
+    const maxAttempts = Number(
+      this.configService.get<string>('EMAIL_RETRY_MAX_ATTEMPTS') ??
+        DEFAULT_RETRY_MAX_ATTEMPTS,
+    );
+    const baseDelayMs = Number(
+      this.configService.get<string>('EMAIL_RETRY_BASE_DELAY_MS') ??
+        DEFAULT_RETRY_BASE_DELAY_MS,
+    );
+
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        await this.deliverEmail(email);
+        return; // success
+      } catch (error) {
+        lastError = error;
+
+        if (!isTransientError(error)) {
+          // Permanent failure — do not retry
+          this.logger.error(
+            `Permanent email failure for message ${email.id} (attempt ${attempt + 1}/${maxAttempts}): ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          );
+          throw error;
+        }
+
+        const attemptsRemaining = maxAttempts - attempt - 1;
+
+        if (attemptsRemaining === 0) {
+          break; // exhausted — log final error below
+        }
+
+        const delayMs = computeBackoffDelay(baseDelayMs, attempt);
+        this.logger.warn(
+          `Transient email failure for message ${email.id} — attempt ${attempt + 1}/${maxAttempts}, ` +
+            `retrying in ${delayMs} ms: ${error instanceof Error ? error.message : String(error)}`,
+        );
+
+        await this.sleep(delayMs);
+      }
+    }
+
+    // All attempts exhausted
+    this.logger.error(
+      `Email delivery failed after ${maxAttempts} attempt(s) for message ${email.id} — ` +
+        `final error: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    );
+    throw lastError;
   }
 
   private async deliverEmail(email: QueuedEmail): Promise<void> {
@@ -229,5 +400,10 @@ export class EmailService implements OnModuleInit, OnModuleDestroy {
     this.logger.log(
       `[DEV] Email queued for ${email.to}: ${email.subject}\n${email.text}`,
     );
+  }
+
+  /** Thin wrapper around `setTimeout` so tests can mock it via fake timers. */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

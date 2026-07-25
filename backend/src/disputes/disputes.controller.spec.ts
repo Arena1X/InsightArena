@@ -2,8 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { DisputesController } from './disputes.controller';
 import { DisputesService } from './disputes.service';
 import { Dispute, DisputeStatus } from './entities/dispute.entity';
+import { DisputeEvidence } from './entities/dispute-evidence.entity';
 import { User } from '../users/entities/user.entity';
 import { CreateDisputeDto } from './dto/create-dispute.dto';
+import { AttachEvidenceDto } from './dto/attach-evidence.dto';
 
 describe('DisputesController', () => {
   let controller: DisputesController;
@@ -42,6 +44,8 @@ describe('DisputesController', () => {
       findOne: jest.fn(),
       findAll: jest.fn(),
       findByMarket: jest.fn(),
+      attachEvidence: jest.fn(),
+      listEvidence: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -146,6 +150,72 @@ describe('DisputesController', () => {
 
       expect(result).toEqual([mockDispute]);
       expect(service.findByMarket).toHaveBeenCalledWith('market-123');
+    });
+  });
+
+  describe('attachEvidence', () => {
+    const attachEvidenceDto: AttachEvidenceDto = {
+      fileUrl: 'https://storage.example.com/evidence/screenshot.png',
+      fileName: 'screenshot.png',
+      mimeType: 'image/png',
+      sizeBytes: 204800,
+    };
+
+    const mockEvidence: DisputeEvidence = {
+      id: 'evidence-123',
+      disputeId: 'dispute-123',
+      uploadedById: 'user-123',
+      fileUrl: attachEvidenceDto.fileUrl,
+      fileName: attachEvidenceDto.fileName,
+      mimeType: attachEvidenceDto.mimeType,
+      sizeBytes: attachEvidenceDto.sizeBytes,
+      description: null,
+      createdAt: new Date(),
+    } as DisputeEvidence;
+
+    it('should attach evidence to a dispute', async () => {
+      jest.spyOn(service, 'attachEvidence').mockResolvedValue(mockEvidence);
+
+      const result = await controller.attachEvidence(
+        'dispute-123',
+        attachEvidenceDto,
+        mockUser,
+      );
+
+      expect(result).toEqual(mockEvidence);
+      expect(service.attachEvidence).toHaveBeenCalledWith(
+        'dispute-123',
+        attachEvidenceDto,
+        mockUser,
+      );
+    });
+  });
+
+  describe('listEvidence', () => {
+    const mockEvidenceList: DisputeEvidence[] = [
+      {
+        id: 'evidence-123',
+        disputeId: 'dispute-123',
+        uploadedById: 'user-123',
+        fileUrl: 'https://storage.example.com/evidence/screenshot.png',
+        fileName: 'screenshot.png',
+        mimeType: 'image/png',
+        sizeBytes: 204800,
+        description: null,
+        createdAt: new Date(),
+      } as DisputeEvidence,
+    ];
+
+    it('should list evidence for a dispute', async () => {
+      jest.spyOn(service, 'listEvidence').mockResolvedValue(mockEvidenceList);
+
+      const result = await controller.listEvidence('dispute-123', mockUser);
+
+      expect(result).toEqual(mockEvidenceList);
+      expect(service.listEvidence).toHaveBeenCalledWith(
+        'dispute-123',
+        mockUser,
+      );
     });
   });
 });

@@ -1,8 +1,6 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class CreateLeaderboardSnapshotsTable1776600000000
-  implements MigrationInterface
-{
+export class CreateLeaderboardSnapshotsTable1776600000000 implements MigrationInterface {
   name = 'CreateLeaderboardSnapshotsTable1776600000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

@@ -15,7 +15,7 @@ import { User } from '../users/entities/user.entity';
 import { SorobanService } from '../soroban/soroban.service';
 
 type MockRepo<T extends ObjectLiteral> = jest.Mocked<
-  Pick<Repository<T>, 'findOne' | 'create' | 'save' | 'findAndCount'>
+  Pick<Repository<T>, 'findOne' | 'create' | 'save' | 'findAndCount' | 'find'>
 >;
 
 const makeUser = (overrides: Partial<User> = {}): User =>
@@ -87,6 +87,7 @@ describe('PredictionsService', () => {
       create: jest.fn(),
       save: jest.fn(),
       findAndCount: jest.fn(),
+      find: jest.fn(),
     };
 
     mockMarketsRepo = {
@@ -94,6 +95,7 @@ describe('PredictionsService', () => {
       create: jest.fn(),
       save: jest.fn(),
       findAndCount: jest.fn(),
+      find: jest.fn(),
     };
 
     mockSoroban = {
@@ -409,6 +411,151 @@ describe('PredictionsService', () => {
       mockPredictionsRepo.findOne.mockResolvedValue(null);
       await expect(service.claim('non-existent', makeUser())).rejects.toThrow(
         NotFoundException,
+      );
+    });
+  });
+
+  describe('getRewardsSummary', () => {
+    it('buckets predictions into claimable, vesting, and total earned', async () => {
+      const user = makeUser();
+      const resolvedWon = makeMarket({
+        id: 'm-won',
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+      const resolvedLost = makeMarket({
+        id: 'm-lost',
+        is_resolved: true,
+        resolved_outcome: 'No',
+      });
+      const unresolved = makeMarket({ id: 'm-open', is_resolved: false });
+
+      mockPredictionsRepo.find.mockResolvedValue([
+        {
+          id: 'p-claimable',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '10000000', // 1 XLM
+        },
+        {
+          id: 'p-lost',
+          market: resolvedLost,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '5000000',
+        },
+        {
+          id: 'p-vesting',
+          market: unresolved,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '20000000', // 2 XLM
+        },
+        {
+          id: 'p-claimed',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: true,
+          payout_amount_stroops: '15000000', // 1.5 XLM
+        },
+      ] as unknown as Prediction[]);
+
+      const result = await service.getRewardsSummary(user);
+
+      expect(result).toEqual({
+        claimable_xlm: 1,
+        vesting_xlm: 2,
+        total_earned_xlm: 1.5,
+      });
+    });
+
+    it('returns all zeros when the user has no predictions', async () => {
+      mockPredictionsRepo.find.mockResolvedValue([]);
+
+      const result = await service.getRewardsSummary(makeUser());
+
+      expect(result).toEqual({
+        claimable_xlm: 0,
+        vesting_xlm: 0,
+        total_earned_xlm: 0,
+      });
+    });
+  });
+
+  describe('claimAllRewards', () => {
+    it('claims every claimable prediction and returns an aggregated summary', async () => {
+      const user = makeUser();
+      const resolvedWon = makeMarket({
+        id: 'm-won',
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+
+      const claimablePredictions = [
+        {
+          id: 'p-1',
+          user,
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+        },
+        {
+          id: 'p-2',
+          user,
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+        },
+      ] as Prediction[];
+
+      // 1st find() call selects the claimable predictions; the 2nd is the
+      // getRewardsSummary() re-read at the end, reflecting the post-claim state.
+      mockPredictionsRepo.find
+        .mockResolvedValueOnce(claimablePredictions)
+        .mockResolvedValueOnce([
+          {
+            ...claimablePredictions[0],
+            payout_claimed: true,
+            payout_amount_stroops: '10000000',
+          },
+          {
+            ...claimablePredictions[1],
+            payout_claimed: true,
+            payout_amount_stroops: '5000000',
+          },
+        ] as Prediction[]);
+
+      // findOne() + save() are used internally by claim() for each prediction
+      mockPredictionsRepo.findOne
+        .mockResolvedValueOnce(claimablePredictions[0])
+        .mockResolvedValueOnce(claimablePredictions[1]);
+      mockSoroban.claimPayout
+        .mockResolvedValueOnce({
+          tx_hash: 'tx-1',
+          payout_amount_stroops: '10000000',
+        })
+        .mockResolvedValueOnce({
+          tx_hash: 'tx-2',
+          payout_amount_stroops: '5000000',
+        });
+      mockPredictionsRepo.save = jest
+        .fn()
+        .mockImplementation((entity: Prediction) => Promise.resolve(entity));
+
+      const result = await service.claimAllRewards(user);
+
+      expect(result.claimed_count).toBe(2);
+      expect(result.claimed_xlm).toBe(1.5);
+      expect(result.transaction_hash).toBe('tx-2');
+      expect(mockSoroban.claimPayout).toHaveBeenCalledTimes(2);
+    });
+
+    it('throws BadRequestException when there is nothing to claim', async () => {
+      mockPredictionsRepo.find.mockResolvedValue([]);
+
+      await expect(service.claimAllRewards(makeUser())).rejects.toThrow(
+        BadRequestException,
       );
     });
   });

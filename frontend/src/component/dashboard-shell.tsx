@@ -3,6 +3,8 @@
 import RewardsWalletCard from "@/component/RewardsWalletCard";
 import NotificationsCard from "@/component/NotificationsCard";
 import { useWallet } from "@/context/WalletContext";
+import { useConfirm } from "@/hooks/useConfirm";
+import { useToast } from "@/hooks/useToast";
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -67,6 +69,8 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { address, logout } = useWallet();
+  const confirm = useConfirm();
+  const toast = useToast();
   const [copied, setCopied] = useState(false);
 
   const handleCopyAddress = async () => {
@@ -80,8 +84,16 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
     }
   };
 
-  const handleDisconnect = () => {
+  const handleDisconnect = async () => {
+    const confirmed = await confirm({
+      title: "Disconnect wallet?",
+      description: "You'll need to reconnect your wallet to trade or view your account.",
+      confirmLabel: "Disconnect",
+      variant: "destructive",
+    });
+    if (!confirmed) return;
     logout();
+    toast.success("Wallet disconnected");
     router.push("/");
   };
 

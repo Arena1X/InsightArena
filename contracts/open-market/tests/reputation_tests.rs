@@ -3,10 +3,10 @@
 use insightarena_contract::market::CreateMarketParams;
 use insightarena_contract::reputation::*;
 use insightarena_contract::storage_types::CreatorStats;
-use insightarena_contract::{InsightArenaContract, InsightArenaContractClient};
-use soroban_sdk::testutils::{Address as _, Ledger as _};
+use insightarena_contract::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
+use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol, TryFromVal};
 
 fn register_token(env: &Env) -> Address {
     let token_admin = Address::generate(env);
@@ -637,4 +637,184 @@ fn test_reputation_capped_at_zero_with_many_disputes() {
 
     let extreme_reputation = calculate_creator_reputation(&extreme_stats);
     assert_eq!(extreme_reputation, 0); // Should be capped at 0, not underflow
+}
+
+// ── Reputation gate on market creation (#1339) ────────────────────────────
+
+#[test]
+fn gate_disabled_by_default_new_creator_can_create() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    // Default min_creator_reputation is 0, so a brand-new creator (score 0)
+    // must still be able to create a market.
+    let result = client.try_create_market(&creator, &default_params(&env));
+    assert!(result.is_ok());
+}
+
+#[test]
+fn create_market_rejects_below_threshold_creator() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    client.set_min_creator_reputation(&admin, &1_u32);
+
+    // New creator has score 0, threshold is 1 — must be rejected.
+    let result = client.try_create_market(&creator, &default_params(&env));
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::InsufficientReputation))
+    ));
+}
+
+#[test]
+fn create_market_succeeds_at_exact_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    // Build up a reputation score of 600 (1/1 resolved, no participants, no disputes).
+    let market_id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+    assert_eq!(client.get_reputation_score(&creator), 600);
+
+    // Threshold set to exactly the creator's current score — "at or above"
+    // must pass.
+    client.set_min_creator_reputation(&admin, &600_u32);
+
+    let mut params = default_params(&env);
+    params.end_time += 10_000;
+    params.resolution_time += 10_000;
+    let result = client.try_create_market(&creator, &params);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn create_market_rejects_just_below_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    let market_id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+    assert_eq!(client.get_reputation_score(&creator), 600);
+
+    // Threshold one point above the creator's current score must reject.
+    client.set_min_creator_reputation(&admin, &601_u32);
+
+    let mut params = default_params(&env);
+    params.end_time += 10_000;
+    params.resolution_time += 10_000;
+    let result = client.try_create_market(&creator, &params);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::InsufficientReputation))
+    ));
+}
+
+#[test]
+fn allowlisted_creator_bypasses_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    client.set_min_creator_reputation(&admin, &1_000_u32);
+    client.add_trusted_creator(&admin, &creator);
+    assert!(client.is_trusted_creator(&creator));
+
+    // Score is 0, threshold is 1000, but the allowlist exempts this creator.
+    let result = client.try_create_market(&creator, &default_params(&env));
+    assert!(result.is_ok());
+}
+
+#[test]
+fn removing_trusted_creator_re_applies_the_gate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    client.set_min_creator_reputation(&admin, &1_000_u32);
+    client.add_trusted_creator(&admin, &creator);
+    client.remove_trusted_creator(&admin, &creator);
+    assert!(!client.is_trusted_creator(&creator));
+
+    let result = client.try_create_market(&creator, &default_params(&env));
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::InsufficientReputation))
+    ));
+}
+
+#[test]
+fn set_min_creator_reputation_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _, _) = deploy(&env);
+    let not_admin = Address::generate(&env);
+
+    let result = client.try_set_min_creator_reputation(&not_admin, &500_u32);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
+}
+
+#[test]
+fn add_trusted_creator_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _, _) = deploy(&env);
+    let not_admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+
+    let result = client.try_add_trusted_creator(&not_admin, &creator);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
+}
+
+#[test]
+fn set_min_creator_reputation_rejects_out_of_range_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = deploy(&env);
+
+    let result = client.try_set_min_creator_reputation(&admin, &1_001_u32);
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+}
+
+#[test]
+fn denial_emits_event_with_attempted_creator() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    client.set_min_creator_reputation(&admin, &1_u32);
+
+    let _ = client.try_create_market(&creator, &default_params(&env));
+
+    let events = env.events().all();
+    let denial_event = events.iter().find(|(contract_id, topics, _)| {
+        if *contract_id != client.address || topics.len() != 2 {
+            return false;
+        }
+        let topic0 = Symbol::try_from_val(&env, &topics.get_unchecked(0)).unwrap();
+        let topic1 = Symbol::try_from_val(&env, &topics.get_unchecked(1)).unwrap();
+        topic0 == symbol_short!("mkt") && topic1 == symbol_short!("rep_den")
+    });
+
+    assert!(
+        denial_event.is_some(),
+        "expected a MarketCreationDenied event to be published"
+    );
+
+    let (_, _, data) = denial_event.unwrap();
+    let denied_creator = Address::try_from_val(&env, &data).unwrap();
+    assert_eq!(denied_creator, creator);
 }

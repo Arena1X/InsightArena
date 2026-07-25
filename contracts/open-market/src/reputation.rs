@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 use crate::config::{PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
@@ -92,6 +92,125 @@ pub fn on_dispute_raised(env: &Env, creator: &Address) {
 
 pub fn get_creator_stats(env: Env, creator: Address) -> Result<CreatorStats, InsightArenaError> {
     Ok(load_stats(&env, &creator))
+}
+
+/// Return `creator`'s current reputation score without mutating any storage.
+/// Reuses `load_stats` + `calculate_creator_reputation`; safe to call from
+/// gating logic (e.g. `market::create_market`) ahead of any writes.
+pub fn get_reputation_score(env: &Env, creator: &Address) -> u32 {
+    calculate_creator_reputation(&load_stats(env, creator))
+}
+
+// ── Trusted-creator allowlist (reputation-gate exemption) ────────────────────
+//
+// Keyed by a raw `(Symbol, Address)` tuple rather than a `DataKey` variant:
+// `DataKey` is a `#[contracttype]` union already carrying ~40 variants, and
+// the generated contract spec has a size limit the SDK enforces at compile
+// time (`LengthExceedsMax`) — one more variant there was enough to trip it.
+
+fn trusted_creator_key(creator: &Address) -> (soroban_sdk::Symbol, Address) {
+    (symbol_short!("trustd"), creator.clone())
+}
+
+/// `true` if `creator` is exempt from the minimum-reputation gate on market
+/// creation, regardless of their current `reputation_score`.
+pub fn is_trusted_creator(env: &Env, creator: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&trusted_creator_key(creator))
+        .unwrap_or(false)
+}
+
+fn set_trusted(env: &Env, creator: &Address, trusted: bool) {
+    let key = trusted_creator_key(creator);
+    if trusted {
+        env.storage().persistent().set(&key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
+    } else {
+        env.storage().persistent().remove(&key);
+    }
+}
+
+fn emit_trusted_creator_updated(env: &Env, creator: &Address, trusted: bool) {
+    env.events().publish(
+        (symbol_short!("rep"), symbol_short!("trusted")),
+        (creator.clone(), trusted),
+    );
+}
+
+/// Add `creator` to the trusted-creator allowlist. Caller must be the stored
+/// admin. For the timelocked governance path see
+/// [`add_trusted_creator_from_governance`], invoked via
+/// `ProposalType::AddTrustedCreator`.
+pub fn add_trusted_creator(
+    env: &Env,
+    admin: Address,
+    creator: Address,
+) -> Result<(), InsightArenaError> {
+    admin.require_auth();
+    let cfg = crate::config::get_config(env)?;
+    if admin != cfg.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    set_trusted(env, &creator, true);
+    emit_trusted_creator_updated(env, &creator, true);
+    Ok(())
+}
+
+/// Remove `creator` from the trusted-creator allowlist. Caller must be the
+/// stored admin. For the timelocked governance path see
+/// [`remove_trusted_creator_from_governance`], invoked via
+/// `ProposalType::RemoveTrustedCreator`.
+pub fn remove_trusted_creator(
+    env: &Env,
+    admin: Address,
+    creator: Address,
+) -> Result<(), InsightArenaError> {
+    admin.require_auth();
+    let cfg = crate::config::get_config(env)?;
+    if admin != cfg.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    set_trusted(env, &creator, false);
+    emit_trusted_creator_updated(env, &creator, false);
+    Ok(())
+}
+
+/// Governance path for adding a trusted creator. Called only from
+/// `governance::execute_proposal` after a `ProposalType::AddTrustedCreator`
+/// proposal has cleared quorum, majority, and the timelock window.
+pub fn add_trusted_creator_from_governance(
+    env: &Env,
+    creator: Address,
+) -> Result<(), InsightArenaError> {
+    set_trusted(env, &creator, true);
+    emit_trusted_creator_updated(env, &creator, true);
+    Ok(())
+}
+
+/// Governance path for removing a trusted creator. Called only from
+/// `governance::execute_proposal` after a `ProposalType::RemoveTrustedCreator`
+/// proposal has cleared quorum, majority, and the timelock window.
+pub fn remove_trusted_creator_from_governance(
+    env: &Env,
+    creator: Address,
+) -> Result<(), InsightArenaError> {
+    set_trusted(env, &creator, false);
+    emit_trusted_creator_updated(env, &creator, false);
+    Ok(())
+}
+
+// ── Reputation gate ───────────────────────────────────────────────────────────
+
+/// `true` if `creator` may create a market: either their current reputation
+/// score meets or exceeds `min_reputation`, or they are on the trusted-creator
+/// allowlist. Does not mutate any storage.
+pub fn meets_creation_threshold(env: &Env, creator: &Address, min_reputation: u32) -> bool {
+    is_trusted_creator(env, creator) || get_reputation_score(env, creator) >= min_reputation
 }
 
 pub fn get_top_creators(env: &Env, limit: u32) -> Vec<CreatorLeaderboardEntry> {

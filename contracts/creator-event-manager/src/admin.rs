@@ -3,7 +3,7 @@
 /// The `initialize` function is the single entry point that must be called
 /// exactly once after deployment.  It stores every piece of global config in
 /// persistent storage and sets the counters to zero.
-use soroban_sdk::{Address, Env, Symbol};
+use soroban_sdk::{Address, Env, Symbol, Vec};
 
 use crate::storage::TTL_LEDGERS;
 use crate::storage_types::DataKey;
@@ -30,6 +30,12 @@ pub enum AdminError {
     AlreadyPaused = 5,
     /// `unpause` was called but the contract is not paused.
     NotPaused = 6,
+    /// The verifier threshold (M) is `0`, or exceeds the number of configured
+    /// signers (N), when calling `set_verifier_config`.
+    InvalidThreshold = 7,
+    /// The `signers` list passed to `set_verifier_config` contains the same
+    /// address more than once.
+    DuplicateSigner = 8,
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +395,85 @@ pub fn ensure_not_paused(env: &Env) {
     if is_paused(env) {
         panic!("contract_paused");
     }
+}
+
+// ---------------------------------------------------------------------------
+// M-of-N verifier configuration (#1358)
+// ---------------------------------------------------------------------------
+
+/// Configure the M-of-N verifier signer set used for event verification.
+///
+/// Replaces any previously configured signer set and threshold atomically,
+/// so the two values are never observed out of sync (e.g. a stale M greater
+/// than a newly-shrunk N).
+///
+/// # Parameters
+/// * `signers` — the full set of N authorised verifier addresses.
+/// * `threshold` — M, the number of distinct signers required before an
+///   event is considered verified via `verification::submit_verification`.
+///
+/// # Errors
+/// * [`AdminError::Unauthorized`] — caller is not the admin.
+/// * [`AdminError::InvalidThreshold`] — `threshold == 0` or `threshold > signers.len()`.
+/// * [`AdminError::DuplicateSigner`] — `signers` contains the same address twice.
+///
+/// # Events
+/// Emits `(Symbol("admin"), Symbol("verifier_config_updated"))` with data
+/// `(signer_count, threshold)`.
+pub fn set_verifier_config(
+    env: &Env,
+    caller: Address,
+    signers: Vec<Address>,
+    threshold: u32,
+) -> Result<(), AdminError> {
+    require_is_admin(env, &caller)?;
+
+    let signer_count = signers.len();
+    if threshold == 0 || threshold > signer_count {
+        return Err(AdminError::InvalidThreshold);
+    }
+
+    for i in 0..signers.len() {
+        for j in (i + 1)..signers.len() {
+            if signers.get(i) == signers.get(j) {
+                return Err(AdminError::DuplicateSigner);
+            }
+        }
+    }
+
+    let storage = env.storage().persistent();
+    storage.set(&DataKey::VerifierSigners, &signers);
+    storage.extend_ttl(&DataKey::VerifierSigners, TTL_LEDGERS, TTL_LEDGERS);
+    storage.set(&DataKey::VerifierThreshold, &threshold);
+    storage.extend_ttl(&DataKey::VerifierThreshold, TTL_LEDGERS, TTL_LEDGERS);
+
+    env.events().publish(
+        (
+            Symbol::new(env, "admin"),
+            Symbol::new(env, "verifier_config_updated"),
+        ),
+        (signer_count, threshold),
+    );
+
+    Ok(())
+}
+
+/// Return the configured verifier signer set, or an empty `Vec` if
+/// `set_verifier_config` has never been called.
+pub fn get_verifier_signers(env: &Env) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get::<DataKey, Vec<Address>>(&DataKey::VerifierSigners)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Return the configured verifier threshold (M), or `0` if
+/// `set_verifier_config` has never been called.
+pub fn get_verifier_threshold(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get::<DataKey, u32>(&DataKey::VerifierThreshold)
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------

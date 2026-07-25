@@ -1,6 +1,9 @@
+use insightarena_contract::config::DEFAULT_TIMELOCK_DELAY;
 use insightarena_contract::governance::ProposalType;
 
-use insightarena_contract::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
+use insightarena_contract::{
+    InsightArenaContract, InsightArenaContractClient, InsightArenaError, ProposalState,
+};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{Address, Env, Symbol, Vec};
 
@@ -32,6 +35,10 @@ fn seed_users(env: &Env, _client: &InsightArenaContractClient, count: u32) -> Ve
     users
 }
 
+/// Runs a proposal through voting, queues it (first `execute_proposal` call
+/// after voting ends), then fast-forwards past the default timelock so the
+/// returned id is immediately executable by a single follow-up call — keeping
+/// pre-existing callers of this helper unchanged.
 fn pass_proposal(
     env: &Env,
     client: &InsightArenaContractClient,
@@ -47,6 +54,11 @@ fn pass_proposal(
     }
 
     env.ledger().with_mut(|l| l.timestamp += duration + 1);
+
+    let queuer = Address::generate(env);
+    let _ = client.try_execute_proposal(&queuer, &id);
+
+    env.ledger().with_mut(|l| l.timestamp += DEFAULT_TIMELOCK_DELAY);
     id
 }
 
@@ -222,5 +234,229 @@ fn test_cancel_proposal_by_non_proposer_fails() {
     let id = client.create_proposal(&proposer, &ProposalType::UpdateProtocolFee(400), &duration);
 
     let result = client.try_cancel_proposal(&non_proposer, &id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
+}
+
+// ── Timelock / veto tests ─────────────────────────────────────────────────────
+
+/// Advances voting to completion and quorum without touching the timelock clock,
+/// returning the proposal id right after voting has ended (not yet queued).
+fn pass_vote_only(
+    env: &Env,
+    client: &InsightArenaContractClient,
+    action: &ProposalType,
+    voters: &Vec<Address>,
+) -> u32 {
+    let proposer = Address::generate(env);
+    let duration = 3_600_u64;
+    let id = client.create_proposal(&proposer, action, &duration);
+
+    for voter in voters.iter() {
+        client.vote(&voter, &id, &true);
+    }
+
+    env.ledger().with_mut(|l| l.timestamp += duration + 1);
+    id
+}
+
+#[test]
+fn test_execute_proposal_queues_and_blocks_before_timelock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy(&env);
+    let voters = seed_users(&env, &client, 5);
+
+    let id = pass_vote_only(&env, &client, &ProposalType::UpdateProtocolFee(500), &voters);
+
+    let executor = Address::generate(&env);
+
+    // First call after voting ends just queues the proposal (persists ready_at);
+    // it does not execute yet.
+    client.execute_proposal(&executor, &id);
+
+    let proposal = client.get_proposal(&id);
+    assert!(!proposal.executed);
+    assert!(proposal.ready_at.is_some());
+    assert_eq!(client.get_proposal_state(&id), ProposalState::Queued);
+
+    // Config must not have changed yet.
+    assert_eq!(client.get_config().protocol_fee_bps, 200);
+
+    // A second call before ready_at errors with the typed timelock error.
+    let result = client.try_execute_proposal(&executor, &id);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::TimelockNotElapsed))
+    ));
+
+    // Still too early one second before ready_at.
+    let ready_at = proposal.ready_at.unwrap();
+    env.ledger().with_mut(|l| l.timestamp = ready_at - 1);
+    let result = client.try_execute_proposal(&executor, &id);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::TimelockNotElapsed))
+    ));
+}
+
+#[test]
+fn test_execute_proposal_succeeds_at_ready_at_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy(&env);
+    let voters = seed_users(&env, &client, 5);
+
+    let id = pass_vote_only(&env, &client, &ProposalType::UpdateProtocolFee(500), &voters);
+
+    let executor = Address::generate(&env);
+    let _ = client.try_execute_proposal(&executor, &id); // queue
+    let ready_at = client.get_proposal(&id).ready_at.unwrap();
+
+    // Exactly at ready_at succeeds.
+    env.ledger().with_mut(|l| l.timestamp = ready_at);
+    client.execute_proposal(&executor, &id);
+
+    let proposal = client.get_proposal(&id);
+    assert!(proposal.executed);
+    assert_eq!(client.get_proposal_state(&id), ProposalState::Executed);
+    assert_eq!(client.get_config().protocol_fee_bps, 500);
+}
+
+#[test]
+fn test_veto_proposal_cancels_before_execution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = deploy(&env);
+    let voters = seed_users(&env, &client, 5);
+
+    let id = pass_vote_only(&env, &client, &ProposalType::UpdateProtocolFee(500), &voters);
+
+    let executor = Address::generate(&env);
+    let _ = client.try_execute_proposal(&executor, &id); // queue
+
+    // Default guardian is the admin.
+    client.veto_proposal(&admin, &id);
+
+    let proposal = client.get_proposal(&id);
+    assert!(proposal.vetoed);
+    assert_eq!(client.get_proposal_state(&id), ProposalState::Vetoed);
+
+    // Execution after veto errors even once the timelock has elapsed.
+    let ready_at = proposal.ready_at.unwrap();
+    env.ledger().with_mut(|l| l.timestamp = ready_at);
+    let result = client.try_execute_proposal(&executor, &id);
+    assert!(result.is_err());
+
+    // The change never applied.
+    assert_eq!(client.get_config().protocol_fee_bps, 200);
+}
+
+#[test]
+fn test_veto_proposal_after_execution_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = deploy(&env);
+    let voters = seed_users(&env, &client, 5);
+
+    let id = pass_proposal(&env, &client, &ProposalType::UpdateProtocolFee(500), &voters);
+    let executor = Address::generate(&env);
+    client.execute_proposal(&executor, &id);
+
+    let result = client.try_veto_proposal(&admin, &id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+}
+
+#[test]
+fn test_veto_proposal_before_queued_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = deploy(&env);
+
+    let proposer = Address::generate(&env);
+    let duration = 3_600_u64;
+    let id = client.create_proposal(&proposer, &ProposalType::UpdateProtocolFee(500), &duration);
+
+    // Still in the voting window — never queued.
+    let result = client.try_veto_proposal(&admin, &id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+}
+
+#[test]
+fn test_veto_proposal_unauthorized_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy(&env);
+    let voters = seed_users(&env, &client, 5);
+
+    let id = pass_vote_only(&env, &client, &ProposalType::UpdateProtocolFee(500), &voters);
+    let executor = Address::generate(&env);
+    let _ = client.try_execute_proposal(&executor, &id); // queue
+
+    let not_guardian = Address::generate(&env);
+    let result = client.try_veto_proposal(&not_guardian, &id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
+}
+
+#[test]
+fn test_set_guardian_allows_new_guardian_to_veto() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = deploy(&env);
+    let voters = seed_users(&env, &client, 5);
+
+    let new_guardian = Address::generate(&env);
+    client.set_guardian(&admin, &new_guardian);
+
+    let id = pass_vote_only(&env, &client, &ProposalType::UpdateProtocolFee(500), &voters);
+    let executor = Address::generate(&env);
+    let _ = client.try_execute_proposal(&executor, &id); // queue
+
+    // The old admin/guardian can no longer veto.
+    let result = client.try_veto_proposal(&admin, &id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
+
+    client.veto_proposal(&new_guardian, &id);
+    assert!(client.get_proposal(&id).vetoed);
+}
+
+#[test]
+fn test_set_timelock_delay_changes_ready_at() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = deploy(&env);
+    let voters = seed_users(&env, &client, 5);
+
+    let short_delay = 10_u64;
+    client.set_timelock_delay(&admin, &short_delay);
+
+    let id = pass_vote_only(&env, &client, &ProposalType::UpdateProtocolFee(500), &voters);
+    let queued_at = env.ledger().timestamp();
+    let executor = Address::generate(&env);
+    let _ = client.try_execute_proposal(&executor, &id); // queue
+
+    let proposal = client.get_proposal(&id);
+    assert_eq!(proposal.ready_at, Some(queued_at + short_delay));
+}
+
+#[test]
+fn test_set_timelock_delay_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy(&env);
+
+    let not_admin = Address::generate(&env);
+    let result = client.try_set_timelock_delay(&not_admin, &10_u64);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
+}
+
+#[test]
+fn test_set_guardian_requires_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy(&env);
+
+    let not_admin = Address::generate(&env);
+    let new_guardian = Address::generate(&env);
+    let result = client.try_set_guardian(&not_admin, &new_guardian);
     assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
 }

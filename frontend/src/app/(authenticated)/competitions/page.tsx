@@ -507,7 +507,7 @@ export default function CompetitionsPage() {
                       >
                         {pendingAction === `claim-${competition.id}`
                           ? "Claiming…"
-                          : `Claim Prize${userPayout?.amountXlm ? ` · ${userPayout.amountXlm.toLocaleString()} XLM` : ""}`}
+                          : `Claim Prize${userPayout?.amountXlm != null ? ` · ${typeof userPayout.amountXlm === "number" ? userPayout.amountXlm.toLocaleString() : userPayout.amountXlm} XLM` : ""}`}
                       </button>
                     ) : isEnded ? (
                       <button

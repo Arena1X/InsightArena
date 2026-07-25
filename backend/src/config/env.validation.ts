@@ -77,6 +77,41 @@ class EnvironmentVariables {
 
   @IsNumber()
   LEADERBOARD_SNAPSHOT_RETENTION_DAYS: number = 30;
+
+  // Oracle submission anomaly detection (#1364)
+  @IsOptional()
+  @IsNumber()
+  ORACLE_ANOMALY_THRESHOLD?: number;
+
+  @IsOptional()
+  @IsNumber()
+  ORACLE_ANOMALY_MIN_SAMPLES?: number;
+
+  @IsOptional()
+  @IsNumber()
+  ORACLE_ANOMALY_WINDOW?: number;
+
+  @IsOptional()
+  @IsString()
+  ORACLE_ANOMALY_HOLD?: string;
+
+  // Dispute evidence attachments (#1363)
+  @IsOptional()
+  @IsNumber()
+  DISPUTE_EVIDENCE_MAX_SIZE_BYTES?: number;
+
+  @IsOptional()
+  @IsString()
+  DISPUTE_EVIDENCE_ALLOWED_MIME_TYPES?: string;
+
+  // Incoming webhook signature verification & replay protection (#1376)
+  @IsOptional()
+  @IsString()
+  WEBHOOK_HMAC_SECRET?: string;
+
+  @IsOptional()
+  @IsNumber()
+  WEBHOOK_REPLAY_WINDOW_SECONDS?: number;
 }
 
 export function validate(config: Record<string, unknown>) {

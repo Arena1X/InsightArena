@@ -1,58 +1,74 @@
-export type UserPayout = {
-  amountXlm: number;
-  claimed: boolean;
-  transactionHash?: string;
-};
+import { apiClient, ApiError } from '@/lib/api';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
+export interface RewardPayload {
+  eventId: string;
+  userId: string;
+  amount: number;
+}
 
-async function parseJsonResponse<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed with status ${response.status}`);
+export interface RewardResponse {
+  success: boolean;
+  transactionId: string;
+}
+
+export interface UserPayout {
+  eventId?: string;
+  userId?: string;
+  amount?: number;
+  amountXlm?: number | string;
+  claimed?: boolean;
+  status?: string;
+  transactionId?: string;
+}
+
+export async function claimEventReward(payload: RewardPayload): Promise<RewardResponse> {
+  try {
+    const result = await apiClient.post<RewardResponse>('/rewards/claim', payload);
+    return result;
+  } catch (error) {
+    if (error instanceof ApiError) {
+      console.error(`Failed to claim reward (${error.status}): ${error.message}`);
+      throw error;
+    }
+    throw new Error('An unexpected error occurred while claiming the reward.');
   }
-
-  return response.json() as Promise<T>;
 }
 
-export async function finalizeEvent(eventId: string) {
-  const response = await fetch(
-    `${API_BASE_URL}/api/creator-events/${eventId}/finalize`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    },
-  );
-
-  return parseJsonResponse(response);
-}
-
-export async function claimPayout(eventId: string, walletAddress: string) {
-  const response = await fetch(
-    `${API_BASE_URL}/api/creator-events/${eventId}/payouts/${walletAddress}/claim`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    },
-  );
-
-  return parseJsonResponse<UserPayout>(response);
-}
-
-export async function getUserPayout(
-  eventId: string,
-  walletAddress: string,
-): Promise<UserPayout | null> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/creator-events/${eventId}/payouts/${walletAddress}`,
-    {
-      cache: "no-store",
-    },
-  );
-
-  if (response.status === 404) {
-    return null;
+export async function claimPayout(eventId: string, userId: string): Promise<UserPayout> {
+  try {
+    return await apiClient.post<UserPayout>(`/events/${eventId}/payout`, { userId });
+  } catch (error) {
+    if (error instanceof ApiError) {
+      console.error(`Failed to claim payout (${error.status}): ${error.message}`);
+      throw error;
+    }
+    throw new Error('An unexpected error occurred while claiming payout.');
   }
+}
 
-  return parseJsonResponse<UserPayout>(response);
+export async function finalizeEvent(eventId: string): Promise<void> {
+  try {
+    await apiClient.post<void>(`/events/${eventId}/finalize`);
+  } catch (error) {
+    if (error instanceof ApiError) {
+      console.error(`Failed to finalize event (${error.status}): ${error.message}`);
+      throw error;
+    }
+    throw new Error('An unexpected error occurred while finalizing the event.');
+  }
+}
+
+export async function getUserPayout(eventId: string, userId: string): Promise<UserPayout | null> {
+  try {
+    return await apiClient.get<UserPayout>(`/events/${eventId}/payout?userId=${userId}`);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      return null;
+    }
+    if (error instanceof ApiError) {
+      console.error(`Failed to get user payout (${error.status}): ${error.message}`);
+      throw error;
+    }
+    throw new Error('An unexpected error occurred while fetching user payout.');
+  }
 }

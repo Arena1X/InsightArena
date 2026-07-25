@@ -19,6 +19,12 @@ export class ChainSyncCheckpoint {
   })
   last_indexed_ledger: number;
 
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  @ApiProperty({
+    description: 'Hash of last_indexed_ledger, used to detect chain reorgs',
+  })
+  last_indexed_ledger_hash: string | null;
+
   @Column({ type: 'bigint', default: 0 })
   @ApiProperty({ description: 'Latest known chain-head ledger' })
   chain_head_ledger: number;

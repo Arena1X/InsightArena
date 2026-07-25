@@ -1,11 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { LessThan, Repository } from 'typeorm';
 import { IdempotencyKey } from './idempotency-key.entity';
 
 const POSTGRES_UNIQUE_VIOLATION = '23505';
-const CLEANUP_AGE_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_TTL_HOURS = 24;
 
 export type AcquireResult =
   | { acquired: true; record: IdempotencyKey }
@@ -15,14 +16,47 @@ export type AcquireResult =
 export class IdempotencyService {
   private readonly logger = new Logger(IdempotencyService.name);
 
+  /** How long a stored key stays valid, configurable via IDEMPOTENCY_KEY_TTL_HOURS. */
+  private readonly ttlMs: number;
+
   constructor(
     @InjectRepository(IdempotencyKey)
     private readonly repository: Repository<IdempotencyKey>,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    const ttlHours = this.readNumberConfig(
+      'IDEMPOTENCY_KEY_TTL_HOURS',
+      DEFAULT_TTL_HOURS,
+    );
+    this.ttlMs = ttlHours * 60 * 60 * 1000;
+  }
+
+  private readNumberConfig(key: string, fallback: number): number {
+    const raw = this.configService.get<string | number>(key);
+    if (raw === undefined || raw === null || raw === '') {
+      return fallback;
+    }
+    const parsed = typeof raw === 'number' ? raw : Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  /** Exposed for tests and callers that need to reason about the configured window. */
+  get ttlMilliseconds(): number {
+    return this.ttlMs;
+  }
+
+  private isExpired(record: IdempotencyKey): boolean {
+    return Date.now() - record.created_at.getTime() > this.ttlMs;
+  }
 
   /**
    * Atomically claims a key for a user. Relies on the unique (key, userId)
    * index to detect a concurrent or prior request with the same key.
+   *
+   * A record older than the configured TTL is treated as if it never
+   * existed: it is purged and the request is retried as a fresh
+   * acquisition, so retries past the expiry window are never blocked or
+   * replayed with a stale response.
    */
   async acquire(
     key: string,
@@ -47,6 +81,10 @@ export class IdempotencyService {
       if (!existing) {
         throw err;
       }
+      if (this.isExpired(existing)) {
+        await this.repository.delete(existing.id);
+        return this.acquire(key, userId, requestHash);
+      }
       return { acquired: false, record: existing };
     }
   }
@@ -70,7 +108,7 @@ export class IdempotencyService {
 
   @Cron(CronExpression.EVERY_HOUR)
   async cleanupExpiredKeys(): Promise<void> {
-    const cutoff = new Date(Date.now() - CLEANUP_AGE_MS);
+    const cutoff = new Date(Date.now() - this.ttlMs);
     const { affected } = await this.repository.delete({
       created_at: LessThan(cutoff),
     });

@@ -12,12 +12,20 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { ApiKey } from './entities/api-key.entity';
 import { ApiKeyService } from './api-key.service';
 import { ApiKeyController } from './api-key.controller';
+import { RefreshToken } from './entities/refresh-token.entity';
+import { AuthAuditEvent } from './entities/auth-audit-event.entity';
 
 @Module({
   imports: [
     PassportModule,
     ConfigModule,
-    TypeOrmModule.forFeature([User, ApiKey, UserPreferences]),
+    TypeOrmModule.forFeature([
+      User,
+      ApiKey,
+      UserPreferences,
+      RefreshToken,
+      AuthAuditEvent,
+    ]),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

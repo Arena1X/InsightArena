@@ -38,6 +38,7 @@ describe('AdminController', () => {
             listFlags: jest.fn(),
             resolveFlag: jest.fn(),
             adminResolveMarket: jest.fn(),
+            bulkUserAction: jest.fn(),
           },
         },
         {
@@ -195,6 +196,33 @@ describe('AdminController', () => {
       );
     });
   });
+
+  describe('bulkUserAction', () => {
+    it('forwards the dto and admin id to the service', async () => {
+      const dto = {
+        user_ids: ['u1', 'u2'],
+        action: 'ban' as const,
+        reason: 'spam',
+      };
+      const response = {
+        results: [
+          { user_id: 'u1', success: true },
+          { user_id: 'u2', success: true },
+        ],
+        succeeded: 2,
+        failed: 0,
+      };
+      service.bulkUserAction.mockResolvedValue(response as any);
+
+      const result = await controller.bulkUserAction(
+        dto as any,
+        mockRequest as any,
+      );
+
+      expect(result).toEqual(response);
+      expect(service.bulkUserAction).toHaveBeenCalledWith(dto, 'admin-1');
+    });
+  });
 });
 
 describe('AdminController — RolesGuard enforcement', () => {
@@ -214,6 +242,7 @@ describe('AdminController — RolesGuard enforcement', () => {
             getStats: jest.fn(),
             listUsers: jest.fn(),
             banUser: jest.fn(),
+            bulkUserAction: jest.fn(),
           },
         },
         {
@@ -264,5 +293,19 @@ describe('AdminController — RolesGuard enforcement', () => {
 
   it('PATCH /admin/users/:id/ban — allows role=admin', () => {
     expect(guard.canActivate(makeCtx('admin', 'banUser'))).toBe(true);
+  });
+
+  it('POST /admin/users/bulk-action — denies role=user', () => {
+    expect(guard.canActivate(makeCtx('user', 'bulkUserAction'))).toBe(false);
+  });
+
+  it('POST /admin/users/bulk-action — denies role=moderator', () => {
+    expect(guard.canActivate(makeCtx('moderator', 'bulkUserAction'))).toBe(
+      false,
+    );
+  });
+
+  it('POST /admin/users/bulk-action — allows role=admin', () => {
+    expect(guard.canActivate(makeCtx('admin', 'bulkUserAction'))).toBe(true);
   });
 });

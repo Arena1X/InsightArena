@@ -1,4 +1,5 @@
-import { Logger, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Logger, OnModuleDestroy, forwardRef } from '@nestjs/common';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import {
@@ -36,6 +37,8 @@ export class EventsGateway
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    @Inject(forwardRef(() => AnalyticsService))
+    private readonly analyticsService: AnalyticsService,
   ) {}
 
   async handleConnection(client: AuthenticatedSocket): Promise<void> {
@@ -77,17 +80,32 @@ export class EventsGateway
       this.heartbeats.set(client.id, heartbeat);
 
       client.on('pong', () => {
+        this.trackActivity(client);
         this.logger.debug(`Pong from ${client.id}`);
       });
 
       client.on('disconnect', () => this.clearHeartbeat(client.id));
     }
+
+    this.trackActivity(client);
+  }
+
+  private trackActivity(client: AuthenticatedSocket): void {
+    this.analyticsService.trackActiveSession(client.id);
+    this.broadcastActiveUsers();
+  }
+
+  private broadcastActiveUsers(): void {
+    const count = this.analyticsService.getActiveUsersCount();
+    this.server.emit('analytics:active-users', { count });
   }
 
   handleDisconnect(client: AuthenticatedSocket): void {
     this.clearHeartbeat(client.id);
     this.connections.delete(client.id);
     this.rateLimits.delete(client.id);
+    this.analyticsService.removeActiveSession(client.id);
+    this.broadcastActiveUsers();
     this.logger.log(`Client disconnected: ${client.id}`);
   }
 
@@ -127,6 +145,7 @@ export class EventsGateway
     await client.join(room);
     client.emit('joined', { room });
     this.logger.debug(`${client.id} joined ${room}`);
+    this.trackActivity(client);
   }
 
   @SubscribeMessage('leave')
@@ -136,6 +155,7 @@ export class EventsGateway
   ): Promise<void> {
     await client.leave(room);
     client.emit('left', { room });
+    this.trackActivity(client);
   }
 
   @SubscribeMessage('notification:delivered')
@@ -152,6 +172,7 @@ export class EventsGateway
       user_address: client.userAddress,
       notification_id: data.notification_id,
     });
+    this.trackActivity(client);
   }
 
   private checkRateLimit(socketId: string): boolean {

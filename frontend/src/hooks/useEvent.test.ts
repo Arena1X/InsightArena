@@ -48,6 +48,7 @@ function mockGetEvent(getEvent: ReturnType<typeof vi.fn>) {
 describe("useEvent", () => {
   beforeEach(() => {
     mockedUseCreatorEvents.mockReset();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
   it("transitions from loading to success when the event resolves", async () => {
@@ -76,7 +77,11 @@ describe("useEvent", () => {
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-    expect(result.current.error).toBe("Failed to load event.");
+    expect(result.current.error).toBe("Network error. Please check your connection and try again.");
+    expect(console.error).toHaveBeenCalledWith(
+      "useEvent failed for event-1:",
+      expect.any(Error),
+    );
     expect(result.current.event).toBeNull();
   });
 

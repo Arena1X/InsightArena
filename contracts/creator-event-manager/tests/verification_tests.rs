@@ -1,9 +1,11 @@
-/// Tests for the verification module (#790–#793).
+/// Tests for the verification module (#790–#793, #1358).
 ///
-/// Covers: verify_address, batch_verify_addresses, unverify_address, is_verified.
+/// Covers: verify_address, batch_verify_addresses, unverify_address, is_verified,
+/// and the M-of-N event-verification signer threshold (#1358).
 use creator_event_manager::CreatorEventManagerContractClient;
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::token::StellarAssetClient;
+use soroban_sdk::{Address, Env, String, Vec};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -388,4 +390,199 @@ fn test_is_verified_requires_no_auth() {
     // Call without mock_all_auths already set for this check — should work
     // (mock_all_auths was set in setup_initialized; this confirms no extra auth needed)
     assert!(client.is_verified(&user));
+}
+
+// ===========================================================================
+// #1358 — M-of-N event verification (submit_verification / is_event_verified)
+// ===========================================================================
+
+const FEE: i128 = 1_000_000;
+
+fn fund(env: &Env, token: &Address, user: &Address, amount: i128) {
+    StellarAssetClient::new(env, token).mint(user, &amount);
+}
+
+/// Deploy, initialize with a real registered XLM asset contract, and create
+/// one funded event. Returns (env, client, contract_id, admin, event_id).
+fn setup_with_event() -> (
+    Env,
+    CreatorEventManagerContractClient<'static>,
+    Address,
+    Address,
+    u64,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1_700_000_000;
+    });
+
+    let contract_id = env.register(creator_event_manager::CreatorEventManagerContract, ());
+    let client = CreatorEventManagerContractClient::new(&env, &contract_id);
+    let client: CreatorEventManagerContractClient<'static> =
+        unsafe { core::mem::transmute(client) };
+
+    let admin = Address::generate(&env);
+    let ai_agent = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let xlm_token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    client.initialize(&admin, &ai_agent, &treasury, &xlm_token, &FEE);
+
+    let creator = Address::generate(&env);
+    fund(&env, &xlm_token, &creator, FEE);
+
+    let start_time = env.ledger().timestamp() + 3600;
+    let end_time = env.ledger().timestamp() + 7200;
+    let (event_id, _invite_code) = client.create_event(
+        &creator,
+        &String::from_str(&env, "Test event"),
+        &String::from_str(&env, "Test event description"),
+        &10u32,
+        &start_time,
+        &end_time,
+        &0i128,
+        &Vec::new(&env),
+        &0i128,
+    );
+
+    (env, client, contract_id, admin, event_id)
+}
+
+#[test]
+fn test_submit_verification_by_configured_signer_succeeds() {
+    let (env, client, _contract_id, admin, event_id) = setup_with_event();
+
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let signer3 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+    signers.push_back(signer3.clone());
+    client.set_verifier_config(&admin, &signers, &2u32);
+
+    let count = client.submit_verification(&event_id, &signer1);
+    assert_eq!(count, 1);
+}
+
+#[test]
+#[should_panic(expected = "not_a_verifier_signer")]
+fn test_submit_verification_by_non_signer_is_rejected() {
+    let (env, client, _contract_id, admin, event_id) = setup_with_event();
+
+    let signer1 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1);
+    client.set_verifier_config(&admin, &signers, &1u32);
+
+    let not_a_signer = Address::generate(&env);
+    client.submit_verification(&event_id, &not_a_signer);
+}
+
+#[test]
+#[should_panic(expected = "event_not_found")]
+fn test_submit_verification_unknown_event_is_rejected() {
+    let (env, client, _contract_id, admin, _event_id) = setup_with_event();
+
+    let signer1 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    client.set_verifier_config(&admin, &signers, &1u32);
+
+    client.submit_verification(&999_999_u64, &signer1);
+}
+
+#[test]
+#[should_panic(expected = "duplicate_signer")]
+fn test_submit_verification_duplicate_signer_is_rejected() {
+    let (env, client, _contract_id, admin, event_id) = setup_with_event();
+
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2);
+    client.set_verifier_config(&admin, &signers, &2u32);
+
+    client.submit_verification(&event_id, &signer1);
+    // Same signer submitting again must be rejected, even though the
+    // threshold has not been reached yet.
+    client.submit_verification(&event_id, &signer1);
+}
+
+#[test]
+fn test_event_not_verified_below_threshold() {
+    let (env, client, _contract_id, admin, event_id) = setup_with_event();
+
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let signer3 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+    signers.push_back(signer3);
+    client.set_verifier_config(&admin, &signers, &3u32);
+
+    assert!(!client.is_event_verified(&event_id));
+
+    client.submit_verification(&event_id, &signer1);
+    assert!(!client.is_event_verified(&event_id));
+
+    client.submit_verification(&event_id, &signer2);
+    // 2 of 3 distinct signers submitted; threshold is 3 — still unverified.
+    assert!(!client.is_event_verified(&event_id));
+    assert_eq!(client.get_event_verification_count(&event_id), 2);
+}
+
+#[test]
+fn test_event_verified_at_exact_threshold() {
+    let (env, client, _contract_id, admin, event_id) = setup_with_event();
+
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let signer3 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+    signers.push_back(signer3);
+    client.set_verifier_config(&admin, &signers, &2u32);
+
+    client.submit_verification(&event_id, &signer1);
+    assert!(!client.is_event_verified(&event_id));
+
+    client.submit_verification(&event_id, &signer2);
+    // 2 of 3 distinct signers submitted; threshold is 2 — now verified.
+    assert!(client.is_event_verified(&event_id));
+    assert_eq!(client.get_event_verification_count(&event_id), 2);
+}
+
+#[test]
+fn test_event_not_verified_without_any_config() {
+    let (env, client, _contract_id, _admin, event_id) = setup_with_event();
+    let _ = &env;
+    // No verifier config has ever been set (threshold defaults to 0).
+    assert!(!client.is_event_verified(&event_id));
+    assert_eq!(client.get_event_verification_count(&event_id), 0);
+}
+
+#[test]
+fn test_get_event_verification_count_reflects_distinct_signers_only() {
+    let (env, client, _contract_id, admin, event_id) = setup_with_event();
+
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+    client.set_verifier_config(&admin, &signers, &2u32);
+
+    assert_eq!(client.get_event_verification_count(&event_id), 0);
+    client.submit_verification(&event_id, &signer1);
+    assert_eq!(client.get_event_verification_count(&event_id), 1);
+    client.submit_verification(&event_id, &signer2);
+    assert_eq!(client.get_event_verification_count(&event_id), 2);
 }

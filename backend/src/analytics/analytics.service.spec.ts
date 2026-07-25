@@ -360,4 +360,30 @@ describe('AnalyticsService', () => {
       expect(qb.andWhere).toHaveBeenCalledWith('market.is_cancelled = false');
     });
   });
+
+  describe('Active Sessions', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('tracks active sessions and decays idle ones', () => {
+      service.trackActiveSession('user1');
+      service.trackActiveSession('user2');
+
+      expect(service.getActiveUsersCount()).toBe(2);
+
+      jest.advanceTimersByTime(200_000);
+      service.trackActiveSession('user2');
+
+      jest.advanceTimersByTime(200_000);
+      // user1 is now idle for 400s (decay threshold is 300s)
+      expect(service.getActiveUsersCount()).toBe(1);
+
+      service.removeActiveSession('user2');
+      expect(service.getActiveUsersCount()).toBe(0);
+    });
+  });
 });

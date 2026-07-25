@@ -5,6 +5,7 @@ import { ContractEvent } from './entities/contract-event.entity';
 import { FeeHistory } from './entities/fee-history.entity';
 import { IndexerCheckpoint } from './entities/indexer-checkpoint.entity';
 import { ChainSyncCheckpoint } from './entities/chain-sync-checkpoint.entity';
+import { ReorgEvent } from './entities/reorg-event.entity';
 import { IndexerService } from './indexer.service';
 import { IndexerController } from './indexer.controller';
 import { IndexerHealthController } from './indexer-health.controller';
@@ -26,6 +27,7 @@ import { WebsocketModule } from '../websocket/websocket.module';
       FeeHistory,
       IndexerCheckpoint,
       ChainSyncCheckpoint,
+      ReorgEvent,
       CreatorEvent,
       CreatorEventLeaderboardEntry,
       CreatorEventPayout,

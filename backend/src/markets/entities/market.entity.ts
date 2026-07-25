@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsEnum,
   IsNumber,
   IsOptional,
   IsString,
@@ -15,12 +16,26 @@ import {
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 
+/**
+ * Grace-period settlement state machine, independent of the legacy
+ * `is_resolved` flag used by the immediate admin-override resolution path.
+ * PENDING -> PROPOSED -> SETTLED, with PROPOSED -> CHALLENGED -> SETTLED
+ * when a challenge is raised during the grace window.
+ */
+export enum MarketSettlementState {
+  PENDING = 'pending',
+  PROPOSED = 'proposed',
+  CHALLENGED = 'challenged',
+  SETTLED = 'settled',
+}
+
 @Entity('markets')
 @Index(['on_chain_market_id'])
 @Index(['creator'])
 @Index(['category'])
 @Index(['is_resolved'])
 @Index(['is_featured'])
+@Index(['settlement_state'])
 export class Market {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -66,6 +81,29 @@ export class Market {
   @Column({ type: 'timestamptz', nullable: true })
   @IsOptional()
   resolved_at: Date | null;
+
+  @Column({
+    type: 'enum',
+    enum: MarketSettlementState,
+    enumName: 'market_settlement_state',
+    default: MarketSettlementState.PENDING,
+  })
+  @IsEnum(MarketSettlementState)
+  settlement_state: MarketSettlementState;
+
+  @Column({ nullable: true })
+  @IsOptional()
+  @IsString()
+  proposed_outcome: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  @IsOptional()
+  resolution_proposed_at: Date | null;
+
+  @Column({ type: 'int', default: 86400 })
+  @IsNumber()
+  @Min(0)
+  grace_period_seconds: number;
 
   @Column({ default: true })
   @IsBoolean()

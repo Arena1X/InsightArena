@@ -2,16 +2,20 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { MoreThan, Repository } from 'typeorm';
 import { ChainSyncCheckpoint } from './entities/chain-sync-checkpoint.entity';
 import {
   ContractEvent,
   ContractEventStatus,
 } from './entities/contract-event.entity';
+import { ReorgEvent } from './entities/reorg-event.entity';
+import { IndexerCheckpoint } from './entities/indexer-checkpoint.entity';
+import { CHECKPOINT_LEDGER_KEY } from './indexer.service';
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
 const DEFAULT_RECONCILE_WINDOW = 200;
 const BACKFILL_BATCH_SIZE = 100;
+const DEFAULT_REORG_ROLLBACK_DEPTH = 10;
 
 @Injectable()
 export class ReconciliationService {
@@ -28,6 +32,12 @@ export class ReconciliationService {
 
     @InjectRepository(ContractEvent)
     private readonly contractEventRepository: Repository<ContractEvent>,
+
+    @InjectRepository(ReorgEvent)
+    private readonly reorgEventRepository: Repository<ReorgEvent>,
+
+    @InjectRepository(IndexerCheckpoint)
+    private readonly indexerCheckpointRepository: Repository<IndexerCheckpoint>,
   ) {}
 
   @Cron('*/60 * * * * *')
@@ -63,6 +73,8 @@ export class ReconciliationService {
       return;
     }
 
+    await this.detectAndHandleReorg(contractId, checkpoint, rpcUrl);
+
     const chainHead = await this.fetchChainHead(rpcUrl, contractId);
     if (chainHead === null) return;
 
@@ -70,6 +82,9 @@ export class ReconciliationService {
 
     const lastIndexed = Number(checkpoint.last_indexed_ledger);
     if (lastIndexed >= chainHead) {
+      checkpoint.last_indexed_ledger_hash =
+        (await this.fetchLedgerHash(rpcUrl, lastIndexed)) ??
+        checkpoint.last_indexed_ledger_hash;
       await this.checkpointRepository.save(checkpoint);
       this.lastRunAt = new Date();
       return;
@@ -94,6 +109,10 @@ export class ReconciliationService {
     if (backfilledCount >= 0) {
       checkpoint.last_indexed_ledger = toLedger;
     }
+
+    checkpoint.last_indexed_ledger_hash =
+      (await this.fetchLedgerHash(rpcUrl, checkpoint.last_indexed_ledger)) ??
+      checkpoint.last_indexed_ledger_hash;
 
     await this.checkpointRepository.save(checkpoint);
     this.lastRunAt = new Date();
@@ -236,6 +255,121 @@ export class ReconciliationService {
       this.logger.error('Failed to fetch chain head');
       return null;
     }
+  }
+
+  private async fetchLedgerHash(
+    rpcUrl: string,
+    ledger: number,
+  ): Promise<string | null> {
+    try {
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'insightarena-reconciliation-ledger-hash',
+          method: 'getLedgers',
+          params: {
+            startLedger: ledger,
+            limit: 1,
+          },
+        }),
+      });
+
+      if (!response.ok) return null;
+
+      const body = (await response.json()) as {
+        result?: { ledgers?: unknown[] };
+      };
+
+      const ledgers = body.result?.ledgers;
+      if (!Array.isArray(ledgers) || ledgers.length === 0) return null;
+
+      const first = ledgers[0];
+      if (!first || typeof first !== 'object') return null;
+
+      const hash = (first as Record<string, unknown>).hash;
+      return typeof hash === 'string' ? hash : null;
+    } catch {
+      this.logger.error('Failed to fetch ledger hash');
+      return null;
+    }
+  }
+
+  /**
+   * Detects a chain reorg by comparing the hash we have stored for our last
+   * indexed ledger against what the chain currently reports for that same
+   * ledger number. If they diverge, rolls back the indexed event log and
+   * both checkpoint systems to a fork point (last_indexed_ledger minus a
+   * configurable rollback depth) so the next poll/reconciliation cycle
+   * re-fetches and re-processes that range from the canonical chain.
+   *
+   * Known limitation: this corrects derived state only when the canonical
+   * branch produces different on-chain IDs for re-indexed events (the case
+   * for idempotent-by-on-chain-id handlers). If a reorg replays the exact
+   * same on-chain ID with different content, derived rows are not corrected
+   * here — that is out of scope for this pass.
+   */
+  private async detectAndHandleReorg(
+    contractId: string,
+    checkpoint: ChainSyncCheckpoint,
+    rpcUrl: string,
+  ): Promise<ReorgEvent | null> {
+    const previousLedger = Number(checkpoint.last_indexed_ledger);
+    if (previousLedger <= 0 || !checkpoint.last_indexed_ledger_hash) {
+      return null;
+    }
+
+    const currentHash = await this.fetchLedgerHash(rpcUrl, previousLedger);
+    if (currentHash === null) return null;
+
+    if (currentHash === checkpoint.last_indexed_ledger_hash) return null;
+
+    const rollbackDepth =
+      this.configService.get<number>('INDEXER_REORG_ROLLBACK_DEPTH') ??
+      DEFAULT_REORG_ROLLBACK_DEPTH;
+    const forkLedger = Math.max(0, previousLedger - rollbackDepth);
+
+    const deleteResult = await this.contractEventRepository.delete({
+      ledger: MoreThan(forkLedger),
+    });
+    const rolledBackEventCount = deleteResult.affected ?? 0;
+
+    const previousHash = checkpoint.last_indexed_ledger_hash;
+
+    checkpoint.last_indexed_ledger = forkLedger;
+    checkpoint.last_indexed_ledger_hash =
+      (await this.fetchLedgerHash(rpcUrl, forkLedger)) ?? null;
+    await this.checkpointRepository.save(checkpoint);
+
+    await this.indexerCheckpointRepository.update(
+      { key: CHECKPOINT_LEDGER_KEY },
+      { value: forkLedger },
+    );
+
+    const reorgEvent = this.reorgEventRepository.create({
+      contract_id: contractId,
+      fork_ledger: forkLedger,
+      previous_ledger: previousLedger,
+      previous_hash: previousHash,
+      new_hash: currentHash,
+      rolled_back_event_count: rolledBackEventCount,
+    });
+    const saved = await this.reorgEventRepository.save(reorgEvent);
+
+    this.logger.error(
+      `Chain reorg detected for contract ${contractId}: rolled back from ledger ${previousLedger} to ${forkLedger}, ${rolledBackEventCount} events removed`,
+    );
+
+    return saved;
+  }
+
+  async getReorgEvents(contractId?: string, limit = 50): Promise<ReorgEvent[]> {
+    return this.reorgEventRepository.find({
+      where: contractId ? { contract_id: contractId } : {},
+      order: { detected_at: 'DESC' },
+      take: limit,
+    });
   }
 
   private async getOrCreateCheckpoint(

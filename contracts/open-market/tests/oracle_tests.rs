@@ -59,6 +59,22 @@ fn resolve_market_success() {
 }
 
 #[test]
+fn resolve_market_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, oracle) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    let id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_resolve_market(&oracle, &id, &symbol_short!("yes"));
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
 fn resolve_market_unauthorized() {
     let env = Env::default();
     env.mock_all_auths();

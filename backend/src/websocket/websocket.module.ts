@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
+import { AnalyticsModule } from '../analytics/analytics.module';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventsGateway } from './events.gateway';
@@ -7,6 +8,7 @@ import { NotificationBroadcasterService } from './notification-broadcaster.servi
 
 @Module({
   imports: [
+    forwardRef(() => AnalyticsModule),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

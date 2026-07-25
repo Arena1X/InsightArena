@@ -282,7 +282,7 @@ fn create_market_fails_when_paused() {
     let client = deploy(&env);
     let creator = Address::generate(&env);
 
-    client.set_paused(&true);
+    client.set_paused(&true, &1u32);
 
     let result = client.try_create_market(&creator, &default_params(&env));
     assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
@@ -370,6 +370,63 @@ fn list_categories_returns_seeded_defaults() {
     assert!(categories.contains(Symbol::new(&env, "Entertainment")));
     assert!(categories.contains(Symbol::new(&env, "Science")));
     assert!(categories.contains(Symbol::new(&env, "Other")));
+}
+
+#[test]
+fn add_category_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle) = deploy_with_actors(&env);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_add_category(&admin, &Symbol::new(&env, "Weather"));
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn remove_category_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle) = deploy_with_actors(&env);
+    let category = Symbol::new(&env, "Weather");
+    client.add_category(&admin, &category);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_remove_category(&admin, &category);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn close_market_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle) = deploy_with_actors(&env);
+    let creator = Address::generate(&env);
+
+    let id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1001);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_close_market(&admin, &id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn cancel_market_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle) = deploy_with_actors(&env);
+    let creator = Address::generate(&env);
+
+    let id = client.create_market(&creator, &default_params(&env));
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_cancel_market(&admin, &id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
 }
 
 #[test]
@@ -879,11 +936,21 @@ fn cancel_market_refunds_all_predictors() {
     StellarAssetClient::new(&env, &xlm_token).mint(&contract_id, &(stake_a + stake_b));
 
     let token_client = TokenClient::new(&env, &xlm_token);
+
+    // Cancel — funds stay in escrow until each participant pulls them.
     client.cancel_market(&admin, &id);
+    assert!(client.get_market(&id).is_cancelled);
+
+    // Funds are still in contract escrow — not pushed.
+    assert_eq!(token_client.balance(&client.address), stake_a + stake_b);
+
+    // Each participant pulls their refund.
+    client.claim_cancel_refund(&predictor_a, &id);
+    client.claim_cancel_refund(&predictor_b, &id);
 
     assert_eq!(token_client.balance(&predictor_a), stake_a);
     assert_eq!(token_client.balance(&predictor_b), stake_b);
-    assert!(client.get_market(&id).is_cancelled);
+    assert_eq!(token_client.balance(&client.address), 0);
 }
 
 #[test]
@@ -950,22 +1017,230 @@ fn cancel_market_refunds_exact_stake_amounts() {
 
     let token_client = TokenClient::new(&env, &xlm_token);
 
-    // Admin cancels the market
+    // Admin cancels the market (pull pattern — no funds move yet).
     client.cancel_market(&admin, &id);
+    assert!(client.get_market(&id).is_cancelled);
 
-    // Assert each user's balance is restored exactly
+    // Each participant pulls their own refund.
+    client.claim_cancel_refund(&user1, &id);
+    client.claim_cancel_refund(&user2, &id);
+    client.claim_cancel_refund(&user3, &id);
+
+    // Assert each user's balance is restored exactly.
     assert_eq!(token_client.balance(&user1), stake1);
     assert_eq!(token_client.balance(&user2), stake2);
     assert_eq!(token_client.balance(&user3), stake3);
-
-    // Assert market is cancelled
-    assert!(client.get_market(&id).is_cancelled);
 
     // Assert further predictions fail with MarketAlreadyCancelled
     let result = client.try_submit_prediction(&user1, &id, &symbol_short!("yes"), &stake1);
     assert!(matches!(
         result,
         Err(Ok(InsightArenaError::MarketAlreadyCancelled))
+    ));
+}
+
+// ── cancel_market multi-predictor refund flow (#1265 / #1341) ────────────────
+//
+// These tests run the full end-to-end flow: predictors are funded, stake real
+// tokens through submit_prediction, and retrieve their funds by calling
+// claim_cancel_refund after cancellation. Refunds in this contract are
+// pull-based — cancel_market only marks the market cancelled; each participant
+// calls claim_cancel_refund independently. Double-claim prevention and
+// non-participant exclusion are exercised against every extraction path.
+
+/// Five distinct stakes within default_params' min/max bounds (10M..=100M).
+const FLOW_STAKES: [i128; 5] = [12_000_000, 25_000_000, 40_000_000, 60_000_000, 100_000_000];
+/// Extra dust funded on top of each stake so a refund that merely pays back
+/// the stake amount (rather than restoring the exact balance) is caught.
+const FLOW_HEADROOM: i128 = 5_000_000;
+
+/// Create a market and stake `FLOW_STAKES` from 5 fresh predictors across both
+/// outcomes (indices 0,2,4 on "yes"; 1,3 on "no"). Returns
+/// (market_id, predictors, pre-stake balances).
+fn setup_five_predictor_market(
+    env: &Env,
+    client: &InsightArenaContractClient<'_>,
+    xlm_token: &Address,
+) -> (u64, [Address; 5], [i128; 5]) {
+    let creator = Address::generate(env);
+    let id = client.create_market(&creator, &default_params(env));
+
+    let predictors = [
+        Address::generate(env),
+        Address::generate(env),
+        Address::generate(env),
+        Address::generate(env),
+        Address::generate(env),
+    ];
+
+    let asset = StellarAssetClient::new(env, xlm_token);
+    let token = TokenClient::new(env, xlm_token);
+    let mut balances_before = [0_i128; 5];
+
+    for (i, predictor) in predictors.iter().enumerate() {
+        asset.mint(predictor, &(FLOW_STAKES[i] + FLOW_HEADROOM));
+        balances_before[i] = token.balance(predictor);
+
+        let outcome = if i % 2 == 0 {
+            symbol_short!("yes")
+        } else {
+            symbol_short!("no")
+        };
+        client.submit_prediction(predictor, &id, &outcome, &FLOW_STAKES[i]);
+    }
+
+    (id, predictors, balances_before)
+}
+
+/// Requirements 1–4 & 7: five predictors with five different stakes across
+/// both outcomes are each made exactly whole after claiming their refund, and
+/// the contract retains zero tokens once all claims are complete.
+#[test]
+fn cancel_market_five_predictors_restores_exact_pre_stake_balances() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm_token) = deploy_with_token(&env);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    // Contract balance before the market opens (fresh deploy: zero).
+    let contract_before = token.balance(&client.address);
+
+    let (id, predictors, balances_before) =
+        setup_five_predictor_market(&env, &client, &xlm_token);
+
+    // Every stake is escrowed, and each predictor is down exactly their stake.
+    let total_staked: i128 = FLOW_STAKES.iter().sum();
+    assert_eq!(token.balance(&client.address), contract_before + total_staked);
+    for (i, predictor) in predictors.iter().enumerate() {
+        assert_eq!(token.balance(predictor), balances_before[i] - FLOW_STAKES[i]);
+    }
+
+    // Cancel marks the market; funds stay in escrow.
+    client.cancel_market(&admin, &id);
+    assert!(client.get_market(&id).is_cancelled);
+
+    // Funds are still in escrow — not pushed.
+    assert_eq!(token.balance(&client.address), contract_before + total_staked);
+
+    // Each predictor pulls their own refund.
+    for predictor in predictors.iter() {
+        client.claim_cancel_refund(predictor, &id);
+    }
+
+    // Every predictor's balance is restored exactly, regardless of stake size
+    // or which outcome they chose.
+    for (i, predictor) in predictors.iter().enumerate() {
+        assert_eq!(token.balance(predictor), balances_before[i]);
+    }
+
+    // The contract holds exactly what it held before the market opened —
+    // no dust locked, no over-refund.
+    assert_eq!(token.balance(&client.address), contract_before);
+}
+
+/// Requirement 5 & acceptance: a second refund for the same predictor is
+/// impossible via claim_cancel_refund (RefundAlreadyClaimed), and all other
+/// extraction paths (resolve-after-cancel, claim_payout, batch payouts) are
+/// also closed.
+#[test]
+fn cancel_market_second_refund_is_impossible_via_any_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy_with_token(&env);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let (id, predictors, balances_before) =
+        setup_five_predictor_market(&env, &client, &xlm_token);
+
+    client.cancel_market(&admin, &id);
+
+    // Each predictor claims once successfully.
+    for predictor in predictors.iter() {
+        client.claim_cancel_refund(predictor, &id);
+    }
+
+    // Path 0: a second claim_cancel_refund is rejected with RefundAlreadyClaimed.
+    for predictor in predictors.iter() {
+        let second_claim = client.try_claim_cancel_refund(predictor, &id);
+        assert!(matches!(
+            second_claim,
+            Err(Ok(InsightArenaError::RefundAlreadyClaimed))
+        ));
+    }
+
+    // Path 1: cancelling again is rejected.
+    let second_cancel = client.try_cancel_market(&admin, &id);
+    assert!(matches!(
+        second_cancel,
+        Err(Ok(InsightArenaError::MarketAlreadyCancelled))
+    ));
+
+    // Path 2: the oracle cannot resolve a cancelled market, so the payout
+    // path can never open after refunds were issued.
+    let resolution_time = default_params(&env).resolution_time;
+    env.ledger().with_mut(|li| li.timestamp = resolution_time + 1);
+    let resolve_after_cancel = client.try_resolve_market(&oracle, &id, &symbol_short!("yes"));
+    assert!(matches!(
+        resolve_after_cancel,
+        Err(Ok(InsightArenaError::MarketAlreadyCancelled))
+    ));
+
+    // Path 3: direct payout claims fail while the market is unresolved.
+    for predictor in predictors.iter() {
+        let claim = client.try_claim_payout(predictor, &id);
+        assert!(matches!(
+            claim,
+            Err(Ok(InsightArenaError::MarketNotResolved))
+        ));
+    }
+
+    // Path 4: batch payout distribution also refuses the cancelled market.
+    let batch = client.try_batch_distribute_payouts(&admin, &id);
+    assert!(matches!(
+        batch,
+        Err(Ok(InsightArenaError::MarketNotResolved))
+    ));
+
+    // After all rejected attempts, balances equal the refunded amounts and
+    // the contract kept nothing.
+    for (i, predictor) in predictors.iter().enumerate() {
+        assert_eq!(token.balance(predictor), balances_before[i]);
+    }
+    assert_eq!(token.balance(&client.address), 0);
+}
+
+/// Requirement 6: an address that never predicted receives nothing and cannot
+/// call claim_cancel_refund (NotAParticipant).
+#[test]
+fn cancel_market_non_participant_receives_nothing() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm_token) = deploy_with_token(&env);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let (id, _predictors, _balances_before) =
+        setup_five_predictor_market(&env, &client, &xlm_token);
+
+    let outsider = Address::generate(&env);
+    assert_eq!(token.balance(&outsider), 0);
+
+    client.cancel_market(&admin, &id);
+
+    // The outsider has no prediction record — claim is rejected.
+    let claim = client.try_claim_cancel_refund(&outsider, &id);
+    assert!(matches!(
+        claim,
+        Err(Ok(InsightArenaError::NotAParticipant))
+    ));
+
+    // The outsider received nothing.
+    assert_eq!(token.balance(&outsider), 0);
+
+    // The payout path is also closed.
+    let payout_claim = client.try_claim_payout(&outsider, &id);
+    assert!(matches!(
+        payout_claim,
+        Err(Ok(InsightArenaError::MarketNotResolved))
     ));
 }
 
@@ -1101,6 +1376,104 @@ fn extend_market_end_time_fails_when_closed() {
     env.ledger().set_timestamp(params.end_time);
     let result = client.try_extend_market_end_time(&creator, &id, &(params.end_time + 500));
     assert!(matches!(result, Err(Ok(InsightArenaError::MarketAlreadyClosed))));
+}
+
+// ── extend_market_end_time validation gaps (#1264) ──────────────────────────
+
+/// Requirement 3: "extending" to a timestamp strictly earlier than the current
+/// end time is rejected (the boundary case `new == current` is covered by
+/// `extend_market_end_time_fails_new_end_time_not_strictly_later`).
+#[test]
+fn extend_market_end_time_fails_earlier_than_current_end_time() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, _) = deploy_with_token(&env);
+    let creator = Address::generate(&env);
+
+    let params = default_params(&env);
+    let id = client.create_market(&creator, &params);
+
+    let result = client.try_extend_market_end_time(&creator, &id, &(params.end_time - 1));
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidTimeRange))));
+
+    // The stored end_time is untouched.
+    assert_eq!(client.get_market(&id).end_time, params.end_time);
+}
+
+/// Requirement 4: extending to a timestamp in the past (before the current
+/// ledger time) is rejected. A past timestamp is always <= the market's
+/// end_time here because extension already requires `now < end_time`, so it
+/// falls into the same InvalidTimeRange guard — this pins that a past deadline
+/// can never be stored.
+#[test]
+fn extend_market_end_time_fails_past_timestamp() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, _) = deploy_with_token(&env);
+    let creator = Address::generate(&env);
+
+    let params = default_params(&env);
+    let id = client.create_market(&creator, &params);
+
+    // Move mid-window: the market is still open, but `now - 100` is history.
+    let mid_window = params.end_time - 500;
+    env.ledger().set_timestamp(mid_window);
+
+    let result = client.try_extend_market_end_time(&creator, &id, &(mid_window - 100));
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidTimeRange))));
+    assert_eq!(client.get_market(&id).end_time, params.end_time);
+}
+
+/// Authorization is creator-only: even the platform admin is rejected, not
+/// just arbitrary addresses.
+#[test]
+fn extend_market_end_time_fails_for_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, _) = deploy_with_token(&env);
+    let creator = Address::generate(&env);
+
+    let params = default_params(&env);
+    let id = client.create_market(&creator, &params);
+
+    let result = client.try_extend_market_end_time(&admin, &id, &(params.end_time + 500));
+    assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
+}
+
+/// Requirement 7 / acceptance: the extended window is actually honored by
+/// submit_prediction. A prediction placed after the original deadline but
+/// before the new one succeeds, and the new deadline is then enforced.
+#[test]
+fn extend_market_end_time_extended_window_honored_by_submit_prediction() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+    let creator = Address::generate(&env);
+
+    let params = default_params(&env);
+    let original_end = params.end_time;
+    let id = client.create_market(&creator, &params);
+
+    let predictor = Address::generate(&env);
+    let late_predictor = Address::generate(&env);
+    let stake = 20_000_000_i128;
+    let asset = StellarAssetClient::new(&env, &xlm_token);
+    asset.mint(&predictor, &stake);
+    asset.mint(&late_predictor, &stake);
+
+    // Extend before the original deadline passes.
+    let new_end = original_end + 2000;
+    client.extend_market_end_time(&creator, &id, &new_end);
+
+    // Inside the extension window: after the original deadline, before the new one.
+    env.ledger().set_timestamp(original_end + 100);
+    client.submit_prediction(&predictor, &id, &symbol_short!("yes"), &stake);
+    assert!(client.has_predicted(&id, &predictor));
+
+    // The new deadline is enforced just like the original one was.
+    env.ledger().set_timestamp(new_end);
+    let result = client.try_submit_prediction(&late_predictor, &id, &symbol_short!("no"), &stake);
+    assert!(matches!(result, Err(Ok(InsightArenaError::MarketExpired))));
 }
 
 // ============================================================================

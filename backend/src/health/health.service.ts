@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   DiskHealthIndicator,
   HealthCheck,
@@ -8,11 +9,15 @@ import {
   TypeOrmHealthIndicator,
 } from '@nestjs/terminus';
 import { InjectDataSource } from '@nestjs/typeorm';
+import type { Cache } from 'cache-manager';
 import * as os from 'os';
 import { DataSource } from 'typeorm';
-import { DetailedHealthDto } from './dto/detailed-health.dto';
+import { DetailedHealthDto, HealthSummaryDto } from './dto/detailed-health.dto';
 
 const START_TIME = Date.now();
+const CACHE_PROBE_KEY = '__health_check_probe__';
+
+type DependencyStatus = { status: string; latency_ms: number };
 
 @Injectable()
 export class HealthService {
@@ -23,6 +28,8 @@ export class HealthService {
     private readonly disk: DiskHealthIndicator,
     @InjectDataSource()
     private readonly dataSource: DataSource,
+    @Inject(CACHE_MANAGER)
+    private readonly cacheManager: Cache,
   ) {}
 
   /**
@@ -67,34 +74,60 @@ export class HealthService {
 
   /**
    * Detailed health check with individual component status and latency for monitoring.
-   * Checks database connectivity, Soroban RPC reachability, and cache status.
+   * Probes the database, Soroban RPC, and cache independently and in parallel.
+   *
+   * The database is treated as a critical dependency: its failure brings the
+   * overall status to 'down'. Soroban RPC and cache are non-critical: their
+   * failure only degrades the overall status, since the API can still serve
+   * most traffic without them.
+   *
+   * @param verbose When false (default), returns only the overall status and
+   * uptime. When true, includes per-dependency status and latency.
    */
-  async checkDetailed(): Promise<DetailedHealthDto> {
-    const [dbResult, sorobanResult] = await Promise.all([
+  async checkDetailed(
+    verbose = false,
+  ): Promise<DetailedHealthDto | HealthSummaryDto> {
+    const [dbResult, sorobanResult, cacheResult] = await Promise.all([
       this.checkDatabase(),
       this.checkSoroban(),
+      this.checkCache(),
     ]);
 
-    const overallStatus =
-      dbResult.status === 'down'
-        ? 'down'
-        : dbResult.status === 'degraded' || sorobanResult.status === 'degraded'
-          ? 'degraded'
-          : 'healthy';
+    const status = this.computeOverallStatus(
+      dbResult,
+      sorobanResult,
+      cacheResult,
+    );
+    const uptime_seconds = Math.floor((Date.now() - START_TIME) / 1000);
+
+    if (!verbose) {
+      return { status, uptime_seconds };
+    }
 
     return {
-      status: overallStatus,
+      status,
       database: dbResult,
       soroban: sorobanResult,
-      cache: this.getCacheStatus(),
-      uptime_seconds: Math.floor((Date.now() - START_TIME) / 1000),
+      cache: cacheResult,
+      uptime_seconds,
     };
   }
 
-  private async checkDatabase(): Promise<{
-    status: string;
-    latency_ms: number;
-  }> {
+  private computeOverallStatus(
+    database: DependencyStatus,
+    soroban: DependencyStatus,
+    cache: DependencyStatus,
+  ): 'healthy' | 'degraded' | 'down' {
+    if (database.status !== 'up') {
+      return 'down';
+    }
+    if (soroban.status !== 'up' || cache.status !== 'up') {
+      return 'degraded';
+    }
+    return 'healthy';
+  }
+
+  private async checkDatabase(): Promise<DependencyStatus> {
     const start = Date.now();
     try {
       await this.dataSource.query('SELECT 1');
@@ -104,10 +137,7 @@ export class HealthService {
     }
   }
 
-  private async checkSoroban(): Promise<{
-    status: string;
-    latency_ms: number;
-  }> {
+  private async checkSoroban(): Promise<DependencyStatus> {
     const rpcUrl =
       process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org';
     const start = Date.now();
@@ -133,8 +163,18 @@ export class HealthService {
     }
   }
 
-  /** Cache is in-memory (challenge cache); always 'up'. Hit rate is not tracked externally. */
-  private getCacheStatus(): { status: string; hit_rate: number } {
-    return { status: 'up', hit_rate: 0 };
+  /** Round-trips a probe value through the cache to verify it is reachable. */
+  private async checkCache(): Promise<DependencyStatus> {
+    const start = Date.now();
+    try {
+      await this.cacheManager.set(CACHE_PROBE_KEY, 'ok', 5000);
+      const value = await this.cacheManager.get(CACHE_PROBE_KEY);
+      return {
+        status: value === 'ok' ? 'up' : 'down',
+        latency_ms: Date.now() - start,
+      };
+    } catch {
+      return { status: 'down', latency_ms: Date.now() - start };
+    }
   }
 }

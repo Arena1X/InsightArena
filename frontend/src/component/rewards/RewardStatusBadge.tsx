@@ -1,4 +1,4 @@
-type RewardStatus = "claimed" | "pending" | "processing";
+type RewardStatus = "claimed" | "pending" | "processing" | "failed";
 
 const statusConfig: Record<
   RewardStatus,
@@ -15,6 +15,10 @@ const statusConfig: Record<
   processing: {
     label: "Processing",
     className: "bg-blue-500/15 text-blue-400 border border-blue-500/30",
+  },
+  failed: {
+    label: "Failed",
+    className: "bg-rose-500/15 text-rose-400 border border-rose-500/30",
   },
 };
 

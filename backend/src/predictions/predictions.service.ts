@@ -25,6 +25,16 @@ import {
 import { User } from '../users/entities/user.entity';
 import { Market } from '../markets/entities/market.entity';
 import { SorobanService } from '../soroban/soroban.service';
+import {
+  ClaimAllRewardsResponseDto,
+  RewardsSummaryDto,
+} from './dto/rewards-summary.dto';
+
+const STROOPS_PER_XLM = 10_000_000n;
+
+function stroopsToXlm(stroops: bigint): number {
+  return Number(stroops) / Number(STROOPS_PER_XLM);
+}
 
 @Injectable()
 export class PredictionsService {
@@ -333,6 +343,84 @@ export class PredictionsService {
     }
 
     return this.predictionsRepository.save(prediction);
+  }
+
+  /**
+   * Aggregate a user's rewards across all their predictions:
+   * - claimable: won, resolved, not-yet-claimed predictions (stake as a lower-bound
+   *   estimate of payout — the exact amount is only known on-chain at claim time)
+   * - vesting: predictions on markets that have not resolved yet
+   * - total_earned: sum of actual payouts already claimed
+   */
+  async getRewardsSummary(user: User): Promise<RewardsSummaryDto> {
+    const predictions = await this.predictionsRepository.find({
+      where: { user: { id: user.id } },
+      relations: ['market'],
+    });
+
+    let claimableStroops = 0n;
+    let vestingStroops = 0n;
+    let totalEarnedStroops = 0n;
+
+    for (const prediction of predictions) {
+      if (prediction.payout_claimed) {
+        totalEarnedStroops += BigInt(prediction.payout_amount_stroops ?? '0');
+        continue;
+      }
+
+      const market = prediction.market;
+      if (!market.is_resolved) {
+        vestingStroops += BigInt(prediction.stake_amount_stroops);
+      } else if (market.resolved_outcome === prediction.chosen_outcome) {
+        claimableStroops += BigInt(prediction.stake_amount_stroops);
+      }
+    }
+
+    return {
+      total_earned_xlm: stroopsToXlm(totalEarnedStroops),
+      claimable_xlm: stroopsToXlm(claimableStroops),
+      vesting_xlm: stroopsToXlm(vestingStroops),
+    };
+  }
+
+  /**
+   * Claim every currently-claimable prediction for a user in sequence, reusing
+   * `claim()` for the actual on-chain submission and bookkeeping per prediction.
+   */
+  async claimAllRewards(user: User): Promise<ClaimAllRewardsResponseDto> {
+    const predictions = await this.predictionsRepository.find({
+      where: { user: { id: user.id }, payout_claimed: false },
+      relations: ['market'],
+    });
+
+    const claimableIds = predictions
+      .filter(
+        (p) =>
+          p.market.is_resolved &&
+          p.market.resolved_outcome === p.chosen_outcome,
+      )
+      .map((p) => p.id);
+
+    if (claimableIds.length === 0) {
+      throw new BadRequestException('No claimable rewards');
+    }
+
+    let claimedStroops = 0n;
+    let lastTxHash = '';
+    for (const predictionId of claimableIds) {
+      const claimed = await this.claim(predictionId, user);
+      claimedStroops += BigInt(claimed.payout_amount_stroops ?? '0');
+      lastTxHash = claimed.tx_hash ?? lastTxHash;
+    }
+
+    const summary = await this.getRewardsSummary(user);
+
+    return {
+      claimed_xlm: stroopsToXlm(claimedStroops),
+      claimed_count: claimableIds.length,
+      transaction_hash: lastTxHash,
+      summary,
+    };
   }
 
   /**

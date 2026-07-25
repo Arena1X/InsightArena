@@ -112,6 +112,26 @@ fn conditional_params(
 }
 
 #[test]
+fn test_create_conditional_market_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let creator = Address::generate(&env);
+
+    let parent_id = client.create_market(&creator, &default_params(&env));
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_create_conditional_market(
+        &creator,
+        &parent_id,
+        &symbol_short!("yes"),
+        &conditional_params(&env, &client, parent_id),
+    );
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
 fn test_create_conditional_market_invalid_parent_fails() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2109,4 +2129,181 @@ fn test_cascading_activation_through_full_chain_on_matching_outcomes() {
     assert_eq!(chain.market_ids.get(1), Some(c2));
     assert_eq!(chain.market_ids.get(2), Some(c1));
     assert_eq!(chain.market_ids.get(3), Some(root));
+}
+
+// ── Issue #1357: resolution ordering (child before parent) ──────────────────
+
+#[test]
+fn test_resolve_child_before_parent_resolves_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, oracle) = deploy_with_oracle(&env);
+    let creator = Address::generate(&env);
+
+    let parent_id = client.create_market(&creator, &default_params(&env));
+    let child_id = client.create_conditional_market(
+        &creator,
+        &parent_id,
+        &symbol_short!("yes"),
+        &conditional_params(&env, &client, parent_id),
+    );
+
+    let child = read_market(&env, &client, child_id);
+    set_timestamp(&env, child.resolution_time);
+
+    let result = client.try_resolve_market(&oracle, &child_id, &symbol_short!("yes"));
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::ParentNotResolved))
+    ));
+}
+
+#[test]
+fn test_resolve_child_after_parent_resolves_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, oracle) = deploy_with_oracle(&env);
+    let creator = Address::generate(&env);
+
+    let parent_id = client.create_market(&creator, &default_params(&env));
+    let child_id = client.create_conditional_market(
+        &creator,
+        &parent_id,
+        &symbol_short!("yes"),
+        &conditional_params(&env, &client, parent_id),
+    );
+
+    let parent = read_market(&env, &client, parent_id);
+    set_timestamp(&env, parent.resolution_time);
+    client.resolve_market(&oracle, &parent_id, &symbol_short!("yes"));
+
+    let child = read_market(&env, &client, child_id);
+    set_timestamp(&env, child.resolution_time);
+    client.resolve_market(&oracle, &child_id, &symbol_short!("yes"));
+
+    assert!(read_market(&env, &client, child_id).is_resolved);
+}
+
+#[test]
+fn test_resolve_grandchild_before_immediate_parent_fails_even_if_root_resolved() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, oracle) = deploy_with_oracle(&env);
+    let creator = Address::generate(&env);
+
+    let root_id = client.create_market(&creator, &default_params(&env));
+    let child_id = client.create_conditional_market(
+        &creator,
+        &root_id,
+        &symbol_short!("yes"),
+        &conditional_params(&env, &client, root_id),
+    );
+    let grandchild_id = client.create_conditional_market(
+        &creator,
+        &child_id,
+        &symbol_short!("yes"),
+        &conditional_params(&env, &client, child_id),
+    );
+
+    let root = read_market(&env, &client, root_id);
+    set_timestamp(&env, root.resolution_time);
+    client.resolve_market(&oracle, &root_id, &symbol_short!("yes"));
+
+    // child (grandchild's immediate parent) is still unresolved.
+    let grandchild = read_market(&env, &client, grandchild_id);
+    set_timestamp(&env, grandchild.resolution_time);
+
+    let result = client.try_resolve_market(&oracle, &grandchild_id, &symbol_short!("yes"));
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::ParentNotResolved))
+    ));
+}
+
+#[test]
+fn test_resolve_root_market_has_no_parent_dependency() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, oracle) = deploy_with_oracle(&env);
+    let creator = Address::generate(&env);
+
+    let root_id = client.create_market(&creator, &default_params(&env));
+    let root = read_market(&env, &client, root_id);
+    set_timestamp(&env, root.resolution_time);
+
+    client.resolve_market(&oracle, &root_id, &symbol_short!("yes"));
+    assert!(read_market(&env, &client, root_id).is_resolved);
+}
+
+// ── Issue #1357: get_dependency_status ───────────────────────────────────────
+
+#[test]
+fn test_dependency_status_root_market_has_no_parent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let creator = Address::generate(&env);
+
+    let root_id = client.create_market(&creator, &default_params(&env));
+    let status = client.get_dependency_status(&root_id);
+
+    assert_eq!(status.market_id, root_id);
+    assert!(!status.is_conditional);
+    assert_eq!(status.parent_market_id, None);
+    assert!(status.parent_resolved);
+}
+
+#[test]
+fn test_dependency_status_child_reflects_unresolved_parent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+    let creator = Address::generate(&env);
+
+    let parent_id = client.create_market(&creator, &default_params(&env));
+    let child_id = client.create_conditional_market(
+        &creator,
+        &parent_id,
+        &symbol_short!("yes"),
+        &conditional_params(&env, &client, parent_id),
+    );
+
+    let status = client.get_dependency_status(&child_id);
+    assert_eq!(status.market_id, child_id);
+    assert!(status.is_conditional);
+    assert_eq!(status.parent_market_id, Some(parent_id));
+    assert!(!status.parent_resolved);
+}
+
+#[test]
+fn test_dependency_status_child_reflects_resolved_parent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, oracle) = deploy_with_oracle(&env);
+    let creator = Address::generate(&env);
+
+    let parent_id = client.create_market(&creator, &default_params(&env));
+    let child_id = client.create_conditional_market(
+        &creator,
+        &parent_id,
+        &symbol_short!("yes"),
+        &conditional_params(&env, &client, parent_id),
+    );
+
+    let parent = read_market(&env, &client, parent_id);
+    set_timestamp(&env, parent.resolution_time);
+    client.resolve_market(&oracle, &parent_id, &symbol_short!("yes"));
+
+    let status = client.get_dependency_status(&child_id);
+    assert!(status.parent_resolved);
+}
+
+#[test]
+fn test_dependency_status_unknown_market_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+
+    let result = client.try_get_dependency_status(&999_u64);
+    assert!(matches!(result, Err(Ok(InsightArenaError::MarketNotFound))));
 }

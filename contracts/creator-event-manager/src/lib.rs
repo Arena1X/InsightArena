@@ -183,6 +183,35 @@ impl CreatorEventManagerContract {
         admin::get_ai_agent(&env).unwrap_or_else(|| panic!("not_initialized"))
     }
 
+    /// Configure the M-of-N verifier signer set used for event verification.
+    ///
+    /// Only the admin may call this. Replaces any previously configured
+    /// signer set and threshold atomically.
+    ///
+    /// # Panics
+    /// * `"unauthorized"` — caller is not the admin.
+    /// * `"invalid_threshold"` — `threshold == 0` or `threshold > signers.len()`.
+    /// * `"duplicate_signer"` — `signers` contains the same address twice.
+    pub fn set_verifier_config(env: Env, caller: Address, signers: Vec<Address>, threshold: u32) {
+        match admin::set_verifier_config(&env, caller, signers, threshold) {
+            Ok(()) => {}
+            Err(AdminError::Unauthorized) => panic!("unauthorized"),
+            Err(AdminError::InvalidThreshold) => panic!("invalid_threshold"),
+            Err(AdminError::DuplicateSigner) => panic!("duplicate_signer"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Return the configured verifier signer set (empty if never configured).
+    pub fn get_verifier_signers(env: Env) -> Vec<Address> {
+        admin::get_verifier_signers(&env)
+    }
+
+    /// Return the configured verifier threshold (M), or 0 if never configured.
+    pub fn get_verifier_threshold(env: Env) -> u32 {
+        admin::get_verifier_threshold(&env)
+    }
+
     // =========================================================================
     // Verification (#790–#793)
     // =========================================================================
@@ -251,6 +280,38 @@ impl CreatorEventManagerContract {
     /// any address that has never been verified or does not exist in storage.
     pub fn is_verified(env: Env, address: Address) -> bool {
         verification::is_verified(&env, address)
+    }
+
+    /// Submit a verifier signature for an event (M-of-N event verification).
+    ///
+    /// `signer` must be one of the addresses configured via
+    /// `set_verifier_config`. Each signer may submit at most once per event.
+    /// Returns the number of distinct signers who have now submitted.
+    ///
+    /// # Panics
+    /// * `"event_not_found"` — no event exists for `event_id`.
+    /// * `"not_a_verifier_signer"` — `signer` is not a configured verifier.
+    /// * `"duplicate_signer"` — `signer` already submitted for this event.
+    pub fn submit_verification(env: Env, event_id: u64, signer: Address) -> u32 {
+        match verification::submit_verification(&env, event_id, signer) {
+            Ok(count) => count,
+            Err(VerificationError::EventNotFound) => panic!("event_not_found"),
+            Err(VerificationError::NotAVerifierSigner) => panic!("not_a_verifier_signer"),
+            Err(VerificationError::DuplicateSigner) => panic!("duplicate_signer"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Returns `true` once at least M distinct configured signers have
+    /// submitted verification for this event.
+    pub fn is_event_verified(env: Env, event_id: u64) -> bool {
+        verification::is_event_verified(&env, event_id)
+    }
+
+    /// Returns the number of distinct signers who have submitted verification
+    /// for this event so far.
+    pub fn get_event_verification_count(env: Env, event_id: u64) -> u32 {
+        verification::get_event_verification_count(&env, event_id)
     }
 
     // =========================================================================

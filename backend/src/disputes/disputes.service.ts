@@ -3,32 +3,66 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
 import {
   Dispute,
   DisputeStatus,
   DisputeResolution,
 } from './entities/dispute.entity';
+import { DisputeEvidence } from './entities/dispute-evidence.entity';
 import { CreateDisputeDto } from './dto/create-dispute.dto';
 import { ResolveDisputeDto } from './dto/resolve-dispute.dto';
+import { AttachEvidenceDto } from './dto/attach-evidence.dto';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
 import { SorobanService } from '../soroban/soroban.service';
 
+const DEFAULT_EVIDENCE_MAX_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+const DEFAULT_EVIDENCE_ALLOWED_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+];
+
 @Injectable()
 export class DisputesService {
   private readonly logger = new Logger(DisputesService.name);
+
+  /** Max evidence file size accepted by attachEvidence, in bytes. */
+  private readonly evidenceMaxSizeBytes: number;
+  /** MIME types accepted by attachEvidence. */
+  private readonly evidenceAllowedMimeTypes: string[];
 
   constructor(
     @InjectRepository(Dispute)
     private readonly disputesRepository: Repository<Dispute>,
     @InjectRepository(Market)
     private readonly marketsRepository: Repository<Market>,
+    @InjectRepository(DisputeEvidence)
+    private readonly evidenceRepository: Repository<DisputeEvidence>,
     private readonly sorobanService: SorobanService,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    const configuredMaxSize = this.configService.get<number>(
+      'DISPUTE_EVIDENCE_MAX_SIZE_BYTES',
+    );
+    this.evidenceMaxSizeBytes =
+      configuredMaxSize ?? DEFAULT_EVIDENCE_MAX_SIZE_BYTES;
+
+    const configuredMimeTypes = this.configService.get<string>(
+      'DISPUTE_EVIDENCE_ALLOWED_MIME_TYPES',
+    );
+    this.evidenceAllowedMimeTypes = configuredMimeTypes
+      ? configuredMimeTypes.split(',').map((type) => type.trim())
+      : DEFAULT_EVIDENCE_ALLOWED_MIME_TYPES;
+  }
 
   /**
    * Create a new dispute for a resolved market
@@ -310,6 +344,78 @@ export class DisputesService {
         error,
       );
       throw error;
+    }
+  }
+
+  /**
+   * Attach evidence to a pending dispute. Only the disputant or the
+   * disputed market's creator may attach evidence.
+   */
+  async attachEvidence(
+    disputeId: string,
+    dto: AttachEvidenceDto,
+    user: User,
+  ): Promise<DisputeEvidence> {
+    const dispute = await this.findOne(disputeId);
+    this.assertIsDisputeParticipant(dispute, user);
+
+    if (dispute.status !== DisputeStatus.PENDING) {
+      throw new BadRequestException(
+        'Evidence can only be attached to a pending dispute',
+      );
+    }
+
+    if (!this.evidenceAllowedMimeTypes.includes(dto.mimeType)) {
+      throw new BadRequestException(
+        `File type "${dto.mimeType}" is not allowed`,
+      );
+    }
+
+    if (dto.sizeBytes > this.evidenceMaxSizeBytes) {
+      throw new BadRequestException(
+        `File exceeds maximum size of ${this.evidenceMaxSizeBytes} bytes`,
+      );
+    }
+
+    const evidence = this.evidenceRepository.create({
+      disputeId,
+      uploadedById: user.id,
+      fileUrl: dto.fileUrl,
+      fileName: dto.fileName,
+      mimeType: dto.mimeType,
+      sizeBytes: dto.sizeBytes,
+      description: dto.description ?? null,
+    });
+
+    return this.evidenceRepository.save(evidence);
+  }
+
+  /**
+   * List evidence for a dispute. Only the disputant or the disputed
+   * market's creator may list evidence.
+   */
+  async listEvidence(
+    disputeId: string,
+    user: User,
+  ): Promise<DisputeEvidence[]> {
+    const dispute = await this.findOne(disputeId);
+    this.assertIsDisputeParticipant(dispute, user);
+
+    return this.evidenceRepository.find({
+      where: { disputeId },
+      relations: ['uploadedBy'],
+      order: { createdAt: 'ASC' },
+    });
+  }
+
+  private assertIsDisputeParticipant(dispute: Dispute, user: User): void {
+    const isDisputant = dispute.disputantId === user.id;
+    const isMarketCreator = dispute.market?.creator?.id === user.id;
+
+    if (!isDisputant && !isMarketCreator) {
+      throw new ForbiddenException(
+        'Only dispute participants can access evidence for this dispute',
+      );
     }
   }
 

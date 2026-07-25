@@ -11,6 +11,7 @@ describe('HealthController', () => {
   let healthService: {
     checkHealth: jest.Mock;
     checkPing: jest.Mock;
+    checkDetailed: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -21,6 +22,7 @@ describe('HealthController', () => {
         type: 'ping',
         timestamp: new Date().toISOString(),
       }),
+      checkDetailed: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -102,6 +104,47 @@ describe('HealthController', () => {
       const timestamp = new Date(result.timestamp);
       expect(timestamp instanceof Date).toBe(true);
       expect(!Number.isNaN(timestamp.getTime())).toBe(true);
+    });
+  });
+
+  describe('checkDetailed', () => {
+    it('requests a compact summary when verbose is omitted', async () => {
+      healthService.checkDetailed.mockResolvedValue({
+        status: 'healthy',
+        uptime_seconds: 42,
+      });
+
+      const result = await controller.checkDetailed();
+
+      expect(healthService.checkDetailed).toHaveBeenCalledWith(false);
+      expect(result).toEqual({ status: 'healthy', uptime_seconds: 42 });
+    });
+
+    it('requests full detail when verbose=true', async () => {
+      const detailed = {
+        status: 'degraded',
+        database: { status: 'up', latency_ms: 3 },
+        soroban: { status: 'down', latency_ms: 5000 },
+        cache: { status: 'up', latency_ms: 1 },
+        uptime_seconds: 42,
+      };
+      healthService.checkDetailed.mockResolvedValue(detailed);
+
+      const result = await controller.checkDetailed('true');
+
+      expect(healthService.checkDetailed).toHaveBeenCalledWith(true);
+      expect(result).toEqual(detailed);
+    });
+
+    it('treats any non-"true" value as non-verbose', async () => {
+      healthService.checkDetailed.mockResolvedValue({
+        status: 'healthy',
+        uptime_seconds: 1,
+      });
+
+      await controller.checkDetailed('yes');
+
+      expect(healthService.checkDetailed).toHaveBeenCalledWith(false);
     });
   });
 

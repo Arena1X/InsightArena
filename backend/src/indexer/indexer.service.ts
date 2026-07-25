@@ -23,7 +23,7 @@ import { NotificationGeneratorService } from '../notifications/notification-gene
 import { BroadcasterService } from '../websocket/broadcaster.service';
 import { ReconciliationService } from './reconciliation.service';
 
-const CHECKPOINT_LEDGER_KEY = 'indexer:last_processed_ledger';
+export const CHECKPOINT_LEDGER_KEY = 'indexer:last_processed_ledger';
 const CHECKPOINT_LEDGER_KEY_LATEST = 'indexer:latest_contract_ledger';
 const MAX_RETRIES = 5;
 const DLQ_THRESHOLD = 5;

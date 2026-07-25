@@ -7,6 +7,7 @@ import {
   SearchType,
 } from './dto/global-search.dto';
 import { SearchQueryDto } from './dto/search-query.dto';
+import { SuggestQueryDto, SuggestType } from './dto/suggest-query.dto';
 import { ValidationPipe, BadRequestException } from '@nestjs/common';
 
 describe('SearchController', () => {
@@ -31,6 +32,10 @@ describe('SearchController', () => {
     users: ['alice'],
   };
 
+  const mockSuggestResponse = {
+    suggestions: [{ id: 'market-1', label: 'Bitcoin Market', type: 'market' }],
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [SearchController],
@@ -42,6 +47,7 @@ describe('SearchController', () => {
             getSuggestions: jest
               .fn()
               .mockResolvedValue(mockSuggestionsResponse),
+            suggest: jest.fn().mockResolvedValue(mockSuggestResponse),
           },
         },
       ],
@@ -153,6 +159,66 @@ describe('SearchController', () => {
         metatype: SearchQueryDto,
       });
       expect(result.query).toBe('%%');
+    });
+  });
+
+  describe('suggest', () => {
+    it('forwards the query to the service', async () => {
+      const result = await controller.suggest({
+        q: 'bit',
+        type: SuggestType.All,
+        limit: 10,
+      });
+
+      expect(result).toEqual(mockSuggestResponse);
+      expect(service.suggest).toHaveBeenCalledWith({
+        q: 'bit',
+        type: SuggestType.All,
+        limit: 10,
+      });
+    });
+
+    it('validation pipe accepts an empty/missing prefix without throwing', async () => {
+      const result = await validationPipe.transform(
+        {},
+        { type: 'query', metatype: SuggestQueryDto },
+      );
+
+      expect(result.q).toBeUndefined();
+      expect(result.type).toBe(SuggestType.All);
+    });
+
+    it('validation pipe rejects a prefix over 100 characters', async () => {
+      const dto = { q: 'a'.repeat(101) };
+
+      await expect(
+        validationPipe.transform(dto, {
+          type: 'query',
+          metatype: SuggestQueryDto,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('validation pipe rejects an invalid type', async () => {
+      const dto = { q: 'bit', type: 'invalid' };
+
+      await expect(
+        validationPipe.transform(dto, {
+          type: 'query',
+          metatype: SuggestQueryDto,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('validation pipe rejects a limit above the max', async () => {
+      const dto = { q: 'bit', limit: 999 };
+
+      await expect(
+        validationPipe.transform(dto, {
+          type: 'query',
+          metatype: SuggestQueryDto,
+        }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });

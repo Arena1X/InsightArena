@@ -13,7 +13,10 @@ import { GenerateChallengeDto } from './dto/generate-challenge.dto';
 import { VerifyChallengeDto } from './dto/verify-challenge.dto';
 import { VerifyWalletDto } from './dto/verify-wallet.dto';
 import { RateLimitStatusDto } from './dto/rate-limit-status.dto';
-import { RefreshTokenResponseDto } from './dto/refresh-token.dto';
+import {
+  RefreshTokenResponseDto,
+  RotateRefreshTokenDto,
+} from './dto/refresh-token.dto';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -21,6 +24,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Public } from '../common/decorators/public.decorator';
 import { User } from '../users/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
 
@@ -82,34 +86,36 @@ export class AuthController {
     return this.rateLimitService.getStatus(user.id);
   }
 
+  @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Refresh JWT token',
+    summary: 'Rotate a refresh token',
     description:
-      'Issues a new JWT token with a fresh expiry for the authenticated user without requiring a new wallet signature',
+      'Exchanges a valid refresh token for a new access token and a new refresh token, invalidating the presented refresh token. Reusing an already-rotated refresh token revokes the entire session family.',
   })
   @ApiResponse({
     status: 200,
-    description: 'New access token issued',
+    description: 'New access token and refresh token issued',
     type: RefreshTokenResponseDto,
   })
   @ApiResponse({
     status: 401,
-    description: 'Unauthorized - invalid or expired token, or user deleted',
+    description:
+      'Unauthorized - invalid, expired, or reused refresh token, or user deleted',
   })
   async refreshToken(
-    @CurrentUser() user: User,
+    @Body() dto: RotateRefreshTokenDto,
   ): Promise<RefreshTokenResponseDto> {
-    const { access_token } = await this.authService.refreshToken(user.id);
+    const { access_token, refresh_token } =
+      await this.authService.rotateRefreshToken(dto.refresh_token);
 
     // Calculate expiry timestamp
     const expiresIn = this.configService.get<string>('JWT_EXPIRES_IN') || '7d';
     const expiresMs = this.parseExpiryToMs(expiresIn);
     const expires_at = new Date(Date.now() + expiresMs).toISOString();
 
-    return { access_token, expires_at };
+    return { access_token, refresh_token, expires_at };
   }
 
   /**

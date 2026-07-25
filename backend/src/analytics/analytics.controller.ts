@@ -31,6 +31,25 @@ import { PlatformStatsDto } from './dto/platform-stats.dto';
 export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 
+  @Get('active-users')
+  @Public()
+  @ApiOperation({
+    summary: 'Get real-time active users gauge',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Current active users count',
+    schema: {
+      type: 'object',
+      properties: {
+        count: { type: 'number' },
+      },
+    },
+  })
+  getActiveUsers(): { count: number } {
+    return { count: this.analyticsService.getActiveUsersCount() };
+  }
+
   @Get('dashboard')
   @ApiBearerAuth()
   @ApiOperation({

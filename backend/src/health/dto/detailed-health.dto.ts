@@ -20,14 +20,19 @@ export class CacheStatusDto {
   @ApiProperty({ example: 'up' })
   status: string;
 
-  @ApiProperty({ example: 0.85 })
-  hit_rate: number;
+  @ApiProperty({ example: 1 })
+  latency_ms: number;
 }
 
-export class DetailedHealthDto {
+export class HealthSummaryDto {
   @ApiProperty({ enum: ['healthy', 'degraded', 'down'], example: 'healthy' })
   status: 'healthy' | 'degraded' | 'down';
 
+  @ApiProperty({ example: 3600 })
+  uptime_seconds: number;
+}
+
+export class DetailedHealthDto extends HealthSummaryDto {
   @ApiProperty({ type: DatabaseStatusDto })
   database: DatabaseStatusDto;
 
@@ -36,7 +41,4 @@ export class DetailedHealthDto {
 
   @ApiProperty({ type: CacheStatusDto })
   cache: CacheStatusDto;
-
-  @ApiProperty({ example: 3600 })
-  uptime_seconds: number;
 }

@@ -18,6 +18,8 @@ import AddMatchForm, { type MatchFormData } from "@/component/creator-events/Add
 import BulkMatchUpload from "@/component/creator-events/BulkMatchUpload";
 import SubmitResultForm from "@/component/creator-events/SubmitResultForm";
 import { type MatchOutcome, useCreatorEvents } from "@/hooks/useCreatorEvents";
+import { useConfirm } from "@/hooks/useConfirm";
+import { useToast } from "@/hooks/useToast";
 
 type MatchStatus = "upcoming" | "started" | "resolved";
 
@@ -114,6 +116,8 @@ export default function MatchManagementPage() {
   const router = useRouter();
   const { address } = useWallet();
   const { submitMatchResult } = useCreatorEvents();
+  const confirm = useConfirm();
+  const toast = useToast();
 
   const [eventMeta] = useState<EventMeta>(MOCK_EVENT);
   const [matches, setMatches] = useState<Match[]>(MOCK_MATCHES);
@@ -172,8 +176,19 @@ export default function MatchManagementPage() {
     setMatches((prev) => [...prev, ...newMatches]);
   }
 
-  function handleDeleteMatch(id: string) {
+  async function handleDeleteMatch(id: string) {
+    const match = matches.find((m) => m.id === id);
+    const confirmed = await confirm({
+      title: "Delete match?",
+      description: match
+        ? `This will permanently remove ${match.teamA} vs ${match.teamB} from the event. This action cannot be undone.`
+        : "This will permanently remove the match from the event. This action cannot be undone.",
+      confirmLabel: "Delete",
+      variant: "destructive",
+    });
+    if (!confirmed) return;
     setMatches((prev) => prev.filter((m) => m.id !== id));
+    toast.success("Match deleted");
   }
 
   if (!hydrated || !isCreator) {

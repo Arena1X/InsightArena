@@ -276,6 +276,20 @@ pub enum DataKey {
     /// treasury via `clawback_unclaimed`  (event_id). Written once by
     /// `finalize_event`.
     ClaimDeadline(u64),
+
+    // ── M-of-N event verification (#1358) ────────────────────────────────────
+    /// Vec<Address> of the configured verifier signer set (the "N"). Written
+    /// by `admin::set_verifier_config`.
+    VerifierSigners,
+
+    /// Number of distinct signers required before an event is considered
+    /// verified (the "M"). Written by `admin::set_verifier_config`.
+    VerifierThreshold,
+
+    /// Vec<Address> of distinct verifier signers who have submitted
+    /// verification for an event so far  (event_id). Written by
+    /// `verification::submit_verification`.
+    EventVerificationSigners(u64),
 }
 
 // ---------------------------------------------------------------------------

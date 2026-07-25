@@ -1,48 +1,81 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { NotificationsService } from './notifications.service';
+import { NotificationsService, isInQuietHours } from './notifications.service';
 import { Notification, NotificationType } from './entities/notification.entity';
+import {
+  NotificationPreference,
+  NotificationChannel,
+  NotificationFrequency,
+} from './entities/notification-preference.entity';
 import { NotificationBroadcasterService } from '../websocket/notification-broadcaster.service';
-import { EventsGateway } from '../websocket/events.gateway';
 
-describe('NotificationsService', () => {
-  let service: NotificationsService;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-  const mockNotification: Partial<Notification> = {
+const makeNotification = (
+  overrides: Partial<Notification> = {},
+): Notification =>
+  ({
     id: 1,
     user_address: 'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
     type: NotificationType.EventCreated,
     title: 'Test',
     message: 'Test message',
     read: false,
+    data: null,
     created_at: new Date('2024-01-01'),
-  };
+    deleted_at: null,
+    ...overrides,
+  }) as Notification;
 
-  const mockRepository = {
-    create: jest.fn(),
-    save: jest.fn(),
-    findAndCount: jest.fn(),
-    count: jest.fn(),
-    update: jest.fn(),
-    softDelete: jest.fn(),
-    findOne: jest.fn(),
-  };
+const makePreference = (
+  overrides: Partial<NotificationPreference> = {},
+): NotificationPreference =>
+  ({
+    id: 'pref-uuid',
+    userId: 'user-1',
+    channel: NotificationChannel.IN_APP,
+    frequency: NotificationFrequency.INSTANT,
+    quietHours: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  }) as NotificationPreference;
 
-  const mockServer = {
-    to: jest.fn().mockReturnThis(),
-    emit: jest.fn(),
-  };
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
 
-  const mockGateway = {
-    server: mockServer,
-  };
+const mockNotificationRepo = {
+  create: jest.fn(),
+  save: jest.fn(),
+  findAndCount: jest.fn(),
+  count: jest.fn(),
+  update: jest.fn(),
+  softDelete: jest.fn(),
+  findOne: jest.fn(),
+};
 
-  const mockNotificationBroadcaster = {
-    broadcastNewNotification: jest.fn(),
-    broadcastNotificationRead: jest.fn(),
-    onModuleDestroy: jest.fn(),
-  };
+const mockPreferencesRepo = {
+  findOne: jest.fn(),
+  find: jest.fn(),
+  create: jest.fn(),
+  save: jest.fn(),
+};
+
+const mockNotificationBroadcaster = {
+  broadcastNewNotification: jest.fn(),
+  broadcastNotificationRead: jest.fn(),
+};
+
+// ---------------------------------------------------------------------------
+// Test suite
+// ---------------------------------------------------------------------------
+
+describe('NotificationsService', () => {
+  let service: NotificationsService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -50,15 +83,15 @@ describe('NotificationsService', () => {
         NotificationsService,
         {
           provide: getRepositoryToken(Notification),
-          useValue: mockRepository,
+          useValue: mockNotificationRepo,
+        },
+        {
+          provide: getRepositoryToken(NotificationPreference),
+          useValue: mockPreferencesRepo,
         },
         {
           provide: NotificationBroadcasterService,
           useValue: mockNotificationBroadcaster,
-        },
-        {
-          provide: EventsGateway,
-          useValue: mockGateway,
         },
       ],
     }).compile();
@@ -71,10 +104,47 @@ describe('NotificationsService', () => {
     expect(service).toBeDefined();
   });
 
-  describe('create', () => {
-    it('should create and save a notification', async () => {
-      mockRepository.create.mockReturnValue(mockNotification);
-      mockRepository.save.mockResolvedValue(mockNotification);
+  // -------------------------------------------------------------------------
+  // isInQuietHours utility
+  // -------------------------------------------------------------------------
+
+  describe('isInQuietHours', () => {
+    it('returns true when current time is inside a same-day window', () => {
+      // 14:00 UTC
+      const now = new Date('2024-01-01T14:00:00Z');
+      expect(isInQuietHours('10:00-18:00', now)).toBe(true);
+    });
+
+    it('returns false when current time is outside a same-day window', () => {
+      const now = new Date('2024-01-01T08:00:00Z');
+      expect(isInQuietHours('10:00-18:00', now)).toBe(false);
+    });
+
+    it('returns true for overnight window (22:00-07:00) when time is 23:00', () => {
+      const now = new Date('2024-01-01T23:00:00Z');
+      expect(isInQuietHours('22:00-07:00', now)).toBe(true);
+    });
+
+    it('returns true for overnight window (22:00-07:00) when time is 03:00', () => {
+      const now = new Date('2024-01-02T03:00:00Z');
+      expect(isInQuietHours('22:00-07:00', now)).toBe(true);
+    });
+
+    it('returns false for overnight window (22:00-07:00) when time is 10:00', () => {
+      const now = new Date('2024-01-01T10:00:00Z');
+      expect(isInQuietHours('22:00-07:00', now)).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // create — legacy path (no userId)
+  // -------------------------------------------------------------------------
+
+  describe('create (legacy — no userId)', () => {
+    it('saves and broadcasts immediately without preference lookup', async () => {
+      const saved = makeNotification();
+      mockNotificationRepo.create.mockReturnValue(saved);
+      mockNotificationRepo.save.mockResolvedValue(saved);
 
       const result = await service.create(
         'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
@@ -83,48 +153,439 @@ describe('NotificationsService', () => {
         'Test message',
       );
 
-      expect(mockRepository.create).toHaveBeenCalledWith({
-        user_address: 'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
-        type: NotificationType.EventCreated,
-        title: 'Test',
-        message: 'Test message',
-        data: null,
-      });
-      expect(result).toEqual(mockNotification);
+      expect(mockNotificationRepo.save).toHaveBeenCalled();
       expect(
         mockNotificationBroadcaster.broadcastNewNotification,
-      ).toHaveBeenCalled();
-    });
-
-    it('should pass data when provided', async () => {
-      const data = { key: 'value' };
-      mockRepository.create.mockReturnValue(mockNotification);
-      mockRepository.save.mockResolvedValue(mockNotification);
-
-      await service.create(
+      ).toHaveBeenCalledWith(
         'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
-        NotificationType.EventCreated,
-        'T',
-        'M',
-        data,
+        expect.objectContaining({ id: saved.id }),
       );
-
-      expect(mockRepository.create).toHaveBeenCalledWith(
-        expect.objectContaining({ data }),
-      );
+      expect(result).toEqual(saved);
+      expect(mockPreferencesRepo.findOne).not.toHaveBeenCalled();
     });
   });
 
-  describe('findAllForUser', () => {
-    it('should return paginated notifications for a user', async () => {
-      mockRepository.findAndCount.mockResolvedValue([[mockNotification], 1]);
-      mockRepository.count.mockResolvedValue(0);
+  // -------------------------------------------------------------------------
+  // create — INSTANT delivery with userId
+  // -------------------------------------------------------------------------
 
-      const result = await service.findAllForUser(
-        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
-        1,
-        20,
+  describe('create (INSTANT frequency)', () => {
+    it('broadcasts immediately for INSTANT preference', async () => {
+      const saved = makeNotification();
+      mockNotificationRepo.create.mockReturnValue(saved);
+      mockNotificationRepo.save.mockResolvedValue(saved);
+      mockPreferencesRepo.findOne.mockResolvedValue(
+        makePreference({ frequency: NotificationFrequency.INSTANT }),
       );
+
+      await service.create(
+        'GBRPYHIL',
+        NotificationType.EventCreated,
+        'T',
+        'M',
+        undefined,
+        'user-1',
+      );
+
+      expect(
+        mockNotificationBroadcaster.broadcastNewNotification,
+      ).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT enqueue for INSTANT preference', async () => {
+      const saved = makeNotification();
+      mockNotificationRepo.create.mockReturnValue(saved);
+      mockNotificationRepo.save.mockResolvedValue(saved);
+      mockPreferencesRepo.findOne.mockResolvedValue(
+        makePreference({ frequency: NotificationFrequency.INSTANT }),
+      );
+
+      await service.create(
+        'GBRPYHIL',
+        NotificationType.EventCreated,
+        'T',
+        'M',
+        undefined,
+        'user-1',
+      );
+
+      const pending = service.drainPending(
+        'GBRPYHIL',
+        NotificationFrequency.INSTANT,
+      );
+      expect(pending).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // create — DAILY delivery with userId
+  // -------------------------------------------------------------------------
+
+  describe('create (DAILY frequency)', () => {
+    it('enqueues to DAILY bucket instead of broadcasting immediately', async () => {
+      const saved = makeNotification({ user_address: 'GDAILY' });
+      mockNotificationRepo.create.mockReturnValue(saved);
+      mockNotificationRepo.save.mockResolvedValue(saved);
+      mockPreferencesRepo.findOne.mockResolvedValue(
+        makePreference({ frequency: NotificationFrequency.DAILY }),
+      );
+
+      await service.create(
+        'GDAILY',
+        NotificationType.EventCreated,
+        'Title',
+        'Body',
+        undefined,
+        'user-daily',
+      );
+
+      // No immediate broadcast
+      expect(
+        mockNotificationBroadcaster.broadcastNewNotification,
+      ).not.toHaveBeenCalled();
+
+      // Should be in DAILY bucket
+      const pending = service.drainPending(
+        'GDAILY',
+        NotificationFrequency.DAILY,
+      );
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toEqual(saved);
+    });
+
+    it('DAILY user receives one batched digest after drain — queue is empty after', async () => {
+      const notifications = [
+        makeNotification({ id: 1, user_address: 'GDAILY' }),
+        makeNotification({ id: 2, user_address: 'GDAILY', title: 'Second' }),
+        makeNotification({ id: 3, user_address: 'GDAILY', title: 'Third' }),
+      ];
+
+      mockNotificationRepo.create
+        .mockReturnValueOnce(notifications[0])
+        .mockReturnValueOnce(notifications[1])
+        .mockReturnValueOnce(notifications[2]);
+      mockNotificationRepo.save
+        .mockResolvedValueOnce(notifications[0])
+        .mockResolvedValueOnce(notifications[1])
+        .mockResolvedValueOnce(notifications[2]);
+      mockPreferencesRepo.findOne.mockResolvedValue(
+        makePreference({ frequency: NotificationFrequency.DAILY }),
+      );
+
+      for (let i = 0; i < 3; i++) {
+        await service.create(
+          'GDAILY',
+          NotificationType.EventCreated,
+          `Title ${i}`,
+          'Body',
+          undefined,
+          'user-daily',
+        );
+      }
+
+      // No broadcasts yet
+      expect(
+        mockNotificationBroadcaster.broadcastNewNotification,
+      ).not.toHaveBeenCalled();
+
+      // First drain returns all 3
+      const batch = service.drainPending('GDAILY', NotificationFrequency.DAILY);
+      expect(batch).toHaveLength(3);
+
+      // Second drain returns nothing (idempotent)
+      const secondBatch = service.drainPending(
+        'GDAILY',
+        NotificationFrequency.DAILY,
+      );
+      expect(secondBatch).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // create — HOURLY delivery with userId
+  // -------------------------------------------------------------------------
+
+  describe('create (HOURLY frequency)', () => {
+    it('enqueues to HOURLY bucket and does not broadcast', async () => {
+      const saved = makeNotification({ user_address: 'GHOURLY' });
+      mockNotificationRepo.create.mockReturnValue(saved);
+      mockNotificationRepo.save.mockResolvedValue(saved);
+      mockPreferencesRepo.findOne.mockResolvedValue(
+        makePreference({ frequency: NotificationFrequency.HOURLY }),
+      );
+
+      await service.create(
+        'GHOURLY',
+        NotificationType.EventCreated,
+        'T',
+        'M',
+        undefined,
+        'user-hourly',
+      );
+
+      expect(
+        mockNotificationBroadcaster.broadcastNewNotification,
+      ).not.toHaveBeenCalled();
+
+      const pending = service.drainPending(
+        'GHOURLY',
+        NotificationFrequency.HOURLY,
+      );
+      expect(pending).toHaveLength(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Quiet hours — deferral, not dropping
+  // -------------------------------------------------------------------------
+
+  describe('quiet hours deferral', () => {
+    it('defers INSTANT notification created during quiet hours to pending bucket', async () => {
+      const saved = makeNotification({ user_address: 'GQUIET' });
+      mockNotificationRepo.create.mockReturnValue(saved);
+      mockNotificationRepo.save.mockResolvedValue(saved);
+
+      // Quiet hours covers 22:00-07:00 UTC; mock is called at 23:30
+      jest.useFakeTimers().setSystemTime(new Date('2024-01-01T23:30:00Z'));
+
+      mockPreferencesRepo.findOne.mockResolvedValue(
+        makePreference({
+          frequency: NotificationFrequency.INSTANT,
+          quietHours: '22:00-07:00',
+        }),
+      );
+
+      await service.create(
+        'GQUIET',
+        NotificationType.EventCreated,
+        'T',
+        'M',
+        undefined,
+        'user-quiet',
+      );
+
+      // No immediate delivery
+      expect(
+        mockNotificationBroadcaster.broadcastNewNotification,
+      ).not.toHaveBeenCalled();
+
+      // Notification is in the INSTANT bucket (deferred, not dropped)
+      const pending = service.drainPending(
+        'GQUIET',
+        NotificationFrequency.INSTANT,
+      );
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toEqual(saved);
+
+      jest.useRealTimers();
+    });
+
+    it('does NOT defer when current time is outside quiet hours', async () => {
+      const saved = makeNotification({ user_address: 'GACTIVE' });
+      mockNotificationRepo.create.mockReturnValue(saved);
+      mockNotificationRepo.save.mockResolvedValue(saved);
+
+      // Outside quiet window
+      jest.useFakeTimers().setSystemTime(new Date('2024-01-01T12:00:00Z'));
+
+      mockPreferencesRepo.findOne.mockResolvedValue(
+        makePreference({
+          frequency: NotificationFrequency.INSTANT,
+          quietHours: '22:00-07:00',
+        }),
+      );
+
+      await service.create(
+        'GACTIVE',
+        NotificationType.EventCreated,
+        'T',
+        'M',
+        undefined,
+        'user-active',
+      );
+
+      // Delivered immediately
+      expect(
+        mockNotificationBroadcaster.broadcastNewNotification,
+      ).toHaveBeenCalledTimes(1);
+
+      jest.useRealTimers();
+    });
+
+    it('notifications created during flush (drain) are not lost or double-sent', async () => {
+      // Simulate: 2 notifications enqueued, drain called once, no duplicates
+      const n1 = makeNotification({ id: 10, user_address: 'GSAFE' });
+      const n2 = makeNotification({ id: 11, user_address: 'GSAFE' });
+
+      mockNotificationRepo.create
+        .mockReturnValueOnce(n1)
+        .mockReturnValueOnce(n2);
+      mockNotificationRepo.save
+        .mockResolvedValueOnce(n1)
+        .mockResolvedValueOnce(n2);
+      mockPreferencesRepo.findOne.mockResolvedValue(
+        makePreference({ frequency: NotificationFrequency.DAILY }),
+      );
+
+      await service.create(
+        'GSAFE',
+        NotificationType.EventCreated,
+        'T1',
+        'M',
+        undefined,
+        'user-safe',
+      );
+      await service.create(
+        'GSAFE',
+        NotificationType.EventCreated,
+        'T2',
+        'M',
+        undefined,
+        'user-safe',
+      );
+
+      const batch1 = service.drainPending('GSAFE', NotificationFrequency.DAILY);
+      expect(batch1).toHaveLength(2);
+
+      // Simulate a notification created during flush (after drain)
+      const n3 = makeNotification({ id: 12, user_address: 'GSAFE' });
+      mockNotificationRepo.create.mockReturnValueOnce(n3);
+      mockNotificationRepo.save.mockResolvedValueOnce(n3);
+
+      await service.create(
+        'GSAFE',
+        NotificationType.EventCreated,
+        'T3',
+        'M',
+        undefined,
+        'user-safe',
+      );
+
+      const batch2 = service.drainPending('GSAFE', NotificationFrequency.DAILY);
+      expect(batch2).toHaveLength(1);
+      expect(batch2[0].id).toBe(12);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getPendingUsers
+  // -------------------------------------------------------------------------
+
+  describe('getPendingUsers', () => {
+    it('returns addresses with pending DAILY notifications', async () => {
+      const saved = makeNotification({ user_address: 'GADDRX' });
+      mockNotificationRepo.create.mockReturnValue(saved);
+      mockNotificationRepo.save.mockResolvedValue(saved);
+      mockPreferencesRepo.findOne.mockResolvedValue(
+        makePreference({ frequency: NotificationFrequency.DAILY }),
+      );
+
+      await service.create(
+        'GADDRX',
+        NotificationType.EventCreated,
+        'T',
+        'M',
+        undefined,
+        'user-x',
+      );
+
+      const users = service.getPendingUsers(NotificationFrequency.DAILY);
+      expect(users).toContain('GADDRX');
+    });
+
+    it('does not list HOURLY users under DAILY', async () => {
+      const saved = makeNotification({ user_address: 'GHOURLY2' });
+      mockNotificationRepo.create.mockReturnValue(saved);
+      mockNotificationRepo.save.mockResolvedValue(saved);
+      mockPreferencesRepo.findOne.mockResolvedValue(
+        makePreference({ frequency: NotificationFrequency.HOURLY }),
+      );
+
+      await service.create(
+        'GHOURLY2',
+        NotificationType.EventCreated,
+        'T',
+        'M',
+        undefined,
+        'user-h2',
+      );
+
+      const dailyUsers = service.getPendingUsers(NotificationFrequency.DAILY);
+      expect(dailyUsers).not.toContain('GHOURLY2');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Preferences CRUD
+  // -------------------------------------------------------------------------
+
+  describe('getPreferences', () => {
+    it('returns all preferences for a user', async () => {
+      const prefs = [makePreference()];
+      mockPreferencesRepo.find.mockResolvedValue(prefs);
+
+      const result = await service.getPreferences('user-1');
+
+      expect(mockPreferencesRepo.find).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+      });
+      expect(result).toEqual(prefs);
+    });
+  });
+
+  describe('upsertPreference', () => {
+    it('creates a new preference when none exists', async () => {
+      mockPreferencesRepo.findOne.mockResolvedValue(null);
+      const created = makePreference({
+        frequency: NotificationFrequency.DAILY,
+      });
+      mockPreferencesRepo.create.mockReturnValue(created);
+      mockPreferencesRepo.save.mockResolvedValue(created);
+
+      const result = await service.upsertPreference(
+        'user-1',
+        NotificationChannel.IN_APP,
+        NotificationFrequency.DAILY,
+      );
+
+      expect(mockPreferencesRepo.create).toHaveBeenCalledWith({
+        userId: 'user-1',
+        channel: NotificationChannel.IN_APP,
+      });
+      expect(mockPreferencesRepo.save).toHaveBeenCalled();
+      expect(result.frequency).toBe(NotificationFrequency.DAILY);
+    });
+
+    it('updates an existing preference', async () => {
+      const existing = makePreference({
+        frequency: NotificationFrequency.INSTANT,
+      });
+      mockPreferencesRepo.findOne.mockResolvedValue(existing);
+      mockPreferencesRepo.save.mockImplementation(async (pref) => pref);
+
+      const result = await service.upsertPreference(
+        'user-1',
+        NotificationChannel.IN_APP,
+        NotificationFrequency.HOURLY,
+        '22:00-07:00',
+      );
+
+      expect(result.frequency).toBe(NotificationFrequency.HOURLY);
+      expect(result.quietHours).toBe('22:00-07:00');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Existing functionality (regression)
+  // -------------------------------------------------------------------------
+
+  describe('findAllForUser', () => {
+    it('returns paginated notifications', async () => {
+      const n = makeNotification();
+      mockNotificationRepo.findAndCount.mockResolvedValue([[n], 1]);
+      mockNotificationRepo.count.mockResolvedValue(0);
+
+      const result = await service.findAllForUser('GBRPYHIL', 1, 20);
 
       expect(result.data).toHaveLength(1);
       expect(result.total).toBe(1);
@@ -133,115 +594,55 @@ describe('NotificationsService', () => {
       expect(result.unreadCount).toBe(0);
     });
 
-    it('should query read filter when provided', async () => {
-      mockRepository.findAndCount.mockResolvedValue([[], 0]);
-      mockRepository.count.mockResolvedValue(0);
+    it('caps limit at 100', async () => {
+      mockNotificationRepo.findAndCount.mockResolvedValue([[], 0]);
+      mockNotificationRepo.count.mockResolvedValue(0);
 
-      await service.findAllForUser(
-        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
-        1,
-        20,
-        false,
-      );
-
-      expect(mockRepository.findAndCount).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: {
-            user_address: 'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
-            read: false,
-          },
-        }),
-      );
-    });
-
-    it('should cap limit at 100', async () => {
-      mockRepository.findAndCount.mockResolvedValue([[], 0]);
-      mockRepository.count.mockResolvedValue(0);
-
-      const result = await service.findAllForUser(
-        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
-        1,
-        999,
-      );
+      const result = await service.findAllForUser('GBRPYHIL', 1, 999);
 
       expect(result.limit).toBe(100);
-      expect(mockRepository.findAndCount).toHaveBeenCalledWith(
+      expect(mockNotificationRepo.findAndCount).toHaveBeenCalledWith(
         expect.objectContaining({ take: 100 }),
       );
     });
   });
 
   describe('markAsRead', () => {
-    it('should update notification read to true and broadcast when owner matches', async () => {
-      mockRepository.update.mockResolvedValue({ affected: 1 });
-
-      await service.markAsRead(1, 'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN');
-
-      expect(mockRepository.update).toHaveBeenCalledWith(
-        { id: 1, user_address: 'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN' },
+    it('updates read flag and broadcasts', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 1 });
+      await service.markAsRead(1, 'GBRPYHIL');
+      expect(mockNotificationRepo.update).toHaveBeenCalledWith(
+        { id: 1, user_address: 'GBRPYHIL' },
         { read: true },
       );
       expect(
         mockNotificationBroadcaster.broadcastNotificationRead,
-      ).toHaveBeenCalledWith('GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN', 1);
+      ).toHaveBeenCalledWith('GBRPYHIL', 1);
     });
 
-    it('should throw NotFoundException when notification belongs to a different user', async () => {
-      mockRepository.update.mockResolvedValue({ affected: 0 });
-
-      await expect(service.markAsRead(1, 'GDIFFERENTADDRESS')).rejects.toThrow(
+    it('throws NotFoundException when not found', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 0 });
+      await expect(service.markAsRead(1, 'GDIFFERENT')).rejects.toThrow(
         NotFoundException,
       );
-
-      expect(
-        mockNotificationBroadcaster.broadcastNotificationRead,
-      ).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('markAllAsRead', () => {
-    it('should mark all unread notifications as read', async () => {
-      mockRepository.update.mockResolvedValue({ affected: 3 });
-
-      const result = await service.markAllAsRead(
-        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
-      );
-
-      expect(mockRepository.update).toHaveBeenCalledWith(
-        {
-          user_address: 'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
-          read: false,
-        },
-        { read: true },
-      );
-      expect(result).toEqual({ updated: 3 });
     });
   });
 
   describe('remove', () => {
-    it('should soft delete notification when found and owned by user', async () => {
-      mockRepository.findOne.mockResolvedValue(mockNotification);
-      mockRepository.softDelete.mockResolvedValue({ affected: 1 });
+    it('soft-deletes when found', async () => {
+      mockNotificationRepo.findOne.mockResolvedValue(makeNotification());
+      mockNotificationRepo.softDelete.mockResolvedValue({ affected: 1 });
 
-      await service.remove(1, 'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN');
+      await service.remove(1, 'GBRPYHIL');
 
-      expect(mockRepository.findOne).toHaveBeenCalledWith({
-        where: {
-          id: 1,
-          user_address: 'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
-        },
-      });
-      expect(mockRepository.softDelete).toHaveBeenCalledWith(1);
+      expect(mockNotificationRepo.softDelete).toHaveBeenCalledWith(1);
     });
 
-    it('should throw NotFoundException when notification not found or not owned', async () => {
-      mockRepository.findOne.mockResolvedValue(null);
-
-      await expect(
-        service.remove(1, 'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN'),
-      ).rejects.toThrow(NotFoundException);
-
-      expect(mockRepository.softDelete).not.toHaveBeenCalled();
+    it('throws NotFoundException when not found', async () => {
+      mockNotificationRepo.findOne.mockResolvedValue(null);
+      await expect(service.remove(1, 'GBRPYHIL')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });

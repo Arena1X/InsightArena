@@ -3,6 +3,8 @@
 import { useState, useMemo } from "react";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useConfirm } from "@/hooks/useConfirm";
+import { useToast } from "@/hooks/useToast";
 
 type PredictionStatus = "Active" | "Won" | "Lost" | "Pending";
 type FilterTab = "All" | "Active" | "Won" | "Lost" | "Pending";
@@ -149,13 +151,16 @@ function getCategoryBadgeClasses(category: string): string {
 }
 
 export default function MyPredictionsPage() {
+  const [predictions, setPredictions] = useState<Prediction[]>(MOCK_PREDICTIONS);
   const [activeFilter, setActiveFilter] = useState<FilterTab>("All");
   const [currentPage, setCurrentPage] = useState(1);
+  const confirm = useConfirm();
+  const toast = useToast();
 
   const filteredPredictions = useMemo(() => {
-    if (activeFilter === "All") return MOCK_PREDICTIONS;
-    return MOCK_PREDICTIONS.filter((pred) => pred.status === activeFilter);
-  }, [activeFilter]);
+    if (activeFilter === "All") return predictions;
+    return predictions.filter((pred) => pred.status === activeFilter);
+  }, [predictions, activeFilter]);
 
   const totalPages = Math.ceil(filteredPredictions.length / ITEMS_PER_PAGE);
   const paginatedPredictions = useMemo(() => {
@@ -164,12 +169,10 @@ export default function MyPredictionsPage() {
   }, [filteredPredictions, currentPage]);
 
   const stats = useMemo(() => {
-    const total = MOCK_PREDICTIONS.length;
-    const won = MOCK_PREDICTIONS.filter((p) => p.status === "Won").length;
-    const lost = MOCK_PREDICTIONS.filter((p) => p.status === "Lost").length;
-    const pending = MOCK_PREDICTIONS.filter(
-      (p) => p.status === "Pending",
-    ).length;
+    const total = predictions.length;
+    const won = predictions.filter((p) => p.status === "Won").length;
+    const lost = predictions.filter((p) => p.status === "Lost").length;
+    const pending = predictions.filter((p) => p.status === "Pending").length;
 
     return {
       total,
@@ -180,17 +183,17 @@ export default function MyPredictionsPage() {
       lostPercentage: total > 0 ? Math.round((lost / total) * 100) : 0,
       pendingPercentage: total > 0 ? Math.round((pending / total) * 100) : 0,
     };
-  }, []);
+  }, [predictions]);
 
   const filterCounts = useMemo(() => {
     return {
-      All: MOCK_PREDICTIONS.length,
-      Active: MOCK_PREDICTIONS.filter((p) => p.status === "Active").length,
-      Won: MOCK_PREDICTIONS.filter((p) => p.status === "Won").length,
-      Lost: MOCK_PREDICTIONS.filter((p) => p.status === "Lost").length,
-      Pending: MOCK_PREDICTIONS.filter((p) => p.status === "Pending").length,
+      All: predictions.length,
+      Active: predictions.filter((p) => p.status === "Active").length,
+      Won: predictions.filter((p) => p.status === "Won").length,
+      Lost: predictions.filter((p) => p.status === "Lost").length,
+      Pending: predictions.filter((p) => p.status === "Pending").length,
     };
-  }, []);
+  }, [predictions]);
 
   const handleFilterChange = (filter: FilterTab) => {
     setActiveFilter(filter);
@@ -200,6 +203,19 @@ export default function MyPredictionsPage() {
   const handleClaimPayout = (predictionId: string) => {
     console.log("Claiming payout for prediction:", predictionId);
     // TODO: Implement actual claim logic
+  };
+
+  const handleCancelPrediction = async (prediction: Prediction) => {
+    const confirmed = await confirm({
+      title: "Cancel prediction?",
+      description: `Your stake of ${prediction.stake} on "${prediction.marketTitle}" will be refunded. This cannot be undone.`,
+      confirmLabel: "Cancel Prediction",
+      cancelLabel: "Keep Prediction",
+      variant: "destructive",
+    });
+    if (!confirmed) return;
+    setPredictions((prev) => prev.filter((p) => p.id !== prediction.id));
+    toast.success("Prediction cancelled and stake refunded");
   };
 
   const handlePreviousPage = () => {
@@ -375,6 +391,15 @@ export default function MyPredictionsPage() {
                         className="inline-flex rounded-xl bg-orange-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-orange-600"
                       >
                         Claim Payout
+                      </button>
+                    )}
+
+                    {prediction.status === "Active" && (
+                      <button
+                        onClick={() => handleCancelPrediction(prediction)}
+                        className="inline-flex rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-300 transition hover:bg-red-500/20"
+                      >
+                        Cancel Prediction
                       </button>
                     )}
                   </div>

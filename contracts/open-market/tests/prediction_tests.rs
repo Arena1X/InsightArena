@@ -1,10 +1,10 @@
 use soroban_sdk::testutils::{storage::Persistent as _, Address as _, Ledger};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
+use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol, Vec};
 
 use insightarena_contract::config::LEDGER_BUMP_MARKET;
 use insightarena_contract::market::CreateMarketParams;
-use insightarena_contract::storage_types::DataKey;
+use insightarena_contract::storage_types::{DataKey, BatchPredictionRequest};
 use insightarena_contract::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 
 // ── Test helpers ──────────────────────────────────────────────────────────
@@ -154,6 +154,97 @@ fn test_submit_prediction_already_predicted() {
         result,
         Err(Ok(InsightArenaError::AlreadyPredicted))
     ));
+}
+
+// ── submit_predictions_batch tests ────────────────────────────────────────
+
+#[test]
+fn test_submit_predictions_batch_success() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let (client, xlm_token, _, _) = deploy(&env);
+    let predictor = Address::generate(&env);
+    let stake = 20_000_000_i128;
+
+    let market_id_1 = client.create_market(&Address::generate(&env), &default_params(&env));
+    let market_id_2 = client.create_market(&Address::generate(&env), &default_params(&env));
+    fund(&env, &xlm_token, &predictor, stake * 2);
+
+    let requests = vec![
+        &env,
+        BatchPredictionRequest {
+            market_id: market_id_1,
+            chosen_outcome: symbol_short!("yes"),
+            stake_amount: stake,
+        },
+        BatchPredictionRequest {
+            market_id: market_id_2,
+            chosen_outcome: symbol_short!("no"),
+            stake_amount: stake,
+        },
+    ];
+
+    let result = client.submit_predictions_batch(&predictor, &requests);
+    assert_eq!(result.len(), 2);
+    
+    assert!(client.has_predicted(&market_id_1, &predictor));
+    assert!(client.has_predicted(&market_id_2, &predictor));
+}
+
+#[test]
+fn test_submit_predictions_batch_oversize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, _) = deploy(&env);
+    let predictor = Address::generate(&env);
+    let stake = 20_000_000_i128;
+
+    let mut requests_vec = std::vec::Vec::new();
+    for _ in 0..11 {
+        requests_vec.push(BatchPredictionRequest {
+            market_id: 1,
+            chosen_outcome: symbol_short!("yes"),
+            stake_amount: stake,
+        });
+    }
+    
+    let requests = soroban_sdk::Vec::from_slice(&env, &requests_vec);
+    let result = client.try_submit_predictions_batch(&predictor, &requests);
+    assert!(matches!(result, Err(Ok(InsightArenaError::BatchSizeExceeded))));
+}
+
+#[test]
+fn test_submit_predictions_batch_partial_failure_reverts_all() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, _) = deploy(&env);
+    let predictor = Address::generate(&env);
+    let stake = 20_000_000_i128;
+
+    let market_id_1 = client.create_market(&Address::generate(&env), &default_params(&env));
+    let market_id_2 = client.create_market(&Address::generate(&env), &default_params(&env));
+    fund(&env, &xlm_token, &predictor, stake * 2);
+
+    let requests = vec![
+        &env,
+        BatchPredictionRequest {
+            market_id: market_id_1,
+            chosen_outcome: symbol_short!("yes"),
+            stake_amount: stake, // valid
+        },
+        BatchPredictionRequest {
+            market_id: market_id_2,
+            chosen_outcome: symbol_short!("maybe"), // invalid outcome
+            stake_amount: stake,
+        },
+    ];
+
+    let result = client.try_submit_predictions_batch(&predictor, &requests);
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidOutcome))));
+    
+    // Check that neither prediction was recorded due to atomic rollback
+    assert!(!client.has_predicted(&market_id_1, &predictor));
+    assert!(!client.has_predicted(&market_id_2, &predictor));
 }
 
 // ── claim_payout tests ────────────────────────────────────────────────────
@@ -452,6 +543,256 @@ fn test_batch_distribute_payouts_skips_already_claimed() {
     // Second batch: all winning predictions already claimed — skips them, returns 0
     let second_run = client.batch_distribute_payouts(&oracle, &market_id);
     assert_eq!(second_run, 0);
+}
+
+// ── batch_distribute_payouts edge cases (#1263) ──────────────────────────────
+//
+// Shared arithmetic for the 3-winner / 2-loser fixture (stake 50 XLM each):
+//   total_pool   = 250_000_000
+//   winning_pool = 150_000_000, loser_pool = 100_000_000
+//   winner_share = 50M × 100M / 150M            = 33_333_333
+//   gross        = 50M + 33_333_333             = 83_333_333
+//   protocol fee = 83_333_333 × 200 / 10_000    =  1_666_666
+//   creator fee  = 83_333_333 × 100 / 10_000    =    833_333
+//   net payout   = 83_333_333 − 1_666_666 − 833_333 = 80_833_334
+const MIXED_STAKE: i128 = 50_000_000;
+const MIXED_NET_PAYOUT: i128 = 80_833_334;
+const MIXED_CREATOR_FEE: i128 = 833_333;
+
+/// Create a resolved 3-winner / 2-loser market. Every predictor stakes
+/// `MIXED_STAKE`; winners pick "yes", losers pick "no"; outcome is "yes".
+/// Returns (market_id, creator, [w1, w2, w3], [l1, l2]).
+#[allow(clippy::type_complexity)]
+fn setup_mixed_market(
+    env: &Env,
+    client: &InsightArenaContractClient<'_>,
+    xlm_token: &Address,
+    oracle: &Address,
+) -> (u64, Address, [Address; 3], [Address; 2]) {
+    let creator = Address::generate(env);
+    let winners = [
+        Address::generate(env),
+        Address::generate(env),
+        Address::generate(env),
+    ];
+    let losers = [Address::generate(env), Address::generate(env)];
+
+    let params = default_params(env);
+    let market_id = client.create_market(&creator, &params);
+
+    for winner in winners.iter() {
+        fund(env, xlm_token, winner, MIXED_STAKE);
+        client.submit_prediction(winner, &market_id, &symbol_short!("yes"), &MIXED_STAKE);
+    }
+    for loser in losers.iter() {
+        fund(env, xlm_token, loser, MIXED_STAKE);
+        client.submit_prediction(loser, &market_id, &symbol_short!("no"), &MIXED_STAKE);
+    }
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = params.resolution_time + 1);
+    client.resolve_market(oracle, &market_id, &symbol_short!("yes"));
+
+    (market_id, creator, winners, losers)
+}
+
+/// Requirement: a batch over a mixed predictor set (3 winners + 2 losers) pays
+/// each winner their exact entitlement, pays losers nothing, and does not
+/// abort. Token accounting is verified to the stroop, and a second batch
+/// proves no composition of repeat calls can double-pay.
+#[test]
+fn test_batch_mixed_winners_and_losers_exact_accounting() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, oracle) = deploy(&env);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let (market_id, creator, winners, losers) =
+        setup_mixed_market(&env, &client, &xlm_token, &oracle);
+
+    let contract_before = token.balance(&client.address);
+    assert_eq!(contract_before, 5 * MIXED_STAKE); // all stakes escrowed
+
+    let processed = client.batch_distribute_payouts(&oracle, &market_id);
+    assert_eq!(processed, 3);
+
+    // Winners receive exactly their entitlement; losers receive nothing.
+    for winner in winners.iter() {
+        assert_eq!(token.balance(winner), MIXED_NET_PAYOUT);
+    }
+    for loser in losers.iter() {
+        assert_eq!(token.balance(loser), 0);
+    }
+
+    // Stroop-exact accounting: the contract released exactly
+    // 3 × (net payout + creator fee); protocol fees stay in escrow.
+    assert_eq!(token.balance(&creator), 3 * MIXED_CREATOR_FEE);
+    assert_eq!(
+        token.balance(&client.address),
+        contract_before - 3 * (MIXED_NET_PAYOUT + MIXED_CREATOR_FEE)
+    );
+
+    // A repeat batch is a no-op: nothing further is paid to anyone.
+    let processed_again = client.batch_distribute_payouts(&oracle, &market_id);
+    assert_eq!(processed_again, 0);
+    for winner in winners.iter() {
+        assert_eq!(token.balance(winner), MIXED_NET_PAYOUT);
+    }
+    assert_eq!(token.balance(&creator), 3 * MIXED_CREATOR_FEE);
+}
+
+/// Requirement: a batch run after one winner already claimed individually via
+/// claim_payout must not double-pay that winner, must still pay the remaining
+/// winners, and must pay them the same entitlement they would have received in
+/// any other claim order (the already-claimed stake stays in the winning pool).
+#[test]
+fn test_batch_after_individual_claim_no_double_pay() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, oracle) = deploy(&env);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let (market_id, creator, winners, losers) =
+        setup_mixed_market(&env, &client, &xlm_token, &oracle);
+
+    // Winner 0 claims individually first.
+    let individual_payout = client.claim_payout(&winners[0], &market_id);
+    assert_eq!(individual_payout, MIXED_NET_PAYOUT);
+
+    // Batch over the full predictor set: only the two unclaimed winners are
+    // processed; the already-claimed winner does not block them.
+    let processed = client.batch_distribute_payouts(&oracle, &market_id);
+    assert_eq!(processed, 2);
+
+    // No double payment, and identical entitlements regardless of claim path.
+    assert_eq!(token.balance(&winners[0]), MIXED_NET_PAYOUT);
+    assert_eq!(token.balance(&winners[1]), MIXED_NET_PAYOUT);
+    assert_eq!(token.balance(&winners[2]), MIXED_NET_PAYOUT);
+    for loser in losers.iter() {
+        assert_eq!(token.balance(loser), 0);
+    }
+
+    // Total released across claim + batch equals the sum of the three
+    // individual entitlements plus creator fees — exact to the stroop.
+    assert_eq!(token.balance(&creator), 3 * MIXED_CREATOR_FEE);
+    assert_eq!(
+        token.balance(&client.address),
+        5 * MIXED_STAKE - 3 * (MIXED_NET_PAYOUT + MIXED_CREATOR_FEE)
+    );
+}
+
+/// Requirement: an address appearing twice in the predictor list is paid only
+/// on its first occurrence. The duplicate neither pays again nor aborts the
+/// batch, and pool math counts the duplicated stake exactly once.
+#[test]
+fn test_batch_duplicate_predictor_entry_pays_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, oracle) = deploy(&env);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let winner1 = Address::generate(&env);
+    let winner2 = Address::generate(&env);
+    let loser = Address::generate(&env);
+    let stake = 50_000_000_i128;
+
+    let creator = Address::generate(&env);
+    let params = default_params(&env);
+    let market_id = client.create_market(&creator, &params);
+
+    for (user, outcome) in [
+        (&winner1, symbol_short!("yes")),
+        (&winner2, symbol_short!("yes")),
+        (&loser, symbol_short!("no")),
+    ] {
+        fund(&env, &xlm_token, user, stake);
+        client.submit_prediction(user, &market_id, &outcome, &stake);
+    }
+
+    // Corrupt the predictor list with a duplicate entry for winner1.
+    // submit_prediction's AlreadyPredicted guard makes this unreachable via
+    // the public API, so inject it directly to pin the defensive behavior.
+    env.as_contract(&client.address, || {
+        let key = DataKey::PredictorList(market_id);
+        let mut list: Vec<Address> = env.storage().persistent().get(&key).unwrap();
+        list.push_back(winner1.clone());
+        env.storage().persistent().set(&key, &list);
+    });
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = params.resolution_time + 1);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+
+    // winning_pool = 100M (winner1 counted once), loser_pool = 50M:
+    // share = 25M, gross = 75M, fees 2% + 1% of gross, net = 72_750_000.
+    let processed = client.batch_distribute_payouts(&oracle, &market_id);
+    assert_eq!(processed, 2);
+
+    assert_eq!(token.balance(&winner1), 72_750_000);
+    assert_eq!(token.balance(&winner2), 72_750_000);
+    assert_eq!(token.balance(&loser), 0);
+    assert_eq!(token.balance(&creator), 2 * 750_000);
+    assert_eq!(
+        token.balance(&client.address),
+        3 * stake - 2 * (72_750_000 + 750_000)
+    );
+
+    // Re-running cannot pay the duplicate either.
+    let processed_again = client.batch_distribute_payouts(&oracle, &market_id);
+    assert_eq!(processed_again, 0);
+    assert_eq!(token.balance(&winner1), 72_750_000);
+}
+
+/// Requirement: a batch over a market with no predictions succeeds as a no-op.
+#[test]
+fn test_batch_empty_market_is_noop() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, oracle) = deploy(&env);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let params = default_params(&env);
+    let market_id = client.create_market(&Address::generate(&env), &params);
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = params.resolution_time + 1);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+
+    let processed = client.batch_distribute_payouts(&oracle, &market_id);
+    assert_eq!(processed, 0);
+    assert_eq!(token.balance(&client.address), 0);
+}
+
+/// Requirement: a batch where every prediction lost pays nobody and succeeds.
+#[test]
+fn test_batch_all_losers_pays_nothing() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, oracle) = deploy(&env);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let loser1 = Address::generate(&env);
+    let loser2 = Address::generate(&env);
+    let stake = 50_000_000_i128;
+
+    let params = default_params(&env);
+    let market_id = client.create_market(&Address::generate(&env), &params);
+
+    for loser in [&loser1, &loser2] {
+        fund(&env, &xlm_token, loser, stake);
+        client.submit_prediction(loser, &market_id, &symbol_short!("no"), &stake);
+    }
+
+    env.ledger()
+        .with_mut(|li| li.timestamp = params.resolution_time + 1);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+
+    let processed = client.batch_distribute_payouts(&oracle, &market_id);
+    assert_eq!(processed, 0);
+    assert_eq!(token.balance(&loser1), 0);
+    assert_eq!(token.balance(&loser2), 0);
+    // Stakes remain escrowed in the contract.
+    assert_eq!(token.balance(&client.address), 2 * stake);
 }
 
 // ── payout_math tests ─────────────────────────────────────────────────────

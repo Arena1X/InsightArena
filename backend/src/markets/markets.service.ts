@@ -17,8 +17,11 @@ import { CACHE_WARMING_KEYS } from '../cache/cache-warming.keys';
 import { SorobanService } from '../soroban/soroban.service';
 import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
+import { ChallengeResolutionDto } from './dto/challenge-resolution.dto';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { CreateMarketDto } from './dto/create-market.dto';
+import { ProposeResolutionDto } from './dto/propose-resolution.dto';
+import { ResolveChallengeDto } from './dto/resolve-challenge.dto';
 import { UpdateMarketDto } from './dto/update-market.dto';
 import {
   ListMarketsDto,
@@ -33,7 +36,7 @@ import {
 } from './dto/trending-markets.dto';
 import { Comment } from './entities/comment.entity';
 import { MarketTemplate } from './entities/market-template.entity';
-import { Market } from './entities/market.entity';
+import { Market, MarketSettlementState } from './entities/market.entity';
 import { UserBookmark } from './entities/user-bookmark.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
@@ -388,6 +391,176 @@ export class MarketsService {
   }
 
   /**
+   * Propose a resolution outcome for an ended market. Starts the
+   * configurable grace/challenge window instead of resolving immediately —
+   * the market only reaches SETTLED once MarketSettlementScheduler sweeps it
+   * (or an admin resolves a challenge) after the window elapses.
+   */
+  async proposeResolution(
+    id: string,
+    dto: ProposeResolutionDto,
+    user: User,
+  ): Promise<Market> {
+    const market = await this.findByIdOrOnChainId(id);
+
+    const isAdmin = user.role === 'admin';
+    const isCreator = market.creator.id === user.id;
+    if (!isAdmin && !isCreator) {
+      throw new ForbiddenException(
+        'Only the market creator or an admin can propose a resolution',
+      );
+    }
+
+    if (market.is_cancelled) {
+      throw new BadRequestException(
+        'Cannot propose a resolution for a cancelled market',
+      );
+    }
+
+    if (market.is_resolved) {
+      throw new ConflictException('Market is already resolved');
+    }
+
+    if (market.settlement_state !== MarketSettlementState.PENDING) {
+      throw new ConflictException(
+        `Cannot propose a resolution while market is in "${market.settlement_state}" state`,
+      );
+    }
+
+    if (new Date() < market.end_time) {
+      throw new BadRequestException(
+        'Cannot propose a resolution before end_time has passed',
+      );
+    }
+
+    if (!market.outcome_options.includes(dto.outcome)) {
+      throw new BadRequestException(
+        `Invalid outcome "${dto.outcome}". Valid options: ${market.outcome_options.join(', ')}`,
+      );
+    }
+
+    market.settlement_state = MarketSettlementState.PROPOSED;
+    market.proposed_outcome = dto.outcome;
+    market.resolution_proposed_at = new Date();
+    if (dto.grace_period_seconds !== undefined) {
+      market.grace_period_seconds = dto.grace_period_seconds;
+    }
+
+    const saved = await this.marketsRepository.save(market);
+    await this.invalidateMarketCaches(saved.id);
+
+    await this.webhookDispatcher.emit('market.resolution_proposed', {
+      id: saved.id,
+      on_chain_market_id: saved.on_chain_market_id,
+      proposed_outcome: saved.proposed_outcome,
+      resolution_proposed_at: saved.resolution_proposed_at,
+      grace_period_seconds: saved.grace_period_seconds,
+      proposed_by: user.id,
+    });
+
+    return saved;
+  }
+
+  /**
+   * Raise a challenge against a proposed resolution while its grace window
+   * is still open. Freezes MarketSettlementScheduler from auto-settling the
+   * market until an admin resolves the challenge.
+   */
+  async challengeResolution(
+    id: string,
+    dto: ChallengeResolutionDto,
+    user: User,
+  ): Promise<Market> {
+    const market = await this.findByIdOrOnChainId(id);
+
+    if (market.settlement_state !== MarketSettlementState.PROPOSED) {
+      throw new BadRequestException(
+        'Market does not have a resolution pending challenge',
+      );
+    }
+
+    const graceDeadline =
+      market.resolution_proposed_at!.getTime() +
+      market.grace_period_seconds * 1000;
+    if (Date.now() > graceDeadline) {
+      throw new BadRequestException('Challenge window has closed');
+    }
+
+    market.settlement_state = MarketSettlementState.CHALLENGED;
+    const saved = await this.marketsRepository.save(market);
+    await this.invalidateMarketCaches(saved.id);
+
+    await this.webhookDispatcher.emit('market.resolution_challenged', {
+      id: saved.id,
+      on_chain_market_id: saved.on_chain_market_id,
+      challenged_by: user.id,
+      reason: dto.reason,
+      challenged_at: new Date(),
+    });
+
+    return saved;
+  }
+
+  /**
+   * Admin adjudication of a challenged market. Settles immediately on-chain
+   * and in the DB — a challenged market has already lost its grace window,
+   * so there's nothing left for the scheduler to wait on.
+   */
+  async resolveChallenge(
+    id: string,
+    dto: ResolveChallengeDto,
+    adminUser: User,
+  ): Promise<Market> {
+    if (adminUser.role !== 'admin') {
+      throw new ForbiddenException('Only admin can resolve a challenge');
+    }
+
+    const market = await this.findByIdOrOnChainId(id);
+
+    if (market.settlement_state !== MarketSettlementState.CHALLENGED) {
+      throw new BadRequestException('Market does not have an active challenge');
+    }
+
+    if (!market.outcome_options.includes(dto.outcome)) {
+      throw new BadRequestException(
+        `Invalid outcome "${dto.outcome}". Valid options: ${market.outcome_options.join(', ')}`,
+      );
+    }
+
+    try {
+      await this.sorobanService.resolveMarket(
+        market.on_chain_market_id,
+        dto.outcome,
+      );
+    } catch (err) {
+      this.logger.error(
+        'Soroban resolveMarket failed while resolving challenge',
+        err,
+      );
+      throw new BadGatewayException('Failed to settle market on Soroban');
+    }
+
+    market.settlement_state = MarketSettlementState.SETTLED;
+    market.proposed_outcome = dto.outcome;
+    market.is_resolved = true;
+    market.resolved_outcome = dto.outcome;
+    market.resolved_at = new Date();
+
+    const saved = await this.marketsRepository.save(market);
+    await this.invalidateMarketCaches(saved.id);
+
+    await this.webhookDispatcher.emit('market.settled', {
+      id: saved.id,
+      on_chain_market_id: saved.on_chain_market_id,
+      resolved_outcome: saved.resolved_outcome,
+      resolved_by_admin: adminUser.id,
+      settled_at: saved.resolved_at,
+    });
+
+    return saved;
+  }
+
+  /**
    * Get trending markets based on recent prediction volume,
    * participant growth rate, and time to resolution.
    * Results are cached for 15 minutes.
@@ -481,7 +654,8 @@ export class MarketsService {
     dto: ListMarketsDto,
   ): Promise<PaginatedMarketsResponse> {
     const page = dto.page ?? 1;
-    const limit = Math.min(dto.limit ?? 20, 50);
+    // PaginationQueryDto already enforces max 100; guard with Math.min for safety
+    const limit = Math.min(dto.limit ?? 20, 100);
     const skip = (page - 1) * limit;
 
     const qb = this.marketsRepository
@@ -527,8 +701,9 @@ export class MarketsService {
       .take(limit);
 
     const [data, total] = await qb.getManyAndCount();
+    const totalPages = Math.ceil(total / limit) || 0;
 
-    return { data, total, page, limit };
+    return { data, total, page, limit, totalPages };
   }
 
   async findAll(): Promise<Market[]> {
@@ -647,9 +822,16 @@ export class MarketsService {
     marketId: string,
     page = 1,
     limit = 20,
-  ): Promise<{ data: Comment[]; total: number; page: number; limit: number }> {
+  ): Promise<{
+    data: Comment[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }> {
     const market = await this.findByIdOrOnChainId(marketId);
-    const take = Math.min(limit, 50);
+    // Enforce shared max of 100 rows
+    const take = Math.min(limit, 100);
     const skip = (page - 1) * take;
 
     const [data, total] = await this.commentsRepository.findAndCount({
@@ -660,7 +842,8 @@ export class MarketsService {
       take,
     });
 
-    return { data, total, page, limit: take };
+    const totalPages = Math.ceil(total / take) || 0;
+    return { data, total, page, limit: take, totalPages };
   }
 
   /**
@@ -690,10 +873,10 @@ export class MarketsService {
       .orderBy('market.featured_at', 'DESC')
       .skip(skip)
       .take(limit);
-
     const [data, total] = await qb.getManyAndCount();
+    const totalPages = Math.ceil(total / limit) || 0;
 
-    return { data, total, page, limit };
+    return { data, total, page, limit, totalPages };
   }
 
   /**

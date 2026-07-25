@@ -7,6 +7,7 @@ import { FilteringService } from './filtering.service';
 import { IdempotencyKey } from './idempotency/idempotency-key.entity';
 import { IdempotencyService } from './idempotency/idempotency.service';
 import { IdempotencyInterceptor } from './idempotency/idempotency.interceptor';
+import { OptionalIdempotencyInterceptor } from './idempotency/optional-idempotency.interceptor';
 
 @Module({
   imports: [
@@ -23,12 +24,18 @@ import { IdempotencyInterceptor } from './idempotency/idempotency.interceptor';
     }),
     TypeOrmModule.forFeature([IdempotencyKey]),
   ],
-  providers: [FilteringService, IdempotencyService, IdempotencyInterceptor],
+  providers: [
+    FilteringService,
+    IdempotencyService,
+    IdempotencyInterceptor,
+    OptionalIdempotencyInterceptor,
+  ],
   exports: [
     JwtModule,
     FilteringService,
     IdempotencyService,
     IdempotencyInterceptor,
+    OptionalIdempotencyInterceptor,
   ],
 })
 export class CommonModule {}

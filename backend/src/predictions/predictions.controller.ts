@@ -36,6 +36,10 @@ import { Public } from '../common/decorators/public.decorator';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
 import { User } from '../users/entities/user.entity';
 import { Prediction } from './entities/prediction.entity';
+import {
+  ClaimAllRewardsResponseDto,
+  RewardsSummaryDto,
+} from './dto/rewards-summary.dto';
 
 @ApiTags('Predictions')
 @ApiBearerAuth()
@@ -85,6 +89,40 @@ export class PredictionsController {
     @CurrentUser() user: User,
   ): Promise<PaginatedMyPredictionsResponse> {
     return this.predictionsService.findMine(user, query);
+  }
+
+  @Get('rewards/summary')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Get the authenticated user's claimable and vesting rewards",
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Claimable, vesting, and total-earned balances in XLM',
+    type: RewardsSummaryDto,
+  })
+  async getRewardsSummary(
+    @CurrentUser() user: User,
+  ): Promise<RewardsSummaryDto> {
+    return this.predictionsService.getRewardsSummary(user);
+  }
+
+  @Post('rewards/claim')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Claim all of the authenticated user's currently claimable rewards",
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Rewards claimed; returns the refreshed summary',
+    type: ClaimAllRewardsResponseDto,
+  })
+  @ApiResponse({ status: 400, description: 'No claimable rewards' })
+  async claimAllRewards(
+    @CurrentUser() user: User,
+  ): Promise<ClaimAllRewardsResponseDto> {
+    return this.predictionsService.claimAllRewards(user);
   }
 
   @Get(':id')

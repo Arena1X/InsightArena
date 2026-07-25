@@ -11,7 +11,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create(AppModule, {
+    bufferLogs: true,
+    rawBody: true,
+  });
   app.useLogger(app.get(Logger));
 
   // Enable URI-based versioning

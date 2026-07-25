@@ -17,7 +17,14 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   OracleSubmission,
   SubmissionStatus,
+  SubmissionReviewStatus,
 } from './entities/oracle-submission.entity';
+import { SubmissionHistoryService } from './submission-history.service';
+import {
+  ReviewSubmissionDto,
+  ReviewDecision,
+  ReviewResultResponse,
+} from './dto/anomaly-detection.dto';
 
 interface QueuedSubmission {
   id: string;
@@ -46,6 +53,7 @@ export class WebhookService {
     @InjectRepository(OracleSubmission)
     private readonly submissionRepository: Repository<OracleSubmission>,
     private readonly configService: ConfigService,
+    private readonly submissionHistoryService: SubmissionHistoryService,
   ) {
     this.startRetryProcessor();
   }
@@ -97,8 +105,33 @@ export class WebhookService {
 
     this.submissionQueue.set(jobId, submission);
 
-    // Save to database for history tracking
-    await this.saveSubmissionToDatabase(submission, match);
+    // Save to database for history tracking.
+    const savedSubmission = await this.saveSubmissionToDatabase(
+      submission,
+      match,
+    );
+
+    // Screen for statistical anomalies before any on-chain use (#1364). A
+    // flagged submission is recorded; when holding is enabled it is withheld
+    // from submission until an admin approves it via reviewSubmission.
+    if (savedSubmission) {
+      const screening =
+        await this.submissionHistoryService.screenSubmission(savedSubmission);
+
+      if (screening.held) {
+        // Do not auto-submit or retry — the submission awaits manual review.
+        this.submissionQueue.delete(jobId);
+        this.logger.warn(
+          `Match result held for manual review: job_id=${jobId}, match_id=${dto.match_id}, submission_id=${savedSubmission.id}`,
+        );
+        return {
+          job_id: jobId,
+          status: 'held',
+          message:
+            'Submission flagged as a statistical anomaly and held for manual review',
+        };
+      }
+    }
 
     this.logger.log(
       `Match result queued for submission: job_id=${jobId}, match_id=${dto.match_id}, winning_team=${dto.winning_team}`,
@@ -245,7 +278,7 @@ export class WebhookService {
   private async saveSubmissionToDatabase(
     submission: QueuedSubmission,
     match: CreatorEventMatch,
-  ): Promise<void> {
+  ): Promise<OracleSubmission | null> {
     try {
       const dbSubmission = this.submissionRepository.create({
         match_id: submission.matchId,
@@ -260,13 +293,96 @@ export class WebhookService {
         retry_count: 0,
       });
 
-      await this.submissionRepository.save(dbSubmission);
+      const saved = await this.submissionRepository.save(dbSubmission);
       this.logger.log(`Submission saved to database: job_id=${submission.id}`);
+      return saved;
     } catch (error) {
       this.logger.error(
         `Failed to save submission to database: ${error instanceof Error ? error.message : 'Unknown'}`,
       );
+      return null;
     }
+  }
+
+  /**
+   * Approve or reject a submission that anomaly detection held for manual
+   * review (#1364).
+   *
+   * Only a submission in `HELD` review status may be reviewed. Approving marks
+   * it `APPROVED` and queues it for on-chain submission — the manual approval
+   * is the gate that lets a flagged value be used. Rejecting marks it
+   * `REJECTED` and `FAILED` so it is never submitted.
+   */
+  async reviewSubmission(
+    submissionId: string,
+    dto: ReviewSubmissionDto,
+  ): Promise<ReviewResultResponse> {
+    const submission = await this.submissionRepository.findOne({
+      where: { id: submissionId },
+    });
+
+    if (!submission) {
+      throw new NotFoundException(`Submission ${submissionId} not found`);
+    }
+
+    if (submission.review_status !== SubmissionReviewStatus.HELD) {
+      throw new ConflictException(
+        `Submission ${submissionId} is not held for review (status: ${submission.review_status})`,
+      );
+    }
+
+    submission.reviewed_by = dto.reviewer;
+    submission.reviewed_at = new Date();
+
+    if (dto.decision === ReviewDecision.REJECT) {
+      submission.review_status = SubmissionReviewStatus.REJECTED;
+      submission.status = SubmissionStatus.FAILED;
+      submission.error_message = dto.note
+        ? `Rejected in manual review: ${dto.note}`
+        : 'Rejected in manual review';
+      await this.submissionRepository.save(submission);
+
+      this.logger.warn(
+        `Held submission rejected: submission_id=${submissionId}, reviewer=${dto.reviewer ?? 'unknown'}`,
+      );
+
+      return {
+        submission_id: submissionId,
+        review_status: submission.review_status,
+        submitted: false,
+        message: 'Submission rejected; it will not be submitted on-chain',
+      };
+    }
+
+    submission.review_status = SubmissionReviewStatus.APPROVED;
+    await this.submissionRepository.save(submission);
+
+    this.logger.log(
+      `Held submission approved: submission_id=${submissionId}, reviewer=${dto.reviewer ?? 'unknown'}`,
+    );
+
+    // Requeue the approved submission for on-chain use.
+    const requeued: QueuedSubmission = {
+      id: this.generateJobId(),
+      matchId: submission.match_id,
+      winningTeam: submission.winning_team,
+      confidenceScore: submission.confidence_score,
+      dataSource: submission.data_source,
+      timestamp: submission.result_timestamp.toISOString(),
+      metadata: submission.metadata,
+      retryCount: 0,
+      createdAt: new Date(),
+      nextRetryAt: new Date(),
+    };
+    this.submissionQueue.set(requeued.id, requeued);
+    await this.submitToOracle(requeued);
+
+    return {
+      submission_id: submissionId,
+      review_status: submission.review_status,
+      submitted: true,
+      message: 'Submission approved and queued for on-chain submission',
+    };
   }
 
   private async updateSubmissionRecord(

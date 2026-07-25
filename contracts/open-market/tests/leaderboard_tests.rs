@@ -130,7 +130,7 @@ fn test_update_leaderboard_when_paused() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, _) = deploy(&env);
-    client.set_paused(&true);
+    client.set_paused(&true, &1u32);
     let result = client.try_update_leaderboard(&admin, &1, &vec![&env]);
     assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
 }
