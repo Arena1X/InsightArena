@@ -68,8 +68,15 @@ export function isNetworkError(error: unknown): boolean {
     const code = (cause as { code?: unknown }).code;
     if (
       typeof code === 'string' &&
-      ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND',
-       'EPIPE', 'EHOSTUNREACH', 'EAI_AGAIN'].includes(code)
+      [
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'ENOTFOUND',
+        'EPIPE',
+        'EHOSTUNREACH',
+        'EAI_AGAIN',
+      ].includes(code)
     ) {
       return true;
     }

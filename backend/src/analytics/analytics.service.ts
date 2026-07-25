@@ -56,7 +56,10 @@ export class AnalyticsService {
     private readonly marketHistoryRepository: Repository<MarketHistory>,
   ) {}
   private readonly activeSessions = new Map<string, number>();
-  private readonly IDLE_WINDOW_MS = parseInt(process.env.ACTIVE_USERS_IDLE_WINDOW_MS || '300000', 10);
+  private readonly IDLE_WINDOW_MS = parseInt(
+    process.env.ACTIVE_USERS_IDLE_WINDOW_MS || '300000',
+    10,
+  );
 
   trackActiveSession(sessionId: string) {
     this.activeSessions.set(sessionId, Date.now());
