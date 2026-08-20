@@ -17,11 +17,14 @@ export interface UseLiveOddsResult {
   odds: OddsUpdate | null;
   status: ConnectionStatus;
   lastUpdatedAt: number | null;
+  /** True when the feed is disconnected/reconnecting or the last data is older than STALE_AFTER_MS. */
+  stale: boolean;
 }
 
 const BASE_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 const POLL_INTERVAL_MS = 10_000;
+const STALE_AFTER_MS = 30_000;
 
 function buildWsUrl(marketId: string): string {
   const base = env.API_URL.replace(/^http/, "ws");
@@ -57,16 +60,34 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
   const [odds, setOdds] = useState<OddsUpdate | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+  const [stale, setStale] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const staleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attemptRef = useRef(0);
   const mountedRef = useRef(true);
 
   const clearTimers = useCallback(() => {
     if (pollTimerRef.current) { clearTimeout(pollTimerRef.current); pollTimerRef.current = null; }
     if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
+    if (staleTimerRef.current) { clearTimeout(staleTimerRef.current); staleTimerRef.current = null; }
+  }, []);
+
+  const scheduleStaleCheck = useCallback(() => {
+    if (staleTimerRef.current) clearTimeout(staleTimerRef.current);
+    staleTimerRef.current = setTimeout(() => {
+      if (mountedRef.current) setStale(true);
+    }, STALE_AFTER_MS);
+  }, []);
+
+  const clearStale = useCallback(() => {
+    setStale(false);
+    if (staleTimerRef.current) {
+      clearTimeout(staleTimerRef.current);
+      staleTimerRef.current = null;
+    }
   }, []);
 
   const closeSocket = useCallback(() => {
@@ -82,6 +103,7 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
   const startPolling = useCallback((id: string) => {
     if (!mountedRef.current) return;
     setStatus("polling");
+    scheduleStaleCheck();
 
     const poll = async () => {
       if (!mountedRef.current) return;
@@ -89,13 +111,15 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
       if (result && mountedRef.current) {
         setOdds(result);
         setLastUpdatedAt(result.updatedAt);
+        clearStale();
+        scheduleStaleCheck();
       }
       if (mountedRef.current) {
         pollTimerRef.current = setTimeout(poll, POLL_INTERVAL_MS);
       }
     };
     poll();
-  }, []);
+  }, [clearStale, scheduleStaleCheck]);
 
   const connect = useCallback((id: string) => {
     if (!mountedRef.current) return;
@@ -112,11 +136,14 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
 
     wsRef.current = ws;
     setStatus("connecting");
+    scheduleStaleCheck();
 
     ws.onopen = () => {
       if (!mountedRef.current) { ws.close(); return; }
       attemptRef.current = 0;
       setStatus("connected");
+      clearStale();
+      scheduleStaleCheck();
     };
 
     ws.onmessage = (event) => {
@@ -125,6 +152,8 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
         const data: OddsUpdate = JSON.parse(event.data as string);
         setOdds(data);
         setLastUpdatedAt(data.updatedAt ?? Date.now());
+        clearStale();
+        scheduleStaleCheck();
       } catch {
         // ignore malformed frames
       }
@@ -147,15 +176,17 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
       }
 
       setStatus("disconnected");
+      setStale(true);
       reconnectTimerRef.current = setTimeout(() => connect(id), backoff);
     };
-  }, [closeSocket, clearTimers, startPolling]);
+  }, [closeSocket, clearTimers, clearStale, scheduleStaleCheck, startPolling]);
 
   useEffect(() => {
     mountedRef.current = true;
     if (!marketId) {
       setOdds(null);
       setStatus("disconnected");
+      setStale(true);
       return;
     }
 
@@ -169,5 +200,5 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
     };
   }, [marketId, connect, clearTimers, closeSocket]);
 
-  return { odds, status, lastUpdatedAt };
+  return { odds, status, lastUpdatedAt, stale };
 }

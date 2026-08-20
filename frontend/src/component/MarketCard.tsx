@@ -1,6 +1,8 @@
 import React from "react";
 import { Heart } from "lucide-react";
 import Link from "next/link";
+import LiveOddsBadge from "./LiveOddsBadge";
+import type { ConnectionStatus } from "@/hooks/useLiveOdds";
 
 type Market = {
   id: string;
@@ -17,11 +19,17 @@ export default function MarketCard({
   onPredict,
   isFavorite = false,
   onFavoriteToggle,
+  connectionStatus,
+  oddsStale,
 }: {
   market: Market;
   onPredict: () => void;
   isFavorite?: boolean;
   onFavoriteToggle?: () => void;
+  /** Current live-odds connection status; omit to hide the badge. */
+  connectionStatus?: ConnectionStatus;
+  /** Whether the displayed odds data is stale. */
+  oddsStale?: boolean;
 }) {
   const probabilityPct = Math.round((market.probability || 0) * 100);
 
@@ -77,6 +85,12 @@ export default function MarketCard({
             >
               {market.status.toUpperCase()}
             </span>
+            {connectionStatus && (
+              <LiveOddsBadge
+                status={connectionStatus}
+                stale={oddsStale ?? false}
+              />
+            )}
           </div>
 
           <div className="mt-4">

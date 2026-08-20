@@ -7,7 +7,7 @@ import { useFavorites } from "@/context/FavoritesContext";
 import { usePredictionSlip } from "@/context/PredictionSlipContext";
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
 import { useDebounce } from "@/hooks/useDebounce";
-import MarketCard from "@/component/MarketCard";
+import MarketCardWithOdds from "@/component/MarketCardWithOdds";
 import { MarketsPageLoadingSkeleton } from "@/component/loading-route-skeletons";
 import { EmptyState } from "@/component/ui/empty-state";
 import { Heart, AlertCircle, Inbox, Loader2, Search, X } from "lucide-react";
@@ -63,8 +63,8 @@ export default function MarketsPage() {
     };
   }, []);
 
-  // Fetch markets (initial + paginated)
-  const fetchMarketsPage = useCallback(async (pageNum: number) => {
+  // Fetch markets (initial + paginated). Returns the number of new items loaded.
+  const fetchMarketsPage = useCallback(async (pageNum: number): Promise<number> => {
     try {
       const data = await apiClient.get<Market[]>(
         `/markets?page=${pageNum}&limit=${PAGE_SIZE}`,
@@ -83,11 +83,13 @@ export default function MarketsPage() {
 
       setHasMoreState(newMarkets.length === PAGE_SIZE);
       setError(null);
+      return newMarkets.length;
     } catch (err) {
       const errorMessage =
         err instanceof ApiError ? err.message : "An unexpected error occurred";
       setError(errorMessage);
       setHasMoreState(false);
+      return 0;
     }
   }, []);
 
@@ -118,14 +120,23 @@ export default function MarketsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, markets.length > 0]);
 
-  // Infinite scroll handler
-  const handleLoadMore = useCallback(async () => {
+  // Infinite scroll handler — returns loaded count for ARIA announcement
+  const handleLoadMore = useCallback(async (): Promise<number> => {
     const nextPage = page + 1;
     setPage(nextPage);
-    await fetchMarketsPage(nextPage);
+    const newMarkets = await fetchMarketsPage(nextPage);
+    return newMarkets;
   }, [page, fetchMarketsPage]);
 
-  const { observerTarget, isLoading: isLoadingMore } = useInfiniteScroll({
+  const {
+    observerTarget,
+    loadMoreButtonRef,
+    announcementRef,
+    canLoadMore,
+    isLoading: isLoadingMore,
+    loadMore: triggerLoadMore,
+    announcement,
+  } = useInfiniteScroll({
     onLoadMore: handleLoadMore,
     enabled: viewMode === "all" && hasMore && !loading,
   });
@@ -322,7 +333,7 @@ export default function MarketsPage() {
           <>
             <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
               {filteredMarkets.map((market) => (
-                <MarketCard
+                <MarketCardWithOdds
                   key={market.id}
                   market={market}
                   isFavorite={favoriteIds.has(market.id)}
@@ -347,13 +358,37 @@ export default function MarketsPage() {
                   </div>
                 )}
 
+                {/* Visible "Load more" button — keyboard / screen-reader fallback */}
+                {canLoadMore && !isLoadingMore && (
+                  <div className="flex justify-center py-8">
+                    <button
+                      ref={loadMoreButtonRef}
+                      onClick={triggerLoadMore}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-white/10 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-orange-400 focus:ring-offset-2 focus:ring-offset-gray-900"
+                    >
+                      Load more
+                    </button>
+                  </div>
+                )}
+
                 {!hasMore && markets.length > 0 && (
                   <div className="mt-8 text-center">
                     <p className="text-sm text-slate-400">
-                      You've reached the end of the list
+                      You&apos;ve reached the end of the list
                     </p>
                   </div>
                 )}
+
+                {/* ARIA live region for screen-reader announcements */}
+                <div
+                  ref={announcementRef}
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                  className="sr-only"
+                >
+                  {announcement}
+                </div>
               </>
             )}
           </>

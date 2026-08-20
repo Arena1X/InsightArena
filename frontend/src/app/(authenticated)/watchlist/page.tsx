@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { apiClient } from "@/lib/api";
 import { useFavorites } from "@/context/FavoritesContext";
-import MarketCard from "@/component/MarketCard";
+import MarketCard from "@/component/MarketCardWithOdds";
 import { EmptyState } from "@/component/ui/empty-state";
 import { Skeleton } from "@/component/ui/skeleton";
 import { Heart } from "lucide-react";
