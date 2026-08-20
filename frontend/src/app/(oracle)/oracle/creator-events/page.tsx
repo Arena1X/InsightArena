@@ -6,7 +6,10 @@ import PendingMatchesList, {
   type PendingMatch,
 } from "@/component/oracle/PendingMatchesList";
 import SubmitResultForm from "@/component/oracle/SubmitResultForm";
-import BatchResultSubmission from "@/component/oracle/BatchResultSubmission";
+import BatchResultSubmission, {
+  type BatchResultRow,
+  type BatchResultOutcome,
+} from "@/component/oracle/BatchResultSubmission";
 import { Button } from "@/component/ui/button";
 
 type Outcome = "TEAM_A" | "TEAM_B" | "DRAW";
@@ -127,25 +130,55 @@ export default function OracleCreatorEventsPage() {
   }
 
   async function handleBatchSubmit(
-    results: Array<{ matchId: string; outcome: Outcome }>,
-  ) {
+    results: BatchResultRow[],
+  ): Promise<BatchResultOutcome[]> {
     await new Promise((r) => setTimeout(r, 2000));
-    const newResults: SubmittedResult[] = results.map((r) => {
+
+    const outcomes: BatchResultOutcome[] = [];
+    const newResults: SubmittedResult[] = [];
+
+    for (const r of results) {
       const match = pending.find((m) => m.matchId === r.matchId);
-      return {
-        matchId: r.matchId,
-        teamA: match?.teamA ?? "Unknown",
-        teamB: match?.teamB ?? "Unknown",
-        outcome: r.outcome,
-        submittedAt: new Date().toISOString(),
-        txHash: `tx${Date.now().toString(16)}-${r.matchId}`,
-      };
-    });
-    setRecentResults((prev) => [...newResults, ...prev]);
-    setPending((prev) =>
-      prev.filter((m) => !results.some((r) => r.matchId === m.matchId)),
+      if (match) {
+        // Simulate occasional failure (e.g., 1 in 5)
+        if (Math.random() < 0.2) {
+          outcomes.push({
+            matchId: r.matchId,
+            success: false,
+            error: "Chain submission timeout — retry.",
+          });
+        } else {
+          outcomes.push({ matchId: r.matchId, success: true });
+          newResults.push({
+            matchId: r.matchId,
+            teamA: match.teamA,
+            teamB: match.teamB,
+            outcome: r.outcome,
+            submittedAt: new Date().toISOString(),
+            txHash: `tx${Date.now().toString(16)}-${r.matchId}`,
+          });
+        }
+      } else {
+        outcomes.push({
+          matchId: r.matchId,
+          success: false,
+          error: "Match not found in pending list.",
+        });
+      }
+    }
+
+    // Update recent results with only successful ones.
+    if (newResults.length > 0) {
+      setRecentResults((prev) => [...newResults, ...prev]);
+    }
+
+    // Remove successful matches from pending.
+    const successfulIds = new Set(
+      outcomes.filter((o) => o.success).map((o) => o.matchId),
     );
-    setSelectedIds(new Set());
+    setPending((prev) => prev.filter((m) => !successfulIds.has(m.matchId)));
+
+    return outcomes;
   }
 
   function toggleSelect(id: string) {
