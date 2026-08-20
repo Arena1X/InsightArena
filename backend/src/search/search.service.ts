@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { Cache } from 'cache-manager';
@@ -35,11 +36,7 @@ import {
  */
 const FTS_FALLBACK_THRESHOLD = 3;
 
-/**
- * Minimum trigram similarity score a row must have to be included in the
- * fallback result set (0–1, where 1 = identical strings).
- */
-const TRGM_SIMILARITY_THRESHOLD = 0.1;
+
 
 /** How long a prefix's suggestion results are cached for */
 const SUGGEST_CACHE_TTL_MS = 30_000;
@@ -61,6 +58,7 @@ export class SearchService {
     @InjectRepository(Competition)
     private readonly competitionsRepository: Repository<Competition>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
+    private readonly configService: ConfigService,
   ) {}
 
   async search(dto: GlobalSearchDto): Promise<GlobalSearchResponseDto> {
@@ -310,7 +308,8 @@ export class SearchService {
         `ts_rank(market.search_vector, plainto_tsquery('english', :query))`,
         'DESC',
       )
-      .addOrderBy('market.id', 'ASC');
+      .addOrderBy('market.participant_count', 'DESC')
+      .addOrderBy('market.created_at', 'DESC');
 
     const [ftsRaw, ftsCount] = await ftsQb.getManyAndCount();
 
@@ -360,7 +359,7 @@ export class SearchService {
             similarity(coalesce(market.description, ''), :query)
           ) >= :trgmThreshold
         )`,
-        { query, trgmThreshold: TRGM_SIMILARITY_THRESHOLD },
+        { query, trgmThreshold: this.configService.get<number>('SEARCH_TRGM_SIMILARITY_THRESHOLD', 0.1) },
       )
       .setParameter('query', query)
       .orderBy(
@@ -373,7 +372,8 @@ export class SearchService {
         )`,
         'DESC',
       )
-      .addOrderBy('market.id', 'ASC');
+      .addOrderBy('market.participant_count', 'DESC')
+      .addOrderBy('market.created_at', 'DESC');
 
     const [trgmRaw, trgmCount] = await trgmQb.getManyAndCount();
 
@@ -449,7 +449,8 @@ export class SearchService {
         `ts_rank(user.search_vector, plainto_tsquery('simple', :query))`,
         'DESC',
       )
-      .addOrderBy('user.id', 'ASC');
+      .addOrderBy('user.reputation_score', 'DESC')
+      .addOrderBy('user.total_predictions', 'DESC');
 
     const [ftsRaw, ftsCount] = await ftsQb.getManyAndCount();
 
@@ -491,7 +492,7 @@ export class SearchService {
           user.search_vector @@ plainto_tsquery('simple', :query)
           OR similarity(coalesce(user.username, ''), :query) >= :trgmThreshold
         )`,
-        { query, trgmThreshold: TRGM_SIMILARITY_THRESHOLD },
+        { query, trgmThreshold: this.configService.get<number>('SEARCH_TRGM_SIMILARITY_THRESHOLD', 0.1) },
       )
       .setParameter('query', query)
       .orderBy(
@@ -501,7 +502,8 @@ export class SearchService {
         )`,
         'DESC',
       )
-      .addOrderBy('user.id', 'ASC');
+      .addOrderBy('user.reputation_score', 'DESC')
+      .addOrderBy('user.total_predictions', 'DESC');
 
     const [trgmRaw, trgmCount] = await trgmQb.getManyAndCount();
 
@@ -582,7 +584,8 @@ export class SearchService {
         `ts_rank(competition.search_vector, plainto_tsquery('english', :query))`,
         'DESC',
       )
-      .addOrderBy('competition.id', 'ASC');
+      .addOrderBy('competition.participant_count', 'DESC')
+      .addOrderBy('competition.start_time', 'DESC');
 
     const [ftsRaw, ftsCount] = await ftsQb.getManyAndCount();
 
@@ -633,7 +636,7 @@ export class SearchService {
             similarity(coalesce(competition.description, ''), :query)
           ) >= :trgmThreshold
         )`,
-        { query, trgmThreshold: TRGM_SIMILARITY_THRESHOLD },
+        { query, trgmThreshold: this.configService.get<number>('SEARCH_TRGM_SIMILARITY_THRESHOLD', 0.1) },
       )
       .setParameter('query', query)
       .orderBy(
@@ -646,7 +649,8 @@ export class SearchService {
         )`,
         'DESC',
       )
-      .addOrderBy('competition.id', 'ASC');
+      .addOrderBy('competition.participant_count', 'DESC')
+      .addOrderBy('competition.start_time', 'DESC');
 
     const [trgmRaw, trgmCount] = await trgmQb.getManyAndCount();
 

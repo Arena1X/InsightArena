@@ -2,6 +2,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { ConfigService } from '@nestjs/config';
 import { SelectQueryBuilder } from 'typeorm';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
@@ -101,6 +102,10 @@ describe('SearchService', () => {
     set: jest.Mock;
   };
 
+  const mockConfigService = {
+    get: jest.fn().mockImplementation((key, defaultValue) => defaultValue),
+  };
+
   beforeEach(async () => {
     // Return count >= FTS_FALLBACK_THRESHOLD (3) so we get the fast FTS path
     marketQb = makeQb([mockMarket], 5);
@@ -132,6 +137,10 @@ describe('SearchService', () => {
         {
           provide: CACHE_MANAGER,
           useValue: mockCacheManager,
+        },
+        {
+          provide: ConfigService,
+          useValue: mockConfigService,
         },
       ],
     }).compile();
@@ -332,6 +341,10 @@ describe('SearchService', () => {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
           },
+          {
+            provide: ConfigService,
+            useValue: mockConfigService,
+          },
         ],
       }).compile();
 
@@ -378,6 +391,10 @@ describe('SearchService', () => {
           {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
+          },
+          {
+            provide: ConfigService,
+            useValue: mockConfigService,
           },
         ],
       }).compile();
@@ -429,6 +446,10 @@ describe('SearchService', () => {
           {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
+          },
+          {
+            provide: ConfigService,
+            useValue: mockConfigService,
           },
         ],
       }).compile();
@@ -617,6 +638,10 @@ describe('SearchService', () => {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
           },
+          {
+            provide: ConfigService,
+            useValue: mockConfigService,
+          },
         ],
       }).compile();
 
@@ -670,6 +695,10 @@ describe('SearchService', () => {
           {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
+          },
+          {
+            provide: ConfigService,
+            useValue: mockConfigService,
           },
         ],
       }).compile();

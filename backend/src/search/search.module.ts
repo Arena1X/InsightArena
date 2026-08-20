@@ -1,3 +1,4 @@
+import { ConfigModule } from '@nestjs/config';
 import { Module } from '@nestjs/common';
 import { CacheModule } from '@nestjs/cache-manager';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -11,6 +12,7 @@ import { SearchService } from './search.service';
   imports: [
     TypeOrmModule.forFeature([Market, User, Competition]),
     CacheModule.register(),
+    ConfigModule,
   ],
   controllers: [SearchController],
   providers: [SearchService],
