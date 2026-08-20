@@ -6,6 +6,7 @@ import { SearchService } from './search.service';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
 import { Competition } from '../competitions/entities/competition.entity';
+import { ConfigService } from '@nestjs/config';
 
 /**
  * Integration tests for wildcard escaping in suggestions endpoint.
@@ -43,6 +44,15 @@ describe('SearchService - Wildcard Escaping Integration', () => {
         {
           provide: CACHE_MANAGER,
           useValue: { get: jest.fn(), set: jest.fn() },
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn().mockImplementation((key: string) => {
+              if (key === 'SEARCH_SIMILARITY_THRESHOLD') return 0.2;
+              return null;
+            }),
+          },
         },
       ],
     }).compile();
