@@ -1,4 +1,4 @@
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const SHELL_CACHE = `insightarena-shell-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `insightarena-runtime-${CACHE_VERSION}`;
 const OFFLINE_URL = "/offline";
@@ -7,6 +7,9 @@ const APP_SHELL = ["/", OFFLINE_URL, "/manifest.webmanifest"];
 
 const STATIC_ASSET_PATTERN =
   /\.(?:png|jpg|jpeg|svg|gif|webp|ico|woff2?|ttf)$/;
+
+// API paths we want to cache for offline reads of previously-viewed data.
+const API_CACHE_PATTERN = /^\/api\/(markets|leaderboard|leaderboards|events|predictions|portfolio|wallet)/;
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -77,7 +80,25 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Everything else (data requests, RSC payloads): stale-while-revalidate.
+  // API data (markets, leaderboard, etc.): network-first with cache fallback.
+  // This gives users offline access to the last-viewed data they've already
+  // fetched before the connection dropped.
+  if (API_CACHE_PATTERN.test(url.pathname)) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => cachePut(request, response))
+        .catch(async () => {
+          const cached = await caches.match(request);
+          return cached || new Response(
+            JSON.stringify({ error: "offline", data: null }),
+            { status: 503, headers: { "Content-Type": "application/json" } },
+          );
+        }),
+    );
+    return;
+  }
+
+  // Everything else (RSC payloads, other data): stale-while-revalidate.
   event.respondWith(
     caches.match(request).then((cached) => {
       const networkFetch = fetch(request)
