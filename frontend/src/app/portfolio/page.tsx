@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowUpDown, ArrowUp, ArrowDown, Filter, Wallet } from "lucide-react";
+import { ArrowUpDown, ArrowUp, ArrowDown, Download, Filter, Wallet } from "lucide-react";
 
 import Footer from "@/component/Footer";
 import Header from "@/component/Header";
@@ -13,6 +13,12 @@ import {
   type SortField,
   type SortDirection,
 } from "@/hooks/usePortfolio";
+import {
+  computePositionPnl,
+  downloadCsv,
+  positionsToCsv,
+  sumPnlBreakdown,
+} from "@/lib/utils";
 
 const STATUS_FILTERS: { label: string; value: PositionStatus | "all" }[] = [
   { label: "All", value: "all" },
@@ -35,8 +41,7 @@ function formatStroops(stroops: string): string {
   });
 }
 
-function formatPnl(pnl: string): { text: string; className: string } {
-  const num = Number(pnl);
+function formatPnlAmount(num: number): { text: string; className: string } {
   if (Number.isNaN(num) || num === 0)
     return { text: "0 XLM", className: "text-gray-400" };
   const formatted = `${num > 0 ? "+" : ""}${(num / 10_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} XLM`;
@@ -44,6 +49,11 @@ function formatPnl(pnl: string): { text: string; className: string } {
     text: formatted,
     className: num > 0 ? "text-green-400" : "text-red-400",
   };
+}
+
+function formatPnl(pnl: string): { text: string; className: string } {
+  const num = Number(pnl);
+  return formatPnlAmount(Number.isNaN(num) ? 0 : num);
 }
 
 const STATUS_BADGE: Record<PositionStatus, string> = {
@@ -76,7 +86,16 @@ export default function PortfolioPage() {
     [total],
   );
 
+  const pnlTotals = useMemo(() => sumPnlBreakdown(positions), [positions]);
+
   const toggleSortDir = () => setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+
+  const handleExportCsv = () => {
+    if (positions.length === 0) return;
+    const csv = positionsToCsv(positions);
+    const datePart = new Date().toISOString().slice(0, 10);
+    downloadCsv(`insightarena-portfolio-${datePart}.csv`, csv);
+  };
 
   if (!isAuthenticated) {
     return (
@@ -110,6 +129,16 @@ export default function PortfolioPage() {
                 View your open and settled positions with performance tracking.
               </p>
             </div>
+
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              disabled={isLoading || positions.length === 0}
+              className="inline-flex items-center gap-2 self-start rounded-lg border border-white/10 bg-gray-950/60 px-4 py-2 text-sm font-medium text-gray-300 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Download className="h-4 w-4" />
+              Export CSV
+            </button>
           </div>
 
           {/* Filters */}
@@ -210,7 +239,13 @@ export default function PortfolioPage() {
                           Current Value
                         </th>
                         <th scope="col" className="px-5 py-4 text-right">
-                          P&L
+                          Realized P&L
+                        </th>
+                        <th scope="col" className="px-5 py-4 text-right">
+                          Unrealized P&L
+                        </th>
+                        <th scope="col" className="px-5 py-4 text-right">
+                          Total P&L
                         </th>
                         <th scope="col" className="px-5 py-4 text-center">
                           Status
@@ -219,7 +254,10 @@ export default function PortfolioPage() {
                     </thead>
                     <tbody className="divide-y divide-white/10 bg-gray-950/40">
                       {positions.map((pos) => {
-                        const pnl = formatPnl(pos.pnl);
+                        const { realized, unrealized } = computePositionPnl(pos);
+                        const realizedFmt = formatPnlAmount(realized);
+                        const unrealizedFmt = formatPnlAmount(unrealized);
+                        const totalFmt = formatPnl(pos.pnl);
                         return (
                           <tr
                             key={pos.id}
@@ -238,9 +276,19 @@ export default function PortfolioPage() {
                               {formatStroops(pos.current_value)} XLM
                             </td>
                             <td
-                              className={`px-5 py-4 text-right font-mono font-semibold ${pnl.className}`}
+                              className={`px-5 py-4 text-right font-mono ${realizedFmt.className}`}
                             >
-                              {pnl.text}
+                              {realizedFmt.text}
+                            </td>
+                            <td
+                              className={`px-5 py-4 text-right font-mono ${unrealizedFmt.className}`}
+                            >
+                              {unrealizedFmt.text}
+                            </td>
+                            <td
+                              className={`px-5 py-4 text-right font-mono font-semibold ${totalFmt.className}`}
+                            >
+                              {totalFmt.text}
                             </td>
                             <td className="px-5 py-4 text-center">
                               <span
@@ -253,6 +301,31 @@ export default function PortfolioPage() {
                         );
                       })}
                     </tbody>
+                    <tfoot>
+                      <tr className="border-t border-white/10 bg-gray-950/60 font-semibold">
+                        <td className="px-5 py-4 text-white" colSpan={4}>
+                          Totals ({positions.length}{" "}
+                          {positions.length === 1 ? "position" : "positions"}
+                          {totalPages > 1 ? " on this page" : ""})
+                        </td>
+                        <td
+                          className={`px-5 py-4 text-right font-mono ${formatPnlAmount(pnlTotals.realized).className}`}
+                        >
+                          {formatPnlAmount(pnlTotals.realized).text}
+                        </td>
+                        <td
+                          className={`px-5 py-4 text-right font-mono ${formatPnlAmount(pnlTotals.unrealized).className}`}
+                        >
+                          {formatPnlAmount(pnlTotals.unrealized).text}
+                        </td>
+                        <td
+                          className={`px-5 py-4 text-right font-mono ${formatPnlAmount(pnlTotals.realized + pnlTotals.unrealized).className}`}
+                        >
+                          {formatPnlAmount(pnlTotals.realized + pnlTotals.unrealized).text}
+                        </td>
+                        <td />
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
 
