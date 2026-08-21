@@ -23,6 +23,7 @@ import { UsersService } from '../users/users.service';
 import { SorobanService } from '../soroban/soroban.service';
 import { SlippageCheckerService } from './services/slippage-checker.service';
 import { SlippageExceededException } from './exceptions/slippage-exceeded.exception';
+import { MarketsService } from '../markets/markets.service';
 
 type MockRepo<T extends ObjectLiteral> = jest.Mocked<
   Pick<
@@ -200,6 +201,10 @@ describe('PredictionsService', () => {
         },
         { provide: getDataSourceToken(), useValue: mockDataSource },
         { provide: ConfigService, useValue: mockConfigService },
+        {
+          provide: MarketsService,
+          useValue: { updateOddsSnapshot: jest.fn().mockResolvedValue(undefined) },
+        },
       ],
     }).compile();
 

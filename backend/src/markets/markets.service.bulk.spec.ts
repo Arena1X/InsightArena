@@ -16,6 +16,7 @@ import { Prediction } from '../predictions/entities/prediction.entity';
 import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { OddsBroadcasterService } from '../websocket/odds-broadcaster.service';
 
 describe('MarketsService - Bulk Creation', () => {
   let service: MarketsService;
@@ -141,6 +142,10 @@ describe('MarketsService - Bulk Creation', () => {
             getDeadLetterQueue: jest.fn(),
             retrySettlement: jest.fn(),
           },
+        },
+        {
+          provide: OddsBroadcasterService,
+          useValue: { broadcastOddsUpdate: jest.fn() },
         },
       ],
     }).compile();

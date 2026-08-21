@@ -25,6 +25,7 @@ import { Prediction } from '../predictions/entities/prediction.entity';
 import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
 import { MarketsService } from './markets.service';
 import { MarketSettlementScheduler } from './market-settlement.scheduler';
+import { OddsBroadcasterService } from '../websocket/odds-broadcaster.service';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
 
 type MockRepo = jest.Mocked<
@@ -153,6 +154,10 @@ describe('MarketsService', () => {
             getDeadLetterQueue: jest.fn(),
             retrySettlement: jest.fn(),
           },
+        },
+        {
+          provide: OddsBroadcasterService,
+          useValue: { broadcastOddsUpdate: jest.fn() },
         },
       ],
     }).compile();
@@ -464,6 +469,10 @@ describe('MarketsService.findFeaturedMarkets', () => {
             retrySettlement: jest.fn(),
           },
         },
+        {
+          provide: OddsBroadcasterService,
+          useValue: { broadcastOddsUpdate: jest.fn() },
+        },
       ],
     }).compile();
 
@@ -645,6 +654,10 @@ describe('MarketsService.update', () => {
             getDeadLetterQueue: jest.fn(),
             retrySettlement: jest.fn(),
           },
+        },
+        {
+          provide: OddsBroadcasterService,
+          useValue: { broadcastOddsUpdate: jest.fn() },
         },
       ],
     }).compile();
@@ -864,7 +877,20 @@ describe('MarketsService.getPredictionStats', () => {
         },
         {
           provide: CACHE_MANAGER,
-          useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
+          useFactory: () => {
+            const store = new Map();
+            return {
+              get: jest.fn((key) => Promise.resolve(store.get(key))),
+              set: jest.fn((key, value) => {
+                store.set(key, value);
+                return Promise.resolve();
+              }),
+              del: jest.fn((key) => {
+                store.delete(key);
+                return Promise.resolve();
+              }),
+            };
+          },
         },
         {
           provide: MarketSettlementScheduler,
@@ -872,6 +898,10 @@ describe('MarketsService.getPredictionStats', () => {
             getDeadLetterQueue: jest.fn(),
             retrySettlement: jest.fn(),
           },
+        },
+        {
+          provide: OddsBroadcasterService,
+          useValue: { broadcastOddsUpdate: jest.fn() },
         },
       ],
     }).compile();
@@ -1018,6 +1048,10 @@ describe('MarketsService.cancelMarket', () => {
             getDeadLetterQueue: jest.fn(),
             retrySettlement: jest.fn(),
           },
+        },
+        {
+          provide: OddsBroadcasterService,
+          useValue: { broadcastOddsUpdate: jest.fn() },
         },
       ],
     }).compile();
@@ -1177,6 +1211,10 @@ describe('MarketsService pause/resume cache invalidation', () => {
             retrySettlement: jest.fn(),
           },
         },
+        {
+          provide: OddsBroadcasterService,
+          useValue: { broadcastOddsUpdate: jest.fn() },
+        },
       ],
     }).compile();
 
@@ -1326,6 +1364,10 @@ describe('MarketsService settlement grace period workflow', () => {
             getDeadLetterQueue: jest.fn(),
             retrySettlement: jest.fn(),
           },
+        },
+        {
+          provide: OddsBroadcasterService,
+          useValue: { broadcastOddsUpdate: jest.fn() },
         },
       ],
     }).compile();

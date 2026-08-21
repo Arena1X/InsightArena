@@ -20,6 +20,7 @@ import { DataSource } from 'typeorm';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { MarketSettlementScheduler } from './market-settlement.scheduler';
+import { OddsBroadcasterService } from '../websocket/odds-broadcaster.service';
 
 describe('MarketsService - getPriceHistory', () => {
   let service: MarketsService;
@@ -71,6 +72,10 @@ describe('MarketsService - getPriceHistory', () => {
         { provide: WebhookDispatcherService, useValue: { emit: jest.fn() } },
         { provide: CACHE_MANAGER, useValue: {} },
         { provide: MarketSettlementScheduler, useValue: {} },
+        {
+          provide: OddsBroadcasterService,
+          useValue: { broadcastOddsUpdate: jest.fn() },
+        },
       ],
     }).compile();
 

@@ -14,6 +14,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { DataSource, Repository } from 'typeorm';
 import { CACHE_WARMING_KEYS } from '../cache/cache-warming.keys';
+import { OddsBroadcasterService } from '../websocket/odds-broadcaster.service';
 
 import { SorobanService } from '../soroban/soroban.service';
 import { User } from '../users/entities/user.entity';
@@ -57,12 +58,6 @@ export class MarketsService {
     cachedAt: number;
   } | null = null;
   private readonly TRENDING_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
-  private predictionStatsCache: Map<
-    string,
-    { data: PredictionStatsDto[]; cachedAt: number }
-  > = new Map();
-
-  private readonly PREDICTION_STATS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor(
     @InjectRepository(Market)
@@ -84,6 +79,8 @@ export class MarketsService {
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
     @Inject(forwardRef(() => MarketSettlementScheduler))
     private readonly settlementScheduler: MarketSettlementScheduler,
+    @Inject(forwardRef(() => OddsBroadcasterService))
+    private readonly oddsBroadcaster: OddsBroadcasterService,
   ) {}
 
   /**
@@ -111,13 +108,13 @@ export class MarketsService {
     const market = await this.findByIdOrOnChainId(marketId);
 
     // Check cache
-    const now = Date.now();
-    const cached = this.predictionStatsCache.get(marketId);
-    if (cached && now - cached.cachedAt < this.PREDICTION_STATS_CACHE_TTL_MS) {
+    const cacheKey = CACHE_WARMING_KEYS.marketOddsSnapshot(marketId);
+    const cached = await this.cacheManager.get<PredictionStatsDto[]>(cacheKey);
+    if (cached) {
       this.logger.debug(
         `Returning cached prediction stats for market "${market.title}" (${marketId})`,
       );
-      return cached.data;
+      return cached;
     }
 
     // Query predictions grouped by outcome
@@ -151,13 +148,41 @@ export class MarketsService {
     const stats = Array.from(statsByOutcome.values());
 
     // Cache the results
-    this.predictionStatsCache.set(marketId, { data: stats, cachedAt: now });
+    await this.cacheManager.set(cacheKey, stats, 0);
 
     this.logger.log(
-      `Retrieved prediction stats for market "${market.title}" (${marketId}) - ${stats.length} outcomes, ${predictions.length} total predictions`,
+      `Retrieved and cached prediction stats for market "${market.title}" (${marketId}) - ${stats.length} outcomes, ${predictions.length} total predictions`,
     );
 
     return stats;
+  }
+
+  /**
+   * Incrementally updates the odds snapshot and broadcasts the update.
+   */
+  async updateOddsSnapshot(
+    marketId: string,
+    chosenOutcome: string,
+    stakeAmount: bigint,
+  ): Promise<void> {
+    const market = await this.findByIdOrOnChainId(marketId);
+    
+    // Ensure we have a baseline snapshot
+    let snapshot = await this.getPredictionStats(marketId);
+    
+    // Find the outcome to update
+    const outcomeStat = snapshot.find(s => s.outcome === chosenOutcome);
+    if (outcomeStat) {
+      outcomeStat.count += 1;
+      outcomeStat.total_staked_stroops = String(BigInt(outcomeStat.total_staked_stroops) + stakeAmount);
+    }
+    
+    // Save back to cache
+    const cacheKey = CACHE_WARMING_KEYS.marketOddsSnapshot(marketId);
+    await this.cacheManager.set(cacheKey, snapshot, 0);
+    
+    // Broadcast
+    this.oddsBroadcaster.broadcastOddsUpdate(marketId, snapshot);
   }
 
   /**

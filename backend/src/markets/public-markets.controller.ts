@@ -87,4 +87,26 @@ export class PublicMarketsController {
     }
     return PublicMarketResponseDto.fromEntity(market);
   }
+
+  @Get(':id/odds')
+  @ApiOperation({
+    summary: 'Get public market odds snapshot',
+    description:
+      'Public API tier endpoint. Requires an X-API-Key with the public:read scope. Returns the current incrementally updated odds snapshot.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Current odds snapshot',
+  })
+  @ApiResponse({ status: 401, description: 'Missing or invalid API key' })
+  @ApiResponse({ status: 403, description: 'API key lacks public:read scope' })
+  @ApiResponse({ status: 404, description: 'Public market not found' })
+  @ApiResponse({ status: 429, description: 'Public API rate limit exceeded' })
+  async getOdds(@Param('id') id: string): Promise<any> {
+    const market = await this.marketsService.findByIdOrOnChainId(id);
+    if (!market.is_public) {
+      throw new NotFoundException(`Public market with ID "${id}" not found`);
+    }
+    return this.marketsService.getPredictionStats(market.id);
+  }
 }

@@ -14,6 +14,7 @@ import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Repository, ObjectLiteral } from 'typeorm';
 import { PredictionsService } from './predictions.service';
+import { MarketsService } from '../markets/markets.service';
 import { Prediction } from './entities/prediction.entity';
 import { PredictionFraudFlag } from './entities/prediction-fraud-flag.entity';
 import { Market } from '../markets/entities/market.entity';
@@ -179,6 +180,10 @@ describe('PredictionsService.getPnl()', () => {
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue(undefined) },
+        },
+        {
+          provide: MarketsService,
+          useValue: { updateOddsSnapshot: jest.fn().mockResolvedValue(undefined) },
         },
       ],
     }).compile();

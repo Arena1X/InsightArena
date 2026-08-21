@@ -5,6 +5,8 @@ import {
   ForbiddenException,
   NotFoundException,
   Logger,
+  forwardRef,
+  Inject,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -36,6 +38,7 @@ import { ExportPredictionsDto } from './dto/export-predictions.dto';
 import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { Market } from '../markets/entities/market.entity';
+import { MarketsService } from '../markets/markets.service';
 import { SorobanService } from '../soroban/soroban.service';
 import { SlippageCheckerService } from './services/slippage-checker.service';
 import {
@@ -77,6 +80,8 @@ export class PredictionsService {
     private readonly dataSource: DataSource,
     private readonly configService: ConfigService,
     private readonly usersService: UsersService,
+    @Inject(forwardRef(() => MarketsService))
+    private readonly marketsService: MarketsService,
   ) {}
 
   /**
@@ -221,6 +226,15 @@ export class PredictionsService {
         `Referral qualifying-action tracking failed for user ${user.id}`,
         err,
       );
+    });
+
+    // Update odds snapshot incrementally
+    await this.marketsService.updateOddsSnapshot(
+      market.id,
+      dto.chosen_outcome,
+      BigInt(dto.stake_amount_stroops),
+    ).catch(err => {
+      this.logger.error(`Failed to update odds snapshot for market ${market.id}`, err);
     });
 
     return {
