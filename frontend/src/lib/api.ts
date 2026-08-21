@@ -98,3 +98,31 @@ export const apiClient = {
   patch: <T>(path: string, body?: unknown, options?: ApiOptions) => request<T>(path, 'PATCH', { ...options, body }),
   delete: <T>(path: string, options?: ApiOptions) => request<T>(path, 'DELETE', options),
 };
+
+/**
+ * Favorites persistence helpers.
+ *
+ * Expected backend contract:
+ *  - GET    /favorites        → { "marketIds": string[] } (or string[])
+ *  - POST   /favorites        → 200/204 (body: { marketId })
+ *  - DELETE /favorites/:id    → 200/204
+ */
+export interface FavoritesResponse {
+  marketIds?: string[];
+}
+
+export async function fetchServerFavorites(
+  options?: { signal?: AbortSignal },
+): Promise<Set<string>> {
+  const data = await apiClient.get<FavoritesResponse | string[]>('/favorites', options);
+  if (Array.isArray(data)) return new Set(data);
+  return new Set(data?.marketIds ?? []);
+}
+
+export async function addServerFavorite(marketId: string): Promise<void> {
+  await apiClient.post<void>(`/favorites`, { marketId });
+}
+
+export async function removeServerFavorite(marketId: string): Promise<void> {
+  await apiClient.delete<void>(`/favorites/${encodeURIComponent(marketId)}`);
+}

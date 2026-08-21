@@ -6,9 +6,15 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { useWallet } from "./WalletContext";
+import {
+  fetchServerFavorites,
+  addServerFavorite as addServer,
+  removeServerFavorite as removeServer,
+} from "@/lib/api";
 
 export interface FavoritesContextValue {
   favoriteIds: Set<string>;
@@ -17,6 +23,8 @@ export interface FavoritesContextValue {
   addFavorite: (marketId: string) => void;
   removeFavorite: (marketId: string) => void;
   isLoading: boolean;
+  /** Whether the last sync operation failed */
+  syncError: boolean;
 }
 
 const DEFAULT_CONTEXT_VALUE: FavoritesContextValue = {
@@ -26,6 +34,7 @@ const DEFAULT_CONTEXT_VALUE: FavoritesContextValue = {
   addFavorite: () => {},
   removeFavorite: () => {},
   isLoading: false,
+  syncError: false,
 };
 
 const FavoritesContext = createContext<FavoritesContextValue>(
@@ -60,20 +69,62 @@ function writeStoredFavorites(key: string, favorites: Set<string>) {
   }
 }
 
+/**
+ * Merge two sets of favorite IDs (union, deduplicated).
+ * Exported for testing.
+ */
+export function mergeFavorites(
+  local: Set<string>,
+  server: Set<string>,
+): Set<string> {
+  const merged = new Set(local);
+  for (const id of server) {
+    merged.add(id);
+  }
+  return merged;
+}
+
 export function FavoritesProvider({ children }: { children: React.ReactNode }) {
-  const { address } = useWallet();
+  const { address, isAuthenticated } = useWallet();
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(true);
+  const [syncError, setSyncError] = useState(false);
+  // Track the previous address to detect login/logout transitions
+  const prevAddressRef = useRef<string | null>(null);
 
   const storageKey = getStorageKey(address);
 
-  // Load favorites from localStorage on mount and when address changes
+  // Load favorites: on mount, on address change, and on auth state change
   useEffect(() => {
-    setIsLoading(true);
-    const stored = readStoredFavorites(storageKey);
-    setFavoriteIds(stored);
-    setIsLoading(false);
-  }, [storageKey]);
+    const load = async () => {
+      setIsLoading(true);
+      setSyncError(false);
+
+      const local = readStoredFavorites(storageKey);
+
+      if (isAuthenticated && address) {
+        try {
+          const server = await fetchServerFavorites();
+          const merged = mergeFavorites(local, server);
+          setFavoriteIds(merged);
+          // Persist the merged result back to localStorage
+          writeStoredFavorites(storageKey, merged);
+        } catch {
+          // Server unavailable — fall back to local-only
+          setFavoriteIds(local);
+          setSyncError(true);
+        }
+      } else {
+        // Guest or unauthenticated — localStorage only
+        setFavoriteIds(local);
+      }
+
+      setIsLoading(false);
+    };
+
+    load();
+    prevAddressRef.current = address;
+  }, [storageKey, isAuthenticated, address]);
 
   const isFavorite = useCallback(
     (marketId: string) => favoriteIds.has(marketId),
@@ -82,42 +133,65 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
 
   const addFavorite = useCallback(
     (marketId: string) => {
+      // Optimistic update
       setFavoriteIds((prev) => {
         const updated = new Set(prev);
         updated.add(marketId);
         writeStoredFavorites(storageKey, updated);
         return updated;
       });
+
+      // Persist to server (fire-and-forget with rollback on failure)
+      if (isAuthenticated) {
+        addServer(marketId).catch(() => {
+          setFavoriteIds((prev) => {
+            const rolledBack = new Set(prev);
+            rolledBack.delete(marketId);
+            writeStoredFavorites(storageKey, rolledBack);
+            return rolledBack;
+          });
+          setSyncError(true);
+        });
+      }
     },
-    [storageKey],
+    [storageKey, isAuthenticated],
   );
 
   const removeFavorite = useCallback(
     (marketId: string) => {
+      // Optimistic update
       setFavoriteIds((prev) => {
         const updated = new Set(prev);
         updated.delete(marketId);
         writeStoredFavorites(storageKey, updated);
         return updated;
       });
+
+      // Persist to server (fire-and-forget with rollback on failure)
+      if (isAuthenticated) {
+        removeServer(marketId).catch(() => {
+          setFavoriteIds((prev) => {
+            const rolledBack = new Set(prev);
+            rolledBack.add(marketId);
+            writeStoredFavorites(storageKey, rolledBack);
+            return rolledBack;
+          });
+          setSyncError(true);
+        });
+      }
     },
-    [storageKey],
+    [storageKey, isAuthenticated],
   );
 
   const toggleFavorite = useCallback(
     (marketId: string) => {
-      setFavoriteIds((prev) => {
-        const updated = new Set(prev);
-        if (updated.has(marketId)) {
-          updated.delete(marketId);
-        } else {
-          updated.add(marketId);
-        }
-        writeStoredFavorites(storageKey, updated);
-        return updated;
-      });
+      if (favoriteIds.has(marketId)) {
+        removeFavorite(marketId);
+      } else {
+        addFavorite(marketId);
+      }
     },
-    [storageKey],
+    [favoriteIds, addFavorite, removeFavorite],
   );
 
   const value = useMemo<FavoritesContextValue>(
@@ -128,6 +202,7 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
       addFavorite,
       removeFavorite,
       isLoading,
+      syncError,
     }),
     [
       favoriteIds,
@@ -136,6 +211,7 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
       addFavorite,
       removeFavorite,
       isLoading,
+      syncError,
     ],
   );
 
