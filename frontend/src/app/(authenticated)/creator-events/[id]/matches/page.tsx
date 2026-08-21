@@ -372,6 +372,10 @@ export default function MatchManagementPage() {
               currentMatchCount={matches.length}
               maxMatches={MAX_MATCHES}
               onImport={handleBulkImport}
+              existingMatches={matches.map((m) => ({
+                teamA: m.teamA,
+                teamB: m.teamB,
+              }))}
             />
           </section>
         )}
