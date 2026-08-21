@@ -15,7 +15,9 @@ fn bump_prediction(env: &Env, market_id: u64, predictor: &Address) {
 }
 
 fn bump_market(env: &Env, market_id: u64) {
-    config::extend_market_ttl(env, market_id);
+    // Bump the full hot-key set (market + escrow pool + price accumulator) on
+    // every prediction write so active-market state stays alive together. #1516.
+    config::extend_active_market_ttl(env, market_id);
 }
 
 fn bump_predictor_list(env: &Env, market_id: u64) {

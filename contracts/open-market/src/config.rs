@@ -36,6 +36,21 @@ pub const LEDGER_BUMP_INVITE: u32 = 100_800;
 // ~1 year for global config and season snapshots.
 pub const LEDGER_BUMP_PERMANENT: u32 = 5_184_000;
 
+// ── Active-market hot-key TTL thresholds (Issue #1516) ────────────────────────
+// An active market is backed by several "hot" persistent keys that are read and
+// written throughout its lifecycle: the market record itself, the AMM escrow
+// pool that custodies pooled reserves, and the rolling price accumulator
+// (volatility state) used to derive dynamic fees. If any of these is archived
+// mid-lifecycle, the market becomes unusable for stakers. They are therefore
+// bumped together on every active-market write via [`extend_active_market_ttl`],
+// and can be topped up permissionlessly through the `bump_market_ttl`
+// maintenance entry point.
+//
+// Kept equal to `LEDGER_BUMP_MARKET` so the escrow and accumulator never expire
+// before the market they belong to; retune the whole set from here.
+pub const LEDGER_BUMP_ESCROW: u32 = LEDGER_BUMP_MARKET;
+pub const LEDGER_BUMP_ACCUMULATOR: u32 = LEDGER_BUMP_MARKET;
+
 fn ttl_threshold(max: u32) -> u32 {
     max.saturating_sub(14_400)
 }
@@ -57,6 +72,54 @@ fn market_ttl_extension_amount(env: &Env) -> u32 {
     get_config_readonly(env)
         .map(|c| c.market_ttl_extension)
         .unwrap_or(LEDGER_BUMP_MARKET)
+}
+
+/// Extend the TTL on every "hot" persistent key backing an active market so that
+/// none of them is archived out from under stakers mid-lifecycle:
+///
+/// - [`DataKey::Market`] — the market record (always present),
+/// - [`DataKey::LiquidityPool`] — the AMM escrow pool holding pooled reserves,
+/// - [`DataKey::VolatilityState`] — the rolling price accumulator.
+///
+/// The market record is bumped via [`extend_market_ttl`], honouring the
+/// admin-configurable extension amount. The escrow and accumulator keys are
+/// optional — a market with no AMM liquidity has no pool, and one with no
+/// recorded swaps has no volatility state — so each is bumped only when
+/// [`has`](soroban_sdk::storage::Persistent::has) confirms it exists, because
+/// `extend_ttl` panics on a missing key.
+///
+/// This is the single choke point for active-market TTL maintenance: it is called
+/// on every active-market write and by the permissionless `bump_market_ttl` entry
+/// point. Callers must ensure the market record exists before invoking it.
+pub fn extend_active_market_ttl(env: &Env, market_id: u64) {
+    // Market record — always present for a live market; honours admin config.
+    extend_market_ttl(env, market_id);
+
+    // Escrow / AMM pool — only when the market has a liquidity pool.
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::LiquidityPool(market_id))
+    {
+        env.storage().persistent().extend_ttl(
+            &DataKey::LiquidityPool(market_id),
+            ttl_threshold(LEDGER_BUMP_ESCROW),
+            LEDGER_BUMP_ESCROW,
+        );
+    }
+
+    // Price accumulator — only after at least one swap has recorded volatility.
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::VolatilityState(market_id))
+    {
+        env.storage().persistent().extend_ttl(
+            &DataKey::VolatilityState(market_id),
+            ttl_threshold(LEDGER_BUMP_ACCUMULATOR),
+            LEDGER_BUMP_ACCUMULATOR,
+        );
+    }
 }
 
 pub fn extend_prediction_ttl(env: &Env, market_id: u64, predictor: &Address) {

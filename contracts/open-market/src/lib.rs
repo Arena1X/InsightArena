@@ -200,6 +200,17 @@ impl InsightArenaContract {
         market::get_market_count(&env)
     }
 
+    /// Permissionless TTL maintenance for an active market (Issue #1516).
+    ///
+    /// Callable by **anyone** with no authorization, so participants or keepers
+    /// can keep a live market alive by extending the TTL on its hot keys — the
+    /// market record, its escrow/liquidity pool, and its price accumulator —
+    /// preventing them from being archived mid-lifecycle. Returns
+    /// `MarketNotFound` if the market does not exist.
+    pub fn bump_market_ttl(env: Env, market_id: u64) -> Result<(), InsightArenaError> {
+        market::bump_market_ttl(&env, market_id)
+    }
+
     /// Return a paginated list of markets in creation order.
     pub fn list_markets(env: Env, start: u64, limit: u32) -> Vec<Market> {
         market::list_markets(&env, start, limit)
