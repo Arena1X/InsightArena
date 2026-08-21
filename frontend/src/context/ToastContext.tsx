@@ -12,11 +12,16 @@ export interface ToastOptions {
   variant?: ToastVariant;
   /** Milliseconds before auto-dismiss. Pass 0 to disable auto-dismiss. */
   duration?: number;
+  action?: {
+    label: string;
+    onClick: () => void;
+  };
 }
 
 export interface ToastItem extends Required<Pick<ToastOptions, "description" | "variant" | "duration">> {
   id: string;
   title?: string;
+  action?: ToastOptions["action"];
 }
 
 export interface ToastContextValue {
@@ -81,6 +86,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         description: options.description,
         variant: options.variant ?? "info",
         duration,
+        action: options.action,
       };
       setToasts((prev) => [...prev, toast]);
       scheduleDismiss(id, duration);
