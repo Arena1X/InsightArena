@@ -30,6 +30,7 @@ export interface PredictionSlipContextValue {
   addItem: (item: Omit<SlipItem, "amount">) => void;
   removeItem: (marketId: string) => void;
   updateAmount: (marketId: string, amount: number) => void;
+  restoreItem: (item: SlipItem) => void;
   clearSlip: () => void;
 }
 
@@ -45,6 +46,7 @@ const DEFAULT_CONTEXT_VALUE: PredictionSlipContextValue = {
   addItem: () => {},
   removeItem: () => {},
   updateAmount: () => {},
+  restoreItem: () => {},
   clearSlip: () => {},
 };
 
@@ -124,6 +126,14 @@ export function PredictionSlipProvider({
     );
   }, []);
 
+  const restoreItem = useCallback((item: SlipItem) => {
+    setItems((prev) => {
+      const withoutStaleCopy = prev.filter((candidate) => candidate.marketId !== item.marketId);
+      return [...withoutStaleCopy, { ...item }];
+    });
+    setIsOpen(true);
+  }, []);
+
   const clearSlip = useCallback(() => {
     setItems([]);
   }, []);
@@ -155,6 +165,7 @@ export function PredictionSlipProvider({
       addItem,
       removeItem,
       updateAmount,
+      restoreItem,
       clearSlip,
     }),
     [
@@ -168,6 +179,7 @@ export function PredictionSlipProvider({
       addItem,
       removeItem,
       updateAmount,
+      restoreItem,
       clearSlip,
     ],
   );
