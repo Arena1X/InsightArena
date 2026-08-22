@@ -7,6 +7,8 @@ import {
   LeaderboardQueryDto,
   PaginatedLeaderboardResponse,
 } from './dto/leaderboard-query.dto';
+import { CoachInsightsResponse } from './dto/coach-insights.dto';
+import { User } from '../users/entities/user.entity';
 
 describe('LeaderboardController', () => {
   let controller: LeaderboardController;
@@ -52,6 +54,7 @@ describe('LeaderboardController', () => {
             getHistoryForAddress: jest.fn(),
             getRankHistory: jest.fn(),
             getSnapshots: jest.fn(),
+            getCoachInsights: jest.fn(),
           },
         },
       ],
@@ -276,6 +279,63 @@ describe('LeaderboardController', () => {
 
       expect(result.data).toEqual([]);
       expect(result.message).toContain('No snapshots found');
+    });
+  });
+
+  describe('getCoachInsights', () => {
+    const coachUser = { id: 'user-uuid-1' } as User;
+
+    it('should return tailored insights scoped to the authenticated user', async () => {
+      const insightsResponse: CoachInsightsResponse = {
+        has_history: true,
+        message: null,
+        insights: {
+          accuracy_trend: {
+            direction: 'improving',
+            recent_accuracy: 80,
+            prior_accuracy: 50,
+          },
+          best_category: {
+            category: 'Crypto',
+            predictions: 5,
+            correct: 4,
+            accuracy_rate: '80.0',
+          },
+          worst_category: null,
+          current_streak: 3,
+          longest_streak: 5,
+          total_resolved: 12,
+          generated_at: new Date('2026-08-19T10:00:00Z').toISOString(),
+        },
+      };
+      const spy = jest
+        .spyOn(service, 'getCoachInsights')
+        .mockResolvedValue(insightsResponse);
+
+      const result = await controller.getCoachInsights(coachUser);
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith(coachUser);
+      expect(result.has_history).toBe(true);
+      expect(result.insights?.best_category?.category).toBe('Crypto');
+    });
+
+    it('should pass through the new-user shape unchanged', async () => {
+      const onboardingResponse: CoachInsightsResponse = {
+        has_history: false,
+        message:
+          'Make a few more predictions to unlock your personalised coach insights.',
+        insights: null,
+      };
+      jest
+        .spyOn(service, 'getCoachInsights')
+        .mockResolvedValue(onboardingResponse);
+
+      const result = await controller.getCoachInsights(coachUser);
+
+      expect(result.has_history).toBe(false);
+      expect(result.insights).toBeNull();
+      expect(result.message).toContain('predictions');
     });
   });
 });

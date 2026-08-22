@@ -8,6 +8,7 @@ import { LeaderboardService } from './leaderboard.service';
 import { LeaderboardEntry } from './entities/leaderboard-entry.entity';
 import { LeaderboardHistory } from './entities/leaderboard-history.entity';
 import { LeaderboardSnapshot } from './entities/leaderboard-snapshot.entity';
+import { Prediction } from '../predictions/entities/prediction.entity';
 import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { SeasonsService } from '../seasons/seasons.service';
@@ -81,6 +82,25 @@ describe('LeaderboardService', () => {
     delete: jest.fn().mockResolvedValue({ affected: 0 }),
   };
 
+  const mockPredictionQb = {
+    leftJoinAndSelect: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    take: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    addSelect: jest.fn().mockReturnThis(),
+    innerJoin: jest.fn().mockReturnThis(),
+    groupBy: jest.fn().mockReturnThis(),
+    having: jest.fn().mockReturnThis(),
+    getMany: jest.fn().mockResolvedValue([]),
+    getRawMany: jest.fn().mockResolvedValue([]),
+  };
+
+  const mockPredictionRepository = {
+    createQueryBuilder: jest.fn(() => mockPredictionQb),
+  };
+
   const mockUsersService = {
     findAll: jest.fn(),
     findByAddress: jest.fn(),
@@ -121,6 +141,10 @@ describe('LeaderboardService', () => {
           useValue: mockSnapshotRepository,
         },
         {
+          provide: getRepositoryToken(Prediction),
+          useValue: mockPredictionRepository,
+        },
+        {
           provide: UsersService,
           useValue: mockUsersService,
         },
@@ -159,6 +183,11 @@ describe('LeaderboardService', () => {
     mockSnapshotQb.orderBy.mockReturnThis();
     mockSnapshotQb.addOrderBy.mockReturnThis();
     mockSnapshotQb.getMany.mockResolvedValue([]);
+    mockPredictionRepository.createQueryBuilder.mockReturnValue(
+      mockPredictionQb,
+    );
+    mockPredictionQb.getMany.mockResolvedValue([]);
+    mockPredictionQb.getRawMany.mockResolvedValue([]);
     mockConfigService.get.mockImplementation(
       (_key: string, defaultValue?: unknown) => defaultValue,
     );
@@ -603,6 +632,295 @@ describe('LeaderboardService', () => {
       await service.getSnapshots({ date: '2026-07-15', limit: 999 });
 
       expect(mockSnapshotQbForDate.take).toHaveBeenCalledWith(100);
+    });
+  });
+
+  describe('coach insights', () => {
+    const coachUser = { id: 'user-uuid-1' } as User;
+
+    const COACH_BASE_DATE = new Date('2026-08-01T12:00:00Z').getTime();
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    /**
+     * Builds one prediction row for the coach fixture.
+     * resolvedOutcome === null means the market is still unresolved (row is
+     * excluded from analysis); is_cancelled rows are excluded too.
+     */
+    function coachPrediction(
+      dayOffset: number,
+      category: string,
+      chosenOutcome: string,
+      resolvedOutcome: string | null,
+      overrides: Partial<{ is_resolved: boolean; is_cancelled: boolean }> = {},
+    ) {
+      return {
+        id: `pred-${dayOffset}-${category}-${chosenOutcome}`,
+        chosen_outcome: chosenOutcome,
+        submitted_at: new Date(COACH_BASE_DATE + dayOffset * DAY_MS),
+        market: {
+          category,
+          is_resolved:
+            overrides.is_resolved ??
+            (resolvedOutcome !== null && !overrides.is_cancelled),
+          is_cancelled: overrides.is_cancelled ?? false,
+          resolved_outcome: resolvedOutcome,
+        },
+      };
+    }
+
+    /**
+     * Known fixture, ordered most-recent-first exactly like the service's
+     * `submitted_at DESC` query returns it.
+     *
+     * Chronological correctness (oldest -> newest): F F F F T T T T
+     *   - trend: prior half 0%, recent half 100% -> improving
+     *   - Crypto: d1,d3,d6,d7,d8 -> 5 preds, 3 correct -> '60.0' (best)
+     *   - Sports: d2,d4,d5       -> 3 preds, 1 correct -> '33.3' (worst)
+     *   - current_streak 4, longest_streak 4
+     */
+    const coachFixtureDesc = [
+      // Most recent entries must be excluded from analysis entirely.
+      coachPrediction(20, 'Crypto', 'Yes', null), // unresolved market
+      coachPrediction(19, 'Crypto', 'Yes', 'Yes', {
+        is_resolved: true,
+        is_cancelled: true,
+      }), // cancelled market
+      // Resolved history (day 8 oldest ... day 1 newest).
+      coachPrediction(8, 'Crypto', 'Yes', 'Yes'),
+      coachPrediction(7, 'Crypto', 'No', 'No'),
+      coachPrediction(6, 'Crypto', 'Yes', 'Yes'),
+      coachPrediction(5, 'Sports', 'No', 'No'),
+      coachPrediction(4, 'Sports', 'Yes', 'No'),
+      coachPrediction(3, 'Crypto', 'No', 'Yes'),
+      coachPrediction(2, 'Sports', 'No', 'Yes'),
+      coachPrediction(1, 'Crypto', 'Yes', 'No'),
+    ];
+
+    it('computes accuracy trend, best/worst category and streaks from a known history', async () => {
+      mockPredictionQb.getMany.mockResolvedValue(coachFixtureDesc);
+
+      const result = await service.computeCoachInsights(coachUser);
+
+      expect(result.has_history).toBe(true);
+      expect(result.message).toBeNull();
+      expect(result.insights).toEqual(
+        expect.objectContaining({
+          accuracy_trend: {
+            direction: 'improving',
+            recent_accuracy: 100,
+            prior_accuracy: 0,
+          },
+          best_category: {
+            category: 'Crypto',
+            predictions: 5,
+            correct: 3,
+            accuracy_rate: '60.0',
+          },
+          worst_category: {
+            category: 'Sports',
+            predictions: 3,
+            correct: 1,
+            accuracy_rate: '33.3',
+          },
+          current_streak: 4,
+          longest_streak: 4,
+          total_resolved: 8,
+        }),
+      );
+    });
+
+    it('queries only the requesting user and filters to resolved markets', async () => {
+      mockPredictionQb.getMany.mockResolvedValue([]);
+
+      await service.computeCoachInsights(coachUser);
+
+      expect(mockPredictionQb.where).toHaveBeenCalledWith(
+        'prediction.userId = :userId',
+        { userId: 'user-uuid-1' },
+      );
+      expect(mockPredictionQb.andWhere).toHaveBeenCalledWith(
+        'market.is_resolved = :isResolved',
+        { isResolved: true },
+      );
+      expect(mockPredictionQb.andWhere).toHaveBeenCalledWith(
+        'market.is_cancelled = :isCancelled',
+        { isCancelled: false },
+      );
+      expect(mockPredictionQb.orderBy).toHaveBeenCalledWith(
+        'prediction.submitted_at',
+        'DESC',
+      );
+    });
+
+    it('returns the new-user shape below the minimum resolved-prediction threshold', async () => {
+      // Only 4 resolved predictions: below MIN_RESOLVED_PREDICTIONS_FOR_INSIGHTS (5).
+      const shortHistory = [
+        coachPrediction(4, 'Crypto', 'Yes', 'Yes'),
+        coachPrediction(3, 'Sports', 'No', 'No'),
+        coachPrediction(2, 'Crypto', 'Yes', null), // unresolved, doesn't count
+        coachPrediction(2, 'Crypto', 'Yes', 'No'),
+        coachPrediction(1, 'Sports', 'No', 'Yes'),
+      ];
+      mockPredictionQb.getMany.mockResolvedValue(shortHistory);
+
+      const result = await service.computeCoachInsights(coachUser);
+
+      expect(result.has_history).toBe(false);
+      expect(result.insights).toBeNull();
+      expect(typeof result.message).toBe('string');
+      expect(result.message?.length).toBeGreaterThan(0);
+    });
+
+    it('tracks current vs longest streak independently when a loss breaks the run', () => {
+      // Fixture ordered most-recent-first; chronologically C C C W C ->
+      // current streak 1 (only the newest), longest streak 3.
+      const history = [
+        coachPrediction(5, 'Crypto', 'Yes', 'Yes'), // newest - C
+        coachPrediction(4, 'Crypto', 'Yes', 'No'), // W
+        coachPrediction(3, 'Crypto', 'Yes', 'Yes'), // C
+        coachPrediction(2, 'Crypto', 'Yes', 'Yes'), // C
+        coachPrediction(1, 'Crypto', 'Yes', 'Yes'), // oldest - C
+      ];
+
+      const result = LeaderboardService.analyzePredictionHistory(history);
+
+      expect(result.has_history).toBe(true);
+      expect(result.insights?.current_streak).toBe(1);
+      expect(result.insights?.longest_streak).toBe(3);
+    });
+
+    it('serves repeated requests within the week from cache without recomputing', async () => {
+      const cachedResponse = {
+        has_history: true,
+        message: null,
+        insights: { current_streak: 2 },
+      };
+      mockCacheManager.get
+        .mockResolvedValueOnce(null) // first request: cache miss
+        .mockResolvedValueOnce(cachedResponse); // second request within the week
+
+      const computeSpy = jest.spyOn(service, 'computeCoachInsights');
+
+      await service.getCoachInsights(coachUser);
+      const second = await service.getCoachInsights(coachUser);
+
+      expect(computeSpy).toHaveBeenCalledTimes(1);
+      expect(second).toBe(cachedResponse);
+    });
+
+    it('scopes the cache key per user and per ISO week with a bounded TTL', async () => {
+      mockCacheManager.get.mockResolvedValue(null);
+
+      await service.getCoachInsights(coachUser);
+
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        expect.stringMatching(/^leaderboard:coach:user-uuid-1:\d{4}-W\d{2}$/),
+        expect.anything(),
+        expect.any(Number),
+      );
+    });
+
+    it('recomputes on demand and caches when the weekly job has not populated the key yet', async () => {
+      mockCacheManager.get.mockResolvedValue(null);
+      mockPredictionQb.getMany.mockResolvedValue(coachFixtureDesc);
+
+      const result = await service.getCoachInsights(coachUser);
+
+      expect(result.has_history).toBe(true);
+      expect(mockCacheManager.set).toHaveBeenCalled();
+    });
+
+    describe('refreshWeeklyCoachInsights', () => {
+      it('refreshes every eligible user into the current week key and clears last week', async () => {
+        mockPredictionQb.getRawMany.mockResolvedValue([
+          { user_id: 'user-a', resolved_count: '10' },
+          { user_id: 'user-b', resolved_count: '7' },
+        ]);
+        const insightA = { has_history: true, message: null, insights: {} };
+        const insightB = { has_history: true, message: null, insights: {} };
+        const computeSpy = jest
+          .spyOn(service, 'computeCoachInsights')
+          .mockResolvedValueOnce(insightA as never)
+          .mockResolvedValueOnce(insightB as never);
+
+        const refreshed = await service.refreshWeeklyCoachInsights();
+
+        expect(refreshed).toBe(2);
+        expect(computeSpy).toHaveBeenCalledTimes(2);
+        expect(computeSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'user-a' }),
+        );
+        expect(computeSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'user-b' }),
+        );
+
+        const setCalls = mockCacheManager.set.mock.calls;
+        expect(setCalls).toHaveLength(2);
+        for (const [key] of setCalls) {
+          expect(String(key)).toMatch(
+            /^leaderboard:coach:user-[ab]:\d{4}-W\d{2}$/,
+          );
+        }
+        // Previous-week keys for both users were invalidated.
+        const delCalls = mockCacheManager.del.mock.calls.map(([k]) =>
+          String(k),
+        );
+        expect(delCalls).toHaveLength(2);
+        for (const key of delCalls) {
+          expect(key).toMatch(/^leaderboard:coach:user-(a|b):\d{4}-W\d{2}$/);
+        }
+
+        // Current-week keys differ from previous-week keys.
+        const setKeys = setCalls.map(([k]) => String(k));
+        for (const key of delCalls) {
+          expect(setKeys).not.toContain(key);
+        }
+      });
+
+      it('keeps refreshing remaining users when one computation fails', async () => {
+        mockPredictionQb.getRawMany.mockResolvedValue([
+          { user_id: 'user-a', resolved_count: '10' },
+          { user_id: 'user-b', resolved_count: '7' },
+        ]);
+        const computeSpy = jest
+          .spyOn(service, 'computeCoachInsights')
+          .mockRejectedValueOnce(new Error('boom'))
+          .mockResolvedValueOnce({
+            has_history: true,
+            message: null,
+            insights: {},
+          } as never);
+
+        const refreshed = await service.refreshWeeklyCoachInsights();
+
+        expect(refreshed).toBe(1);
+        expect(computeSpy).toHaveBeenCalledTimes(2);
+        expect(mockCacheManager.set).toHaveBeenCalledTimes(1);
+      });
+
+      it('filters eligibility at query time by the minimum threshold', async () => {
+        mockPredictionQb.getRawMany.mockResolvedValue([]);
+
+        await service.refreshWeeklyCoachInsights();
+
+        expect(mockPredictionQb.having).toHaveBeenCalledWith(
+          'COUNT(*) >= :minCount',
+          { minCount: 5 },
+        );
+      });
+    });
+
+    it('derives ISO week ids deterministically', () => {
+      // 2026-01-01 falls in ISO week 1 of 2026; 2025-12-31 also belongs to it.
+      expect(
+        LeaderboardService.getIsoWeekId(new Date('2026-01-01T00:00:00Z')),
+      ).toBe('2026-W01');
+      expect(
+        LeaderboardService.getIsoWeekId(new Date('2026-08-19T10:00:00Z')),
+      ).toBe('2026-W34');
+      expect(
+        LeaderboardService.getIsoWeekId(new Date('2025-12-31T00:00:00Z')),
+      ).toBe('2026-W01');
     });
   });
 });

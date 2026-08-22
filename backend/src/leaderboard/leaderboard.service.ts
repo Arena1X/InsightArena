@@ -19,6 +19,13 @@ import { LeaderboardHistory } from './entities/leaderboard-history.entity';
 import { LeaderboardSnapshot } from './entities/leaderboard-snapshot.entity';
 import { UsersService } from '../users/users.service';
 import { User } from '../users/entities/user.entity';
+import { Prediction } from '../predictions/entities/prediction.entity';
+import {
+  CoachAccuracyTrendDto,
+  CoachCategoryStatDto,
+  CoachInsightPayloadDto,
+  CoachInsightsResponse,
+} from './dto/coach-insights.dto';
 import {
   LeaderboardQueryDto,
   LeaderboardEntryResponse,
@@ -45,10 +52,44 @@ import {
 import { CACHE_WARMING_KEYS } from '../cache/cache-warming.keys';
 import { SeasonsService } from '../seasons/seasons.service';
 
+/**
+ * Minimum number of resolved predictions required before the coach will
+ * produce insights. Below this the API returns has_history=false so the
+ * frontend can render an onboarding state instead of a broken insight card.
+ */
+const MIN_RESOLVED_PREDICTIONS_FOR_INSIGHTS = 5;
+
+/** Maximum number of most-recent resolved predictions analysed per user. */
+const COACH_ANALYSIS_WINDOW = 30;
+
+/** A category needs at least this many resolved predictions to rank as best/worst. */
+const MIN_CATEGORY_PREDICTIONS = 3;
+
+/** Percentage-point change between window halves required to call a trend improving/declining. */
+const TREND_CHANGE_THRESHOLD_PP = 10;
+
+/**
+ * Structural view of a prediction row joined with its market, used by the
+ * pure coach analysis helper so tests can pass plain fixture objects.
+ */
+type CoachPredictionRow = {
+  chosen_outcome: string;
+  submitted_at: Date;
+  market?: {
+    category: string;
+    is_resolved: boolean;
+    is_cancelled?: boolean;
+    resolved_outcome: string | null;
+  } | null;
+};
+
 @Injectable()
 export class LeaderboardService {
   private readonly logger = new Logger(LeaderboardService.name);
   private readonly CACHE_TTL_MS = 1 * 60 * 60 * 1000; // 1 hour
+
+  /** Insights are week-scoped; TTL is only a safety net so nothing lives indefinitely. */
+  private readonly COACH_CACHE_TTL_MS = 8 * 24 * 60 * 60 * 1000;
 
   constructor(
     @InjectRepository(LeaderboardEntry)
@@ -57,6 +98,8 @@ export class LeaderboardService {
     private readonly historyRepository: Repository<LeaderboardHistory>,
     @InjectRepository(LeaderboardSnapshot)
     private readonly snapshotRepository: Repository<LeaderboardSnapshot>,
+    @InjectRepository(Prediction)
+    private readonly predictionRepository: Repository<Prediction>,
     private readonly usersService: UsersService,
     private readonly seasonsService: SeasonsService,
     private readonly dataSource: DataSource,
@@ -822,5 +865,295 @@ export class LeaderboardService {
     });
 
     return { user_id: user.id, data };
+  }
+
+  /**
+   * Returns the personalised coach insights for a user, served from the
+   * per-user, ISO-week-scoped cache when available. On a cache miss (new
+   * user, weekly job not yet run, or previous failure) it computes on demand
+   * and populates the cache rather than erroring.
+   */
+  async getCoachInsights(user: User): Promise<CoachInsightsResponse> {
+    const weekId = LeaderboardService.getIsoWeekId(new Date());
+    const cacheKey = CACHE_WARMING_KEYS.coachInsights(user.id, weekId);
+
+    const cached = await this.cacheManager.get<CoachInsightsResponse>(cacheKey);
+    if (cached) {
+      this.logger.debug(`Cache hit for coach insights: ${cacheKey}`);
+      return cached;
+    }
+
+    const result = await this.computeCoachInsights(user);
+    await this.cacheManager.set(cacheKey, result, this.COACH_CACHE_TTL_MS);
+    this.logger.debug(`Cached coach insights for user ${user.id} (${weekId})`);
+
+    return result;
+  }
+
+  /**
+   * Fetches the user's recent resolved predictions and derives the insight
+   * payload. Public so the scheduler and tests can invoke it directly; the
+   * request-time path is getCoachInsights which wraps it with caching.
+   */
+  async computeCoachInsights(user: User): Promise<CoachInsightsResponse> {
+    const predictions = await this.predictionRepository
+      .createQueryBuilder('prediction')
+      .leftJoinAndSelect('prediction.market', 'market')
+      .where('prediction.userId = :userId', { userId: user.id })
+      .andWhere('market.is_resolved = :isResolved', { isResolved: true })
+      .andWhere('market.is_cancelled = :isCancelled', { isCancelled: false })
+      .orderBy('prediction.submitted_at', 'DESC')
+      .take(COACH_ANALYSIS_WINDOW)
+      .getMany();
+
+    return LeaderboardService.analyzePredictionHistory(predictions);
+  }
+
+  /**
+   * Pure derivation of coach insights from resolved prediction history.
+   * Rows must be ordered most-recent-first (submitted_at DESC), mirroring the
+   * query in computeCoachInsights. Correctness follows the platform-wide rule:
+   * a prediction is correct when market.resolved_outcome === chosen_outcome.
+   */
+  static analyzePredictionHistory(
+    predictions: CoachPredictionRow[],
+  ): CoachInsightsResponse {
+    const resolved = (predictions ?? []).filter(
+      (
+        p,
+      ): p is CoachPredictionRow & {
+        market: NonNullable<CoachPredictionRow['market']>;
+      } =>
+        !!p.market &&
+        p.market.is_resolved &&
+        !p.market.is_cancelled &&
+        p.market.resolved_outcome !== null &&
+        p.market.resolved_outcome !== undefined,
+    );
+
+    if (resolved.length < MIN_RESOLVED_PREDICTIONS_FOR_INSIGHTS) {
+      return {
+        has_history: false,
+        message:
+          'Make a few more predictions to unlock your personalised coach insights.',
+        insights: null,
+      };
+    }
+
+    // Chronological order (oldest -> newest) for trend and streak math.
+    const chronological = [...resolved].reverse();
+
+    const correctness = chronological.map((p) => ({
+      correct: p.market.resolved_outcome === p.chosen_outcome,
+      category: p.market.category,
+    }));
+
+    const accuracy_trend = LeaderboardService.computeAccuracyTrend(correctness);
+    const { best_category, worst_category } =
+      LeaderboardService.computeCategoryStats(correctness);
+    const { current_streak, longest_streak } =
+      LeaderboardService.computeStreaks(correctness);
+
+    const insights: CoachInsightPayloadDto = {
+      accuracy_trend,
+      best_category,
+      worst_category,
+      current_streak,
+      longest_streak,
+      total_resolved: correctness.length,
+      generated_at: new Date().toISOString(),
+    };
+
+    return { has_history: true, message: null, insights };
+  }
+
+  /**
+   * Compares accuracy over the newer half of the window vs the older half.
+   * The change must exceed TREND_CHANGE_THRESHOLD_PP percentage points to
+   * count as improving/declining; anything else is steady.
+   */
+  private static computeAccuracyTrend(
+    correctness: { correct: boolean; category: string }[],
+  ): CoachAccuracyTrendDto {
+    const halfIndex = Math.floor(correctness.length / 2);
+    const prior = correctness.slice(0, halfIndex);
+    const recent = correctness.slice(halfIndex);
+
+    const rate = (rows: { correct: boolean }[]): number =>
+      rows.length === 0
+        ? 0
+        : Math.round(
+            (rows.filter((r) => r.correct).length / rows.length) * 100,
+          );
+
+    const priorAccuracy = rate(prior);
+    const recentAccuracy = rate(recent);
+    const delta = recentAccuracy - priorAccuracy;
+
+    let direction: CoachAccuracyTrendDto['direction'];
+    if (prior.length === 0 || recent.length === 0) {
+      direction = 'not_enough_data';
+    } else if (delta > TREND_CHANGE_THRESHOLD_PP) {
+      direction = 'improving';
+    } else if (delta < -TREND_CHANGE_THRESHOLD_PP) {
+      direction = 'declining';
+    } else {
+      direction = 'steady';
+    }
+
+    return {
+      direction,
+      recent_accuracy: recentAccuracy,
+      prior_accuracy: priorAccuracy,
+    };
+  }
+
+  /**
+   * Ranks categories by accuracy within the analysed window. Only categories
+   * with at least MIN_CATEGORY_PREDICTIONS resolved predictions qualify.
+   */
+  private static computeCategoryStats(
+    correctness: {
+      correct: boolean;
+      category: string;
+    }[],
+  ): {
+    best_category: CoachCategoryStatDto | null;
+    worst_category: CoachCategoryStatDto | null;
+  } {
+    const grouped = new Map<string, { total: number; correct: number }>();
+    for (const entry of correctness) {
+      const stats = grouped.get(entry.category) ?? { total: 0, correct: 0 };
+      stats.total += 1;
+      if (entry.correct) stats.correct += 1;
+      grouped.set(entry.category, stats);
+    }
+
+    const qualified: CoachCategoryStatDto[] = [];
+    for (const [category, stats] of grouped) {
+      if (stats.total < MIN_CATEGORY_PREDICTIONS) continue;
+      qualified.push({
+        category,
+        predictions: stats.total,
+        correct: stats.correct,
+        accuracy_rate: ((stats.correct / stats.total) * 100).toFixed(1),
+      });
+    }
+
+    if (qualified.length === 0) {
+      return { best_category: null, worst_category: null };
+    }
+
+    const sortByAccuracyThenVolume = (
+      a: CoachCategoryStatDto,
+      b: CoachCategoryStatDto,
+    ): number => {
+      const accuracyA = parseFloat(a.accuracy_rate);
+      const accuracyB = parseFloat(b.accuracy_rate);
+      if (accuracyB !== accuracyA) return accuracyB - accuracyA;
+      if (b.predictions !== a.predictions) return b.predictions - a.predictions;
+      return a.category.localeCompare(b.category);
+    };
+
+    const sorted = [...qualified].sort(sortByAccuracyThenVolume);
+
+    return {
+      best_category: sorted[0],
+      worst_category: sorted[sorted.length - 1],
+    };
+  }
+
+  /** Current (trailing) and longest run of consecutive correct predictions. */
+  private static computeStreaks(
+    correctness: {
+      correct: boolean;
+    }[],
+  ): { current_streak: number; longest_streak: number } {
+    let current = 0;
+    let longest = 0;
+
+    for (const entry of correctness) {
+      if (entry.correct) {
+        current += 1;
+        longest = Math.max(longest, current);
+      } else {
+        current = 0;
+      }
+    }
+    // `correctness` ends at the most recent prediction, so `current` already
+    // represents the trailing streak.
+
+    return { current_streak: current, longest_streak: longest };
+  }
+
+  /**
+   * Recomputes and re-caches insights for every eligible user under the
+   * current ISO-week key and deletes their previous-week keys so nothing
+   * stale survives the weekly refresh. Called by the Monday cron job; the
+   * request-time path recomputes on demand for anyone the job missed.
+   */
+  async refreshWeeklyCoachInsights(): Promise<number> {
+    const start = Date.now();
+    this.logger.log('Refreshing weekly coach insights...');
+
+    const rows = await this.predictionRepository
+      .createQueryBuilder('prediction')
+      .select('prediction.userId', 'user_id')
+      .addSelect('COUNT(*)', 'resolved_count')
+      .innerJoin('prediction.market', 'market')
+      .where('market.is_resolved = :isResolved', { isResolved: true })
+      .andWhere('market.is_cancelled = :isCancelled', { isCancelled: false })
+      .groupBy('prediction.userId')
+      .having('COUNT(*) >= :minCount', {
+        minCount: MIN_RESOLVED_PREDICTIONS_FOR_INSIGHTS,
+      })
+      .getRawMany<{ user_id: string; resolved_count: string }>();
+
+    const now = new Date();
+    const currentWeekId = LeaderboardService.getIsoWeekId(now);
+    const previousWeekId = LeaderboardService.getIsoWeekId(
+      new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
+    );
+
+    let refreshed = 0;
+    for (const row of rows) {
+      try {
+        await this.cacheManager.del(
+          CACHE_WARMING_KEYS.coachInsights(row.user_id, previousWeekId),
+        );
+        const insights = await this.computeCoachInsights({
+          id: row.user_id,
+        } as User);
+        await this.cacheManager.set(
+          CACHE_WARMING_KEYS.coachInsights(row.user_id, currentWeekId),
+          insights,
+          this.COACH_CACHE_TTL_MS,
+        );
+        refreshed++;
+      } catch (error) {
+        this.logger.warn(
+          `Failed to refresh coach insights for user ${row.user_id}: ${error instanceof Error ? error.message : error}`,
+        );
+      }
+    }
+
+    this.logger.log(
+      `Weekly coach insights refreshed for ${refreshed}/${rows.length} users in ${Date.now() - start}ms`,
+    );
+    return refreshed;
+  }
+
+  /** ISO-8601 week identifier, e.g. "2026-W34", used to scope cache entries. */
+  static getIsoWeekId(date: Date): string {
+    const d = new Date(
+      Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+    );
+    const dayNumber = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNumber);
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    const weekNo = Math.ceil(
+      ((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7,
+    );
+    return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
   }
 }

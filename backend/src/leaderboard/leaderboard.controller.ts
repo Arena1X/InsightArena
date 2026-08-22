@@ -27,12 +27,39 @@ import {
   LeaderboardSnapshotQueryDto,
   PaginatedSnapshotRankingResponse,
 } from './dto/leaderboard-snapshot-query.dto';
+import { CoachInsightsResponse } from './dto/coach-insights.dto';
 import { Public } from '../common/decorators/public.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { User } from '../users/entities/user.entity';
 
 @ApiTags('Leaderboard')
 @Controller('leaderboard')
 export class LeaderboardController {
   constructor(private readonly leaderboardService: LeaderboardService) {}
+
+  /**
+   * Personalised weekly insights for the authenticated user. Auth required
+   * (no @Public) so insights are always scoped to the caller. Declared before
+   * the :address routes below.
+   */
+  @Get('coach/insights')
+  @ApiOperation({
+    summary:
+      "Get the authenticated user's personalised leaderboard coach insights",
+    description:
+      'Returns accuracy trend, best/worst categories and streaks computed from resolved prediction history. When the user is below the minimum resolved-prediction threshold, has_history is false with an onboarding message instead of insights.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Coach insights or the new-user onboarding shape',
+    type: CoachInsightsResponse,
+  })
+  @ApiResponse({ status: 401, description: 'Not authenticated' })
+  async getCoachInsights(
+    @CurrentUser() user: User,
+  ): Promise<CoachInsightsResponse> {
+    return this.leaderboardService.getCoachInsights(user);
+  }
 
   @Get('top/:n')
   @Public()
