@@ -36,7 +36,41 @@ pub struct CreateMarketParams {
 // ── TTL helpers ───────────────────────────────────────────────────────────────
 
 pub(crate) fn bump_market(env: &Env, market_id: u64) {
-    config::extend_market_ttl(env, market_id);
+    // Extend the whole hot-key set (market + escrow pool + price accumulator),
+    // not just the market record, so an active market's supporting state never
+    // gets archived before the market itself. See Issue #1516.
+    config::extend_active_market_ttl(env, market_id);
+}
+
+/// Permissionless maintenance call that keeps a live market's hot keys alive.
+///
+/// Anyone may invoke this — **no authorization is required** — so that market
+/// participants or off-chain keepers can extend the TTL on an active market's
+/// [`Market`] record, its escrow/liquidity pool, and its price accumulator,
+/// preventing them from being archived out from under stakers mid-lifecycle.
+///
+/// Resolved or cancelled markets are still bumped on request so their
+/// post-resolution claim and dispute windows remain reachable.
+///
+/// # Errors
+/// - `MarketNotFound` when no market exists for `market_id`.
+pub fn bump_market_ttl(env: &Env, market_id: u64) -> Result<(), InsightArenaError> {
+    // Confirm the market exists first: `extend_ttl` traps on a missing key, and
+    // we want a clean, catchable error instead of a contract panic.
+    if !env.storage().persistent().has(&DataKey::Market(market_id)) {
+        return Err(InsightArenaError::MarketNotFound);
+    }
+
+    config::extend_active_market_ttl(env, market_id);
+    emit_market_ttl_bumped(env, market_id);
+    Ok(())
+}
+
+fn emit_market_ttl_bumped(env: &Env, market_id: u64) {
+    env.events().publish(
+        (symbol_short!("market"), symbol_short!("ttl_bump")),
+        market_id,
+    );
 }
 
 fn bump_counter(env: &Env) {
