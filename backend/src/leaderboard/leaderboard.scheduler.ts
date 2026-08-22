@@ -63,6 +63,21 @@ export class LeaderboardScheduler implements OnModuleInit {
   }
 
   /**
+   * Weekly coach insights refresh (Mondays 03:00). Recomputes and re-caches
+   * each eligible user's insights under the new ISO-week cache key. Users
+   * missed by this job still get on-demand computation at request time.
+   */
+  @Cron('0 3 * * 1')
+  async handleWeeklyCoachInsightsRefresh(): Promise<void> {
+    this.logger.log('Weekly coach insights refresh triggered');
+    try {
+      await this.leaderboardService.refreshWeeklyCoachInsights();
+    } catch (err) {
+      this.logger.error('Weekly coach insights refresh failed', err);
+    }
+  }
+
+  /**
    * Persists a rank/score snapshot on the configurable cadence, then prunes
    * snapshots outside the configured retention window.
    */

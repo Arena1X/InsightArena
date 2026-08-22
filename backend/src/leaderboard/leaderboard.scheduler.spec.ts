@@ -28,6 +28,8 @@ describe('LeaderboardScheduler', () => {
             recalculateRanks: jest.fn(),
             createRankSnapshot: jest.fn(),
             pruneSnapshots: jest.fn(),
+            refreshWeeklyCoachInsights: jest.fn(),
+            createDailySnapshot: jest.fn(),
           },
         },
         {
@@ -111,6 +113,28 @@ describe('LeaderboardScheduler', () => {
 
       expect(createSpy).toHaveBeenCalled();
       expect(pruneSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('handleWeeklyCoachInsightsRefresh', () => {
+    it('should trigger the weekly coach insights refresh', async () => {
+      const refreshSpy = jest
+        .spyOn(service, 'refreshWeeklyCoachInsights')
+        .mockResolvedValue(3);
+
+      await scheduler.handleWeeklyCoachInsightsRefresh();
+
+      expect(refreshSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not throw if the weekly refresh fails', async () => {
+      jest
+        .spyOn(service, 'refreshWeeklyCoachInsights')
+        .mockRejectedValue(new Error('DB error'));
+
+      await expect(
+        scheduler.handleWeeklyCoachInsightsRefresh(),
+      ).resolves.not.toThrow();
     });
   });
 });
