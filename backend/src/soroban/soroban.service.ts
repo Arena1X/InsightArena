@@ -8,7 +8,79 @@ import {
   Contract,
   nativeToScVal,
   Networks,
+  Transaction,
 } from '@stellar/stellar-sdk';
+import { withRetry } from '../common/retry.util';
+
+/**
+ * Errors we classify as "definitive rejections" — the network/contract has
+ * conclusively refused the transaction, so resubmitting would just fail
+ * again (or, worse, double-submit). Everything else (network blips, RPC
+ * timeouts, 5xx/429 responses) is treated as transient and retried.
+ */
+const PERMANENT_ERROR_PATTERNS = [
+  /EscrowEmpty/,
+  /InsufficientFunds/,
+  /Simulation failed/,
+  /txMalformed/,
+  /txBadAuth/,
+  /txInsufficientBalance/,
+  /txBadSeq/,
+];
+
+export function isTransientSorobanError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+
+  if (PERMANENT_ERROR_PATTERNS.some((pattern) => pattern.test(error.message))) {
+    return false;
+  }
+
+  // Network-layer failures (fetch/TypeError, abort/timeout, errno codes).
+  if (error instanceof TypeError) return true;
+  if (error.name === 'AbortError') return true;
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause && typeof cause === 'object') {
+    const code = (cause as { code?: unknown }).code;
+    if (
+      typeof code === 'string' &&
+      [
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'ENOTFOUND',
+        'EPIPE',
+        'EHOSTUNREACH',
+        'EAI_AGAIN',
+      ].includes(code)
+    ) {
+      return true;
+    }
+  }
+
+  const httpMatch = /HTTP (\d{3})/.exec(error.message);
+  if (httpMatch) {
+    const status = parseInt(httpMatch[1], 10);
+    return status === 429 || (status >= 500 && status <= 599);
+  }
+
+  // "Transaction submission failed: ..." from a non-definitive RPC error
+  // result (e.g. txTooLate, txInternalError) is treated as transient.
+  return /Transaction submission failed/.test(error.message);
+}
+
+export class SorobanTransientError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SorobanTransientError';
+  }
+}
+
+export class SorobanPermanentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SorobanPermanentError';
+  }
+}
 
 export interface SorobanPredictionResult {
   tx_hash: string;
@@ -257,13 +329,12 @@ export class SorobanService {
         ).build();
         assembledTx.sign(serverKeypair);
 
-        // Submit
-        const response = await this.rpcServer.sendTransaction(assembledTx);
-        if (response.status === 'ERROR') {
-          throw new Error(
-            `Transaction submission failed: ${JSON.stringify(response.errorResult)}`,
-          );
-        }
+        // Submit (retries transient RPC errors with backoff; definitive
+        // rejections surface immediately)
+        const response = await this.sendTransactionWithRetry(
+          assembledTx,
+          `refundCompetitionParticipant[${cid}]`,
+        );
 
         this.logger.log(`[${cid}] Refund submitted. tx_hash=${response.hash}`);
 
@@ -526,13 +597,12 @@ export class SorobanService {
       ).build();
       assembledTx.sign(serverKeypair);
 
-      // Submit
-      const response = await this.rpcServer.sendTransaction(assembledTx);
-      if (response.status === 'ERROR') {
-        throw new Error(
-          `Transaction submission failed: ${JSON.stringify(response.errorResult)}`,
-        );
-      }
+      // Submit (retries transient RPC errors with backoff; definitive
+      // rejections surface immediately)
+      const response = await this.sendTransactionWithRetry(
+        assembledTx,
+        'finalizeEvent',
+      );
 
       this.logger.log(`finalizeEvent submitted: tx_hash=${response.hash}`);
 
@@ -651,6 +721,43 @@ export class SorobanService {
 
       return { events, latestLedger };
     });
+  }
+
+  /**
+   * Submits an already-assembled and signed transaction, retrying on
+   * transient RPC errors (network blips, timeouts, 5xx/429) with backoff.
+   * Definitive rejections (bad auth, malformed tx, insufficient balance,
+   * simulation failure) are surfaced immediately without retrying, since
+   * retrying those would just fail again — or double-submit.
+   */
+  private async sendTransactionWithRetry(
+    tx: Transaction,
+    operation: string,
+  ): Promise<SorobanRpc.Api.SendTransactionResponse> {
+    return withRetry(
+      async () => {
+        const response = await this.rpcServer.sendTransaction(tx);
+        if (response.status === 'ERROR') {
+          const message = `Transaction submission failed: ${JSON.stringify(response.errorResult)}`;
+          throw isTransientSorobanError(new Error(message))
+            ? new SorobanTransientError(message)
+            : new SorobanPermanentError(message);
+        }
+        return response;
+      },
+      {
+        maxAttempts: 3,
+        baseDelayMs: 1000,
+        isTransient: isTransientSorobanError,
+        onRetry: (error, attempt, delayMs) => {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          this.logger.warn(
+            `${operation}: sendTransaction attempt ${attempt + 1} failed transiently (${message}), retrying in ${delayMs}ms`,
+          );
+        },
+      },
+    );
   }
 
   private async withSorobanErrorHandling<T>(
