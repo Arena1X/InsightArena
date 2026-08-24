@@ -257,8 +257,9 @@ pub enum DataKey {
     /// Verification status for an address — true = verified, false = not verified.
     VerifiedAddresses(Address),
 
-    // ── Event invite code index (#795) ───────────────────────────────────────
-    /// Maps an 8-character invite code Symbol → event_id (u64).
+    // ── Event invite code index (#795, #1699) ────────────────────────────────
+    /// Maps an 8-character invite code Symbol → its [`InviteCodeData`],
+    /// which carries the event_id plus expiry/usage-cap state.
     InviteCode(Symbol),
 
     // ── Canonical XLM token key (#794) ───────────────────────────────────────
@@ -355,6 +356,61 @@ pub enum DataKey {
     /// must be placed. `0` (default) means predictions lock exactly at
     /// `match_time`. Written by `admin::set_prediction_lock_lead_seconds`.
     PredictionLockLeadSeconds,
+
+    // ── Oracle consensus result proposals (#1698) ────────────────────────────
+    /// Vec<MatchResultSubmission> of scoreline proposals submitted by
+    /// authorized oracle sources for a match, awaiting consensus  (match_id).
+    /// Written by `oracle::propose_match_result`; cleared implicitly once the
+    /// match is finalized (no further submissions are accepted).
+    MatchResultProposals(u64),
+}
+
+// ---------------------------------------------------------------------------
+// InviteCodeData (#1699)
+// ---------------------------------------------------------------------------
+
+/// Redemption state for a single invite code, stored under
+/// `DataKey::InviteCode(code)`.
+///
+/// `expires_at == 0` means the code never expires; `max_uses == 0` means the
+/// code has no redemption cap. Both defaults preserve the original
+/// unrestricted invite-code behaviour for events that never configure limits.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InviteCodeData {
+    /// The event this code grants entry to.
+    pub event_id: u64,
+
+    /// Unix timestamp after which the code is rejected. `0` = never expires.
+    pub expires_at: u64,
+
+    /// Maximum number of successful redemptions allowed. `0` = unlimited.
+    pub max_uses: u32,
+
+    /// Number of times the code has been successfully redeemed so far.
+    pub use_count: u32,
+}
+
+impl InviteCodeData {
+    /// A fresh, unrestricted invite code for `event_id`.
+    pub fn new(event_id: u64) -> Self {
+        Self {
+            event_id,
+            expires_at: 0,
+            max_uses: 0,
+            use_count: 0,
+        }
+    }
+
+    /// `true` once `current_time >= expires_at` (never, when `expires_at == 0`).
+    pub fn is_expired(&self, current_time: u64) -> bool {
+        self.expires_at != 0 && current_time >= self.expires_at
+    }
+
+    /// `true` once `use_count >= max_uses` (never, when `max_uses == 0`).
+    pub fn is_at_cap(&self) -> bool {
+        self.max_uses != 0 && self.use_count >= self.max_uses
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1177,6 +1233,35 @@ pub struct OracleSubmission {
     pub value: i128,
 
     /// Unix timestamp when the value was submitted.
+    pub submitted_at: u64,
+}
+
+// ---------------------------------------------------------------------------
+// MatchResultSubmission (#1698)
+// ---------------------------------------------------------------------------
+
+/// A single scoreline proposal submitted by an authorized oracle source for a
+/// match, contributing toward the agreement threshold checked by
+/// `oracle::propose_match_result`.
+///
+/// Stored in `Vec<MatchResultSubmission>` under
+/// `DataKey::MatchResultProposals(match_id)`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MatchResultSubmission {
+    /// Address of the authorized oracle source that submitted this proposal.
+    pub source: Address,
+
+    /// Match this proposal resolves.
+    pub match_id: u64,
+
+    /// Proposed final score for team A (home team).
+    pub home_score: u32,
+
+    /// Proposed final score for team B (away team).
+    pub away_score: u32,
+
+    /// Unix timestamp when the proposal was submitted.
     pub submitted_at: u64,
 }
 

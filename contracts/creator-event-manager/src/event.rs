@@ -4,8 +4,8 @@ use crate::admin;
 use crate::invite::{self, InviteError};
 use crate::storage::{self, TTL_LEDGERS};
 use crate::storage_types::{
-    DataKey, Event, MAX_DESCRIPTION_LEN, MAX_EVENT_DURATION_SECONDS, MAX_REWARD_RANKS,
-    MAX_TITLE_LEN, REWARD_PERCENT_TOTAL,
+    DataKey, Event, InviteCodeData, MAX_DESCRIPTION_LEN, MAX_EVENT_DURATION_SECONDS,
+    MAX_REWARD_RANKS, MAX_TITLE_LEN, REWARD_PERCENT_TOTAL,
 };
 
 // ---------------------------------------------------------------------------
@@ -81,12 +81,19 @@ pub enum EventError {
     /// challenge_finalization called by an address that is neither admin nor
     /// a configured verifier signer (#1344).
     UnauthorizedChallenge = 31,
+    /// The invite code's `expires_at` has passed (#1699).
+    InviteCodeExpired = 32,
+    /// The invite code has already been redeemed `max_uses` times (#1699).
+    InviteCodeUsesExceeded = 33,
 }
 
 impl From<InviteError> for EventError {
     fn from(e: InviteError) -> Self {
         match e {
             InviteError::CodeGenerationFailed => EventError::CodeGenerationFailed,
+            InviteError::InvalidCode => EventError::InvalidInviteCode,
+            InviteError::CodeExpired => EventError::InviteCodeExpired,
+            InviteError::CodeUsesExceeded => EventError::InviteCodeUsesExceeded,
         }
     }
 }
@@ -282,12 +289,10 @@ pub fn create_event(
         .persistent()
         .extend_ttl(&matches_key, TTL_LEDGERS, TTL_LEDGERS);
 
-    // Store the invite-code → event_id reverse index.
-    let invite_key = DataKey::InviteCode(invite_code.clone());
-    env.storage().persistent().set(&invite_key, &event_id);
-    env.storage()
-        .persistent()
-        .extend_ttl(&invite_key, TTL_LEDGERS, TTL_LEDGERS);
+    // Store the invite-code → InviteCodeData reverse index. Freshly created
+    // codes are unrestricted (no expiry, no use cap); see
+    // `invite::set_invite_limits` to configure them.
+    invite::set_invite_data(env, &invite_code, &InviteCodeData::new(event_id));
 
     env.events().publish(
         (Symbol::new(env, "event"), Symbol::new(env, "created")),
@@ -369,15 +374,56 @@ pub fn get_event(env: &Env, event_id: u64) -> Result<Event, EventError> {
 /// Look up an event by its invite code.
 ///
 /// Resolves the code through the `InviteCode` index to retrieve the event.
-/// Returns [`EventError::InvalidInviteCode`] when the code is unknown, or
-/// [`EventError::EventNotFound`] when the associated event is missing.
+/// This is a lookup only — it does not check expiry or the use cap, and does
+/// not redeem the code. Returns [`EventError::InvalidInviteCode`] when the
+/// code is unknown, or [`EventError::EventNotFound`] when the associated
+/// event is missing.
 pub fn get_event_by_code(env: &Env, invite_code: Symbol) -> Result<Event, EventError> {
-    let invite_key = DataKey::InviteCode(invite_code);
-    let event_id: u64 = env
-        .storage()
-        .persistent()
-        .get(&invite_key)
-        .ok_or(EventError::InvalidInviteCode)?;
+    let data = invite::get_invite_data(env, &invite_code).map_err(EventError::from)?;
+    storage::get_event(env, data.event_id).map_err(|_| EventError::EventNotFound)
+}
 
-    storage::get_event(env, event_id).map_err(|_| EventError::EventNotFound)
+// ---------------------------------------------------------------------------
+// set_invite_limits (#1699)
+// ---------------------------------------------------------------------------
+
+/// Configure the expiry and/or use cap on an event's invite code. Only the
+/// event's creator may call this.
+///
+/// `expires_at == 0` means the code never expires; `max_uses == 0` means the
+/// code has no redemption cap. Does not reset `use_count` — tightening the
+/// cap below the current `use_count` simply means the code is already at (or
+/// past) its cap on the next redemption attempt.
+///
+/// # Errors
+/// * [`EventError::EventNotFound`] — no event exists with the given ID.
+/// * [`EventError::Unauthorized`] — caller is not the event creator.
+pub fn set_invite_limits(
+    env: &Env,
+    caller: Address,
+    event_id: u64,
+    expires_at: u64,
+    max_uses: u32,
+) -> Result<(), EventError> {
+    caller.require_auth();
+
+    let event = storage::get_event(env, event_id).map_err(|_| EventError::EventNotFound)?;
+    if event.creator != caller {
+        return Err(EventError::Unauthorized);
+    }
+
+    let mut data = invite::get_invite_data(env, &event.invite_code).map_err(EventError::from)?;
+    data.expires_at = expires_at;
+    data.max_uses = max_uses;
+    invite::set_invite_data(env, &event.invite_code, &data);
+
+    env.events().publish(
+        (
+            Symbol::new(env, "event"),
+            Symbol::new(env, "invite_limits_updated"),
+        ),
+        (event_id, expires_at, max_uses),
+    );
+
+    Ok(())
 }

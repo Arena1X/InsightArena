@@ -3,7 +3,9 @@ use soroban_sdk::{Address, Env, Symbol, Vec};
 use crate::admin;
 use crate::leaderboard;
 use crate::storage::{self, StorageError};
-use crate::storage_types::{DataKey, Event, Match, MatchResult, OracleSubmission};
+use crate::storage_types::{
+    DataKey, Event, Match, MatchResult, MatchResultSubmission, OracleSubmission,
+};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -45,6 +47,9 @@ pub enum OracleError {
     /// of zero or greater than the source count, or a duplicate source
     /// address. (#1347)
     InvalidOracleConfig = 14,
+    /// This source has already proposed a scoreline for this match's
+    /// consensus round (#1698).
+    DuplicateResultProposal = 15,
 }
 
 impl From<StorageError> for OracleError {
@@ -137,7 +142,7 @@ pub fn submit_match_result(
     }
 
     // 3. Match must exist.
-    let mut match_record: Match =
+    let match_record: Match =
         storage::get_match(env, match_id).map_err(|_| OracleError::MatchNotFound)?;
 
     // 4. Result must not already be submitted.
@@ -151,18 +156,45 @@ pub fn submit_match_result(
         return Err(OracleError::MatchNotStarted);
     }
 
-    // 6. Derive result from scores and record it on the match.
+    // 6-9. Record the result, grade predictions, recompute standings, emit.
+    finalize_match_result(
+        env,
+        match_record,
+        match_id,
+        caller,
+        home_score,
+        away_score,
+        now,
+    )
+}
+
+/// Shared finalization path for a match's winning result: records the
+/// scoreline, grades every prediction for the match, recomputes the event's
+/// weighted standings, and emits the result event.
+///
+/// Used by both [`submit_match_result`] (single AI-agent oracle) and
+/// [`propose_match_result`]'s consensus path (#1698) once a result is ready
+/// to be locked in — the two paths differ only in *how* the result was
+/// authorized, not in what happens once it is.
+fn finalize_match_result(
+    env: &Env,
+    mut match_record: Match,
+    match_id: u64,
+    submitted_by: Address,
+    home_score: u32,
+    away_score: u32,
+    now: u64,
+) -> Result<(), OracleError> {
     let result = MatchResult::from_scores(home_score, away_score);
     match_record
-        .submit_result(result.clone(), caller.clone(), now)
+        .submit_result(result.clone(), submitted_by.clone(), now)
         .map_err(|_| OracleError::ResultAlreadySubmitted)?;
 
-    // 7. Store the actual scores.
     match_record.home_score = Some(home_score);
     match_record.away_score = Some(away_score);
     storage::set_match(env, match_id, &match_record);
 
-    // 8. Grade every prediction submitted for this match.
+    // Grade every prediction submitted for this match.
     let prediction_ids = storage::get_match_predictions(env, match_id);
     for prediction_id in prediction_ids.iter() {
         if let Ok(mut prediction) = storage::get_prediction(env, prediction_id) {
@@ -171,19 +203,18 @@ pub fn submit_match_result(
         }
     }
 
-    // 8b. Recompute and persist the event's weighted standings (#1311).
+    // Recompute and persist the event's weighted standings (#1311).
     leaderboard::recompute_standings(env, match_record.event_id).map_err(|e| match e {
         leaderboard::LeaderboardError::Overflow => OracleError::Overflow,
         _ => OracleError::EventNotFound,
     })?;
 
-    // 9. Emit the result event using the derived outcome symbol.
     let outcome_symbol = match result {
         MatchResult::TeamA => Symbol::new(env, crate::storage_types::OUTCOME_TEAM_A),
         MatchResult::TeamB => Symbol::new(env, crate::storage_types::OUTCOME_TEAM_B),
         MatchResult::Draw => Symbol::new(env, crate::storage_types::OUTCOME_DRAW),
     };
-    emit_match_result_submitted(env, match_id, &outcome_symbol, &caller);
+    emit_match_result_submitted(env, match_id, &outcome_symbol, &submitted_by);
 
     Ok(())
 }
@@ -327,6 +358,128 @@ pub fn configure_oracle_sources(
     emit_oracle_sources_configured(env, source_count, min_sources);
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Multi-submitter match result consensus (#1698)
+// ---------------------------------------------------------------------------
+
+/// Propose a match's final scoreline as an authorized oracle source, toward
+/// the multi-submitter consensus that finalizes match results.
+///
+/// Each configured source (`oracle::configure_oracle_sources`) may submit one
+/// proposal per match. Once distinct sources have proposed the **same**
+/// scoreline `min_sources` times (the configured agreement threshold), the
+/// match is finalized exactly as `submit_match_result` would: the winning
+/// outcome is recorded, every prediction for the match is graded, and the
+/// event's weighted standings are recomputed.
+///
+/// Submissions made after the match is already finalized — whether they
+/// agree with the recorded result or conflict with it — are rejected, since
+/// a finalized result is immutable outside `match::overturn_match_result`
+/// (#1701).
+///
+/// # Errors
+/// * [`OracleError::Paused`] — the contract is paused.
+/// * [`OracleError::MatchNotFound`] — no match with the given id.
+/// * [`OracleError::NotAnOracleSource`] — `source` is not in the configured
+///   oracle source set.
+/// * [`OracleError::ResultAlreadySubmitted`] — the match already has a
+///   finalized result; no further proposals are accepted.
+/// * [`OracleError::DuplicateResultProposal`] — `source` has already
+///   proposed a scoreline for this match's consensus round.
+///
+/// # Returns
+/// `true` if this submission reached the agreement threshold and finalized
+/// the match; `false` if the match is still awaiting consensus.
+pub fn propose_match_result(
+    env: &Env,
+    source: Address,
+    match_id: u64,
+    home_score: u32,
+    away_score: u32,
+) -> Result<bool, OracleError> {
+    source.require_auth();
+
+    if admin::is_paused(env) {
+        return Err(OracleError::Paused);
+    }
+
+    let sources = storage::get_oracle_sources(env);
+    if !sources.contains(source.clone()) {
+        return Err(OracleError::NotAnOracleSource);
+    }
+
+    let match_record: Match =
+        storage::get_match(env, match_id).map_err(|_| OracleError::MatchNotFound)?;
+
+    // A finalized result is immutable outside the overturn path (#1701) —
+    // reject any further proposal, matching or conflicting.
+    if match_record.result_submitted {
+        return Err(OracleError::ResultAlreadySubmitted);
+    }
+
+    let existing = storage::get_match_result_proposals(env, match_id);
+    for submission in existing.iter() {
+        if submission.source == source {
+            return Err(OracleError::DuplicateResultProposal);
+        }
+    }
+
+    let now = env.ledger().timestamp();
+    let submission = MatchResultSubmission {
+        source: source.clone(),
+        match_id,
+        home_score,
+        away_score,
+        submitted_at: now,
+    };
+    storage::add_match_result_proposal(env, match_id, &submission);
+
+    emit_match_result_proposed(env, match_id, &source, home_score, away_score);
+
+    // Count distinct sources that agree with this submission's scoreline.
+    let mut agreement_count: u32 = 0;
+    let proposals = storage::get_match_result_proposals(env, match_id);
+    for proposal in proposals.iter() {
+        if proposal.home_score == home_score && proposal.away_score == away_score {
+            agreement_count += 1;
+        }
+    }
+
+    let min_sources = storage::get_oracle_min_sources(env);
+    if min_sources == 0 || agreement_count < min_sources {
+        return Ok(false);
+    }
+
+    // Threshold reached: finalize using the agreed-upon scoreline.
+    finalize_match_result(
+        env,
+        match_record,
+        match_id,
+        source,
+        home_score,
+        away_score,
+        now,
+    )?;
+
+    Ok(true)
+}
+
+fn emit_match_result_proposed(
+    env: &Env,
+    match_id: u64,
+    source: &Address,
+    home_score: u32,
+    away_score: u32,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "oracle"),
+            Symbol::new(env, "result_proposed"),
+        ),
+        (match_id, source.clone(), home_score, away_score),
+    );
 }
 
 /// Submit a numeric resolution value for a match as an authorized oracle

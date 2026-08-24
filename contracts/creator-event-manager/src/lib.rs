@@ -21,8 +21,8 @@ use admin::AdminError;
 use event::EventError;
 use r#match::MatchError;
 use storage_types::{
-    CreatorVestingSchedule, Event, FinalizationBond, LeaderboardEntry, Match, OracleSubmission,
-    ParticipantScore, Prediction, StandingEntry,
+    CreatorVestingSchedule, Event, FinalizationBond, LeaderboardEntry, Match,
+    MatchResultSubmission, OracleSubmission, ParticipantScore, Prediction, StandingEntry,
 };
 use verification::VerificationError;
 use views::{EventStatistics, PlatformStatistics};
@@ -650,6 +650,42 @@ impl CreatorEventManagerContract {
             Err(MatchError::InvalidPointsMultiplier) => panic!("invalid_points_multiplier"),
             Err(MatchError::MatchNotFound) => panic!("match_not_found"),
             Err(MatchError::InvalidLockLeadTime) => panic!("invalid_lock_lead_time"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Correct a previously submitted match result — the only path through
+    /// which a finalized-per-match result may change (#1701). Only the
+    /// admin may call this, and only before the parent event is finalized.
+    ///
+    /// Re-derives the winning outcome from the corrected scoreline, re-grades
+    /// every prediction for the match, and recomputes the event's weighted
+    /// standings.
+    ///
+    /// # Panics
+    /// * `"unauthorized"` — caller is not the admin.
+    /// * `"match_not_found"` — no match exists with the given ID.
+    /// * `"result_not_submitted"` — the match has no result yet; call
+    ///   `submit_match_result` for the first submission instead.
+    /// * `"event_not_found"` — the match's parent event is missing.
+    /// * `"event_already_finalized"` — the parent event has already been
+    ///   finalized, so the result is immutable.
+    pub fn overturn_match_result(
+        env: Env,
+        caller: Address,
+        match_id: u64,
+        new_home_score: u32,
+        new_away_score: u32,
+    ) {
+        match r#match::overturn_match_result(&env, caller, match_id, new_home_score, new_away_score)
+        {
+            Ok(()) => {}
+            Err(MatchError::Unauthorized) => panic!("unauthorized"),
+            Err(MatchError::MatchNotFound) => panic!("match_not_found"),
+            Err(MatchError::ResultNotSubmitted) => panic!("result_not_submitted"),
+            Err(MatchError::EventNotFound) => panic!("event_not_found"),
+            Err(MatchError::EventAlreadyFinalized) => panic!("event_already_finalized"),
+            Err(_) => panic!("unexpected_error"),
         }
     }
 
@@ -820,6 +856,10 @@ impl CreatorEventManagerContract {
     }
 
     /// Join an event using its invite code.
+    ///
+    /// # Panics
+    /// * `"invite_code_expired"` — the code's expiry has passed (#1699).
+    /// * `"invite_code_uses_exceeded"` — the code has reached its use cap (#1699).
     pub fn join_event(env: Env, user: Address, invite_code: Symbol) {
         match prediction::join_event(&env, user, invite_code) {
             Ok(()) => {}
@@ -832,6 +872,36 @@ impl CreatorEventManagerContract {
             Err(prediction::PredictionError::InsufficientEntryFeeBalance) => {
                 panic!("insufficient_entry_fee_balance")
             }
+            Err(prediction::PredictionError::InviteCodeExpired) => {
+                panic!("invite_code_expired")
+            }
+            Err(prediction::PredictionError::InviteCodeUsesExceeded) => {
+                panic!("invite_code_uses_exceeded")
+            }
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Configure the expiry and/or use cap on an event's invite code (#1699).
+    ///
+    /// Only the event's creator may call this. `expires_at == 0` means the
+    /// code never expires; `max_uses == 0` means the code has no redemption
+    /// cap. Both default to unrestricted at event creation.
+    ///
+    /// # Panics
+    /// * `"event_not_found"` — no event exists with the given ID.
+    /// * `"unauthorized"` — caller is not the event creator.
+    pub fn set_invite_limits(
+        env: Env,
+        caller: Address,
+        event_id: u64,
+        expires_at: u64,
+        max_uses: u32,
+    ) {
+        match event::set_invite_limits(&env, caller, event_id, expires_at, max_uses) {
+            Ok(()) => {}
+            Err(EventError::EventNotFound) => panic!("event_not_found"),
+            Err(EventError::Unauthorized) => panic!("unauthorized"),
             Err(_) => panic!("unexpected_error"),
         }
     }
@@ -1259,6 +1329,53 @@ impl CreatorEventManagerContract {
             Err(oracle::OracleError::InvalidOracleConfig) => panic!("invalid_oracle_config"),
             Err(_) => panic!("unexpected_error"),
         }
+    }
+
+    /// Propose a match's final scoreline as an authorized oracle source,
+    /// toward the multi-submitter consensus that finalizes match results
+    /// (#1698).
+    ///
+    /// Once distinct sources have proposed the same scoreline `min_sources`
+    /// (the configured agreement threshold) times, the match is finalized:
+    /// the winning outcome is recorded, every prediction is graded, and the
+    /// event's weighted standings are recomputed. Returns `true` if this
+    /// call reached the threshold and finalized the match.
+    ///
+    /// # Panics
+    /// * `"contract_paused"` — the contract is paused.
+    /// * `"match_not_found"` — no match exists with the given ID.
+    /// * `"not_an_oracle_source"` — caller is not a configured oracle source.
+    /// * `"result_already_submitted"` — the match already has a finalized
+    ///   result; no further proposals are accepted.
+    /// * `"duplicate_result_proposal"` — caller already proposed a scoreline
+    ///   for this match's consensus round.
+    pub fn propose_match_result(
+        env: Env,
+        source: Address,
+        match_id: u64,
+        home_score: u32,
+        away_score: u32,
+    ) -> bool {
+        match oracle::propose_match_result(&env, source, match_id, home_score, away_score) {
+            Ok(finalized) => finalized,
+            Err(oracle::OracleError::Paused) => panic!("contract_paused"),
+            Err(oracle::OracleError::MatchNotFound) => panic!("match_not_found"),
+            Err(oracle::OracleError::NotAnOracleSource) => panic!("not_an_oracle_source"),
+            Err(oracle::OracleError::ResultAlreadySubmitted) => {
+                panic!("result_already_submitted")
+            }
+            Err(oracle::OracleError::DuplicateResultProposal) => {
+                panic!("duplicate_result_proposal")
+            }
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Return every scoreline proposal recorded for a match's consensus
+    /// round (#1698). Returns an empty `Vec` when no source has proposed a
+    /// result yet.
+    pub fn get_match_result_proposals(env: Env, match_id: u64) -> Vec<MatchResultSubmission> {
+        storage::get_match_result_proposals(&env, match_id)
     }
 
     /// Submit a numeric resolution value for a match as an authorized oracle
