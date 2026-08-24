@@ -604,6 +604,42 @@ impl CreatorEventManagerContract {
             Err(MatchError::InvalidPointsMultiplier) => panic!("invalid_points_multiplier"),
             Err(MatchError::MatchNotFound) => panic!("match_not_found"),
             Err(MatchError::InvalidLockLeadTime) => panic!("invalid_lock_lead_time"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Correct a previously submitted match result — the only path through
+    /// which a finalized-per-match result may change (#1701). Only the
+    /// admin may call this, and only before the parent event is finalized.
+    ///
+    /// Re-derives the winning outcome from the corrected scoreline, re-grades
+    /// every prediction for the match, and recomputes the event's weighted
+    /// standings.
+    ///
+    /// # Panics
+    /// * `"unauthorized"` — caller is not the admin.
+    /// * `"match_not_found"` — no match exists with the given ID.
+    /// * `"result_not_submitted"` — the match has no result yet; call
+    ///   `submit_match_result` for the first submission instead.
+    /// * `"event_not_found"` — the match's parent event is missing.
+    /// * `"event_already_finalized"` — the parent event has already been
+    ///   finalized, so the result is immutable.
+    pub fn overturn_match_result(
+        env: Env,
+        caller: Address,
+        match_id: u64,
+        new_home_score: u32,
+        new_away_score: u32,
+    ) {
+        match r#match::overturn_match_result(&env, caller, match_id, new_home_score, new_away_score)
+        {
+            Ok(()) => {}
+            Err(MatchError::Unauthorized) => panic!("unauthorized"),
+            Err(MatchError::MatchNotFound) => panic!("match_not_found"),
+            Err(MatchError::ResultNotSubmitted) => panic!("result_not_submitted"),
+            Err(MatchError::EventNotFound) => panic!("event_not_found"),
+            Err(MatchError::EventAlreadyFinalized) => panic!("event_already_finalized"),
+            Err(_) => panic!("unexpected_error"),
         }
     }
 

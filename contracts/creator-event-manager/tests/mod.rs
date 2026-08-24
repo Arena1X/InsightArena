@@ -5,6 +5,7 @@ mod get_match_predictions_tests;
 mod invite_tests;
 mod match_tests;
 mod oracle_tests;
+mod overturn_match_result_tests;
 mod prediction_tests;
 mod storage_types_tests;
 mod submit_match_result_contract_tests;
