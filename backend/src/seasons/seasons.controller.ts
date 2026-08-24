@@ -90,7 +90,7 @@ export class SeasonsController {
   @ApiOperation({
     summary: 'List all seasons (paginated, public)',
     description:
-      'Ordered by season_number descending. When a season is finalized and a top winner is stored, `top_winner` includes public profile fields.',
+      'Ordered by start date descending. Optional `status` filter supports active, upcoming, and finalized seasons. When a season is finalized and a top winner is stored, `top_winner` includes public profile fields.',
   })
   @ApiResponse({ status: 200, type: PaginatedSeasonsResponseDto })
   async list(
