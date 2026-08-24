@@ -2,13 +2,15 @@ import { Inject, Injectable } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { Cache } from 'cache-manager';
-import { Repository } from 'typeorm';
+import { Brackets, Repository } from 'typeorm';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
 import {
   Competition,
   CompetitionVisibility,
 } from '../competitions/entities/competition.entity';
+import { CreatorEvent } from '../matches/entities/creator-event.entity';
+import { CreatorEventSearchStatus } from '../creator-events/dto/search-events-query.dto';
 import {
   GlobalSearchDto,
   GlobalSearchResponseDto,
@@ -44,6 +46,24 @@ const TRGM_SIMILARITY_THRESHOLD = 0.1;
 /** How long a prefix's suggestion results are cached for */
 const SUGGEST_CACHE_TTL_MS = 30_000;
 
+export interface CreatorEventSearchParams {
+  query: string;
+  skip: number;
+  limit: number;
+  status?: CreatorEventSearchStatus;
+  creator?: string;
+}
+
+export interface CreatorEventSearchHit {
+  event: CreatorEvent;
+  searchRank: number;
+}
+
+export interface CreatorEventSearchResult {
+  data: CreatorEventSearchHit[];
+  total: number;
+}
+
 interface ScoredSuggestion {
   id: string;
   label: string;
@@ -60,6 +80,8 @@ export class SearchService {
     private readonly usersRepository: Repository<User>,
     @InjectRepository(Competition)
     private readonly competitionsRepository: Repository<Competition>,
+    @InjectRepository(CreatorEvent)
+    private readonly creatorEventsRepository: Repository<CreatorEvent>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
   ) {}
 
@@ -651,6 +673,104 @@ export class SearchService {
     const [trgmRaw, trgmCount] = await trgmQb.getManyAndCount();
 
     return [this.mapCompetitionsWithScore(trgmRaw, skip, limit), trgmCount];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Creator events
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Index-backed full-text search over creator events (title, description,
+   * category, creator address). Ranks by relevance with recency tie-break.
+   */
+  async searchCreatorEvents(
+    params: CreatorEventSearchParams,
+  ): Promise<CreatorEventSearchResult> {
+    const searchTerm = params.query.trim();
+    const tsQuery = `websearch_to_tsquery('english', :searchTerm)`;
+    const escapedTerm = escapeLikeWildcards(searchTerm);
+
+    const qb = this.creatorEventsRepository
+      .createQueryBuilder('creatorEvent')
+      .addSelect(
+        `ts_rank_cd(creatorEvent.search_vector, ${tsQuery})`,
+        'search_rank',
+      )
+      .where(
+        new Brackets((inner) => {
+          inner
+            .where(`creatorEvent.search_vector @@ ${tsQuery}`)
+            .orWhere(
+              "creatorEvent.creator_address ILIKE :creatorAddressSearch ESCAPE '\\'",
+            )
+            .orWhere("creatorEvent.category ILIKE :categorySearch ESCAPE '\\'");
+        }),
+      )
+      .setParameter('searchTerm', searchTerm)
+      .setParameter('creatorAddressSearch', `%${escapedTerm}%`)
+      .setParameter('categorySearch', `%${escapedTerm}%`);
+
+    this.applyCreatorEventStatusFilter(
+      qb,
+      params.status ?? CreatorEventSearchStatus.All,
+    );
+
+    if (params.creator?.trim()) {
+      qb.andWhere('LOWER(creatorEvent.creator_address) = LOWER(:creator)', {
+        creator: params.creator.trim(),
+      });
+    }
+
+    const total = await qb.clone().getCount();
+    const { entities, raw } = await qb
+      .orderBy('search_rank', 'DESC')
+      .addOrderBy('creatorEvent.created_at', 'DESC')
+      .skip(params.skip)
+      .take(params.limit)
+      .getRawAndEntities<{ search_rank?: string | number }>();
+
+    return {
+      data: entities.map((event, index) => ({
+        event,
+        searchRank: Number(raw[index]?.search_rank ?? 0),
+      })),
+      total,
+    };
+  }
+
+  private applyCreatorEventStatusFilter(
+    queryBuilder: ReturnType<Repository<CreatorEvent>['createQueryBuilder']>,
+    status: CreatorEventSearchStatus,
+  ): void {
+    switch (status) {
+      case CreatorEventSearchStatus.Active:
+        queryBuilder.andWhere('creatorEvent.is_active = :isActive', {
+          isActive: true,
+        });
+        queryBuilder.andWhere('creatorEvent.is_cancelled = :isCancelled', {
+          isCancelled: false,
+        });
+        break;
+      case CreatorEventSearchStatus.Finished:
+        queryBuilder.andWhere(
+          new Brackets((qb) => {
+            qb.where('creatorEvent.end_time < :now', {
+              now: new Date(),
+            }).orWhere('creatorEvent.is_active = :isActive', {
+              isActive: false,
+            });
+          }),
+        );
+        break;
+      case CreatorEventSearchStatus.Upcoming:
+        queryBuilder.andWhere('creatorEvent.start_time > :now', {
+          now: new Date(),
+        });
+        break;
+      case CreatorEventSearchStatus.All:
+      default:
+        break;
+    }
   }
 
   private mapCompetitionsWithScore(

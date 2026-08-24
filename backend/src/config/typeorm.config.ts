@@ -3,14 +3,17 @@ config();
 
 import { DataSource, DataSourceOptions } from 'typeorm';
 import { join } from 'path';
+import { validate, NodeEnvironment } from './env.validation';
+
+const env = validate(process.env);
 
 export const typeOrmConfig: DataSourceOptions = {
   type: 'postgres',
-  url: process.env.DATABASE_URL,
+  url: env.DATABASE_URL,
   entities: [join(__dirname, '/../**/*.entity{.ts,.js}')],
   migrations: [join(__dirname, '/../migrations/*{.ts,.js}')],
   synchronize: false, // Never use synchronize in production
-  logging: process.env.NODE_ENV === 'development',
+  logging: env.NODE_ENV === NodeEnvironment.DEVELOPMENT,
   migrationsRun: false, // Run migrations manually
 };
 

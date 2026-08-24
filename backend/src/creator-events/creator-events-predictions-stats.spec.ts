@@ -12,6 +12,7 @@ import { Match } from '../matches/entities/match.entity';
 import { MatchPrediction } from '../matches/entities/match-prediction.entity';
 import { User } from '../users/entities/user.entity';
 import { CreatorEventsService } from './creator-events.service';
+import { SearchService } from '../search/search.service';
 
 describe('CreatorEventsService predictions and stats', () => {
   let service: CreatorEventsService;
@@ -84,6 +85,10 @@ describe('CreatorEventsService predictions and stats', () => {
       providers: [
         CreatorEventsService,
         { provide: ContractService, useValue: contractService },
+        {
+          provide: SearchService,
+          useValue: { searchCreatorEvents: jest.fn() },
+        },
         {
           provide: getRepositoryToken(CreatorEvent),
           useValue: creatorEventRepository,

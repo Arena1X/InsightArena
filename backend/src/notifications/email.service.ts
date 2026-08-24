@@ -17,6 +17,7 @@ import {
   EmailTemplateContext,
   EmailTemplateType,
   renderEmailTemplate,
+  validateEmailTemplateContext,
 } from './email-templates';
 
 export interface QueuedEmail {
@@ -195,7 +196,13 @@ export class EmailService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const { subject, html, text } = renderEmailTemplate(template, context);
+    const strict =
+      (this.configService.get<string>('NODE_ENV') ?? 'development') !==
+      'production';
+    validateEmailTemplateContext(template, context, { strict });
+    const { subject, html, text } = renderEmailTemplate(template, context, {
+      strict,
+    });
 
     return this.queueEmail({ to, subject, html, text, userAddress });
   }

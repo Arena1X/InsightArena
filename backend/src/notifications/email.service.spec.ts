@@ -429,11 +429,25 @@ describe('EmailService — queueing and preferences', () => {
       const result = await service.sendTemplatedEmail(
         'user@example.com',
         template,
-        { eventTitle: 'Test Event' },
+        {
+          eventTitle: 'Test Event',
+          inviteCode: 'ABC123',
+          matchHomeTeam: 'Home',
+          matchAwayTeam: 'Away',
+          matchResult: '2-1',
+        },
       );
       expect(result.queued).toBe(true);
     }
 
     expect(service.getQueueLength()).toBe(4);
+  });
+
+  it('rejects incomplete templates in non-production environments', async () => {
+    userRepository.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.sendTemplatedEmail('user@example.com', 'event_created', {}),
+    ).rejects.toThrow(/Missing required email template variables/);
   });
 });
