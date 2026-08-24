@@ -14,11 +14,22 @@ use soroban_sdk::{contracttype, Address, Env, Vec};
 /// Returned by `get_event_statistics(event_id)` as a compact summary of the
 /// event's current on-chain state:
 /// * `event_id` — event being summarized.
-/// * `participant_count` — number of joined participants stored on the event.
-/// * `match_count` — number of matches stored on the event.
+/// * `participant_count` — number of entries in the `EventParticipants`
+///   source list (not the cached `Event.participant_count` counter).
+/// * `match_count` — number of entries in the `EventMatches` source list
+///   (not the cached `Event.match_count` counter).
 /// * `total_predictions` — total predictions linked to all event matches.
 /// * `all_matches_resolved` — `true` only when the event has at least one
 ///   match and every stored match has a submitted result.
+///
+/// # Consistency
+/// `participant_count`, `match_count`, and `total_predictions` are derived
+/// directly from the underlying storage lists on every call, so they always
+/// reflect current on-chain state — they cannot drift even if a cached
+/// counter elsewhere (e.g. `Event.participant_count`, used only for O(1)
+/// capacity checks on `join_event`) were ever out of sync. `all_matches_resolved`
+/// is a point-in-time read: a match resolved in the same ledger after this
+/// view is read will not retroactively change an already-returned value.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventStatistics {
@@ -75,8 +86,13 @@ pub fn get_event_reward_distribution(env: &Env, event_id: u64) -> Result<Vec<u32
 /// then derives prediction totals from the event's match index and completion
 /// status from each stored match result.
 pub fn get_event_statistics(env: &Env, event_id: u64) -> Result<EventStatistics, EventError> {
-    let event = event::get_event(env, event_id)?;
+    // Validate the event exists; statistics themselves are derived entirely
+    // from source records below rather than from this record's cached
+    // counters, so a churned event never reports stale figures.
+    event::get_event(env, event_id)?;
     let match_ids = storage::get_event_matches(env, event_id);
+    let participant_count = storage::get_event_participants(env, event_id).len();
+    let match_count = match_ids.len();
 
     let mut total_predictions: u32 = 0;
     let mut resolved_matches: u32 = 0;
@@ -92,14 +108,12 @@ pub fn get_event_statistics(env: &Env, event_id: u64) -> Result<EventStatistics,
         }
     }
 
-    let all_matches_resolved = event.match_count > 0
-        && match_ids.len() == event.match_count
-        && resolved_matches == event.match_count;
+    let all_matches_resolved = match_count > 0 && resolved_matches == match_count;
 
     Ok(EventStatistics {
         event_id,
-        participant_count: event.participant_count,
-        match_count: event.match_count,
+        participant_count,
+        match_count,
         total_predictions,
         all_matches_resolved,
     })
@@ -196,6 +210,19 @@ pub struct PlatformStatistics {
 /// Aggregates data across all events to provide a comprehensive view of
 /// platform activity including total events, matches, predictions, unique
 /// participants, and fees collected.
+///
+/// # Consistency
+/// `total_events`, `total_matches`, and `total_predictions` read the
+/// monotonically-incrementing `EventCounter` / `MatchCounter` /
+/// `PredictionCounter` instance values. These counters are themselves the
+/// source of truth for ID assignment (every `next_*_id` call both allocates
+/// an ID and advances the counter in the same write), so unlike a
+/// denormalized cache they cannot drift from the records they describe —
+/// reconciling them against a full per-event scan would be strictly more
+/// expensive with no consistency benefit. `unique_participants` and
+/// `total_fees_collected` are computed by scanning every event's source
+/// `EventParticipants` list and `creation_fee_paid` field on each call, so
+/// they always reflect current state at read time.
 ///
 /// # Returns
 /// `PlatformStatistics` struct with aggregated platform data.
