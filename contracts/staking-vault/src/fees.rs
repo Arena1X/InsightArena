@@ -1,22 +1,43 @@
 //! Fee intake: the `fee_source` contract (e.g. open-market) transfers protocol
 //! fees into the vault, which are then distributed to stakers via [`crate::pool`].
-//!
-//! Skeleton — fill in the token transfer-in and pool distribution.
 
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{token::Client as TokenClient, Address, Env};
 
 use crate::errors::StakingError;
+use crate::pool;
+use crate::storage_types::{Config, DataKey, PoolState};
 
 /// Pull `amount` of the staking token from `from` into the vault and fold it
 /// into the reward pool. Caller must be the configured `fee_source`.
-pub fn deposit_fees(
-    _env: &Env,
-    _from: Address,
-    _amount: i128,
-) -> Result<(), StakingError> {
-    // TODO:
-    //   1. require_auth(from) and assert from == config.fee_source
-    //   2. token.transfer(from, contract, amount)
-    //   3. pool::distribute(env, &mut pool, amount)
-    todo!()
+pub fn deposit_fees(env: &Env, from: Address, amount: i128) -> Result<(), StakingError> {
+    from.require_auth();
+
+    if amount <= 0 {
+        return Err(StakingError::InvalidAmount);
+    }
+
+    let config = env
+        .storage()
+        .instance()
+        .get::<DataKey, Config>(&DataKey::Config)
+        .ok_or(StakingError::NotInitialized)?;
+
+    if from != config.fee_source {
+        return Err(StakingError::Unauthorized);
+    }
+
+    let mut pool_state = env
+        .storage()
+        .instance()
+        .get::<DataKey, PoolState>(&DataKey::Pool)
+        .ok_or(StakingError::NotInitialized)?;
+
+    let token_client = TokenClient::new(env, &config.token);
+    token_client.transfer(&from, &env.current_contract_address(), &amount);
+
+    pool::distribute(env, &mut pool_state, amount)?;
+
+    env.storage().instance().set(&DataKey::Pool, &pool_state);
+
+    Ok(())
 }

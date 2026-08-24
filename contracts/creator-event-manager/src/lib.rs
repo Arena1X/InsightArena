@@ -267,6 +267,35 @@ impl CreatorEventManagerContract {
         admin::get_verifier_threshold(&env)
     }
 
+    /// Bind a raw ed25519 public key to a configured verifier signer, used by
+    /// `submit_verification` to check a detached signature over the
+    /// submitted attestation payload.
+    ///
+    /// Only the admin may call this, and `signer` must already be in the
+    /// configured verifier signer set (see `set_verifier_config`).
+    ///
+    /// # Panics
+    /// * `"unauthorized"` — caller is not the admin.
+    /// * `"not_a_verifier_signer"` — `signer` is not in the configured set.
+    pub fn set_verifier_public_key(
+        env: Env,
+        caller: Address,
+        signer: Address,
+        public_key: soroban_sdk::BytesN<32>,
+    ) {
+        match admin::set_verifier_public_key(&env, caller, signer, public_key) {
+            Ok(()) => {}
+            Err(AdminError::Unauthorized) => panic!("unauthorized"),
+            Err(AdminError::NotAVerifierSigner) => panic!("not_a_verifier_signer"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Return the ed25519 public key bound to a verifier signer, if any.
+    pub fn get_verifier_public_key(env: Env, signer: Address) -> Option<soroban_sdk::BytesN<32>> {
+        admin::get_verifier_public_key(&env, &signer)
+    }
+
     // =========================================================================
     // Verification (#790–#793)
     // =========================================================================
@@ -337,21 +366,38 @@ impl CreatorEventManagerContract {
         verification::is_verified(&env, address)
     }
 
-    /// Submit a verifier signature for an event (M-of-N event verification).
+    /// Submit a signed verifier attestation for an event (M-of-N event
+    /// verification).
     ///
     /// `signer` must be one of the addresses configured via
-    /// `set_verifier_config`. Each signer may submit at most once per event.
-    /// Returns the number of distinct signers who have now submitted.
+    /// `set_verifier_config`, with an ed25519 public key bound via
+    /// `set_verifier_public_key`. `signature` must be a valid ed25519
+    /// signature by that key over `event_id (8 bytes, big-endian) || data`,
+    /// so a signature cannot be replayed against a different event. Each
+    /// signer may submit at most once per event. Returns the number of
+    /// distinct signers who have now submitted.
     ///
     /// # Panics
     /// * `"event_not_found"` — no event exists for `event_id`.
     /// * `"not_a_verifier_signer"` — `signer` is not a configured verifier.
+    /// * `"no_public_key_configured"` — `signer` has no bound public key.
     /// * `"duplicate_signer"` — `signer` already submitted for this event.
-    pub fn submit_verification(env: Env, event_id: u64, signer: Address) -> u32 {
-        match verification::submit_verification(&env, event_id, signer) {
+    /// * an ed25519 verification panic — `signature` does not verify against
+    ///   the signer's bound key and the event-bound payload.
+    pub fn submit_verification(
+        env: Env,
+        event_id: u64,
+        signer: Address,
+        data: soroban_sdk::Bytes,
+        signature: soroban_sdk::BytesN<64>,
+    ) -> u32 {
+        match verification::submit_verification(&env, event_id, signer, data, signature) {
             Ok(count) => count,
             Err(VerificationError::EventNotFound) => panic!("event_not_found"),
             Err(VerificationError::NotAVerifierSigner) => panic!("not_a_verifier_signer"),
+            Err(VerificationError::NoPublicKeyConfigured) => {
+                panic!("no_public_key_configured")
+            }
             Err(VerificationError::DuplicateSigner) => panic!("duplicate_signer"),
             Err(_) => panic!("unexpected_error"),
         }
