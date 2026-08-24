@@ -5,9 +5,13 @@ import { UserAchievement } from './entities/user-achievement.entity';
 import { AchievementsService } from './achievements.service';
 import { AchievementsController } from './achievements.controller';
 import { User } from '../users/entities/user.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Achievement, UserAchievement, User])],
+  imports: [
+    TypeOrmModule.forFeature([Achievement, UserAchievement, User]),
+    NotificationsModule,
+  ],
   providers: [AchievementsService],
   controllers: [AchievementsController],
   exports: [AchievementsService],
