@@ -978,3 +978,71 @@ fn test_finalize_season_non_admin_rejected() {
     );
 }
 
+// ── Emergency pause coverage ──────────────────────────────────────────────────
+
+#[test]
+fn test_create_season_fails_when_paused() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 100_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 50_000_000);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_create_season(&admin, &100, &200, &50_000_000);
+    assert_eq!(result, Err(Ok(InsightArenaError::Paused)));
+}
+
+#[test]
+fn test_update_leaderboard_fails_when_paused() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 200_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 100_000_000);
+
+    let season_id = client.create_season(&admin, &10, &100, &100_000_000);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_update_leaderboard(&admin, &season_id, &sample_entries(&env));
+    assert_eq!(result, Err(Ok(InsightArenaError::Paused)));
+}
+
+#[test]
+fn test_finalize_season_fails_when_paused() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 200_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 100_000_000);
+
+    let season_id = client.create_season(&admin, &10, &100, &100_000_000);
+    client.update_leaderboard(&admin, &season_id, &sample_entries(&env));
+    env.ledger().set_timestamp(100);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_finalize_season(&admin, &season_id);
+    assert_eq!(result, Err(Ok(InsightArenaError::Paused)));
+}
+
+#[test]
+fn test_reset_season_points_fails_when_paused() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 200_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 100_000_000);
+
+    let season1_id = client.create_season(&admin, &0, &100, &50_000_000);
+    let season2_id = client.create_season(&admin, &200, &300, &50_000_000);
+    let _ = season1_id;
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_reset_season_points(&admin, &season2_id);
+    assert_eq!(result, Err(Ok(InsightArenaError::Paused)));
+}
+

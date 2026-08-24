@@ -368,3 +368,41 @@ fn test_generate_invite_code_succeeds_for_private_market() {
     let result = client.try_generate_invite_code(&creator, &market_id, &10, &3600);
     assert!(result.is_ok());
 }
+
+#[test]
+fn test_generate_invite_code_fails_when_paused() {
+    let env = Env::default();
+    let (creator, _, market_id, client) = setup_test(&env);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_generate_invite_code(&creator, &market_id, &10, &3600);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn test_redeem_invite_code_fails_when_paused() {
+    let env = Env::default();
+    let (creator, _, market_id, client) = setup_test(&env);
+    let invitee = Address::generate(&env);
+
+    let code = client.generate_invite_code(&creator, &market_id, &2, &3600);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_redeem_invite_code(&invitee, &code);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn test_revoke_invite_code_fails_when_paused() {
+    let env = Env::default();
+    let (creator, _, market_id, client) = setup_test(&env);
+
+    let code = client.generate_invite_code(&creator, &market_id, &2, &3600);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_revoke_invite_code(&creator, &code);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}

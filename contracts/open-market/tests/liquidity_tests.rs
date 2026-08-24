@@ -811,6 +811,67 @@ fn test_collect_lp_fees_fails_when_no_fees_earned() {
     assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
 }
 
+// ── Emergency pause coverage ──────────────────────────────────────────────────
+
+#[test]
+fn test_collect_lp_fees_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+
+    let creator = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let trader = Address::generate(&env);
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let market_id = client.create_market(&creator, &lp_market_params(&env));
+
+    let liquidity = 100_000_i128;
+    sa.mint(&provider, &liquidity);
+    token.approve(&provider, &client.address, &liquidity, &9999);
+    client.add_liquidity(&provider, &market_id, &liquidity);
+
+    let swap_amount = 10_000_i128;
+    sa.mint(&trader, &swap_amount);
+    token.approve(&trader, &client.address, &swap_amount, &9999);
+    client.swap_outcome(
+        &trader,
+        &market_id,
+        &symbol_short!("yes"),
+        &symbol_short!("no"),
+        &swap_amount,
+        &0_i128,
+    );
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_collect_lp_fees(&provider, &market_id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn test_update_fee_tier_config_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, _xlm_token) = deploy_with_token(&env);
+
+    client.set_paused(&true, &1u32);
+
+    let new_config = FeeTierConfig {
+        calm_threshold_bps: 40,
+        volatile_threshold_bps: 250,
+        calm_fee_bps: 10,
+        normal_fee_bps: 25,
+        volatile_fee_bps: 90,
+        protocol_share_bps: 2000,
+    };
+
+    let result = client.try_update_fee_tier_config(&admin, &new_config);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
 #[test]
 fn test_collect_lp_fees_clears_and_idempotent() {
     let env = Env::default();

@@ -835,3 +835,45 @@ fn denial_emits_event_with_attempted_creator() {
     let denied_creator = Address::try_from_val(&env, &data).unwrap();
     assert_eq!(denied_creator, creator);
 }
+
+// ── Emergency pause coverage ──────────────────────────────────────────────────
+
+#[test]
+fn add_trusted_creator_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_add_trusted_creator(&admin, &creator);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn remove_trusted_creator_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = deploy(&env);
+    let creator = Address::generate(&env);
+    client.add_trusted_creator(&admin, &creator);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_remove_trusted_creator(&admin, &creator);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn reset_creator_stats_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_reset_creator_stats(&admin, &creator);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}

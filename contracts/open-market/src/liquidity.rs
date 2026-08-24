@@ -219,6 +219,7 @@ pub fn set_fee_tier_config(
     admin: Address,
     new_config: FeeTierConfig,
 ) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(env)?;
     admin.require_auth();
 
     let cfg = config::get_config(env)?;
@@ -1293,6 +1294,7 @@ pub fn collect_lp_fees(
     provider: Address,
     market_id: u64,
 ) -> Result<i128, InsightArenaError> {
+    config::ensure_not_paused(env)?;
     provider.require_auth();
 
     let mut position = get_lp_position(env, &provider, market_id)?;

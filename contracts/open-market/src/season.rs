@@ -414,6 +414,7 @@ pub fn create_season(
     end_time: u64,
     reward_pool: i128,
 ) -> Result<u32, InsightArenaError> {
+    config::ensure_not_paused(env)?;
     let cfg = config::get_config(env)?;
     cfg.admin.require_auth();
     if admin != cfg.admin {
@@ -505,6 +506,7 @@ pub fn update_leaderboard(
     season_id: u32,
     entries: Vec<LeaderboardEntry>,
 ) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(env)?;
     let cfg = config::get_config(env)?;
     cfg.admin.require_auth();
     if admin != cfg.admin {
@@ -582,6 +584,7 @@ pub fn get_season_participants(
 }
 
 pub fn finalize_season(env: &Env, admin: Address, season_id: u32) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(env)?;
     let cfg = config::get_config(env)?;
     cfg.admin.require_auth();
     if admin != cfg.admin {
@@ -643,6 +646,7 @@ pub fn reset_season_points(
     admin: Address,
     new_season_id: u32,
 ) -> Result<u32, InsightArenaError> {
+    config::ensure_not_paused(env)?;
     let cfg = config::get_config(env)?;
     cfg.admin.require_auth();
     if admin != cfg.admin {

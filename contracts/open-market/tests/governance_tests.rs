@@ -261,6 +261,21 @@ fn test_cancel_proposal_by_non_proposer_fails() {
     assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
 }
 
+#[test]
+fn test_cancel_proposal_fails_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, proposer) = deploy(&env);
+
+    let duration = 3_600_u64;
+    let id = client.create_proposal(&proposer, &ProposalType::UpdateProtocolFee(400), &duration);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_cancel_proposal(&proposer, &id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
 // ── Timelock / veto tests ─────────────────────────────────────────────────────
 
 /// Advances voting to completion and quorum without touching the timelock clock,
