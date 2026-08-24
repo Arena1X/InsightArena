@@ -347,6 +347,7 @@ pub fn cancel_proposal(
     caller: Address,
     proposal_id: u32,
 ) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(env)?;
     caller.require_auth();
 
     let mut proposal = load_proposal(env, proposal_id)?;

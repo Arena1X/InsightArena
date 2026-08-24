@@ -1102,6 +1102,74 @@ fn test_withdraw_treasury_reverts_while_paused() {
 }
 
 #[test]
+fn test_transfer_fee_reverts_while_paused() {
+    // `transfer_fee` is the function backing the live `withdraw_treasury`
+    // contract entry point (see lib.rs); unlike the standalone
+    // `escrow::withdraw_treasury` helper above, it previously had no pause
+    // guard of its own.
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+
+    let cfg = env.as_contract(&client.address, || config::get_config(&env).unwrap());
+    let admin = cfg.admin.clone();
+    let recipient = Address::generate(&env);
+    let fee_amount = 3_000_000_i128;
+
+    fund(&env, &xlm_token, &client.address, fee_amount);
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Treasury, &fee_amount);
+    });
+
+    client.set_paused(&true, &1u32);
+
+    let result = env.as_contract(&client.address, || {
+        transfer_fee(&env, &admin, &recipient, fee_amount)
+    });
+    assert_eq!(result, Err(InsightArenaError::Paused));
+
+    let token = TokenClient::new(&env, &xlm_token);
+    assert_eq!(token.balance(&client.address), fee_amount);
+    assert_eq!(token.balance(&recipient), 0);
+}
+
+#[test]
+fn test_draw_insurance_pool_reverts_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+
+    let cfg = env.as_contract(&client.address, || config::get_config(&env).unwrap());
+    let admin = cfg.admin.clone();
+    let recipient = Address::generate(&env);
+    let pool_amount = 5_000_000_i128;
+
+    fund(&env, &xlm_token, &client.address, pool_amount);
+    env.as_contract(&client.address, || {
+        let mut cfg = config::get_config(&env).unwrap();
+        cfg.insurance_pool_balance = pool_amount;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Config, &cfg);
+    });
+
+    client.set_paused(&true, &1u32);
+
+    let result = env.as_contract(&client.address, || {
+        draw_insurance_pool(env.clone(), admin.clone(), recipient.clone(), pool_amount)
+    });
+    assert_eq!(result, Err(InsightArenaError::Paused));
+
+    let token = TokenClient::new(&env, &xlm_token);
+    assert_eq!(token.balance(&client.address), pool_amount);
+    assert_eq!(token.balance(&recipient), 0);
+}
+
+#[test]
 fn test_escrow_operations_resume_after_unpause() {
     let env = Env::default();
     env.mock_all_auths();

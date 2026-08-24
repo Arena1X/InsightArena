@@ -295,6 +295,8 @@ pub fn transfer_fee(
     to: &Address,
     amount: i128,
 ) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(env)?;
+
     if amount <= 0 {
         return Err(InsightArenaError::InvalidInput);
     }
@@ -502,6 +504,8 @@ pub fn draw_insurance_pool(
     to: Address,
     amount: i128,
 ) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(&env)?;
+
     if amount <= 0 {
         return Err(InsightArenaError::InvalidInput);
     }

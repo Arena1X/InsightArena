@@ -214,6 +214,7 @@ pub fn add_trusted_creator(
     admin: Address,
     creator: Address,
 ) -> Result<(), InsightArenaError> {
+    crate::config::ensure_not_paused(env)?;
     admin.require_auth();
     let cfg = crate::config::get_config(env)?;
     if admin != cfg.admin {
@@ -234,6 +235,7 @@ pub fn remove_trusted_creator(
     admin: Address,
     creator: Address,
 ) -> Result<(), InsightArenaError> {
+    crate::config::ensure_not_paused(env)?;
     admin.require_auth();
     let cfg = crate::config::get_config(env)?;
     if admin != cfg.admin {
@@ -344,6 +346,7 @@ pub fn reset_creator_stats(
     admin: Address,
     creator: Address,
 ) -> Result<(), InsightArenaError> {
+    crate::config::ensure_not_paused(env)?;
     admin.require_auth();
     let cfg = crate::config::get_config(env)?;
     if admin != cfg.admin {

@@ -22,6 +22,7 @@ pub fn generate_invite_code(
     max_uses: u32,
     expires_in_seconds: u64,
 ) -> Result<Symbol, InsightArenaError> {
+    config::ensure_not_paused(&env)?;
     creator.require_auth();
 
     // 1. Fetch market and validate creator
@@ -94,6 +95,7 @@ pub fn redeem_invite_code(
     invitee: Address,
     code: Symbol,
 ) -> Result<u64, InsightArenaError> {
+    config::ensure_not_paused(&env)?;
     invitee.require_auth();
 
     let invite_key = DataKey::InviteCode(code.clone());
@@ -188,6 +190,7 @@ pub fn revoke_invite_code(
     creator: Address,
     code: Symbol,
 ) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(&env)?;
     creator.require_auth();
 
     let invite_key = DataKey::InviteCode(code.clone());

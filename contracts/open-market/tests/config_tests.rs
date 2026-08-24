@@ -350,3 +350,209 @@ fn set_treasury_split_rejects_unauthorized_caller() {
     let result = client.try_set_treasury_split(&not_admin, &new_treasury, &5_000_u32, &5_000_u32);
     assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
 }
+
+// ── Emergency pause coverage: every admin mutator must respect the pause flag ──
+
+fn deploy_initialized(env: &Env) -> (InsightArenaContractClient<'_>, Address, Address) {
+    env.mock_all_auths();
+    let client = deploy(env);
+    let admin = Address::generate(env);
+    let oracle = Address::generate(env);
+    client.initialize(&admin, &oracle, &200_u32, &register_token(env));
+    (client, admin, oracle)
+}
+
+#[test]
+fn update_protocol_fee_fails_when_paused() {
+    let env = Env::default();
+    let (client, _admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_update_protocol_fee(&300_u32);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn transfer_admin_fails_when_paused() {
+    let env = Env::default();
+    let (client, _admin, _oracle) = deploy_initialized(&env);
+    let new_admin = Address::generate(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_transfer_admin(&new_admin);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn update_oracle_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    let new_oracle = Address::generate(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_update_oracle(&admin, &new_oracle);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_timelock_delay_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_timelock_delay(&admin, &1_000_u64);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_guardian_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    let new_guardian = Address::generate(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_guardian(&admin, &new_guardian);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_min_creator_reputation_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_min_creator_reputation(&admin, &500_u32);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_reputation_decay_config_fails_when_paused() {
+    // Not exposed on the public contract ABI (no lib.rs wrapper), so this
+    // exercises the module function directly, same as escrow_tests.rs does
+    // for its internal-only helpers.
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = env.as_contract(&client.address, || {
+        config::set_reputation_decay_config(
+            &env,
+            admin.clone(),
+            1_000_000_u32,
+            config::ReputationDecayMode::Linear,
+        )
+    });
+    assert!(matches!(result, Err(InsightArenaError::Paused)));
+}
+
+#[test]
+fn set_market_ttl_extension_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_market_ttl_extension(&admin, &1_000_u32);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_stake_bounds_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_stake_bounds(&admin, &5_000_000_i128, &50_000_000_i128);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_insurance_pool_share_bps_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_insurance_pool_share_bps(&admin, &2_000_u32);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_max_liquidity_per_outcome_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_max_liquidity_per_outcome(&admin, &1_000_000_i128);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_treasury_split_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    let new_treasury = Address::generate(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_treasury_split(&admin, &new_treasury, &7_000_u32, &3_000_u32);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_arbiter_config_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_arbiter_config(&admin, &5_000_u32, &1_000_u32, &172_800_u64);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_governance_quorum_bps_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_governance_quorum_bps(&admin, &1_500_u32);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_max_outcomes_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_max_outcomes(&admin, &5_u32);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_oracle_stake_config_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_oracle_stake_config(&admin, &200_000_000_i128, &500_u32);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_vesting_config_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_vesting_config(&admin, &6_u32, &1_000_000_u64);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_bond_amount_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_bond_amount(&admin, &10_000_000_i128);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_early_exit_fee_bps_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    client.set_paused(&true, &1u32);
+    let result = client.try_set_early_exit_fee_bps(&admin, &1_000_u32);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+#[test]
+fn set_volume_fee_config_fails_when_paused() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+    let current = client.get_volume_fee_config();
+    client.set_paused(&true, &1u32);
+    let result = client.try_update_volume_fee_config(&admin, &current);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
