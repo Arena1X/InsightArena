@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, In, Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import {
   ContractService,
   ContractEvent,
@@ -8,6 +8,7 @@ import {
   ContractParticipant,
   ContractMatch,
 } from '../contract/contract.service';
+import { SearchService } from '../search/search.service';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
 import { Match } from '../matches/entities/match.entity';
 import { MatchPrediction } from '../matches/entities/match-prediction.entity';
@@ -30,7 +31,6 @@ import {
   SortOrder as ParticipantSortOrder,
 } from './dto/list-participants-query.dto';
 import {
-  CreatorEventSearchStatus,
   SearchEventsQueryDto,
 } from './dto/search-events-query.dto';
 import {
@@ -87,6 +87,7 @@ export class CreatorEventsService {
 
   constructor(
     private readonly contractService: ContractService,
+    private readonly searchService: SearchService,
     @InjectRepository(CreatorEvent)
     private readonly creatorEventRepository: Repository<CreatorEvent>,
     @InjectRepository(Match)
@@ -119,46 +120,17 @@ export class CreatorEventsService {
       };
     }
 
-    const searchVector = this.getSearchVectorSql('creatorEvent');
-    const searchQuery = `websearch_to_tsquery('english', :searchTerm)`;
-
-    const searchQueryBuilder = this.creatorEventRepository
-      .createQueryBuilder('creatorEvent')
-      .addSelect(`ts_rank_cd((${searchVector}), ${searchQuery})`, 'search_rank')
-      .where(
-        new Brackets((qb) => {
-          qb.where(`(${searchVector}) @@ ${searchQuery}`).orWhere(
-            "creatorEvent.creator_address ILIKE :creatorAddressSearch ESCAPE '\\'",
-          );
-        }),
-      )
-      .setParameter('searchTerm', searchTerm)
-      .setParameter(
-        'creatorAddressSearch',
-        `%${this.escapeLikePattern(searchTerm)}%`,
-      );
-
-    this.applyStatusFilter(searchQueryBuilder, query.status);
-
-    if (query.creator?.trim()) {
-      searchQueryBuilder.andWhere(
-        'LOWER(creatorEvent.creator_address) = LOWER(:creator)',
-        { creator: query.creator.trim() },
-      );
-    }
-
-    const total = await searchQueryBuilder.clone().getCount();
-    const { entities, raw } = await searchQueryBuilder
-      .orderBy('search_rank', 'DESC')
-      .addOrderBy('creatorEvent.participant_count', 'DESC')
-      .addOrderBy('creatorEvent.created_at', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit)
-      .getRawAndEntities<{ search_rank?: string | number }>();
+    const { data: hits, total } = await this.searchService.searchCreatorEvents({
+      query: searchTerm,
+      skip: (page - 1) * limit,
+      limit,
+      status: query.status,
+      creator: query.creator,
+    });
 
     return {
-      data: entities.map((event, index) =>
-        this.toSearchResult(event, raw[index]?.search_rank, searchTerm),
+      data: hits.map(({ event, searchRank }) =>
+        this.toSearchResult(event, searchRank, searchTerm),
       ),
       total,
       page,
@@ -648,47 +620,16 @@ export class CreatorEventsService {
     });
   }
 
-  private getSearchVectorSql(alias: string): string {
-    return `
-      setweight(to_tsvector('english', coalesce(${alias}.title, '')), 'A') ||
-      setweight(to_tsvector('english', coalesce(${alias}.description, '')), 'B') ||
-      setweight(to_tsvector('simple', coalesce(${alias}.creator_address, '')), 'C')
-    `;
-  }
-
-  private applyStatusFilter(
-    queryBuilder: ReturnType<Repository<CreatorEvent>['createQueryBuilder']>,
-    status: CreatorEventSearchStatus = CreatorEventSearchStatus.All,
-  ): void {
-    switch (status) {
-      case CreatorEventSearchStatus.Active:
-        queryBuilder.andWhere('creatorEvent.is_active = :isActive', {
-          isActive: true,
-        });
-        queryBuilder.andWhere('creatorEvent.is_cancelled = :isCancelled', {
-          isCancelled: false,
-        });
-        break;
-      case CreatorEventSearchStatus.Finished:
-        queryBuilder.andWhere(
-          new Brackets((qb) => {
-            qb.where('creatorEvent.end_time < :now', {
-              now: new Date(),
-            }).orWhere('creatorEvent.is_active = :isActive', {
-              isActive: false,
-            });
-          }),
-        );
-        break;
-      case CreatorEventSearchStatus.Upcoming:
-        queryBuilder.andWhere('creatorEvent.start_time > :now', {
-          now: new Date(),
-        });
-        break;
-      case CreatorEventSearchStatus.All:
-      default:
-        break;
-    }
+  private buildHighlights(
+    event: CreatorEvent,
+    searchTerm: string,
+  ): SearchHighlightsDto {
+    return {
+      title: this.highlightMatches(event.title, searchTerm),
+      description: this.highlightMatches(event.description, searchTerm),
+      creator_address: this.highlightMatches(event.creator_address, searchTerm),
+      category: this.highlightMatches(event.category, searchTerm),
+    };
   }
 
   private toSearchResult(
@@ -713,17 +654,6 @@ export class CreatorEventsService {
       banner_url: event.banner_url ?? null,
       is_finalized: event.is_finalized,
       highlights: this.buildHighlights(event, searchTerm),
-    };
-  }
-
-  private buildHighlights(
-    event: CreatorEvent,
-    searchTerm: string,
-  ): SearchHighlightsDto {
-    return {
-      title: this.highlightMatches(event.title, searchTerm),
-      description: this.highlightMatches(event.description, searchTerm),
-      creator_address: this.highlightMatches(event.creator_address, searchTerm),
     };
   }
 
@@ -766,10 +696,6 @@ export class CreatorEventsService {
 
       return replacements[char];
     });
-  }
-
-  private escapeLikePattern(value: string): string {
-    return value.replace(/[\\%_]/g, (char) => `\\${char}`);
   }
 
   private escapeRegExp(value: string): string {

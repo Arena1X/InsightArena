@@ -9,6 +9,8 @@ import {
   Competition,
   CompetitionVisibility,
 } from '../competitions/entities/competition.entity';
+import { CreatorEvent } from '../matches/entities/creator-event.entity';
+import { CreatorEventSearchStatus } from '../creator-events/dto/search-events-query.dto';
 import { SearchService } from './search.service';
 import { GlobalSearchDto, SearchType } from './dto/global-search.dto';
 import { SuggestType } from './dto/suggest-query.dto';
@@ -28,6 +30,9 @@ type MockQb<T> = jest.Mocked<
     | 'limit'
     | 'getMany'
     | 'getManyAndCount'
+    | 'clone'
+    | 'getCount'
+    | 'getRawAndEntities'
   >
 >;
 
@@ -46,6 +51,12 @@ function makeQb<T>(results: T[], count?: number): MockQb<T> {
     limit: jest.fn().mockReturnThis(),
     getMany: jest.fn().mockResolvedValue(results),
     getManyAndCount: jest.fn().mockResolvedValue([results, resolvedCount]),
+    clone: jest.fn().mockReturnThis(),
+    getCount: jest.fn().mockResolvedValue(resolvedCount),
+    getRawAndEntities: jest.fn().mockResolvedValue({
+      entities: results,
+      raw: results.map(() => ({ search_rank: '0.75' })),
+    }),
   } as unknown as MockQb<T>;
   return qb;
 }
@@ -55,6 +66,7 @@ describe('SearchService', () => {
   let marketQb: MockQb<Market>;
   let userQb: MockQb<User>;
   let competitionQb: MockQb<Competition>;
+  let creatorEventQb: MockQb<CreatorEvent>;
 
   /** Market with virtual addSelect columns TypeORM attaches to entity instances */
   const mockMarket = {
@@ -96,6 +108,15 @@ describe('SearchService', () => {
     headline: '<b>Crypto</b> League',
   } as unknown as Competition;
 
+  const mockCreatorEvent = {
+    id: 'event-1',
+    title: 'Champions League Final',
+    description: 'Predict the Champions League winner',
+    category: 'football',
+    creator_address: '0xCreatorAddress',
+    created_at: new Date('2026-05-01T00:00:00.000Z'),
+  } as unknown as CreatorEvent;
+
   let mockCacheManager: {
     get: jest.Mock;
     set: jest.Mock;
@@ -106,6 +127,7 @@ describe('SearchService', () => {
     marketQb = makeQb([mockMarket], 5);
     userQb = makeQb([mockUser], 5);
     competitionQb = makeQb([mockCompetition], 5);
+    creatorEventQb = makeQb([mockCreatorEvent], 1);
 
     mockCacheManager = {
       get: jest.fn().mockResolvedValue(undefined),
@@ -127,6 +149,12 @@ describe('SearchService', () => {
           provide: getRepositoryToken(Competition),
           useValue: {
             createQueryBuilder: jest.fn().mockReturnValue(competitionQb),
+          },
+        },
+        {
+          provide: getRepositoryToken(CreatorEvent),
+          useValue: {
+            createQueryBuilder: jest.fn().mockReturnValue(creatorEventQb),
           },
         },
         {
@@ -329,6 +357,12 @@ describe('SearchService', () => {
             },
           },
           {
+            provide: getRepositoryToken(CreatorEvent),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(creatorEventQb),
+            },
+          },
+          {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
           },
@@ -373,6 +407,12 @@ describe('SearchService', () => {
             provide: getRepositoryToken(Competition),
             useValue: {
               createQueryBuilder: jest.fn().mockReturnValue(competitionQb),
+            },
+          },
+          {
+            provide: getRepositoryToken(CreatorEvent),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(creatorEventQb),
             },
           },
           {
@@ -424,6 +464,12 @@ describe('SearchService', () => {
             provide: getRepositoryToken(Competition),
             useValue: {
               createQueryBuilder: jest.fn().mockReturnValue(competitionQb),
+            },
+          },
+          {
+            provide: getRepositoryToken(CreatorEvent),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(creatorEventQb),
             },
           },
           {
@@ -614,6 +660,12 @@ describe('SearchService', () => {
             },
           },
           {
+            provide: getRepositoryToken(CreatorEvent),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(creatorEventQb),
+            },
+          },
+          {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
           },
@@ -665,6 +717,12 @@ describe('SearchService', () => {
             provide: getRepositoryToken(Competition),
             useValue: {
               createQueryBuilder: jest.fn().mockReturnValue(competitionQb),
+            },
+          },
+          {
+            provide: getRepositoryToken(CreatorEvent),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(creatorEventQb),
             },
           },
           {
@@ -817,6 +875,61 @@ describe('SearchService', () => {
       expect(competitionQb.where).toHaveBeenCalledWith(
         'competition.visibility = :visibility',
         { visibility: CompetitionVisibility.Public },
+      );
+    });
+  });
+
+  describe('searchCreatorEvents()', () => {
+    it('queries the stored search_vector index across title, description, and category', async () => {
+      const result = await service.searchCreatorEvents({
+        query: 'champions',
+        skip: 0,
+        limit: 20,
+        status: CreatorEventSearchStatus.All,
+      });
+
+      expect(creatorEventQb.addSelect).toHaveBeenCalledWith(
+        expect.stringContaining('creatorEvent.search_vector'),
+        'search_rank',
+      );
+      expect(creatorEventQb.where).toHaveBeenCalled();
+      expect(creatorEventQb.setParameter).toHaveBeenCalledWith(
+        'searchTerm',
+        'champions',
+      );
+      expect(creatorEventQb.orderBy).toHaveBeenCalledWith(
+        'search_rank',
+        'DESC',
+      );
+      expect(creatorEventQb.addOrderBy).toHaveBeenCalledWith(
+        'creatorEvent.created_at',
+        'DESC',
+      );
+      expect(result.total).toBe(1);
+      expect(result.data[0].event.id).toBe('event-1');
+      expect(result.data[0].searchRank).toBe(0.75);
+    });
+
+    it('includes category ILIKE fallback and applies active status filter', async () => {
+      await service.searchCreatorEvents({
+        query: 'football',
+        skip: 0,
+        limit: 10,
+        status: CreatorEventSearchStatus.Active,
+        creator: '0xCreatorAddress',
+      });
+
+      expect(creatorEventQb.setParameter).toHaveBeenCalledWith(
+        'categorySearch',
+        '%football%',
+      );
+      expect(creatorEventQb.andWhere).toHaveBeenCalledWith(
+        'creatorEvent.is_active = :isActive',
+        { isActive: true },
+      );
+      expect(creatorEventQb.andWhere).toHaveBeenCalledWith(
+        'LOWER(creatorEvent.creator_address) = LOWER(:creator)',
+        { creator: '0xCreatorAddress' },
       );
     });
   });
