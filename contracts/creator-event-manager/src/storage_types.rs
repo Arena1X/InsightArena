@@ -298,6 +298,15 @@ pub enum DataKey {
     /// `verification::submit_verification`.
     EventVerificationSigners(u64),
 
+    // ── Verifier signature keys (#1705) ──────────────────────────────────────
+    /// The raw ed25519 public key (32 bytes) bound to a configured verifier
+    /// signer's `Address`  (signer). Written by `admin::set_verifier_config`.
+    /// `verification::submit_verification` verifies the caller's signature
+    /// against this key rather than trusting `require_auth` alone, since a
+    /// detached ed25519 signature can be checked against a payload bound to
+    /// the specific event being verified.
+    VerifierPublicKey(Address),
+
     // ── Multi-source oracle aggregation (#1347) ──────────────────────────────
     /// Vec<Address> of addresses authorized to submit numeric oracle values.
     /// Written by `oracle::configure_oracle_sources`.
