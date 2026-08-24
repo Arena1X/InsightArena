@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { clampAnalyticsDateRange } from '../common/dto/date-range-query.dto';
 import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.entity';
 import { Market } from '../markets/entities/market.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
@@ -228,6 +229,10 @@ export class AnalyticsService {
     to: Date,
     interval?: string, // TODO: Implement interval-based aggregation
   ): Promise<MarketHistoryResponseDto> {
+    const clampedRange = clampAnalyticsDateRange(from, to);
+    from = clampedRange.from;
+    to = clampedRange.to;
+
     if (interval) {
       this.logger.debug(
         `Interval aggregation (${interval}) requested but not yet implemented`,
