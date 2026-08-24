@@ -825,4 +825,46 @@ describe('UsersService', () => {
       expect(referralsRepository.save).not.toHaveBeenCalled();
     });
   });
+
+  describe('updateProfile', () => {
+    it('updates only the fields provided in a partial payload', async () => {
+      const existingUser = {
+        ...mockUser,
+        username: 'keep_me',
+        avatar_url: 'https://example.com/original.png',
+      } as User;
+
+      jest.spyOn(repository, 'findOneBy').mockResolvedValue(existingUser);
+      jest.spyOn(repository, 'save').mockImplementation(async (user) => user);
+
+      const result = await service.updateProfile(existingUser.id, {
+        username: 'new_name',
+      });
+
+      expect(result.username).toBe('new_name');
+      expect(result.avatar_url).toBe('https://example.com/original.png');
+      expect(repository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          username: 'new_name',
+          avatar_url: 'https://example.com/original.png',
+        }),
+      );
+    });
+
+    it('leaves the profile unchanged when no updatable fields are provided', async () => {
+      const existingUser = {
+        ...mockUser,
+        username: 'keep_me',
+        avatar_url: 'https://example.com/original.png',
+      } as User;
+
+      jest.spyOn(repository, 'findOneBy').mockResolvedValue(existingUser);
+      jest.spyOn(repository, 'save').mockImplementation(async (user) => user);
+
+      const result = await service.updateProfile(existingUser.id, {});
+
+      expect(result.username).toBe('keep_me');
+      expect(result.avatar_url).toBe('https://example.com/original.png');
+    });
+  });
 });
