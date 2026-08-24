@@ -15,9 +15,7 @@ describe('validate()', () => {
     const result = validate({ ...validEnv });
 
     expect(result.DATABASE_URL).toBe(validEnv.DATABASE_URL);
-    expect(result.SOROBAN_RPC_URL).toBe(
-      'https://soroban-testnet.stellar.org',
-    );
+    expect(result.SOROBAN_RPC_URL).toBe('https://soroban-testnet.stellar.org');
   });
 
   it('throws with descriptive messages when required variables are missing', () => {

@@ -60,18 +60,17 @@ const TEMPLATE_REQUIRED_FIELDS: Record<
   digest: ['digestFrequency', 'digestPeriod'],
 };
 
-const TEMPLATE_FALLBACKS: Partial<
-  Record<keyof EmailTemplateContext, string>
-> = {
-  eventTitle: 'Event',
-  eventId: '',
-  matchHomeTeam: 'Team A',
-  matchAwayTeam: 'Team B',
-  matchResult: 'Pending',
-  userAddress: '',
-  inviteCode: '',
-  digestPeriod: '',
-};
+const TEMPLATE_FALLBACKS: Partial<Record<keyof EmailTemplateContext, string>> =
+  {
+    eventTitle: 'Event',
+    eventId: '',
+    matchHomeTeam: 'Team A',
+    matchAwayTeam: 'Team B',
+    matchResult: 'Pending',
+    userAddress: '',
+    inviteCode: '',
+    digestPeriod: '',
+  };
 
 export function validateEmailTemplateContext(
   type: EmailTemplateType,
@@ -82,7 +81,7 @@ export function validateEmailTemplateContext(
 
   for (const field of TEMPLATE_REQUIRED_FIELDS[type] ?? []) {
     const value = context[field];
-    if (value === undefined || value === null || String(value).trim() === '') {
+    if (typeof value !== 'string' || value.trim() === '') {
       missing.push(String(field));
     }
   }
@@ -92,7 +91,9 @@ export function validateEmailTemplateContext(
       context.digestGroups?.reduce(
         (sum, group) => sum + group.items.length,
         0,
-      ) ?? context.digestItems?.length ?? 0;
+      ) ??
+      context.digestItems?.length ??
+      0;
     if (itemCount === 0) {
       missing.push('digestItems');
     }
@@ -109,8 +110,8 @@ function resolveField(
   strict: boolean,
 ): string {
   const raw = context[field];
-  if (raw !== undefined && raw !== null && String(raw).trim() !== '') {
-    return String(raw);
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    return raw;
   }
 
   if (strict) {
@@ -228,7 +229,9 @@ export function renderEmailTemplate(
 
       const itemsText = groups
         .flatMap((group) =>
-          group.items.map((item) => `[${group.category}] ${item.title}: ${item.message}`),
+          group.items.map(
+            (item) => `[${group.category}] ${item.title}: ${item.message}`,
+          ),
         )
         .join('\n');
 

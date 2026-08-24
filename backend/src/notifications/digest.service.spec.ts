@@ -2,7 +2,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DigestService, aggregateDigestNotifications, DIGEST_MAX_ITEMS } from './digest.service';
+import {
+  DigestService,
+  aggregateDigestNotifications,
+  DIGEST_MAX_ITEMS,
+} from './digest.service';
 import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { User } from '../users/entities/user.entity';
 import { Notification } from './entities/notification.entity';
@@ -298,11 +302,14 @@ describe('DigestService', () => {
     });
 
     it('caps visible items and reports overflow count', () => {
-      const notifications = Array.from({ length: DIGEST_MAX_ITEMS + 4 }, (_, i) => ({
-        type: 'prediction_submitted',
-        title: `Prediction ${i + 1}`,
-        message: 'Submitted',
-      })) as Notification[];
+      const notifications = Array.from(
+        { length: DIGEST_MAX_ITEMS + 4 },
+        (_, i) => ({
+          type: 'prediction_submitted',
+          title: `Prediction ${i + 1}`,
+          message: 'Submitted',
+        }),
+      ) as Notification[];
 
       const aggregated = aggregateDigestNotifications(notifications);
 

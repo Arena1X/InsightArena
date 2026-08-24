@@ -189,7 +189,10 @@ describe('CreatorEventsService getUpcomingMatches', () => {
       providers: [
         CreatorEventsService,
         { provide: ContractService, useValue: {} },
-        { provide: SearchService, useValue: { searchCreatorEvents: jest.fn() } },
+        {
+          provide: SearchService,
+          useValue: { searchCreatorEvents: jest.fn() },
+        },
         {
           provide: getRepositoryToken(CreatorEvent),
           useValue: creatorEventRepository,

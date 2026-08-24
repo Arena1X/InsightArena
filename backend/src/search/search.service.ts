@@ -703,9 +703,7 @@ export class SearchService {
             .orWhere(
               "creatorEvent.creator_address ILIKE :creatorAddressSearch ESCAPE '\\'",
             )
-            .orWhere(
-              "creatorEvent.category ILIKE :categorySearch ESCAPE '\\'",
-            );
+            .orWhere("creatorEvent.category ILIKE :categorySearch ESCAPE '\\'");
         }),
       )
       .setParameter('searchTerm', searchTerm)

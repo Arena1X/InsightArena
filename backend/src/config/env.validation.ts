@@ -18,7 +18,7 @@ enum StellarNetwork {
   MAINNET = 'mainnet',
 }
 
-enum NodeEnvironment {
+export enum NodeEnvironment {
   DEVELOPMENT = 'development',
   PRODUCTION = 'production',
   TEST = 'test',

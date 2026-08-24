@@ -30,9 +30,7 @@ import {
   ParticipantSortBy,
   SortOrder as ParticipantSortOrder,
 } from './dto/list-participants-query.dto';
-import {
-  SearchEventsQueryDto,
-} from './dto/search-events-query.dto';
+import { SearchEventsQueryDto } from './dto/search-events-query.dto';
 import {
   SearchEventResultDto,
   SearchEventsResponseDto,
