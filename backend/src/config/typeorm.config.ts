@@ -9,6 +9,8 @@ export const typeOrmConfig: DataSourceOptions = {
   url: process.env.DATABASE_URL,
   entities: [join(__dirname, '/../**/*.entity{.ts,.js}')],
   migrations: [join(__dirname, '/../migrations/*{.ts,.js}')],
+  // Migration filenames must use unique 13-digit timestamp prefixes.
+  // Run `pnpm run migration:check-timestamps` before opening a PR.
   synchronize: false, // Never use synchronize in production
   logging: process.env.NODE_ENV === 'development',
   migrationsRun: false, // Run migrations manually
