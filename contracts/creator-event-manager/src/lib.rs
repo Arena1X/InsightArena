@@ -774,6 +774,10 @@ impl CreatorEventManagerContract {
     }
 
     /// Join an event using its invite code.
+    ///
+    /// # Panics
+    /// * `"invite_code_expired"` — the code's expiry has passed (#1699).
+    /// * `"invite_code_uses_exceeded"` — the code has reached its use cap (#1699).
     pub fn join_event(env: Env, user: Address, invite_code: Symbol) {
         match prediction::join_event(&env, user, invite_code) {
             Ok(()) => {}
@@ -786,6 +790,36 @@ impl CreatorEventManagerContract {
             Err(prediction::PredictionError::InsufficientEntryFeeBalance) => {
                 panic!("insufficient_entry_fee_balance")
             }
+            Err(prediction::PredictionError::InviteCodeExpired) => {
+                panic!("invite_code_expired")
+            }
+            Err(prediction::PredictionError::InviteCodeUsesExceeded) => {
+                panic!("invite_code_uses_exceeded")
+            }
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Configure the expiry and/or use cap on an event's invite code (#1699).
+    ///
+    /// Only the event's creator may call this. `expires_at == 0` means the
+    /// code never expires; `max_uses == 0` means the code has no redemption
+    /// cap. Both default to unrestricted at event creation.
+    ///
+    /// # Panics
+    /// * `"event_not_found"` — no event exists with the given ID.
+    /// * `"unauthorized"` — caller is not the event creator.
+    pub fn set_invite_limits(
+        env: Env,
+        caller: Address,
+        event_id: u64,
+        expires_at: u64,
+        max_uses: u32,
+    ) {
+        match event::set_invite_limits(&env, caller, event_id, expires_at, max_uses) {
+            Ok(()) => {}
+            Err(EventError::EventNotFound) => panic!("event_not_found"),
+            Err(EventError::Unauthorized) => panic!("unauthorized"),
             Err(_) => panic!("unexpected_error"),
         }
     }
