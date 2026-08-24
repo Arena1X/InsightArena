@@ -5,12 +5,15 @@ import { AchievementsService } from './achievements.service';
 import { Achievement, AchievementType } from './entities/achievement.entity';
 import { UserAchievement } from './entities/user-achievement.entity';
 import { User } from '../users/entities/user.entity';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/entities/notification.entity';
 
 describe('AchievementsService', () => {
   let service: AchievementsService;
   let achievementsRepository: jest.Mocked<Repository<Achievement>>;
   let userAchievementsRepository: jest.Mocked<Repository<UserAchievement>>;
   let usersRepository: jest.Mocked<Repository<User>>;
+  let notificationsService: jest.Mocked<NotificationsService>;
 
   const mockUser = {
     id: 'user-1',
@@ -20,6 +23,39 @@ describe('AchievementsService', () => {
     total_staked_stroops: '5000000',
     reputation_score: 600,
   } as User;
+
+  /**
+   * Simulates a Postgres unique-constraint-backed `INSERT ... ON CONFLICT DO
+   * NOTHING`: the first insert for a given (user, achievement) key succeeds
+   * (returns an identifier), every subsequent insert for the same key is
+   * ignored (returns no identifiers) — regardless of call order, which is
+   * what lets us model concurrent triggers racing each other.
+   */
+  const makeInsertOrIgnoreMock = (userAchievementsRepo: any) => {
+    const awardedKeys = new Set<string>();
+    userAchievementsRepo.createQueryBuilder.mockImplementation(() => {
+      let values: any;
+      const qb = {
+        insert: () => qb,
+        into: () => qb,
+        values: (v: any) => {
+          values = v;
+          return qb;
+        },
+        orIgnore: () => qb,
+        execute: async () => {
+          const key = `${values.user.id}:${values.achievement.id}`;
+          if (awardedKeys.has(key)) {
+            return { identifiers: [], raw: [] };
+          }
+          awardedKeys.add(key);
+          return { identifiers: [{ id: `ua-${key}` }], raw: [] };
+        },
+      };
+      return qb;
+    });
+    return awardedKeys;
+  };
 
   beforeEach(async () => {
     achievementsRepository = {
@@ -33,10 +69,16 @@ describe('AchievementsService', () => {
       find: jest.fn(),
       findOne: jest.fn(),
       save: jest.fn(),
+      update: jest.fn(),
+      createQueryBuilder: jest.fn(),
     } as any;
 
     usersRepository = {
       findOne: jest.fn().mockResolvedValue(mockUser),
+    } as any;
+
+    notificationsService = {
+      create: jest.fn().mockResolvedValue({}),
     } as any;
 
     const module: TestingModule = await Test.createTestingModule({
@@ -53,6 +95,10 @@ describe('AchievementsService', () => {
         {
           provide: getRepositoryToken(User),
           useValue: usersRepository,
+        },
+        {
+          provide: NotificationsService,
+          useValue: notificationsService,
         },
       ],
     }).compile();
@@ -73,11 +119,19 @@ describe('AchievementsService', () => {
     } as Achievement;
 
     achievementsRepository.findOne.mockResolvedValue(mockAchievement);
-    userAchievementsRepository.findOne.mockResolvedValue(null);
+    makeInsertOrIgnoreMock(userAchievementsRepository);
 
     await service.checkAndUnlockAchievements(mockUser);
 
-    expect(userAchievementsRepository.save).toHaveBeenCalled();
+    expect(userAchievementsRepository.createQueryBuilder).toHaveBeenCalled();
+    expect(notificationsService.create).toHaveBeenCalledWith(
+      mockUser.stellar_address,
+      NotificationType.AchievementUnlocked,
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({ achievementId: mockAchievement.id }),
+      mockUser.id,
+    );
   });
 
   it('should get user achievements', async () => {
@@ -126,44 +180,43 @@ describe('AchievementsService', () => {
         const type = options?.where?.type;
         return Promise.resolve({ id: `ach-${type}`, type } as Achievement);
       });
-      userAchievementsRepository.findOne.mockResolvedValue(null);
-      userAchievementsRepository.save.mockClear();
+      makeInsertOrIgnoreMock(userAchievementsRepository);
     });
 
-    const savedTypes = () =>
-      userAchievementsRepository.save.mock.calls.map(
-        (call) => (call[0] as any).achievement.type,
+    const unlockedTypes = () =>
+      notificationsService.create.mock.calls.map(
+        (call) => (call[4] as any)?.achievementType,
       );
 
     it('should NOT unlock ACCURACY_75 at 74% accuracy (below boundary)', async () => {
       usersRepository.findOne.mockResolvedValue(makeUser(74, 100));
       await service.checkAndUnlockAchievements(makeUser(74, 100));
-      expect(savedTypes()).not.toContain(AchievementType.ACCURACY_75);
+      expect(unlockedTypes()).not.toContain(AchievementType.ACCURACY_75);
     });
 
     it('should unlock ACCURACY_75 at exactly 75% accuracy', async () => {
       usersRepository.findOne.mockResolvedValue(makeUser(75, 100));
       await service.checkAndUnlockAchievements(makeUser(75, 100));
-      expect(savedTypes()).toContain(AchievementType.ACCURACY_75);
+      expect(unlockedTypes()).toContain(AchievementType.ACCURACY_75);
     });
 
     it('should NOT unlock ACCURACY_90 at 89% accuracy (below boundary)', async () => {
       usersRepository.findOne.mockResolvedValue(makeUser(89, 100));
       await service.checkAndUnlockAchievements(makeUser(89, 100));
-      expect(savedTypes()).not.toContain(AchievementType.ACCURACY_90);
+      expect(unlockedTypes()).not.toContain(AchievementType.ACCURACY_90);
     });
 
     it('should unlock ACCURACY_90 at exactly 90% accuracy', async () => {
       usersRepository.findOne.mockResolvedValue(makeUser(90, 100));
       await service.checkAndUnlockAchievements(makeUser(90, 100));
-      expect(savedTypes()).toContain(AchievementType.ACCURACY_90);
+      expect(unlockedTypes()).toContain(AchievementType.ACCURACY_90);
     });
 
     it('should NOT unlock any accuracy achievement when total_predictions is 0', async () => {
       usersRepository.findOne.mockResolvedValue(makeUser(0, 0));
       await service.checkAndUnlockAchievements(makeUser(0, 0));
-      expect(savedTypes()).not.toContain(AchievementType.ACCURACY_75);
-      expect(savedTypes()).not.toContain(AchievementType.ACCURACY_90);
+      expect(unlockedTypes()).not.toContain(AchievementType.ACCURACY_75);
+      expect(unlockedTypes()).not.toContain(AchievementType.ACCURACY_90);
     });
   });
 
@@ -183,61 +236,55 @@ describe('AchievementsService', () => {
         const type = options?.where?.type;
         return Promise.resolve({ id: `ach-${type}`, type } as Achievement);
       });
-      userAchievementsRepository.findOne.mockResolvedValue(null);
-      userAchievementsRepository.save.mockClear();
     });
 
-    const savedTypes = () =>
-      userAchievementsRepository.save.mock.calls.map(
-        (call) => (call[0] as any).achievement.type,
+    const unlockedTypes = () =>
+      notificationsService.create.mock.calls.map(
+        (call) => (call[4] as any)?.achievementType,
       );
 
     it('should NOT unlock TOTAL_STAKED_1M when staked is 999999 (just below 1M)', async () => {
+      makeInsertOrIgnoreMock(userAchievementsRepository);
       const user = makeStakeUser('999999');
       usersRepository.findOne.mockResolvedValue(user);
       await service.checkAndUnlockAchievements(user);
-      expect(savedTypes()).not.toContain(AchievementType.TOTAL_STAKED_1M);
+      expect(unlockedTypes()).not.toContain(AchievementType.TOTAL_STAKED_1M);
     });
 
     it('should unlock TOTAL_STAKED_1M when staked is exactly 1000000', async () => {
+      makeInsertOrIgnoreMock(userAchievementsRepository);
       const user = makeStakeUser('1000000');
       usersRepository.findOne.mockResolvedValue(user);
       await service.checkAndUnlockAchievements(user);
-      expect(savedTypes()).toContain(AchievementType.TOTAL_STAKED_1M);
+      expect(unlockedTypes()).toContain(AchievementType.TOTAL_STAKED_1M);
     });
 
-    it('should NOT unlock TOTAL_STAKED_10M when staked is 9999999 (just below 10M), but TOTAL_STAKED_1M already unlocked is not re-awarded', async () => {
+    it('should NOT re-notify TOTAL_STAKED_1M once already awarded', async () => {
       const user = makeStakeUser('9999999');
       usersRepository.findOne.mockResolvedValue(user);
-      userAchievementsRepository.findOne.mockImplementation((options: any) => {
-        const type = options?.where?.achievement?.id;
-        if (type === `ach-${AchievementType.TOTAL_STAKED_1M}`) {
-          return Promise.resolve({ id: 'ua-1m', is_unlocked: true } as any);
-        }
-        return Promise.resolve(null);
-      });
+      const awardedKeys = makeInsertOrIgnoreMock(userAchievementsRepository);
+      awardedKeys.add(`${user.id}:ach-${AchievementType.TOTAL_STAKED_1M}`);
+
       await service.checkAndUnlockAchievements(user);
-      expect(savedTypes()).not.toContain(AchievementType.TOTAL_STAKED_10M);
-      expect(savedTypes()).not.toContain(AchievementType.TOTAL_STAKED_1M);
+
+      expect(unlockedTypes()).not.toContain(AchievementType.TOTAL_STAKED_10M);
+      expect(unlockedTypes()).not.toContain(AchievementType.TOTAL_STAKED_1M);
     });
 
     it('should unlock only TOTAL_STAKED_10M when staked is exactly 10000000 and TOTAL_STAKED_1M already unlocked', async () => {
       const user = makeStakeUser('10000000');
       usersRepository.findOne.mockResolvedValue(user);
-      userAchievementsRepository.findOne.mockImplementation((options: any) => {
-        const achievementId = options?.where?.achievement?.id;
-        if (achievementId === `ach-${AchievementType.TOTAL_STAKED_1M}`) {
-          return Promise.resolve({ id: 'ua-1m', is_unlocked: true } as any);
-        }
-        return Promise.resolve(null);
-      });
+      const awardedKeys = makeInsertOrIgnoreMock(userAchievementsRepository);
+      awardedKeys.add(`${user.id}:ach-${AchievementType.TOTAL_STAKED_1M}`);
+
       await service.checkAndUnlockAchievements(user);
-      expect(savedTypes()).toContain(AchievementType.TOTAL_STAKED_10M);
-      expect(savedTypes()).not.toContain(AchievementType.TOTAL_STAKED_1M);
+
+      expect(unlockedTypes()).toContain(AchievementType.TOTAL_STAKED_10M);
+      expect(unlockedTypes()).not.toContain(AchievementType.TOTAL_STAKED_1M);
     });
   });
 
-  describe('idempotency: no double-award', () => {
+  describe('idempotency: one award per (user, achievement) under concurrent triggers', () => {
     const qualifyingUser = {
       id: 'user-1',
       stellar_address: 'GABC123',
@@ -253,42 +300,59 @@ describe('AchievementsService', () => {
       title: 'First Step',
     } as Achievement;
 
-    const existingUserAchievement = {
-      id: 'ua-1',
-      user: qualifyingUser,
-      achievement: firstPredictionAchievement,
-      is_unlocked: true,
-      unlocked_at: new Date(),
-    } as UserAchievement;
-
     beforeEach(() => {
       usersRepository.findOne.mockResolvedValue(qualifyingUser);
       achievementsRepository.findOne.mockResolvedValue(
         firstPredictionAchievement,
       );
-      // First invocation: no existing record yet → save triggers
-      userAchievementsRepository.findOne.mockResolvedValueOnce(null);
-      // Second invocation: record already exists → save is skipped
-      userAchievementsRepository.findOne.mockResolvedValue(
-        existingUserAchievement,
+    });
+
+    it('awards exactly once and notifies exactly once when two concurrent triggers race', async () => {
+      makeInsertOrIgnoreMock(userAchievementsRepository);
+
+      // Simulate two concurrent triggers (e.g. two predictions resolving
+      // near-simultaneously) both racing to unlock the same achievement.
+      await Promise.all([
+        service.checkAndUnlockAchievements(qualifyingUser),
+        service.checkAndUnlockAchievements(qualifyingUser),
+      ]);
+
+      expect(notificationsService.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('awards exactly once and notifies exactly once across many concurrent triggers', async () => {
+      makeInsertOrIgnoreMock(userAchievementsRepository);
+
+      await Promise.all(
+        Array.from({ length: 10 }, () =>
+          service.checkAndUnlockAchievements(qualifyingUser),
+        ),
       );
+
+      expect(notificationsService.create).toHaveBeenCalledTimes(1);
     });
 
-    it('should save FIRST_PREDICTION exactly once when checkAndUnlockAchievements is called twice', async () => {
+    it('does not re-notify on a second sequential call once already awarded', async () => {
+      makeInsertOrIgnoreMock(userAchievementsRepository);
+
       await service.checkAndUnlockAchievements(qualifyingUser);
       await service.checkAndUnlockAchievements(qualifyingUser);
 
-      expect(userAchievementsRepository.save).toHaveBeenCalledTimes(1);
+      expect(notificationsService.create).toHaveBeenCalledTimes(1);
     });
 
-    it('should call findOne on every invocation to guard against duplicate rows', async () => {
-      await service.checkAndUnlockAchievements(qualifyingUser);
-      await service.checkAndUnlockAchievements(qualifyingUser);
+    it('updateAchievementProgress also awards at most once under concurrent calls', async () => {
+      achievementsRepository.find.mockResolvedValue([
+        firstPredictionAchievement,
+      ]);
+      makeInsertOrIgnoreMock(userAchievementsRepository);
 
-      // findOne is invoked once per call (proves the guard runs each time, not just the first)
-      expect(userAchievementsRepository.findOne).toHaveBeenCalledTimes(2);
-      // save only fires on the first call when findOne returned null
-      expect(userAchievementsRepository.save).toHaveBeenCalledTimes(1);
+      await Promise.all([
+        service.updateAchievementProgress(qualifyingUser),
+        service.updateAchievementProgress(qualifyingUser),
+      ]);
+
+      expect(notificationsService.create).toHaveBeenCalledTimes(1);
     });
   });
 });

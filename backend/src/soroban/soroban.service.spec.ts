@@ -198,4 +198,93 @@ describe('SorobanService', () => {
       ).resolves.toBeUndefined();
     });
   });
+
+  describe('sendTransaction retry behavior', () => {
+    const mockTxHash = 'b'.repeat(64);
+
+    beforeEach(() => {
+      jest.spyOn(SorobanRpc.Server.prototype, 'getAccount').mockResolvedValue({
+        sequenceNumber: () => '1',
+        accountId: () => testServerKeypair.publicKey(),
+        incrementSequenceNumber: () => {},
+      } as never);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({
+          results: [{}],
+          transactionData: new SorobanDataBuilder(),
+          result: { auth: [] },
+          minResourceFee: '100',
+          _parsed: true,
+        } as never);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getTransaction')
+        .mockResolvedValue({
+          status: 'SUCCESS',
+          hash: mockTxHash,
+        } as never);
+
+      // Retry backoff sleeps use setTimeout; keep tests fast.
+      jest.spyOn(global, 'setTimeout').mockImplementation(((fn: () => void) => {
+        fn();
+        return 0 as unknown as NodeJS.Timeout;
+      }) as unknown as typeof setTimeout);
+    });
+
+    it('retries a transient network error on sendTransaction and eventually succeeds', async () => {
+      const sendTransactionSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'sendTransaction')
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          hash: mockTxHash,
+        } as never);
+
+      const result = await service.refundCompetitionParticipant(
+        testKeypair.publicKey(),
+        'comp_123',
+        '1000000',
+      );
+
+      expect(result.tx_hash).toBe(mockTxHash);
+      expect(sendTransactionSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry a definitive rejection (permanent error) on sendTransaction', async () => {
+      const sendTransactionSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'sendTransaction')
+        .mockResolvedValue({
+          status: 'ERROR',
+          errorResult: { message: 'txBadAuth' },
+        } as never);
+
+      await expect(
+        service.refundCompetitionParticipant(
+          testKeypair.publicKey(),
+          'comp_123',
+          '1000000',
+        ),
+      ).rejects.toThrow(/Transaction submission failed/);
+
+      expect(sendTransactionSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('surfaces the final error after exhausting retries on persistent transient failures', async () => {
+      const sendTransactionSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'sendTransaction')
+        .mockRejectedValue(new TypeError('fetch failed'));
+
+      await expect(
+        service.refundCompetitionParticipant(
+          testKeypair.publicKey(),
+          'comp_123',
+          '1000000',
+        ),
+      ).rejects.toThrow('fetch failed');
+
+      expect(sendTransactionSpy).toHaveBeenCalledTimes(3);
+    });
+  });
 });

@@ -24,9 +24,24 @@ interface AuthenticatedSocket extends Socket {
   userAddress?: string;
 }
 
+interface JwtHandshakePayload {
+  sub: string;
+  stellar_address: string;
+}
+
 /** UUID v4 pattern used to validate market room subscriptions. */
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** In-memory snapshot of an authenticated client's subscriptions, keyed by session id. */
+interface SessionSnapshot {
+  userAddress: string;
+  rooms: Set<string>;
+  markets: Set<string>;
+}
+
+/** How long a session's subscriptions are retained after disconnect, to allow reconnect resume. */
+const SESSION_RETENTION_MS = 5 * 60_000;
 
 @WebSocketGateway({
   cors: { origin: '*', credentials: true },
@@ -44,6 +59,11 @@ export class EventsGateway
   private readonly heartbeats = new Map<string, NodeJS.Timeout>();
   /** Tracks which market rooms each socket has subscribed to for cleanup on disconnect. */
   private readonly socketMarkets = new Map<string, Set<string>>(); // socketId → Set<marketId>
+  /** socketId → sessionId, so disconnect can snapshot subscriptions under a stable key. */
+  private readonly socketSessions = new Map<string, string>();
+  /** sessionId → last-known subscriptions, retained briefly to resume after reconnect. */
+  private readonly sessions = new Map<string, SessionSnapshot>();
+  private readonly sessionExpiry = new Map<string, NodeJS.Timeout>();
   private readonly RATE_LIMIT = 60; // messages per minute
   private readonly RATE_WINDOW = 60_000;
 
@@ -63,21 +83,42 @@ export class EventsGateway
         '',
       );
 
-    if (token) {
-      try {
-        const payload = this.jwtService.verify<{ sub: string }>(token, {
-          secret: this.configService.get<string>('JWT_SECRET'),
-        });
-        client.userAddress = payload.sub;
-        this.connections.set(client.id, payload.sub);
-        await client.join(`user:${payload.sub}`);
-        this.logger.log(`Client connected: ${client.id} (${payload.sub})`);
-      } catch {
-        this.logger.warn(`Client connected unauthenticated: ${client.id}`);
-      }
-    } else {
-      this.logger.log(`Client connected unauthenticated: ${client.id}`);
+    if (!token) {
+      this.logger.warn(`Rejecting unauthenticated handshake: ${client.id}`);
+      client.emit('error', { message: 'Unauthorized' });
+      client.disconnect(true);
+      return;
     }
+
+    let payload: JwtHandshakePayload;
+    try {
+      payload = this.jwtService.verify<JwtHandshakePayload>(token, {
+        secret: this.configService.get<string>('JWT_SECRET'),
+      });
+    } catch {
+      this.logger.warn(`Rejecting invalid handshake token: ${client.id}`);
+      client.emit('error', { message: 'Unauthorized' });
+      client.disconnect(true);
+      return;
+    }
+
+    const userAddress = payload.stellar_address;
+    client.userAddress = userAddress;
+    this.connections.set(client.id, userAddress);
+    await client.join(`user:${userAddress}`);
+    this.logger.log(`Client connected: ${client.id} (${userAddress})`);
+
+    // Resume subscriptions from a prior connection, if the client presents
+    // the session id it was issued on a previous handshake.
+    const requestedSessionId = client.handshake.auth?.sessionId as
+      | string
+      | undefined;
+    const sessionId = await this.resolveSession(
+      client,
+      userAddress,
+      requestedSessionId,
+    );
+    client.emit('session', { sessionId });
 
     // Heartbeat
     // In Jest/unit test runs we don't want to keep background intervals alive,
@@ -104,6 +145,59 @@ export class EventsGateway
     this.trackActivity(client);
   }
 
+  /**
+   * Resolves the session id for a freshly authenticated socket. If the
+   * client presents a `sessionId` from a prior connection that belongs to
+   * the same authenticated user and hasn't expired, its previously tracked
+   * rooms/markets are rejoined. Otherwise a new session id is minted.
+   */
+  private async resolveSession(
+    client: AuthenticatedSocket,
+    userAddress: string,
+    requestedSessionId?: string,
+  ): Promise<string> {
+    const existing = requestedSessionId
+      ? this.sessions.get(requestedSessionId)
+      : undefined;
+
+    if (existing && existing.userAddress === userAddress) {
+      const expiry = this.sessionExpiry.get(requestedSessionId!);
+      if (expiry) {
+        clearTimeout(expiry);
+        this.sessionExpiry.delete(requestedSessionId!);
+      }
+
+      for (const room of existing.rooms) {
+        await client.join(room);
+      }
+      if (existing.markets.size > 0) {
+        this.socketMarkets.set(client.id, new Set(existing.markets));
+        for (const marketId of existing.markets) {
+          await client.join(`market:${marketId}`);
+          this.oddsBroadcaster?.onSubscribe(marketId);
+        }
+      }
+
+      this.sessions.delete(requestedSessionId!);
+      this.socketSessions.set(client.id, requestedSessionId!);
+      this.logger.log(
+        `Resumed session ${requestedSessionId} for ${client.id}: ${existing.rooms.size} room(s), ${existing.markets.size} market(s)`,
+      );
+      return requestedSessionId!;
+    }
+
+    const sessionId = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    this.socketSessions.set(client.id, sessionId);
+    return sessionId;
+  }
+
+  /** Rooms currently joined by this socket, excluding its own default/user room bookkeeping. */
+  private getTrackedRooms(client: AuthenticatedSocket): Set<string> {
+    const rooms = new Set(client.rooms ?? []);
+    rooms.delete(client.id);
+    return rooms;
+  }
+
   private trackActivity(client: AuthenticatedSocket): void {
     this.analyticsService.trackActiveSession(client.id);
     this.broadcastActiveUsers();
@@ -116,10 +210,12 @@ export class EventsGateway
 
   handleDisconnect(client: AuthenticatedSocket): void {
     this.clearHeartbeat(client.id);
-    this.connections.delete(client.id);
     this.rateLimits.delete(client.id);
     this.analyticsService.removeActiveSession(client.id);
     this.broadcastActiveUsers();
+
+    const userAddress = this.connections.get(client.id);
+    this.connections.delete(client.id);
 
     // Unsubscribe the socket from all market rooms it had joined.
     const markets = this.socketMarkets.get(client.id);
@@ -130,6 +226,23 @@ export class EventsGateway
       this.socketMarkets.delete(client.id);
     }
 
+    // Snapshot this session's subscriptions so a reconnect can resume them.
+    const sessionId = this.socketSessions.get(client.id);
+    if (sessionId && userAddress) {
+      this.sessions.set(sessionId, {
+        userAddress,
+        rooms: this.getTrackedRooms(client),
+        markets: markets ?? new Set(),
+      });
+      const expiry = setTimeout(() => {
+        this.sessions.delete(sessionId);
+        this.sessionExpiry.delete(sessionId);
+      }, SESSION_RETENTION_MS);
+      expiry.unref?.();
+      this.sessionExpiry.set(sessionId, expiry);
+    }
+    this.socketSessions.delete(client.id);
+
     this.logger.log(`Client disconnected: ${client.id}`);
   }
 
@@ -139,6 +252,11 @@ export class EventsGateway
     }
     this.heartbeats.clear();
     this.socketMarkets.clear();
+    for (const expiry of this.sessionExpiry.values()) {
+      clearTimeout(expiry);
+    }
+    this.sessionExpiry.clear();
+    this.sessions.clear();
   }
 
   @SubscribeMessage('join')
