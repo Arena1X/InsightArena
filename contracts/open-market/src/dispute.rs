@@ -8,7 +8,11 @@ use crate::reputation;
 use crate::storage_types::{ArbiterAssignment, ArbiterTally, DataKey, Dispute, OracleSubmission, UserProfile};
 
 fn bump_dispute(env: &Env, market_id: u64) {
-    config::extend_market_ttl(env, market_id);
+    // A disputed market is still active (its escrow pool and price
+    // accumulator, if any, remain live for stakers), so every dispute write
+    // must bump the full hot-key set, not just the market record. See
+    // Issue #1516.
+    config::extend_active_market_ttl(env, market_id);
     env.storage().persistent().extend_ttl(
         &DataKey::Dispute(market_id),
         config::PERSISTENT_THRESHOLD,
@@ -164,7 +168,7 @@ pub fn resolve_dispute(
         env.storage()
             .persistent()
             .set(&DataKey::Market(market_id), &market);
-        config::extend_market_ttl(&env, market_id);
+        config::extend_active_market_ttl(&env, market_id);
     } else {
         // Slash bond: route the configured insurance-pool share to the
         // reserve, with the remainder to treasury (accounting balances only,
@@ -324,7 +328,7 @@ pub fn resolve_appeal(
         env.storage()
             .persistent()
             .set(&DataKey::Market(market_id), &market);
-        config::extend_market_ttl(&env, market_id);
+        config::extend_active_market_ttl(&env, market_id);
     } else {
         escrow::slash_funds(&env, dispute.appeal_bond)?;
     }
@@ -784,7 +788,7 @@ pub fn finalize_arbiter_vote(
         env.storage()
             .persistent()
             .set(&DataKey::Market(market_id), &market);
-        config::extend_market_ttl(&env, market_id);
+        config::extend_active_market_ttl(&env, market_id);
     } else {
         escrow::slash_funds(&env, dispute.bond)?;
     }

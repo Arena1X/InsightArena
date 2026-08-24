@@ -136,7 +136,10 @@ pub fn redeem_invite_code(
         .ok_or(InsightArenaError::Overflow)?;
     env.storage().persistent().set(&invite_key, &invite);
     config::extend_invite_ttl(&env, &code);
-    config::extend_market_ttl(&env, invite.market_id);
+    // Redemption is about to let the invitee join an active market, so keep
+    // its full hot-key set (market + escrow + accumulator) alive too, not
+    // just the market record. See Issue #1516.
+    config::extend_active_market_ttl(&env, invite.market_id);
 
     env.events().publish(
         (symbol_short!("invite"), symbol_short!("redeemd")),

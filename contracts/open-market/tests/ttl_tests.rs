@@ -428,3 +428,61 @@ fn market_ttl_decays_toward_archival_without_bump() {
     assert_eq!(ttl_after, ttl_before - elapsed);
     assert!(ttl_after < ttl_before);
 }
+
+/// While a dispute's arbiter panel is deliberating, the underlying market is
+/// still active — its escrow pool and price accumulator remain live for
+/// stakers — but nothing else touches the `Market` record during that
+/// window: `cast_arbiter_vote` only reads/writes the `Dispute` record via
+/// `bump_dispute`. If `bump_dispute` only extended the market key (as it did
+/// before Issue #1516's fix), the escrow and accumulator TTLs would keep
+/// decaying, unbumped, for the whole voting period and could be archived out
+/// from under stakers even while the market is actively being adjudicated.
+#[test]
+fn cast_arbiter_vote_bumps_market_escrow_and_accumulator_together() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = deploy(&env);
+
+    let market_id = market_with_pool_and_swap(&env, &client);
+    let admin = client.get_config().admin;
+    let oracle = client.get_config().oracle_address;
+    let token = client.get_config().xlm_token;
+
+    // Resolve the market and raise a dispute against it.
+    let market = client.get_market(&market_id);
+    env.ledger()
+        .set_timestamp(market.resolution_time.max(env.ledger().timestamp()) + 1);
+    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+
+    let disputer = Address::generate(&env);
+    let bond = 10_000_000_i128;
+    fund(&env, &token, &disputer, bond);
+    TokenClient::new(&env, &token).approve(&disputer, &client.address, &bond, &9999);
+    client.raise_dispute(&disputer, &market_id, &bond);
+
+    // Stake and assign a single arbiter to the panel.
+    let arbiter = Address::generate(&env);
+    let stake = 20_000_000_i128;
+    fund(&env, &token, &arbiter, stake);
+    TokenClient::new(&env, &token).approve(&arbiter, &client.address, &stake, &9999);
+    client.stake_as_arbiter(&arbiter, &stake);
+    client.assign_arbiters(&admin, &market_id, &vec![&env, arbiter.clone()]);
+
+    // Let all three hot keys' TTLs decay for a while before the arbiter
+    // votes, so the assertions below prove the vote itself performed a fresh
+    // bump rather than merely observing an already-high starting TTL. Only
+    // the sequence number advances (not the timestamp), so the vote stays
+    // within `voting_deadline`.
+    let start_seq = env.ledger().sequence();
+    env.ledger().set_sequence_number(start_seq + 150_000);
+
+    client.cast_arbiter_vote(&arbiter, &market_id, &true);
+
+    let market_ttl = persistent_ttl(&env, &client, DataKey::Market(market_id));
+    let escrow_ttl = persistent_ttl(&env, &client, DataKey::LiquidityPool(market_id));
+    let accumulator_ttl = persistent_ttl(&env, &client, DataKey::VolatilityState(market_id));
+
+    assert!(market_ttl >= LEDGER_BUMP_MARKET - 14_400);
+    assert!(escrow_ttl >= LEDGER_BUMP_ESCROW - 14_400);
+    assert!(accumulator_ttl >= LEDGER_BUMP_ACCUMULATOR - 14_400);
+}
