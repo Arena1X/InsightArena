@@ -4,6 +4,7 @@ mod event_tests;
 mod get_match_predictions_tests;
 mod invite_tests;
 mod match_tests;
+mod oracle_consensus_tests;
 mod oracle_tests;
 mod overturn_match_result_tests;
 mod prediction_tests;

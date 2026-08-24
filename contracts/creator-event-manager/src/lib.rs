@@ -21,8 +21,8 @@ use admin::AdminError;
 use event::EventError;
 use r#match::MatchError;
 use storage_types::{
-    CreatorVestingSchedule, Event, FinalizationBond, LeaderboardEntry, Match, OracleSubmission,
-    ParticipantScore, Prediction, StandingEntry,
+    CreatorVestingSchedule, Event, FinalizationBond, LeaderboardEntry, Match,
+    MatchResultSubmission, OracleSubmission, ParticipantScore, Prediction, StandingEntry,
 };
 use verification::VerificationError;
 use views::{EventStatistics, PlatformStatistics};
@@ -1283,6 +1283,53 @@ impl CreatorEventManagerContract {
             Err(oracle::OracleError::InvalidOracleConfig) => panic!("invalid_oracle_config"),
             Err(_) => panic!("unexpected_error"),
         }
+    }
+
+    /// Propose a match's final scoreline as an authorized oracle source,
+    /// toward the multi-submitter consensus that finalizes match results
+    /// (#1698).
+    ///
+    /// Once distinct sources have proposed the same scoreline `min_sources`
+    /// (the configured agreement threshold) times, the match is finalized:
+    /// the winning outcome is recorded, every prediction is graded, and the
+    /// event's weighted standings are recomputed. Returns `true` if this
+    /// call reached the threshold and finalized the match.
+    ///
+    /// # Panics
+    /// * `"contract_paused"` — the contract is paused.
+    /// * `"match_not_found"` — no match exists with the given ID.
+    /// * `"not_an_oracle_source"` — caller is not a configured oracle source.
+    /// * `"result_already_submitted"` — the match already has a finalized
+    ///   result; no further proposals are accepted.
+    /// * `"duplicate_result_proposal"` — caller already proposed a scoreline
+    ///   for this match's consensus round.
+    pub fn propose_match_result(
+        env: Env,
+        source: Address,
+        match_id: u64,
+        home_score: u32,
+        away_score: u32,
+    ) -> bool {
+        match oracle::propose_match_result(&env, source, match_id, home_score, away_score) {
+            Ok(finalized) => finalized,
+            Err(oracle::OracleError::Paused) => panic!("contract_paused"),
+            Err(oracle::OracleError::MatchNotFound) => panic!("match_not_found"),
+            Err(oracle::OracleError::NotAnOracleSource) => panic!("not_an_oracle_source"),
+            Err(oracle::OracleError::ResultAlreadySubmitted) => {
+                panic!("result_already_submitted")
+            }
+            Err(oracle::OracleError::DuplicateResultProposal) => {
+                panic!("duplicate_result_proposal")
+            }
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Return every scoreline proposal recorded for a match's consensus
+    /// round (#1698). Returns an empty `Vec` when no source has proposed a
+    /// result yet.
+    pub fn get_match_result_proposals(env: Env, match_id: u64) -> Vec<MatchResultSubmission> {
+        storage::get_match_result_proposals(&env, match_id)
     }
 
     /// Submit a numeric resolution value for a match as an authorized oracle
