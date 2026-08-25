@@ -93,7 +93,7 @@ describe("positionsToCsv", () => {
     const csv = positionsToCsv([buildPosition()]);
     const [, row] = csv.split("\n");
     expect(row).toBe(
-      "BTC above $95,000,Yes,settled,10.00,15.00,5.00,0.00,5.00,2026-01-01T00:00:00Z,2026-01-05T00:00:00Z",
+      '"BTC above $95,000",Yes,settled,10.00,15.00,5.00,0.00,5.00,2026-01-01T00:00:00Z,2026-01-05T00:00:00Z',
     );
   });
 
@@ -107,7 +107,7 @@ describe("positionsToCsv", () => {
     ]);
     const [, row] = csv.split("\n");
     expect(row).toBe(
-      "BTC above $95,000,Yes,open,10.00,15.00,0.00,2.00,2.00,2026-01-01T00:00:00Z,",
+      '"BTC above $95,000",Yes,open,10.00,15.00,0.00,2.00,2.00,2026-01-01T00:00:00Z,',
     );
   });
 
