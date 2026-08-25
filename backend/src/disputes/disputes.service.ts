@@ -22,6 +22,11 @@ import { CreateDisputeDto } from './dto/create-dispute.dto';
 import { ResolveDisputeDto } from './dto/resolve-dispute.dto';
 import { AttachEvidenceDto } from './dto/attach-evidence.dto';
 import { CastVoteDto } from './dto/cast-vote.dto';
+import {
+  ListDisputesDto,
+  DisputeStatusCounts,
+  PaginatedDisputesResponse,
+} from './dto/list-disputes.dto';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../common/enums/role.enum';
@@ -485,34 +490,113 @@ export class DisputesService {
   }
 
   /**
-   * Find all disputes with pagination
+   * List disputes with status/date-range filters and cursor pagination.
+   * The cursor encodes `createdAt:id` of the last row of the previous page
+   * (base64), so pages stay stable even as new disputes are created
+   * concurrently - unlike offset pagination, which can skip or repeat rows
+   * under concurrent inserts.
    */
-  async findAll(
-    page = 1,
-    limit = 20,
-    status?: DisputeStatus,
-  ): Promise<{
-    disputes: Dispute[];
-    total: number;
-    page: number;
-    limit: number;
-  }> {
-    const where = status ? { status } : {};
+  async findAll(query: ListDisputesDto): Promise<PaginatedDisputesResponse> {
+    const limit = query.limit ?? 20;
+    const decodedCursor = query.cursor
+      ? this.decodeDisputeCursor(query.cursor)
+      : null;
 
-    const [disputes, total] = await this.disputesRepository.findAndCount({
-      where,
-      relations: ['market', 'disputant', 'resolvedBy'],
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    const qb = this.disputesRepository
+      .createQueryBuilder('dispute')
+      .leftJoinAndSelect('dispute.market', 'market')
+      .leftJoinAndSelect('dispute.disputant', 'disputant')
+      .leftJoinAndSelect('dispute.resolvedBy', 'resolvedBy')
+      .orderBy('dispute.createdAt', 'DESC')
+      .addOrderBy('dispute.id', 'DESC')
+      .take(limit + 1);
+
+    if (query.status) {
+      qb.andWhere('dispute.status = :status', { status: query.status });
+    }
+    if (query.created_after) {
+      qb.andWhere('dispute.createdAt >= :createdAfter', {
+        createdAfter: new Date(query.created_after),
+      });
+    }
+    if (query.created_before) {
+      qb.andWhere('dispute.createdAt <= :createdBefore', {
+        createdBefore: new Date(query.created_before),
+      });
+    }
+
+    if (decodedCursor) {
+      qb.andWhere(
+        '(dispute.createdAt < :cursorCreatedAt OR (dispute.createdAt = :cursorCreatedAt AND dispute.id < :cursorId))',
+        {
+          cursorCreatedAt: decodedCursor.createdAt,
+          cursorId: decodedCursor.id,
+        },
+      );
+    }
+
+    const [rows, counts] = await Promise.all([
+      qb.getMany(),
+      this.countByStatus(),
+    ]);
+
+    const hasMore = rows.length > limit;
+    const disputes = hasMore ? rows.slice(0, limit) : rows;
+    const last = disputes[disputes.length - 1];
+    const nextCursor =
+      hasMore && last
+        ? this.encodeDisputeCursor(last.createdAt, last.id)
+        : null;
 
     return {
       disputes,
-      total,
-      page,
+      next_cursor: nextCursor,
+      has_more: hasMore,
       limit,
+      counts_by_status: counts,
     };
+  }
+
+  private encodeDisputeCursor(createdAt: Date, id: string): string {
+    return Buffer.from(`${createdAt.toISOString()}:${id}`, 'utf-8').toString(
+      'base64',
+    );
+  }
+
+  private decodeDisputeCursor(cursor: string): { createdAt: Date; id: string } {
+    try {
+      const decoded = Buffer.from(cursor, 'base64').toString('utf-8');
+      const separatorIndex = decoded.lastIndexOf(':');
+      const isoDate = decoded.slice(0, separatorIndex);
+      const id = decoded.slice(separatorIndex + 1);
+      const createdAt = new Date(isoDate);
+      if (!id || Number.isNaN(createdAt.getTime())) {
+        throw new Error('malformed cursor');
+      }
+      return { createdAt, id };
+    } catch {
+      throw new BadRequestException('Invalid pagination cursor');
+    }
+  }
+
+  /** Counts of disputes grouped by status, for list response metadata. */
+  private async countByStatus(): Promise<DisputeStatusCounts> {
+    const rows = await this.disputesRepository
+      .createQueryBuilder('dispute')
+      .select('dispute.status', 'status')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('dispute.status')
+      .getRawMany<{ status: DisputeStatus; count: string }>();
+
+    const counts: DisputeStatusCounts = { pending: 0, resolved: 0 };
+    for (const row of rows) {
+      if (row.status === DisputeStatus.PENDING) {
+        counts.pending = Number(row.count);
+      } else if (row.status === DisputeStatus.RESOLVED) {
+        counts.resolved = Number(row.count);
+      }
+    }
+    return counts;
   }
 
   /**

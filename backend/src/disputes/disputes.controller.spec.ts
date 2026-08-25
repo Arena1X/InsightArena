@@ -94,51 +94,37 @@ describe('DisputesController', () => {
   });
 
   describe('findAll', () => {
-    it('should return paginated disputes', async () => {
+    it('should return disputes with pagination metadata', async () => {
       const mockResult = {
         disputes: [mockDispute],
-        total: 1,
-        page: 1,
+        next_cursor: null,
+        has_more: false,
         limit: 20,
+        counts_by_status: { pending: 1, resolved: 0 },
       };
       jest.spyOn(service, 'findAll').mockResolvedValue(mockResult);
 
-      const result = await controller.findAll('1', '20');
+      const query = { limit: 20 } as any;
+      const result = await controller.findAll(query);
 
       expect(result).toEqual(mockResult);
-      expect(service.findAll).toHaveBeenCalledWith(1, 20, undefined);
+      expect(service.findAll).toHaveBeenCalledWith(query);
     });
 
-    it('should parse query parameters correctly', async () => {
+    it('should pass status filter through to the service', async () => {
       const mockResult = {
         disputes: [mockDispute],
-        total: 1,
-        page: 2,
+        next_cursor: null,
+        has_more: false,
         limit: 10,
+        counts_by_status: { pending: 1, resolved: 0 },
       };
       jest.spyOn(service, 'findAll').mockResolvedValue(mockResult);
 
-      await controller.findAll('2', '10', DisputeStatus.PENDING);
+      const query = { status: DisputeStatus.PENDING, limit: 10 } as any;
+      await controller.findAll(query);
 
-      expect(service.findAll).toHaveBeenCalledWith(
-        2,
-        10,
-        DisputeStatus.PENDING,
-      );
-    });
-
-    it('should use default values for pagination', async () => {
-      const mockResult = {
-        disputes: [mockDispute],
-        total: 1,
-        page: 1,
-        limit: 20,
-      };
-      jest.spyOn(service, 'findAll').mockResolvedValue(mockResult);
-
-      await controller.findAll();
-
-      expect(service.findAll).toHaveBeenCalledWith(1, 20, undefined);
+      expect(service.findAll).toHaveBeenCalledWith(query);
     });
   });
 
