@@ -163,7 +163,61 @@ make clean       # Clean build artifacts
 make help        # Show available targets
 ```
 
-## 10) Links to Related Docs
+## 10) TWAP Price Oracle
+
+Each AMM liquidity pool (`src/liquidity.rs`) maintains a manipulation-resistant
+time-weighted average price (TWAP) per outcome, computed from a cumulative
+price accumulator — the same technique used by Uniswap V2-style oracles.
+
+### Accumulator math
+
+For each `(market_id, outcome)` pair, `PriceAccumulator` (`src/storage_types.rs`)
+tracks a running integral of `price * elapsed_seconds` over the pool's history,
+plus a fixed-capacity ring buffer (`TWAP_RING_BUFFER_CAPACITY = 64`) of recent
+`PriceObservation` snapshots (`timestamp`, `price`, `price_cumulative`).
+
+On every reserve-changing operation (pool creation, `swap_outcome`),
+`record_price_observation` extends the integral forward using the *previous*
+price for however long it was active, then records a new observation:
+
+```
+cumulative_new = cumulative_old + last_price * (now - last_timestamp)
+```
+
+`get_twap(market_id, outcome, window)` reconstructs the integral at two
+points — `now` and `now - window` — by locating the latest retained
+observation at or before each timestamp and extrapolating with its price for
+the remaining gap, then divides the difference by the elapsed time:
+
+```
+twap = (cumulative(now) - cumulative(now - window)) / window
+```
+
+Because the average is derived from a time integral rather than any single
+spot price, a single large trade can only move the TWAP by roughly
+`(trade_duration / window)` of its instantaneous price impact — this is what
+makes the oracle manipulation-resistant to flash-loan-style single-block
+price spikes.
+
+### Guards
+
+- `window == 0` → `TwapEmptyWindow`.
+- No accumulator, or the window reaches further back than the oldest
+  retained observation (either because the pool is younger than the window,
+  or more than `TWAP_RING_BUFFER_CAPACITY` price-changing swaps have occurred
+  and older samples were overwritten) → `TwapInsufficientHistory`.
+- Degenerate zero-length elapsed time between the window boundaries →
+  `TwapDivideByZero`.
+- Unknown outcome for the market → `InvalidOutcome`.
+
+### Entry points
+
+- `get_twap(market_id, outcome, window)` — TWAP for a specific outcome.
+- `get_market_twap(market_id, window_seconds)` — convenience view returning
+  the TWAP of the market's primary outcome (`outcome_options[0]`), for
+  consumers (indexer, UI) that track a single headline price per market.
+
+## 11) Links to Related Docs
 - [Repository contribution guide](../backend/.github/CONTRIBUTING.md)
 - [Contract security audit notes](./SECURITY_AUDIT.md)
 - [Contract storage schema notes](./STORAGE_SCHEMA.md)

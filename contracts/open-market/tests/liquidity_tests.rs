@@ -3466,3 +3466,111 @@ fn test_cumulative_il_zero_on_withdrawal_without_price_change() {
     let position = client.get_lp_position(&provider, &market_id);
     assert_eq!(position.cumulative_il_bps, 0);
 }
+
+// ── get_market_twap (Issue #1512) ───────────────────────────────────────────
+
+#[test]
+fn test_market_twap_matches_primary_outcome_twap() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+
+    let provider = Address::generate(&env);
+    let trader = Address::generate(&env);
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let market_id = client.create_market(&_admin, &lp_market_params(&env));
+
+    let liquidity = 1_000_000_i128;
+    sa.mint(&provider, &liquidity);
+    token.approve(&provider, &client.address, &liquidity, &9999);
+    client.add_liquidity(&provider, &market_id, &liquidity);
+
+    let swap_amount = 20_000_i128;
+    sa.mint(&trader, &swap_amount);
+    token.approve(&trader, &client.address, &swap_amount, &9999);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.swap_outcome(
+        &trader,
+        &market_id,
+        &symbol_short!("yes"),
+        &symbol_short!("no"),
+        &swap_amount,
+        &0_i128,
+    );
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+
+    let window: u64 = 200;
+    let expected = client.get_twap(&market_id, &symbol_short!("yes"), &window);
+    let market_twap = client.get_market_twap(&market_id, &window);
+
+    // `outcome_options[0]` is "yes" for `lp_market_params`, so the market-level
+    // convenience view must agree exactly with the outcome-scoped one.
+    assert_eq!(market_twap, expected);
+}
+
+#[test]
+fn test_market_twap_insufficient_history_returns_typed_error() {
+    let env = Env::default();
+    env.ledger().with_mut(|l| l.timestamp = 500);
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+
+    let provider = Address::generate(&env);
+    let market_id = client.create_market(&_admin, &lp_market_params(&env));
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+    let liquidity = 100_000_i128;
+    sa.mint(&provider, &liquidity);
+    token.approve(&provider, &client.address, &liquidity, &9999);
+    client.add_liquidity(&provider, &market_id, &liquidity);
+
+    // Pool was created at t=500; a window of 10,000s reaches back before
+    // genesis (t=0), which predates the oldest retained observation.
+    let result = client.try_get_market_twap(&market_id, &10_000_u64);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::TwapInsufficientHistory))
+    ));
+}
+
+#[test]
+fn test_market_twap_empty_window_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+
+    let provider = Address::generate(&env);
+    let market_id = client.create_market(&_admin, &lp_market_params(&env));
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+    let liquidity = 100_000_i128;
+    sa.mint(&provider, &liquidity);
+    token.approve(&provider, &client.address, &liquidity, &9999);
+    client.add_liquidity(&provider, &market_id, &liquidity);
+
+    let result = client.try_get_market_twap(&market_id, &0_u64);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::TwapEmptyWindow))
+    ));
+}
+
+#[test]
+fn test_market_twap_unknown_market_returns_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, _xlm_token) = deploy_with_token(&env);
+
+    let result = client.try_get_market_twap(&999_u64, &60_u64);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::MarketNotFound))
+    ));
+}
