@@ -49,6 +49,7 @@ describe('LeaderboardController', () => {
           useValue: {
             getTopLeaderboard: jest.fn(),
             getLeaderboard: jest.fn(),
+            getLeaderboardCursor: jest.fn(),
             getUserRank: jest.fn(),
             getHistory: jest.fn(),
             getHistoryForAddress: jest.fn(),
@@ -96,6 +97,37 @@ describe('LeaderboardController', () => {
       expect(spy).toHaveBeenCalledWith(
         expect.objectContaining({ season_id: 'season-1' }),
       );
+    });
+
+    it('delegates to getLeaderboardCursor when a cursor query param is present', async () => {
+      const cursorSpy = jest
+        .spyOn(service, 'getLeaderboardCursor')
+        .mockResolvedValue({
+          data: [],
+          nextCursor: null,
+          hasMore: false,
+          limit: 20,
+        });
+      const offsetSpy = jest.spyOn(service, 'getLeaderboard');
+      const query: LeaderboardQueryDto = { cursor: 'abc', limit: 20 };
+
+      await controller.getLeaderboard(query);
+
+      expect(cursorSpy).toHaveBeenCalledWith(query);
+      expect(offsetSpy).not.toHaveBeenCalled();
+    });
+
+    it('delegates to getLeaderboard (offset) when no cursor is present', async () => {
+      const offsetSpy = jest
+        .spyOn(service, 'getLeaderboard')
+        .mockResolvedValue(mockResponse);
+      const cursorSpy = jest.spyOn(service, 'getLeaderboardCursor');
+      const query: LeaderboardQueryDto = { page: 1, limit: 20 };
+
+      await controller.getLeaderboard(query);
+
+      expect(offsetSpy).toHaveBeenCalledWith(query);
+      expect(cursorSpy).not.toHaveBeenCalled();
     });
   });
 

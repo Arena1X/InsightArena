@@ -77,11 +77,7 @@ export class PredictionsController {
   @ApiResponse({
     status: 409,
     description:
-      'Duplicate prediction on this market, slippage exceeded, or request with the same Idempotency-Key is already in progress',
-  })
-  @ApiResponse({
-    status: 422,
-    description: 'Idempotency-Key reused with a different request body',
+      'Duplicate prediction on this market, slippage exceeded, a request with the same Idempotency-Key already in progress, or the same Idempotency-Key reused with a different request body',
   })
   async submit(
     @Body() dto: SubmitPredictionDto,
@@ -92,6 +88,7 @@ export class PredictionsController {
 
   @Post('batch')
   @UseGuards(BanGuard)
+  @Idempotent()
   @ThrottleTier('write')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -106,7 +103,13 @@ export class PredictionsController {
   })
   @ApiResponse({
     status: 400,
-    description: 'Validation failed (atomic mode) or invalid payload',
+    description:
+      'Validation failed (atomic mode), invalid payload, or missing Idempotency-Key',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'A request with the same Idempotency-Key is already in progress, or it was reused with a different request body',
   })
   async submitBatch(
     @Body() dto: SubmitBatchPredictionsDto,

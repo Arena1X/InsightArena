@@ -12,6 +12,7 @@ import { OracleSubmission } from './entities/oracle-submission.entity';
 import { OracleSubmissionFlag } from './entities/oracle-submission-flag.entity';
 import { OracleSourceReliability } from './entities/oracle-source-reliability.entity';
 import { OracleReliabilityService } from './oracle-reliability.service';
+import { MatchResultDivergence } from '../matches/entities/match-result-divergence.entity';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { OracleReliabilityService } from './oracle-reliability.service';
       OracleSubmission,
       OracleSubmissionFlag,
       OracleSourceReliability,
+      MatchResultDivergence,
     ]),
     ScheduleModule.forRoot(),
   ],

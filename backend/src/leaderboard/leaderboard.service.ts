@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   Repository,
@@ -223,8 +228,47 @@ export class LeaderboardService {
   }
 
   /**
-   * Get leaderboard with cursor-based pagination and caching
-   * Cursor is keyed on (rank, user_id) for stable pagination
+   * Encodes (score, rank, user_id) into an opaque cursor token. Score is
+   * included (not just rank) because the keyset predicate needs it to seek
+   * past ties without a DB round-trip to look the cursor row back up.
+   */
+  private encodeLeaderboardCursor(
+    score: number,
+    rank: number,
+    userId: string,
+  ): string {
+    return Buffer.from(`${score}:${rank}:${userId}`, 'utf-8').toString(
+      'base64',
+    );
+  }
+
+  private decodeLeaderboardCursor(cursor: string): {
+    score: number;
+    rank: number;
+    userId: string;
+  } {
+    try {
+      const decoded = Buffer.from(cursor, 'base64').toString('utf-8');
+      const parts = decoded.split(':');
+      if (parts.length !== 3) {
+        throw new Error('malformed cursor');
+      }
+      const [scoreStr, rankStr, userId] = parts;
+      const score = Number(scoreStr);
+      const rank = parseInt(rankStr, 10);
+      if (!userId || Number.isNaN(score) || Number.isNaN(rank)) {
+        throw new Error('malformed cursor');
+      }
+      return { score, rank, userId };
+    } catch {
+      throw new BadRequestException('Invalid pagination cursor');
+    }
+  }
+
+  /**
+   * Get leaderboard with opaque cursor-based pagination and caching.
+   * Cursor encodes (score, rank) as a keyset seek predicate for stable
+   * ordering under concurrent score changes.
    */
   async getLeaderboardCursor(
     query: CursorPaginationDto,
@@ -257,32 +301,14 @@ export class LeaderboardService {
     qb.addOrderBy('entry.rank', 'ASC');
 
     if (query.cursor) {
-      const [rankStr, userId] = query.cursor.split(':');
-      const rank = parseInt(rankStr, 10);
-
-      const cursorEntry = await this.leaderboardRepository.findOne({
-        where: { rank, user_id: userId },
-      });
-
-      if (cursorEntry) {
-        if (query.season_id) {
-          qb.andWhere(
-            '(entry.season_points < :season_points OR (entry.season_points = :season_points AND entry.rank > :rank))',
-            {
-              season_points: cursorEntry.season_points,
-              rank: cursorEntry.rank,
-            },
-          );
-        } else {
-          qb.andWhere(
-            '(entry.reputation_score < :reputation_score OR (entry.reputation_score = :reputation_score AND entry.rank > :rank))',
-            {
-              reputation_score: cursorEntry.reputation_score,
-              rank: cursorEntry.rank,
-            },
-          );
-        }
-      }
+      const { score, rank } = this.decodeLeaderboardCursor(query.cursor);
+      const scoreColumn = query.season_id
+        ? 'entry.season_points'
+        : 'entry.reputation_score';
+      qb.andWhere(
+        `(${scoreColumn} < :score OR (${scoreColumn} = :score AND entry.rank > :rank))`,
+        { score, rank },
+      );
     }
 
     const entries = await qb.take(limit + 1).getMany();
@@ -297,7 +323,14 @@ export class LeaderboardService {
             ).toFixed(1)
           : '0.0';
 
-      const cursor = `${entry.rank}:${entry.user_id}`;
+      const score = query.season_id
+        ? (entry.season_points ?? 0)
+        : entry.reputation_score;
+      const cursor = this.encodeLeaderboardCursor(
+        score,
+        entry.rank,
+        entry.user_id,
+      );
 
       return {
         rank: entry.rank,
@@ -316,8 +349,8 @@ export class LeaderboardService {
       hasMore && data.length > 0 ? data[data.length - 1].cursor : null;
     const result: PaginatedCursorResponse = {
       data,
-      next_cursor: nextCursor,
-      has_more: hasMore,
+      nextCursor,
+      hasMore,
       limit,
     };
 

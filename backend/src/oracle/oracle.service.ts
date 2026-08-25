@@ -3,12 +3,17 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { CreatorEventMatch } from '../creator-events/entities/creator-event-match.entity';
 import { CreatorEvent } from '../creator-events/entities/creator-event.entity';
+import { MatchResultDivergence } from '../matches/entities/match-result-divergence.entity';
 import {
   ListPendingMatchesQueryDto,
   PendingMatchResponse,
   PaginatedPendingMatchesResponse,
   OracleStatsResponse,
 } from './dto/list-pending-matches-query.dto';
+import {
+  ListDivergencesQueryDto,
+  PaginatedDivergencesResponse,
+} from './dto/list-divergences.dto';
 
 @Injectable()
 export class OracleService {
@@ -19,6 +24,8 @@ export class OracleService {
     private readonly matchRepository: Repository<CreatorEventMatch>,
     @InjectRepository(CreatorEvent)
     private readonly eventRepository: Repository<CreatorEvent>,
+    @InjectRepository(MatchResultDivergence)
+    private readonly divergenceRepository: Repository<MatchResultDivergence>,
   ) {}
 
   async getPendingMatches(
@@ -101,5 +108,34 @@ export class OracleService {
     ]);
 
     return { pending, resolved, overdue };
+  }
+
+  async getDivergences(
+    query: ListDivergencesQueryDto,
+  ): Promise<PaginatedDivergencesResponse> {
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 100);
+    const skip = (page - 1) * limit;
+
+    const [divergences, total] = await this.divergenceRepository
+      .createQueryBuilder('d')
+      .leftJoinAndSelect('d.match', 'match')
+      .where('d.resolved = false')
+      .orderBy('d.created_at', 'DESC')
+      .skip(skip)
+      .take(limit)
+      .getManyAndCount();
+
+    const data = divergences.map((d) => ({
+      id: d.id,
+      match_id: d.match.id,
+      source_a_name: d.source_a_name,
+      source_a_value: d.source_a_value,
+      source_b_name: d.source_b_name,
+      source_b_value: d.source_b_value,
+      created_at: d.created_at.toISOString(),
+    }));
+
+    return { data, total, page, limit };
   }
 }

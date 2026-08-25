@@ -14,6 +14,7 @@ import {
   LeaderboardEntryResponse,
   PaginatedLeaderboardResponse,
 } from './dto/leaderboard-query.dto';
+import { PaginatedCursorResponse } from './dto/cursor-pagination.dto';
 import {
   LeaderboardHistoryQueryDto,
   PaginatedLeaderboardHistoryResponse,
@@ -77,8 +78,23 @@ export class LeaderboardController {
 
   @Get()
   @Public()
-  @ApiOperation({ summary: 'Get global leaderboard (all-time or by season)' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiOperation({
+    summary: 'Get global leaderboard (all-time or by season)',
+    description:
+      'Supports opaque cursor-based pagination via `cursor`/`limit` (recommended for deep pagination — stable under concurrent score changes) or legacy `page`/`limit` offset pagination (deprecated, see the `page` param description).',
+  })
+  @ApiQuery({
+    name: 'cursor',
+    required: false,
+    type: String,
+    description: "Opaque cursor from a previous response's nextCursor",
+  })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    type: Number,
+    description: 'Deprecated: prefer `cursor` for deep pagination',
+  })
   @ApiQuery({
     name: 'limit',
     required: false,
@@ -89,11 +105,14 @@ export class LeaderboardController {
   @ApiResponse({
     status: 200,
     description:
-      'Paginated leaderboard with accuracy_rate computed server-side',
+      'Paginated leaderboard with accuracy_rate computed server-side. Cursor shape (nextCursor/hasMore) when `cursor` or no `page` is used for the first page; offset shape (total/page) otherwise.',
   })
   async getLeaderboard(
     @Query() query: LeaderboardQueryDto,
-  ): Promise<PaginatedLeaderboardResponse> {
+  ): Promise<PaginatedLeaderboardResponse | PaginatedCursorResponse> {
+    if (query.cursor) {
+      return this.leaderboardService.getLeaderboardCursor(query);
+    }
     return this.leaderboardService.getLeaderboard(query);
   }
 
