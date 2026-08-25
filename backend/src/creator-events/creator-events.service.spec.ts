@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Repository, SelectQueryBuilder } from 'typeorm';
 import { NotFoundException } from '@nestjs/common';
 import { ContractService } from '../contract/contract.service';
@@ -80,6 +81,10 @@ describe('CreatorEventsService searchEvents', () => {
         {
           provide: getRepositoryToken(CreatorEventPayout),
           useValue: {},
+        },
+        {
+          provide: CACHE_MANAGER,
+          useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
         },
       ],
     }).compile();
@@ -205,6 +210,10 @@ describe('CreatorEventsService getUpcomingMatches', () => {
           useValue: {},
         },
         { provide: getRepositoryToken(CreatorEventPayout), useValue: {} },
+        {
+          provide: CACHE_MANAGER,
+          useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
+        },
       ],
     }).compile();
 

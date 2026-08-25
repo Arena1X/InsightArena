@@ -27,7 +27,9 @@ describe('MarketsService - Comments moderation and rate limiting', () => {
   const mockUser = { id: 'user-1', stellar_address: 'GABC123' } as User;
   const mockMarket = { id: 'market-1' } as Market;
 
-  const makeDto = (content = 'A perfectly normal comment'): CreateCommentDto => ({
+  const makeDto = (
+    content = 'A perfectly normal comment',
+  ): CreateCommentDto => ({
     content,
   });
 
@@ -55,12 +57,24 @@ describe('MarketsService - Comments moderation and rate limiting', () => {
         { provide: getRepositoryToken(MarketTemplate), useValue: {} },
         {
           provide: getRepositoryToken(UserBookmark),
-          useValue: { findOne: jest.fn(), create: jest.fn(), save: jest.fn(), delete: jest.fn() },
+          useValue: {
+            findOne: jest.fn(),
+            create: jest.fn(),
+            save: jest.fn(),
+            delete: jest.fn(),
+          },
         },
-        { provide: getRepositoryToken(Prediction), useValue: { find: jest.fn() } },
+        {
+          provide: getRepositoryToken(Prediction),
+          useValue: { find: jest.fn() },
+        },
         {
           provide: getRepositoryToken(MarketPriceSnapshot),
-          useValue: { create: jest.fn(), save: jest.fn(), createQueryBuilder: jest.fn() },
+          useValue: {
+            create: jest.fn(),
+            save: jest.fn(),
+            createQueryBuilder: jest.fn(),
+          },
         },
         { provide: UsersService, useValue: {} },
         { provide: SorobanService, useValue: {} },
@@ -68,11 +82,19 @@ describe('MarketsService - Comments moderation and rate limiting', () => {
         { provide: WebhookDispatcherService, useValue: { emit: jest.fn() } },
         {
           provide: CACHE_MANAGER,
-          useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn(), reset: jest.fn() },
+          useValue: {
+            get: jest.fn(),
+            set: jest.fn(),
+            del: jest.fn(),
+            reset: jest.fn(),
+          },
         },
         {
           provide: MarketSettlementScheduler,
-          useValue: { getDeadLetterQueue: jest.fn(), retrySettlement: jest.fn() },
+          useValue: {
+            getDeadLetterQueue: jest.fn(),
+            retrySettlement: jest.fn(),
+          },
         },
       ],
     }).compile();

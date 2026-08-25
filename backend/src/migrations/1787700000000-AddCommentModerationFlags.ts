@@ -1,8 +1,6 @@
 import { MigrationInterface, QueryRunner, TableColumn } from 'typeorm';
 
-export class AddCommentModerationFlags1787700000000
-  implements MigrationInterface
-{
+export class AddCommentModerationFlags1787700000000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.addColumns('comments', [
       new TableColumn({
