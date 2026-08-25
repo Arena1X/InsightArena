@@ -68,14 +68,17 @@ pub fn apply_reputation_decay(
         return score;
     }
     let half_life_seconds = half_life_seconds as u64;
-    match mode {
+    let decayed = match mode {
         ReputationDecayMode::Linear => {
             let full_life = half_life_seconds.saturating_mul(2);
-            if elapsed_seconds >= full_life {
+            if full_life == 0 || elapsed_seconds >= full_life {
                 0
             } else {
-                let remaining = full_life - elapsed_seconds;
-                ((score as u64 * remaining) / full_life) as u32
+                let remaining = full_life.saturating_sub(elapsed_seconds);
+                (score as u64)
+                    .checked_mul(remaining)
+                    .and_then(|v| v.checked_div(full_life))
+                    .unwrap_or(0) as u32
             }
         }
         ReputationDecayMode::Exponential => {
@@ -84,13 +87,17 @@ pub fn apply_reputation_decay(
             let mut decayed = score >> halvings;
             if remainder > 0 && decayed > 0 {
                 let next = decayed >> 1;
-                let diff = decayed - next;
-                let interpolated = ((diff as u64) * remainder / half_life_seconds) as u32;
+                let diff = decayed.saturating_sub(next);
+                let interpolated = (diff as u64)
+                    .checked_mul(remainder)
+                    .and_then(|v| v.checked_div(half_life_seconds))
+                    .unwrap_or(0) as u32;
                 decayed = decayed.saturating_sub(interpolated);
             }
             decayed
         }
-    }
+    };
+    decayed.min(score)
 }
 
 /// Recompute the live (undecayed) formula score, then decay it against the
