@@ -26,7 +26,7 @@ if (!BASE_URL) {
   console.warn('NEXT_PUBLIC_API_URL is not set. API calls may fail.');
 }
 
-interface ApiOptions extends Omit<RequestInit, 'body'> {
+export interface ApiOptions extends Omit<RequestInit, 'body'> {
   body?: unknown;
   signal?: AbortSignal;
 }
@@ -98,3 +98,60 @@ export const apiClient = {
   patch: <T>(path: string, body?: unknown, options?: ApiOptions) => request<T>(path, 'PATCH', { ...options, body }),
   delete: <T>(path: string, options?: ApiOptions) => request<T>(path, 'DELETE', options),
 };
+
+// ── Profile completeness ────────────────────────────────────────────────────
+
+export interface ProfileFieldValues {
+  username?: string;
+  avatarUrl?: string;
+  bio?: string;
+}
+
+export interface ProfileFieldDef {
+  key: keyof ProfileFieldValues;
+  label: string;
+  description: string;
+}
+
+export const REQUIRED_PROFILE_FIELDS: ProfileFieldDef[] = [
+  { key: 'username', label: 'Username', description: 'Choose a display name for your account.' },
+  { key: 'avatarUrl', label: 'Profile picture', description: 'Add an avatar so others recognize you.' },
+  { key: 'bio', label: 'Bio', description: 'Tell the community a little about yourself.' },
+];
+
+/** Returns the required profile fields that are still empty for `user`. */
+export function getMissingProfileFields(
+  user: ProfileFieldValues | null | undefined,
+): ProfileFieldDef[] {
+  if (!user) return REQUIRED_PROFILE_FIELDS;
+  return REQUIRED_PROFILE_FIELDS.filter((field) => !user[field.key]?.trim());
+}
+
+// ── Course completion ───────────────────────────────────────────────────────
+
+export interface CourseCompletionResponse {
+  courseId: string;
+  status: 'completed';
+  awardedAt: string;
+}
+
+/** A fresh idempotency key identifying one completion attempt for a course. */
+export function generateIdempotencyKey(courseId: string): string {
+  const random =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `course-complete:${courseId}:${random}`;
+}
+
+export function submitCourseCompletion(
+  courseId: string,
+  idempotencyKey: string,
+  options: ApiOptions = {},
+): Promise<CourseCompletionResponse> {
+  return apiClient.post<CourseCompletionResponse>(
+    `/courses/${encodeURIComponent(courseId)}/complete`,
+    { idempotencyKey },
+    { ...options, headers: { 'Idempotency-Key': idempotencyKey, ...options.headers } },
+  );
+}

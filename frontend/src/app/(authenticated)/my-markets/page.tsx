@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, type ReactNode } from "react";
 import Link from "next/link";
+import { FileText, Bookmark, Search } from "lucide-react";
+import { EmptyState } from "@/component/ui/empty-state";
 
 type MarketStatus = "Open" | "Resolved" | "Cancelled";
 type Tab = "All Markets" | "My Markets" | "Bookmarked";
@@ -35,6 +37,24 @@ const STATUS_COLORS: Record<MarketStatus, string> = {
   Cancelled: "bg-red-500/20 text-red-400",
 };
 
+const EMPTY_STATE_CONFIG: Record<Tab, { icon: ReactNode; title: string; description: string }> = {
+  "My Markets": {
+    icon: <FileText className="h-7 w-7" />,
+    title: "No markets created yet",
+    description: "Create your first prediction market to get started.",
+  },
+  Bookmarked: {
+    icon: <Bookmark className="h-7 w-7" />,
+    title: "No bookmarks yet",
+    description: "Bookmark markets to find them quickly later.",
+  },
+  "All Markets": {
+    icon: <Search className="h-7 w-7" />,
+    title: "No markets match your filters",
+    description: "Try adjusting your search or filters.",
+  },
+};
+
 export default function MarketsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("All Markets");
   const [search, setSearch] = useState("");
@@ -57,6 +77,16 @@ export default function MarketsPage() {
   }, [activeTab, search, categoryFilter, statusFilter, sort]);
 
   const isEmpty = filtered.length === 0;
+
+  function clearFilters() {
+    setSearch("");
+    setCategoryFilter("All");
+    setStatusFilter("All");
+    setSort("Newest");
+  }
+
+  const hasActiveFilters =
+    search !== "" || categoryFilter !== "All" || statusFilter !== "All" || sort !== "Newest";
 
   return (
     <div className="space-y-6 p-4 sm:p-6">
@@ -109,27 +139,19 @@ export default function MarketsPage() {
         </select>
       </div>
 
-      {/* Empty States */}
-      {isEmpty && activeTab === "My Markets" && (
-        <div className="flex flex-col items-center justify-center py-20 text-center space-y-3">
-          <p className="text-4xl">📋</p>
-          <p className="text-white font-semibold">No markets created yet</p>
-          <p className="text-gray-400 text-sm">Create your first prediction market to get started.</p>
-        </div>
-      )}
-      {isEmpty && activeTab === "Bookmarked" && (
-        <div className="flex flex-col items-center justify-center py-20 text-center space-y-3">
-          <p className="text-4xl">🔖</p>
-          <p className="text-white font-semibold">No bookmarks yet</p>
-          <p className="text-gray-400 text-sm">Bookmark markets to find them quickly later.</p>
-        </div>
-      )}
-      {isEmpty && activeTab === "All Markets" && (
-        <div className="flex flex-col items-center justify-center py-20 text-center space-y-3">
-          <p className="text-4xl">🔍</p>
-          <p className="text-white font-semibold">No markets match your filters</p>
-          <p className="text-gray-400 text-sm">Try adjusting your search or filters.</p>
-        </div>
+      {/* Empty State */}
+      {isEmpty && (
+        <EmptyState
+          icon={EMPTY_STATE_CONFIG[activeTab].icon}
+          title={EMPTY_STATE_CONFIG[activeTab].title}
+          description={EMPTY_STATE_CONFIG[activeTab].description}
+          action={
+            activeTab === "My Markets" ? { label: "Create Market", href: "/markets/create" } : undefined
+          }
+          secondaryAction={
+            hasActiveFilters ? { label: "Clear Filters", onClick: clearFilters } : undefined
+          }
+        />
       )}
 
       {/* Markets Grid */}
