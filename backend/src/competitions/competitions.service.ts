@@ -36,6 +36,8 @@ import {
   BracketRoundResponseDto,
   BracketMatchupResponseDto,
 } from './dto/bracket-response.dto';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/entities/notification.entity';
 
 @Injectable()
 export class CompetitionsService {
@@ -56,6 +58,7 @@ export class CompetitionsService {
     private readonly roundsRepository: Repository<BracketRound>,
     @InjectRepository(BracketMatchup)
     private readonly matchupsRepository: Repository<BracketMatchup>,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async create(dto: CreateCompetitionDto, user: User): Promise<Competition> {
@@ -356,6 +359,10 @@ export class CompetitionsService {
       );
     }
 
+    if (competition.is_cancelled) {
+      throw new BadRequestException('Competition has been cancelled');
+    }
+
     // Check if competition is active
     const now = new Date();
     if (now >= competition.end_time) {
@@ -447,6 +454,60 @@ export class CompetitionsService {
         1,
       );
     });
+  }
+
+  async cancel(competitionId: string, userId: string): Promise<Competition> {
+    const competition = await this.competitionsRepository.findOne({
+      where: { id: competitionId },
+      relations: ['creator'],
+    });
+
+    if (!competition) {
+      throw new NotFoundException(
+        `Competition with ID "${competitionId}" not found`,
+      );
+    }
+
+    if (competition.creator?.id !== userId) {
+      throw new ForbiddenException(
+        'Only the creator can cancel this competition',
+      );
+    }
+
+    if (competition.is_cancelled) {
+      throw new ConflictException('Competition is already cancelled');
+    }
+
+    competition.is_cancelled = true;
+    const saved = await this.competitionsRepository.save(competition);
+
+    await this.notifyParticipantsOfCancellation(competition);
+
+    return saved;
+  }
+
+  private async notifyParticipantsOfCancellation(
+    competition: Competition,
+  ): Promise<void> {
+    const participants = await this.participantsRepository.find({
+      where: { competition_id: competition.id },
+      relations: ['user'],
+    });
+
+    await Promise.all(
+      participants
+        .filter((p) => p.user?.stellar_address)
+        .map((p) =>
+          this.notificationsService.create(
+            p.user.stellar_address,
+            NotificationType.EventCancelled,
+            'Competition cancelled',
+            `"${competition.title}" has been cancelled by the organizer.`,
+            { competition_id: competition.id },
+            p.user_id,
+          ),
+        ),
+    );
   }
 
   // -------------------------------------------------------------------------
