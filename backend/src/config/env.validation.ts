@@ -73,6 +73,18 @@ class EnvironmentVariables {
   @IsUrl({ require_tld: false })
   SOROBAN_RPC_URL?: string;
 
+  /** Default: 10000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  SOROBAN_RPC_TIMEOUT_MS?: number;
+
+  /** Default: 2 */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  SOROBAN_RPC_MAX_RETRIES?: number;
+
   /** Default: true */
   @IsOptional()
   @IsBooleanString()
