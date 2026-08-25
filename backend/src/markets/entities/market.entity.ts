@@ -36,6 +36,21 @@ export enum MarketSettlementState {
 @Index(['is_resolved'])
 @Index(['is_featured'])
 @Index(['settlement_state'])
+@Index('IDX_markets_status_sort', [
+  'is_resolved',
+  'is_cancelled',
+  'is_featured',
+  'featured_at',
+  'created_at',
+])
+@Index('IDX_markets_category_status_sort', [
+  'category',
+  'is_resolved',
+  'is_cancelled',
+  'is_featured',
+  'created_at',
+])
+@Index('IDX_markets_public_sort', ['is_public', 'is_featured', 'created_at'])
 export class Market {
   @PrimaryGeneratedColumn('uuid')
   id: string;
