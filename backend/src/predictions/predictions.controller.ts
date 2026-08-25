@@ -24,6 +24,8 @@ import { ThrottleTier } from '../common/decorators/throttle-tier.decorator';
 import { PredictionsService } from './predictions.service';
 import { SubmitPredictionDto } from './dto/submit-prediction.dto';
 import { SubmitPredictionResponseDto } from './dto/submit-prediction-response.dto';
+import { SubmitBatchPredictionsDto } from './dto/submit-batch-prediction.dto';
+import { BatchSubmitResponseDto } from './dto/batch-submit-response.dto';
 import { UpdatePredictionNoteDto } from './dto/update-prediction-note.dto';
 import {
   ListMyPredictionsDto,
@@ -86,6 +88,31 @@ export class PredictionsController {
     @CurrentUser() user: User,
   ): Promise<SubmitPredictionResponseDto> {
     return this.predictionsService.submit(dto, user);
+  }
+
+  @Post('batch')
+  @UseGuards(BanGuard)
+  @ThrottleTier('write')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Submit a batch (slip) of predictions in one validated call. Atomic by default - the whole slip is rejected if any item fails.',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Per-item results. In non-atomic mode valid items are submitted and failures are reported per item; in atomic mode a failure yields HTTP 400 with per-item errors and nothing is persisted.',
+    type: BatchSubmitResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation failed (atomic mode) or invalid payload',
+  })
+  async submitBatch(
+    @Body() dto: SubmitBatchPredictionsDto,
+    @CurrentUser() user: User,
+  ): Promise<BatchSubmitResponseDto> {
+    return this.predictionsService.submitBatch(dto, user);
   }
 
   @Get('me')

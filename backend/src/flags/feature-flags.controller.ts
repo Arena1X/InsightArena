@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -22,7 +23,9 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { User } from '../users/entities/user.entity';
 import { FeatureFlagsService, ResolvedFlagDto } from './feature-flags.service';
 import { CreateFeatureFlagDto } from './dto/create-feature-flag.dto';
+import { FeatureFlagAuditQueryDto } from './dto/feature-flag-audit-query.dto';
 import { FeatureFlag } from './entities/feature-flag.entity';
+import { AdminAuditLog } from '../admin/entities/admin-audit-log.entity';
 
 @ApiTags('Feature Flags')
 @Controller('feature-flags')
@@ -40,8 +43,11 @@ export class FeatureFlagsController {
     type: FeatureFlag,
   })
   @ApiResponse({ status: 409, description: 'Flag key already exists' })
-  async create(@Body() dto: CreateFeatureFlagDto): Promise<FeatureFlag> {
-    return this.featureFlagsService.create(dto);
+  async create(
+    @Body() dto: CreateFeatureFlagDto,
+    @CurrentUser() user: User,
+  ): Promise<FeatureFlag> {
+    return this.featureFlagsService.create(dto, user.id);
   }
 
   @Put(':id')
@@ -58,8 +64,9 @@ export class FeatureFlagsController {
   async update(
     @Param('id') id: string,
     @Body() dto: Partial<CreateFeatureFlagDto>,
+    @CurrentUser() user: User,
   ): Promise<FeatureFlag> {
-    return this.featureFlagsService.update(id, dto);
+    return this.featureFlagsService.update(id, dto, user.id);
   }
 
   @Delete(':id')
@@ -69,9 +76,35 @@ export class FeatureFlagsController {
   @ApiOperation({ summary: 'Delete a feature flag (admin only)' })
   @ApiResponse({ status: 200, description: 'Flag deleted' })
   @ApiResponse({ status: 404, description: 'Flag not found' })
-  async delete(@Param('id') id: string): Promise<{ message: string }> {
-    await this.featureFlagsService.delete(id);
+  async delete(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<{ message: string }> {
+    await this.featureFlagsService.delete(id, user.id);
     return { message: `Feature flag ${id} deleted` };
+  }
+
+  /**
+   * Audit trail for feature flag changes. Declared before the `:id` routes
+   * so "audit-trail" is not captured as an id.
+   */
+  @Get('audit-trail')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Get the audit trail of feature flag changes (actor, before/after diff, timestamp)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Newest-first list of audited flag changes',
+    type: [AdminAuditLog],
+  })
+  async getAuditTrail(
+    @Query() query: FeatureFlagAuditQueryDto,
+  ): Promise<AdminAuditLog[]> {
+    return this.featureFlagsService.getAuditTrail(query.flag_id, query.limit);
   }
 
   @Get()
