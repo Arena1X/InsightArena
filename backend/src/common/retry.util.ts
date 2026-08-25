@@ -58,3 +58,48 @@ export async function withRetry<T>(
   }
   throw lastError;
 }
+
+/**
+ * Thrown by {@link withTimeout} when `fn` doesn't settle within `timeoutMs`.
+ * `name` is set to `AbortError` so it lines up with the native fetch/DOM
+ * abort convention — callers that already classify errors by `name`
+ * (e.g. Soroban's transient-error detection) pick it up for free.
+ */
+export class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AbortError';
+  }
+}
+
+/**
+ * Races `fn` against a `timeoutMs` clock. If the clock wins, rejects with a
+ * {@link TimeoutError} labelled with `label`; the still-pending `fn` call is
+ * left to settle on its own (its result/rejection is swallowed) since most
+ * RPC clients don't expose a way to actually abort an in-flight call.
+ */
+export async function withTimeout<T>(
+  fn: () => Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  const inner = fn();
+  inner.catch(() => {
+    // Swallow — the timeout may have already "won" the race below, and an
+    // unobserved rejection on `inner` would otherwise surface as an
+    // unhandled rejection.
+  });
+
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new TimeoutError(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([inner, timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
