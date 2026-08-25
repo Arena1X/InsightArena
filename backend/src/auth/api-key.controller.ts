@@ -21,6 +21,7 @@ import {
   ApiKeyCreatedResponseDto,
   ApiKeyListItemDto,
 } from './dto/api-key-response.dto';
+import { RotateApiKeyDto } from './dto/rotate-api-key.dto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { User } from '../users/entities/user.entity';
 
@@ -91,5 +92,36 @@ export class ApiKeyController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<ApiKeyListItemDto> {
     return this.apiKeyService.revoke(id, user.id);
+  }
+
+  /**
+   * Rotate an API key by ID: issues a new key with the same name/scopes,
+   * and grace-expires the old raw key so in-flight integrations have time
+   * to switch over.
+   */
+  @Post(':id/rotate')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Rotate an API key',
+    description:
+      'Issues a new raw key preserving name/scopes, and grace-expires the old key. The new raw key is shown once.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'New key issued — raw key shown once',
+    type: ApiKeyCreatedResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({
+    status: 403,
+    description: 'Key already revoked or already rotated',
+  })
+  @ApiResponse({ status: 404, description: 'Key not found' })
+  rotate(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RotateApiKeyDto,
+  ): Promise<ApiKeyCreatedResponseDto> {
+    return this.apiKeyService.rotate(id, user.id, dto?.grace_period_ms);
   }
 }

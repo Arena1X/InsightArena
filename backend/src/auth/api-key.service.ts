@@ -19,6 +19,9 @@ import {
 /** Throttle window for last_used_at writes (60 seconds) */
 const LAST_USED_THROTTLE_MS = 60_000;
 
+/** Default grace window (ms) a rotated-out key remains valid for */
+const DEFAULT_ROTATION_GRACE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 /** bcrypt cost factor */
 const BCRYPT_ROUNDS = 10;
 
@@ -151,7 +154,83 @@ export class ApiKeyService {
       throw new UnauthorizedException('API key has expired');
     }
 
+    if (
+      matched.rotated_at &&
+      (!matched.grace_expires_at || matched.grace_expires_at < new Date())
+    ) {
+      throw new UnauthorizedException('API key has been rotated');
+    }
+
     return matched;
+  }
+
+  /**
+   * Rotate a key owned by userId: issues a brand-new raw key/hash under the
+   * same row (preserving id, name, and scopes), and marks the *previous*
+   * value as grace-expiring by recording it on a fresh row so the old raw
+   * key keeps validating for `graceMs` while callers switch over.
+   *
+   * Implementation: since only one (key_prefix, key_hash) pair can live on a
+   * row, rotation inserts a new row carrying the new key material and points
+   * the old row at it via `replaced_by_id`/`rotated_at`/`grace_expires_at` —
+   * the old row's own key_hash is untouched, so it keeps validating until
+   * grace_expires_at. Mirrors `RefreshToken`'s rotation-chain pattern.
+   */
+  async rotate(
+    id: string,
+    userId: string,
+    graceMs: number = DEFAULT_ROTATION_GRACE_MS,
+  ): Promise<ApiKeyCreatedResponseDto> {
+    const existing = await this.apiKeyRepository.findOne({
+      where: { id, userId },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('API key not found');
+    }
+
+    if (existing.revoked_at) {
+      throw new ForbiddenException('Cannot rotate a revoked API key');
+    }
+
+    if (existing.rotated_at) {
+      throw new ForbiddenException('API key has already been rotated');
+    }
+
+    const rawKey = `${KEY_PREFIX}${randomBytes(32).toString('hex')}`;
+    const key_prefix = rawKey.slice(0, 10);
+    const key_hash = await bcrypt.hash(rawKey, BCRYPT_ROUNDS);
+
+    const replacement = this.apiKeyRepository.create({
+      userId,
+      name: existing.name,
+      key_prefix,
+      key_hash,
+      scopes: existing.scopes,
+      expires_at: existing.expires_at,
+      revoked_at: null,
+      last_used_at: null,
+    });
+    const savedReplacement = await this.apiKeyRepository.save(replacement);
+
+    existing.rotated_at = new Date();
+    existing.grace_expires_at = new Date(Date.now() + graceMs);
+    existing.replaced_by_id = savedReplacement.id;
+    await this.apiKeyRepository.save(existing);
+
+    this.logger.log(
+      `API key rotated: id=${id} userId=${userId} replacedBy=${savedReplacement.id}`,
+    );
+
+    return {
+      id: savedReplacement.id,
+      name: savedReplacement.name,
+      key: rawKey,
+      key_prefix: savedReplacement.key_prefix,
+      scopes: savedReplacement.scopes,
+      expires_at: savedReplacement.expires_at,
+      created_at: savedReplacement.created_at,
+    };
   }
 
   /**
@@ -190,6 +269,9 @@ export class ApiKeyService {
       expires_at: k.expires_at,
       last_used_at: k.last_used_at,
       revoked_at: k.revoked_at,
+      rotated_at: k.rotated_at,
+      grace_expires_at: k.grace_expires_at,
+      replaced_by_id: k.replaced_by_id,
       created_at: k.created_at,
     };
   }
