@@ -8,6 +8,7 @@ import { Season } from './entities/season.entity';
 import { SorobanService } from '../soroban/soroban.service';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
 import { CreateSeasonDto } from './dto/create-season.dto';
+import { SeasonStatus } from './dto/list-seasons.dto';
 
 describe('SeasonsService', () => {
   let service: SeasonsService;
@@ -173,6 +174,53 @@ describe('SeasonsService', () => {
       await service.findAllPaginated({ page: 1, limit: 999 });
 
       expect(take).toHaveBeenCalledWith(50);
+    });
+
+    it.each([
+      {
+        status: SeasonStatus.Active,
+        clause: 'season.is_active = :isActive',
+      },
+      {
+        status: SeasonStatus.Upcoming,
+        clause: 'season.starts_at > :now',
+      },
+      {
+        status: SeasonStatus.Finalized,
+        clause: 'season.is_finalized = :isFinalized',
+      },
+    ])('applies the $status status filter', async ({ status, clause }) => {
+      const andWhere = jest.fn().mockReturnThis();
+      seasonsRepository.createQueryBuilder.mockReturnValue({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        andWhere,
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      } as never);
+
+      await service.findAllPaginated({ page: 1, limit: 20, status });
+
+      expect(andWhere).toHaveBeenCalledWith(
+        clause,
+        expect.any(Object),
+      );
+    });
+
+    it('sorts seasons by start date descending', async () => {
+      const orderBy = jest.fn().mockReturnThis();
+      seasonsRepository.createQueryBuilder.mockReturnValue({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy,
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      } as never);
+
+      await service.findAllPaginated({ page: 1, limit: 20 });
+
+      expect(orderBy).toHaveBeenCalledWith('season.starts_at', 'DESC');
     });
   });
 

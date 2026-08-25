@@ -198,13 +198,16 @@ export class UsersService {
 
   async updateProfile(userId: string, dto: UpdateUserDto): Promise<User> {
     const user = await this.findById(userId);
+    const updates: Partial<Pick<User, 'username' | 'avatar_url'>> = {};
 
     if (dto.username !== undefined) {
-      user.username = dto.username;
+      updates.username = dto.username;
     }
     if (dto.avatar_url !== undefined) {
-      user.avatar_url = dto.avatar_url;
+      updates.avatar_url = dto.avatar_url;
     }
+
+    Object.assign(user, updates);
 
     return this.usersRepository.save(user);
   }
