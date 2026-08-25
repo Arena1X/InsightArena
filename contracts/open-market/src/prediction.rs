@@ -1682,9 +1682,23 @@ pub fn withdraw_position(
     bump_market(env, market_id);
 
     // ── Distribute fee to remaining participants pro-rata ────────────────────
-    // Fee is conserved: distributed = deducted
-    if fee_amount > 0 && market.total_pool > 0 {
-        distribute_early_exit_fee_to_participants(env, market_id, fee_amount, market.total_pool)?;
+    // Fee is conserved: distributed = deducted. The withdrawing predictor's own
+    // (already-reduced) stake must be excluded from both the recipient set and
+    // the pro-rata denominator — otherwise a partial withdrawal would credit
+    // part of the fee straight back to the payer, inflating their tracked
+    // stake_amount above their true remaining balance.
+    let pool_excluding_withdrawer = market
+        .total_pool
+        .checked_sub(if is_full_exit { 0 } else { remaining_stake })
+        .ok_or(InsightArenaError::Overflow)?;
+    if fee_amount > 0 && pool_excluding_withdrawer > 0 {
+        distribute_early_exit_fee_to_participants(
+            env,
+            market_id,
+            &predictor,
+            fee_amount,
+            pool_excluding_withdrawer,
+        )?;
     }
 
     // ── Release refund to predictor via escrow ───────────────────────────────
@@ -1703,11 +1717,16 @@ pub fn withdraw_position(
 
 /// Distribute early-exit fee to remaining participants pro-rata by stake.
 ///
-/// For each remaining predictor in the market, award fee_share = fee * (their_stake / total_remaining_pool).
-/// This is done by iterating through all predictors and accumulating their shares.
+/// For each remaining predictor in the market *other than the one who just
+/// withdrew*, award fee_share = fee * (their_stake / total_remaining_pool).
+/// This is done by iterating through all predictors and accumulating their
+/// shares. `withdrawing_predictor` is always skipped: they are the one paying
+/// the fee, so `total_remaining_pool` must already exclude their stake (see
+/// caller) or the fee would be partially refunded to the payer.
 fn distribute_early_exit_fee_to_participants(
     env: &Env,
     market_id: u64,
+    withdrawing_predictor: &Address,
     total_fee: i128,
     total_remaining_pool: i128,
 ) -> Result<(), InsightArenaError> {
@@ -1726,6 +1745,10 @@ fn distribute_early_exit_fee_to_participants(
 
     while index < predictors.len() {
         if let Some(addr) = predictors.get(index) {
+            if &addr == withdrawing_predictor {
+                index += 1;
+                continue;
+            }
             let pred_key = DataKey::Prediction(market_id, addr.clone());
             if let Some(pred) = env.storage().persistent().get::<DataKey, Prediction>(&pred_key) {
                 // Calculate this participant's share of the fee
