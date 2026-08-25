@@ -6,11 +6,13 @@ import { AchievementsService } from './achievements.service';
 import { AchievementsController } from './achievements.controller';
 import { User } from '../users/entities/user.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { WebsocketModule } from '../websocket/websocket.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Achievement, UserAchievement, User]),
     NotificationsModule,
+    WebsocketModule,
   ],
   providers: [AchievementsService],
   controllers: [AchievementsController],
