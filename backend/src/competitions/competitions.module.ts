@@ -8,6 +8,7 @@ import { BracketMatchup } from './entities/bracket-matchup.entity';
 import { CompetitionsService } from './competitions.service';
 import { CompetitionsController } from './competitions.controller';
 import { UsersModule } from '../users/users.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { UsersModule } from '../users/users.module';
       BracketMatchup,
     ]),
     UsersModule,
+    NotificationsModule,
   ],
   controllers: [CompetitionsController],
   providers: [CompetitionsService],

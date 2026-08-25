@@ -238,6 +238,26 @@ export class CompetitionsController {
     return this.competitionsService.getBracket(id);
   }
 
+  @Post(':id/cancel')
+  @UseGuards(BanGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Cancel a competition (creator only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Competition cancelled',
+    type: Competition,
+  })
+  @ApiResponse({ status: 403, description: 'Only the creator can cancel' })
+  @ApiResponse({ status: 404, description: 'Competition not found' })
+  @ApiResponse({ status: 409, description: 'Competition already cancelled' })
+  async cancelCompetition(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<Competition> {
+    return this.competitionsService.cancel(id, user.id);
+  }
+
   @Delete(':id/leave')
   @UseGuards(BanGuard)
   @HttpCode(HttpStatus.OK)
