@@ -301,12 +301,17 @@ pub fn claim_prize(env: &Env, winner: Address, event_id: u64) -> Result<i128, Ev
         return Err(EventError::AlreadyClaimed);
     }
 
+    if allocation.amount <= 0 {
+        return Err(EventError::NoAllocation);
+    }
+
+    // Mark as claimed in storage before external interaction (Checks-Effects-Interactions pattern)
+    allocation.claimed = true;
+    storage::set_prize_allocation(env, &allocation);
+
     let xlm_token = admin::get_xlm_token(env).unwrap_or_else(|| panic!("not_initialized"));
     TokenHelper::distribute_winnings(env, &xlm_token, &winner, allocation.amount)
         .map_err(|_| EventError::TransferFailed)?;
-
-    allocation.claimed = true;
-    storage::set_prize_allocation(env, &allocation);
 
     env.events().publish(
         (Symbol::new(env, "prize"), Symbol::new(env, "claimed")),
