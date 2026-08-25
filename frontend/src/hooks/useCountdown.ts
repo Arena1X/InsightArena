@@ -1,4 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect } from "react";
+
+const MILLISECONDS_PER_SECOND = 1000;
+const SECONDS_PER_MINUTE = 60;
+const MINUTES_PER_HOUR = 60;
+const HOURS_PER_DAY = 24;
+
+const EMPTY_COUNTDOWN: CountdownTime = {
+  days: 0,
+  hours: 0,
+  minutes: 0,
+  seconds: 0,
+  isExpired: true,
+  totalSeconds: 0,
+};
 
 export interface CountdownTime {
   days: number;
@@ -9,52 +23,59 @@ export interface CountdownTime {
   totalSeconds: number;
 }
 
+function getTargetEpochMilliseconds(
+  targetDate: string | Date | number,
+): number {
+  if (typeof targetDate === "number") {
+    return targetDate;
+  }
+
+  return typeof targetDate === "string"
+    ? Date.parse(targetDate)
+    : targetDate.getTime();
+}
+
+/** Calculate a countdown using only UTC epoch timestamps. */
+export function calculateCountdown(
+  targetDate: string | Date | number,
+  now = Date.now(),
+): CountdownTime {
+  const target = getTargetEpochMilliseconds(targetDate);
+  const difference = target - now;
+
+  if (!Number.isFinite(difference) || difference <= 0) {
+    return EMPTY_COUNTDOWN;
+  }
+
+  const totalSeconds = Math.floor(difference / MILLISECONDS_PER_SECOND);
+  const secondsPerHour = SECONDS_PER_MINUTE * MINUTES_PER_HOUR;
+  const secondsPerDay = secondsPerHour * HOURS_PER_DAY;
+
+  return {
+    days: Math.floor(totalSeconds / secondsPerDay),
+    hours: Math.floor((totalSeconds % secondsPerDay) / secondsPerHour),
+    minutes: Math.floor((totalSeconds % secondsPerHour) / SECONDS_PER_MINUTE),
+    seconds: totalSeconds % SECONDS_PER_MINUTE,
+    isExpired: false,
+    totalSeconds,
+  };
+}
+
 /**
  * Hook to calculate countdown time from a target date.
  * Avoids unnecessary re-renders by only updating when the time actually changes.
  * Returns isExpired=true when target date has passed.
  */
-export function useCountdown(targetDate: string | Date | number): CountdownTime {
-  const [time, setTime] = useState<CountdownTime>({
-    days: 0,
-    hours: 0,
-    minutes: 0,
-    seconds: 0,
-    isExpired: false,
-    totalSeconds: 0,
-  });
+export function useCountdown(
+  targetDate: string | Date | number,
+): CountdownTime {
+  const [time, setTime] = useState<CountdownTime>(() =>
+    calculateCountdown(targetDate),
+  );
 
   useEffect(() => {
     const calculateTime = () => {
-      const now = Date.now();
-      const target = typeof targetDate === 'string' ? new Date(targetDate).getTime() : typeof targetDate === 'number' ? targetDate : targetDate.getTime();
-      const diff = target - now;
-
-      if (diff <= 0) {
-        setTime({
-          days: 0,
-          hours: 0,
-          minutes: 0,
-          seconds: 0,
-          isExpired: true,
-          totalSeconds: 0,
-        });
-        return;
-      }
-
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-
-      setTime({
-        days,
-        hours,
-        minutes,
-        seconds,
-        isExpired: false,
-        totalSeconds: Math.floor(diff / 1000),
-      });
+      setTime(calculateCountdown(targetDate));
     };
 
     calculateTime();
@@ -73,7 +94,7 @@ export function useCountdown(targetDate: string | Date | number): CountdownTime 
  */
 export function formatCountdown(time: CountdownTime, expired?: string): string {
   if (time.isExpired) {
-    return expired || 'Event Started';
+    return expired || "Event Started";
   }
 
   if (time.days > 0) {
