@@ -461,9 +461,11 @@ fn test_stale_high_score_decays_below_creation_gate() {
     assert_eq!(client.get_reputation_score(&creator), 600);
 
     client.set_min_creator_reputation(&admin, &400_u32);
-    assert!(client.try_create_market(&creator, &default_params(&env)).is_ok());
+    assert!(client.get_reputation_score(&creator) >= 400_u32);
 
     // Two half-lives of inactivity (default exponential) should drop 600 -> 150.
+    // Do not create another market here — that would reset last_updated and
+    // change the raw formula score (1 resolved / 2 created = 300).
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + 86_400 * 60);
     assert_eq!(client.get_reputation_score(&creator), 150);
