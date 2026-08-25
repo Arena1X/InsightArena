@@ -7,6 +7,7 @@ import { UserAchievement } from './entities/user-achievement.entity';
 import { User } from '../users/entities/user.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
+import { NotificationBroadcasterService } from '../websocket/notification-broadcaster.service';
 
 describe('AchievementsService', () => {
   let service: AchievementsService;
@@ -14,6 +15,7 @@ describe('AchievementsService', () => {
   let userAchievementsRepository: jest.Mocked<Repository<UserAchievement>>;
   let usersRepository: jest.Mocked<Repository<User>>;
   let notificationsService: jest.Mocked<NotificationsService>;
+  let notificationBroadcaster: jest.Mocked<NotificationBroadcasterService>;
 
   const mockUser = {
     id: 'user-1',
@@ -81,6 +83,11 @@ describe('AchievementsService', () => {
       create: jest.fn().mockResolvedValue({}),
     } as any;
 
+    notificationBroadcaster = {
+      broadcastAchievementUnlocked: jest.fn(),
+      broadcastAchievementProgress: jest.fn(),
+    } as any;
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AchievementsService,
@@ -99,6 +106,10 @@ describe('AchievementsService', () => {
         {
           provide: NotificationsService,
           useValue: notificationsService,
+        },
+        {
+          provide: NotificationBroadcasterService,
+          useValue: notificationBroadcaster,
         },
       ],
     }).compile();
@@ -131,6 +142,12 @@ describe('AchievementsService', () => {
       expect.any(String),
       expect.objectContaining({ achievementId: mockAchievement.id }),
       mockUser.id,
+    );
+    expect(
+      notificationBroadcaster.broadcastAchievementUnlocked,
+    ).toHaveBeenCalledWith(
+      mockUser.stellar_address,
+      expect.objectContaining({ achievement_id: mockAchievement.id }),
     );
   });
 
@@ -353,6 +370,85 @@ describe('AchievementsService', () => {
       ]);
 
       expect(notificationsService.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('achievement progress broadcasting', () => {
+    const lockedAchievement = {
+      id: 'ach-locked',
+      type: AchievementType.CORRECT_PREDICTIONS_10,
+      title: 'Rising Star',
+    } as Achievement;
+
+    const progressingUser = {
+      id: 'user-2',
+      stellar_address: 'GXYZ789',
+      total_predictions: 10,
+      correct_predictions: 5,
+      total_staked_stroops: '0',
+      reputation_score: 0,
+    } as User;
+
+    beforeEach(() => {
+      achievementsRepository.find.mockResolvedValue([lockedAchievement]);
+    });
+
+    it('broadcasts progress when current_value changed from the stored row', async () => {
+      userAchievementsRepository.findOne.mockResolvedValue({
+        current_value: 3,
+        is_unlocked: false,
+      } as UserAchievement);
+      userAchievementsRepository.save.mockResolvedValue({} as UserAchievement);
+
+      await service.updateAchievementProgress(progressingUser);
+
+      expect(
+        notificationBroadcaster.broadcastAchievementProgress,
+      ).toHaveBeenCalledWith(
+        progressingUser.stellar_address,
+        expect.objectContaining({
+          achievement_id: lockedAchievement.id,
+          current_progress: 5,
+          threshold: 10,
+        }),
+      );
+    });
+
+    it('does not broadcast progress when current_value is unchanged', async () => {
+      userAchievementsRepository.findOne.mockResolvedValue({
+        current_value: 5,
+        is_unlocked: false,
+      } as UserAchievement);
+      userAchievementsRepository.save.mockResolvedValue({} as UserAchievement);
+
+      await service.updateAchievementProgress(progressingUser);
+
+      expect(
+        notificationBroadcaster.broadcastAchievementProgress,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('broadcasts an achievement:unlocked event exactly once when threshold is met', async () => {
+      const unlockingUser = {
+        id: 'user-3',
+        stellar_address: 'GUNLOCK1',
+        total_predictions: 10,
+        correct_predictions: 10,
+        total_staked_stroops: '0',
+        reputation_score: 0,
+      } as User;
+
+      achievementsRepository.find.mockResolvedValue([lockedAchievement]);
+      makeInsertOrIgnoreMock(userAchievementsRepository);
+
+      await service.updateAchievementProgress(unlockingUser);
+
+      expect(
+        notificationBroadcaster.broadcastAchievementUnlocked,
+      ).toHaveBeenCalledTimes(1);
+      expect(
+        notificationBroadcaster.broadcastAchievementProgress,
+      ).not.toHaveBeenCalled();
     });
   });
 });

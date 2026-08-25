@@ -7,6 +7,7 @@ import { User } from '../users/entities/user.entity';
 import { AchievementResponseDto } from './dto/achievement-response.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
+import { NotificationBroadcasterService } from '../websocket/notification-broadcaster.service';
 
 @Injectable()
 export class AchievementsService {
@@ -20,6 +21,7 @@ export class AchievementsService {
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
     private readonly notificationsService: NotificationsService,
+    private readonly notificationBroadcaster: NotificationBroadcasterService,
   ) {}
 
   async initializeAchievements(): Promise<void> {
@@ -226,6 +228,7 @@ export class AchievementsService {
     user: User,
     achievement: Achievement,
   ): Promise<void> {
+    const unlockedAt = new Date();
     await this.notificationsService.create(
       user.stellar_address,
       NotificationType.AchievementUnlocked,
@@ -233,6 +236,19 @@ export class AchievementsService {
       `You unlocked "${achievement.title}"`,
       { achievementId: achievement.id, achievementType: achievement.type },
       user.id,
+    );
+
+    this.notificationBroadcaster.broadcastAchievementUnlocked(
+      user.stellar_address,
+      {
+        achievement_id: achievement.id,
+        type: achievement.type,
+        title: achievement.title,
+        description: achievement.description,
+        icon_url: achievement.icon_url,
+        reward_points: achievement.reward_points,
+        unlocked_at: unlockedAt,
+      },
     );
   }
 
@@ -375,6 +391,8 @@ export class AchievementsService {
         where: { user: { id: user.id }, achievement: { id: achievement.id } },
       });
 
+      const previousProgress = existing?.current_value ?? 0;
+
       if (existing) {
         existing.current_value = currentProgress;
         await this.userAchievementsRepository.save(existing);
@@ -391,6 +409,25 @@ export class AchievementsService {
           })
           .orIgnore()
           .execute();
+      }
+
+      // Only push a live update when progress actually moved — avoids
+      // spamming unchanged progress on every profile view/poll.
+      if (currentProgress !== previousProgress) {
+        const percentage =
+          threshold > 0
+            ? Math.min(100, Math.round((currentProgress / threshold) * 100))
+            : 0;
+        this.notificationBroadcaster.broadcastAchievementProgress(
+          user.stellar_address,
+          {
+            achievement_id: achievement.id,
+            type: achievement.type,
+            current_progress: currentProgress,
+            threshold,
+            progress_percentage: percentage,
+          },
+        );
       }
     }
   }

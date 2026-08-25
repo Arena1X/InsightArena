@@ -62,6 +62,31 @@ export class ApiKey {
   @Column({ name: 'last_used_at', type: 'timestamptz', nullable: true })
   last_used_at: Date | null;
 
+  /**
+   * Set when this key is rotated out via `ApiKeyService.rotate`. A non-null
+   * value means a replacement key exists; this key keeps working only until
+   * `grace_expires_at`.
+   */
+  @Column({ name: 'rotated_at', type: 'timestamptz', nullable: true })
+  rotated_at: Date | null;
+
+  /**
+   * End of the grace window during which a rotated-out key still validates,
+   * so in-flight integrations have time to switch to the replacement key.
+   * Null unless `rotated_at` is set.
+   */
+  @Column({ name: 'grace_expires_at', type: 'timestamptz', nullable: true })
+  grace_expires_at: Date | null;
+
+  /**
+   * The key that replaced this one via rotation. Null unless `rotated_at` is
+   * set. Plain indexed uuid rather than a FK — mirrors
+   * `RefreshToken.previous_token_id`, avoiding self-referential FK ordering
+   * issues on delete.
+   */
+  @Column({ name: 'replaced_by_id', type: 'uuid', nullable: true })
+  replaced_by_id: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 
@@ -72,6 +97,12 @@ export class ApiKey {
   get isActive(): boolean {
     if (this.revoked_at) return false;
     if (this.expires_at && this.expires_at < new Date()) return false;
+    if (
+      this.rotated_at &&
+      (!this.grace_expires_at || this.grace_expires_at < new Date())
+    ) {
+      return false;
+    }
     return true;
   }
 }

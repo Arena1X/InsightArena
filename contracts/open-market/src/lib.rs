@@ -1272,6 +1272,17 @@ impl InsightArenaContract {
         liquidity::get_twap(&env, market_id, outcome, window)
     }
 
+    /// Compute the time-weighted average price over the trailing
+    /// `window_seconds` for `market_id`'s primary outcome. See
+    /// `liquidity::get_market_twap` for details.
+    pub fn get_market_twap(
+        env: Env,
+        market_id: u64,
+        window_seconds: u64,
+    ) -> Result<i128, InsightArenaError> {
+        liquidity::get_market_twap(&env, market_id, window_seconds)
+    }
+
     // ── Dynamic Swap Fee ──────────────────────────────────────────────────────
 
     /// Return the current dynamic fee tier and effective swap fee for a market.

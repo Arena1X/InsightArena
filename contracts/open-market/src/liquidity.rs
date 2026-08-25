@@ -458,6 +458,26 @@ pub fn get_twap(
     Ok(twap)
 }
 
+/// Compute the time-weighted average price over the trailing `window_seconds`
+/// for `market_id`'s primary outcome (`Market::outcome_options[0]`).
+///
+/// Convenience entry point for downstream consumers (indexer, UI) that track
+/// a market by a single headline price rather than per-outcome, delegating to
+/// [`get_twap`] for the actual accumulator math. Markets with more than one
+/// outcome still have their other outcomes queryable via `get_twap` directly.
+pub fn get_market_twap(
+    env: &Env,
+    market_id: u64,
+    window_seconds: u64,
+) -> Result<i128, InsightArenaError> {
+    let mkt = market::get_market(env, market_id)?;
+    let outcome = mkt
+        .outcome_options
+        .get(0)
+        .ok_or(InsightArenaError::InvalidOutcome)?;
+    get_twap(env, market_id, outcome, window_seconds)
+}
+
 // ── Impermanent Loss Accounting ───────────────────────────────────────────────
 //
 // Scope: this contract's AMM pool is generalized to N outcomes

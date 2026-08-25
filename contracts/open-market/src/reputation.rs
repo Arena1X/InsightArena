@@ -100,22 +100,103 @@ pub fn apply_reputation_decay(
     decayed.min(score)
 }
 
-/// Recompute the live (undecayed) formula score, then decay it against the
-/// record's `last_updated` using the current governance config. Falls back
+/// Apply season-inactivity decay to `score`: for each fully-elapsed inactive
+/// season beyond `grace_seasons`, multiply the score by
+/// `(10_000 - decay_bps) / 10_000`, compounding. Pure function — no storage
+/// access. Never returns a value above `score`; floors at 0 (never negative,
+/// since `u32`).
+///
+/// `inactive_seasons` is the number of seasons that have become active since
+/// the creator was last active (i.e. `current_active_season_id -
+/// last_active_season_id`, saturating at 0 for creators active in the
+/// current season).
+pub fn apply_season_inactivity_decay(
+    score: u32,
+    inactive_seasons: u32,
+    grace_seasons: u32,
+    decay_bps: u32,
+) -> u32 {
+    if score == 0 || decay_bps == 0 || inactive_seasons <= grace_seasons {
+        return score;
+    }
+    let decaying_seasons = inactive_seasons - grace_seasons;
+    let retain_bps = 10_000_u64.saturating_sub(decay_bps as u64);
+
+    let mut decayed = score as u64;
+    for _ in 0..decaying_seasons {
+        decayed = decayed.saturating_mul(retain_bps) / 10_000;
+        if decayed == 0 {
+            break;
+        }
+    }
+
+    (decayed as u32).min(score)
+}
+
+/// Recompute the live (undecayed) formula score, then apply time-based decay
+/// against `last_updated` followed by season-inactivity decay against
+/// `last_active_season_id`, using the current governance config. Falls back
 /// to the raw score, undecayed, if the contract hasn't been initialized yet.
-fn decayed_score(env: &Env, stats: &CreatorStats) -> u32 {
+fn decayed_score(env: &Env, creator: &Address, stats: &CreatorStats) -> u32 {
     let raw_score = calculate_creator_reputation(stats);
     let cfg = match crate::config::get_config_readonly(env) {
         Ok(c) => c,
         Err(_) => return raw_score,
     };
     let elapsed = env.ledger().timestamp().saturating_sub(stats.last_updated);
-    apply_reputation_decay(
+    let time_decayed = apply_reputation_decay(
         raw_score,
         elapsed,
         cfg.reputation_half_life_seconds,
         cfg.reputation_decay_mode,
+    );
+
+    let inactive_seasons = inactive_season_count(env, creator);
+    apply_season_inactivity_decay(
+        time_decayed,
+        inactive_seasons,
+        cfg.reputation_season_decay_grace,
+        cfg.reputation_season_decay_bps,
     )
+}
+
+// ── Season-activity tracking ─────────────────────────────────────────────────
+//
+// Keyed by a raw `(Symbol, Address)` tuple rather than a `DataKey` variant —
+// see `trusted_creator_key` below for why. Lazily applied at read time only;
+// never mutates stored counters, so no unbounded loop over seasons is needed.
+
+fn last_active_season_key(creator: &Address) -> (soroban_sdk::Symbol, Address) {
+    (symbol_short!("lastseas"), creator.clone())
+}
+
+/// Record `creator` as active in the currently active season (if any). Called
+/// from every mutation hook below.
+fn touch_active_season(env: &Env, creator: &Address) {
+    if let Some(season) = crate::season::get_active_season(env) {
+        let key = last_active_season_key(creator);
+        env.storage().persistent().set(&key, &season.season_id);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
+    }
+}
+
+/// Number of seasons that have become active since `creator` was last active,
+/// i.e. `current_active_season_id - last_active_season_id`. `0` if there is
+/// no active season, or the creator has never been recorded as active (a
+/// creator who has never created/resolved/disputed a market has no decay
+/// baseline to decay from).
+fn inactive_season_count(env: &Env, creator: &Address) -> u32 {
+    let current = match crate::season::get_active_season(env) {
+        Some(s) => s.season_id,
+        None => return 0,
+    };
+    let last_active: Option<u32> = env.storage().persistent().get(&last_active_season_key(creator));
+    match last_active {
+        Some(last) => current.saturating_sub(last),
+        None => 0,
+    }
 }
 
 // ── Mutation hooks ────────────────────────────────────────────────────────────
@@ -127,6 +208,7 @@ pub fn on_market_created(env: &Env, creator: &Address) {
     stats.reputation_score = calculate_creator_reputation(&stats);
     stats.last_updated = env.ledger().timestamp();
     save_stats(env, creator, &stats);
+    touch_active_season(env, creator);
 }
 
 /// Called after a market is successfully resolved.
@@ -146,6 +228,7 @@ pub fn on_market_resolved(env: &Env, creator: &Address, participant_count: u32) 
     stats.reputation_score = calculate_creator_reputation(&stats);
     stats.last_updated = env.ledger().timestamp();
     save_stats(env, creator, &stats);
+    touch_active_season(env, creator);
 }
 
 /// Called when a dispute is raised against a market created by this creator.
@@ -156,13 +239,14 @@ pub fn on_dispute_raised(env: &Env, creator: &Address) {
     stats.reputation_score = calculate_creator_reputation(&stats);
     stats.last_updated = env.ledger().timestamp();
     save_stats(env, creator, &stats);
+    touch_active_season(env, creator);
 }
 
 // ── View ──────────────────────────────────────────────────────────────────────
 
 pub fn get_creator_stats(env: Env, creator: Address) -> Result<CreatorStats, InsightArenaError> {
     let mut stats = load_stats(&env, &creator);
-    stats.reputation_score = decayed_score(&env, &stats);
+    stats.reputation_score = decayed_score(&env, &creator, &stats);
     Ok(stats)
 }
 
@@ -170,7 +254,7 @@ pub fn get_creator_stats(env: Env, creator: Address) -> Result<CreatorStats, Ins
 /// Reuses `load_stats` + `calculate_creator_reputation`; safe to call from
 /// gating logic (e.g. `market::create_market`) ahead of any writes.
 pub fn get_reputation_score(env: &Env, creator: &Address) -> u32 {
-    decayed_score(env, &load_stats(env, creator))
+    decayed_score(env, creator, &load_stats(env, creator))
 }
 
 // ── Trusted-creator allowlist (reputation-gate exemption) ────────────────────
@@ -308,7 +392,7 @@ pub fn get_top_creators(env: &Env, limit: u32) -> Vec<CreatorLeaderboardEntry> {
             .get::<DataKey, CreatorStats>(&DataKey::CreatorStats(user.clone()))
         {
             if stats.markets_created > 0 {
-                stats.reputation_score = decayed_score(env, &stats);
+                stats.reputation_score = decayed_score(env, &user, &stats);
                 creators.push_back(CreatorLeaderboardEntry {
                     address: user,
                     stats,
