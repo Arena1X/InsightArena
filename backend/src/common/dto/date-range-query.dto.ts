@@ -12,8 +12,6 @@ import {
 export const DEFAULT_DATE_RANGE_DAYS = 30;
 export const MAX_DATE_RANGE_DAYS = 365;
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
 function subtractDays(date: Date, days: number): Date {
   const result = new Date(date);
   result.setDate(result.getDate() - days);
