@@ -424,6 +424,7 @@ export class MarketsController {
 
   @Post(':id/comments')
   @UseGuards(BanGuard)
+  @ThrottleTier('write')
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Post a comment on a market' })

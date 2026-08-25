@@ -3,6 +3,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   Logger,
@@ -37,6 +39,7 @@ import {
   TrendingMarketsQueryDto,
 } from './dto/trending-markets.dto';
 import { Comment } from './entities/comment.entity';
+import { moderateCommentContent } from '../common/comment-moderation.util';
 import { MarketTemplate } from './entities/market-template.entity';
 import { Market, MarketSettlementState } from './entities/market.entity';
 import { UserBookmark } from './entities/user-bookmark.entity';
@@ -916,6 +919,9 @@ export class MarketsService {
     }
   }
 
+  /** Minimum time a user must wait between posting comments. */
+  private static readonly COMMENT_MIN_INTERVAL_MS = 10_000;
+
   /**
    * Create a comment for a market
    */
@@ -925,6 +931,20 @@ export class MarketsService {
     user: User,
   ): Promise<Comment> {
     const market = await this.findByIdOrOnChainId(marketId);
+
+    const lastComment = await this.commentsRepository.findOne({
+      where: { author: { id: user.id } },
+      order: { created_at: 'DESC' },
+    });
+    if (lastComment) {
+      const elapsedMs = Date.now() - lastComment.created_at.getTime();
+      if (elapsedMs < MarketsService.COMMENT_MIN_INTERVAL_MS) {
+        throw new HttpException(
+          'You are posting comments too quickly. Please wait before posting again.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+    }
 
     let parent: Comment | null = null;
     if (dto.parentId) {
@@ -938,11 +958,15 @@ export class MarketsService {
       }
     }
 
+    const { flagged, reason } = moderateCommentContent(dto.content);
+
     const comment = this.commentsRepository.create({
       content: dto.content,
       author: user,
       market,
       parent: parent || undefined,
+      is_flagged: flagged,
+      flagged_reason: reason,
     });
 
     return await this.commentsRepository.save(comment);
@@ -968,7 +992,7 @@ export class MarketsService {
     const skip = (page - 1) * take;
 
     const [data, total] = await this.commentsRepository.findAndCount({
-      where: { market: { id: market.id } },
+      where: { market: { id: market.id }, is_flagged: false },
       relations: ['author', 'parent'],
       order: { created_at: 'ASC' },
       skip,
