@@ -245,3 +245,106 @@ export function downloadCsv(filename: string, content: string): void {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+// ── Active prediction cash-out estimate (#1600) ─────────────────────────────
+
+/** Odds as implied probabilities in (0, 1]. */
+export interface LiveOddsPrices {
+  yes: number;
+  no: number;
+}
+
+export type PredictionStance = "Yes" | "No" | "yes" | "no";
+
+export interface CashOutEstimateInput {
+  /** Stake in the same unit shown in the UI (e.g. XLM). */
+  stake: number;
+  /** Side the user took. */
+  stance: PredictionStance;
+  /** Implied price when the position was opened (0–1). */
+  entryOdds: number;
+  /** Latest live prices. */
+  live: LiveOddsPrices | null;
+  /** When true, early exit is unavailable. */
+  marketLocked?: boolean;
+}
+
+export interface CashOutEstimate {
+  /** Mark-to-market value if the user exited now. */
+  estimatedValue: number;
+  /** estimatedValue − stake */
+  unrealizedPnl: number;
+  /** Whether the UI should allow an early-exit action. */
+  canExit: boolean;
+  /** Short reason when canExit is false. */
+  exitBlockedReason: string | null;
+}
+
+function clampProb(p: number): number {
+  if (!Number.isFinite(p) || p <= 0) return 0;
+  if (p > 1) return 1;
+  return p;
+}
+
+/**
+ * Estimate cash-out value from live odds.
+ *
+ * Model: shares = stake / entryOdds; value = shares * currentOddsForSide.
+ * If the market is locked or prices are missing/invalid, exit is disabled.
+ */
+export function estimateCashOut(input: CashOutEstimateInput): CashOutEstimate {
+  const stake = Number(input.stake);
+  const entry = clampProb(Number(input.entryOdds));
+  const locked = Boolean(input.marketLocked);
+
+  if (locked) {
+    return {
+      estimatedValue: Number.isFinite(stake) ? stake : 0,
+      unrealizedPnl: 0,
+      canExit: false,
+      exitBlockedReason: "Market locked — early exit unavailable",
+    };
+  }
+
+  if (!input.live || !Number.isFinite(stake) || stake <= 0 || entry <= 0) {
+    return {
+      estimatedValue: Number.isFinite(stake) ? stake : 0,
+      unrealizedPnl: 0,
+      canExit: false,
+      exitBlockedReason: "Live odds unavailable",
+    };
+  }
+
+  const stance = String(input.stance).toLowerCase();
+  const current = clampProb(stance === "no" ? input.live.no : input.live.yes);
+  if (current <= 0) {
+    return {
+      estimatedValue: 0,
+      unrealizedPnl: -stake,
+      canExit: false,
+      exitBlockedReason: "Live odds unavailable",
+    };
+  }
+
+  const shares = stake / entry;
+  const estimatedValue = shares * current;
+  const unrealizedPnl = estimatedValue - stake;
+
+  return {
+    estimatedValue,
+    unrealizedPnl,
+    canExit: true,
+    exitBlockedReason: null,
+  };
+}
+
+export function formatXlm(amount: number, digits = 2): string {
+  if (!Number.isFinite(amount)) return "—";
+  return `${amount.toFixed(digits)} XLM`;
+}
+
+export function formatPnlXlm(pnl: number, digits = 2): string {
+  if (!Number.isFinite(pnl)) return "—";
+  const sign = pnl > 0 ? "+" : "";
+  return `\( {sign} \){pnl.toFixed(digits)} XLM`;
+      }
