@@ -19,6 +19,7 @@ import { ApiKeyGuard } from '../common/guards/api-key.guard';
 import { PublicMarketsController } from './public-markets.controller';
 
 import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
+import { SettlementAttempt } from './entities/settlement-attempt.entity';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
       UserBookmark,
       Prediction,
       MarketPriceSnapshot,
+      SettlementAttempt,
     ]),
     UsersModule,
     AnalyticsModule,
