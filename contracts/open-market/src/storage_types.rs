@@ -359,8 +359,15 @@ pub struct Market {
     /// The fee fraction assigned to the creator, measured in basis points (bps). Max 500 (5%).
     pub creator_fee_bps: u32,
     /// The predefined minimum stake permissible for a single prediction.
+    /// `0` means "inherit the global `Config::min_stake_xlm` floor"; a
+    /// non-zero value overrides the global bound. Every prediction entry
+    /// point (single, batch, allowance, commit-reveal) resolves the
+    /// effective window via `config::resolve_stake_bounds` and rejects
+    /// out-of-window stakes with `StakeTooLow` / `StakeTooHigh`.
     pub min_stake: i128,
     /// The predefined maximum stake permissible for a single prediction.
+    /// `0` means "inherit the global `Config::max_stake_xlm` ceiling"; a
+    /// non-zero value overrides the global bound.
     pub max_stake: i128,
     /// The current number of unique participants holding a stake. Defaults to 0.
     pub participant_count: u32,

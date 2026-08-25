@@ -607,7 +607,11 @@ pub fn reveal_prediction(
 ) -> Result<(), InsightArenaError> {
     config::ensure_not_paused(env)?;
 
-    predictor.require_auth();
+    // NOTE: no explicit `predictor.require_auth()` here — authorization is
+    // enforced by the token transfer inside `escrow::lock_stake` below, the
+    // same pattern as `do_submit_prediction`. An explicit top-level auth
+    // would produce a duplicate authorization frame for the predictor
+    // (one here, one in the token transfer), which the host rejects.
 
     let mut market: Market = env
         .storage()
@@ -629,10 +633,15 @@ pub fn reveal_prediction(
         return Err(InsightArenaError::InvalidOutcome);
     }
 
-    if stake_amount < market.min_stake {
+    // Stake bounds must be resolved the same way as every other submission
+    // path: per-market non-zero bounds override, zero inherits the global
+    // Config window.
+    let (min_stake, max_stake) =
+        config::resolve_stake_bounds(env, market.min_stake, market.max_stake)?;
+    if stake_amount < min_stake {
         return Err(InsightArenaError::StakeTooLow);
     }
-    if stake_amount > market.max_stake {
+    if stake_amount > max_stake {
         return Err(InsightArenaError::StakeTooHigh);
     }
 
@@ -801,10 +810,15 @@ fn do_submit_prediction_via_allowance(
         );
     }
 
-    if stake_amount < market.min_stake {
+    // ── Guard 5 & 6: stake_amount must be within effective [min, max] ─────────
+    // Per-market non-zero bounds override the global Config bounds, matching
+    // do_submit_prediction.
+    let (min_stake, max_stake) =
+        config::resolve_stake_bounds(env, market.min_stake, market.max_stake)?;
+    if stake_amount < min_stake {
         return Err(InsightArenaError::StakeTooLow);
     }
-    if stake_amount > market.max_stake {
+    if stake_amount > max_stake {
         return Err(InsightArenaError::StakeTooHigh);
     }
 

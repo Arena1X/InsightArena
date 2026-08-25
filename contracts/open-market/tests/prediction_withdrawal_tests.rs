@@ -80,21 +80,20 @@ fn test_partial_withdrawal_adjusts_position_pool_and_escrow_atomically() {
     assert_eq!(refund_amount, withdrawal_amount - fee_amount);
     assert_eq!(refund_amount + fee_amount, withdrawal_amount);
 
-    // The predictor is the sole participant, so the retained fee is
-    // redistributed pro-rata across the "remaining participants" — which is
-    // just themselves — and lands right back on their own position. Net
-    // effect: only `refund_amount` ever actually leaves escrow, and the
-    // pool/position/escrow all move by exactly that much.
+    // Pool and stake are reduced by the full withdrawal_amount. The fee is
+    // distributed to *other* participants only; as the sole participant the
+    // withdrawing predictor receives no redistribution. The fee stays in
+    // escrow as unallocated balance.
     let prediction = client.get_prediction(&market_id, &predictor);
-    assert_eq!(prediction.stake_amount, stake - refund_amount);
+    assert_eq!(prediction.stake_amount, stake - withdrawal_amount);
 
     let market = client.get_market(&market_id);
-    assert_eq!(market.total_pool, stake - refund_amount);
+    assert_eq!(market.total_pool, stake - withdrawal_amount);
     // Position and pool must stay in lockstep for a single-participant market.
     assert_eq!(market.total_pool, prediction.stake_amount);
 
-    // Escrow balance moves by exactly the refunded amount — the fee never
-    // left the contract, it was only re-credited as bookkeeping.
+    // Escrow balance moves by exactly the refunded amount — the fee remains
+    // in escrow as unallocated balance (distributed to no one).
     let escrow_after = token.balance(&client.address);
     assert_eq!(escrow_after, escrow_before - refund_amount);
 
@@ -266,11 +265,9 @@ fn test_withdrawal_fails_when_paused() {
 
 #[test]
 fn test_sequential_partial_withdrawals_conserve_amounts() {
-    // Sole participant: each withdrawal's retained fee is redistributed
-    // pro-rata across "remaining participants" — just the withdrawer
-    // themselves — and lands right back on their own position. So across
-    // repeated withdrawals, only the sum of the *refunded* amounts ever
-    // actually leaves the pool/escrow; the fee never does.
+    // Sole participant: each withdrawal reduces pool and stake by
+    // withdrawal_amount. The fee is distributed only to *other* participants;
+    // with no co-participants the fee stays in escrow unallocated.
     let env = Env::default();
     let (client, xlm_token, _admin, _oracle) = deploy(&env);
     let creator = Address::generate(&env);
@@ -281,23 +278,25 @@ fn test_sequential_partial_withdrawals_conserve_amounts() {
     fund(&env, &xlm_token, &predictor, stake);
     client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
 
-    let (refund1, fee1) = client.withdraw_position(&predictor, &market_id, &30_000_000_i128);
+    let w1 = 30_000_000_i128;
+    let (refund1, fee1) = client.withdraw_position(&predictor, &market_id, &w1);
     assert_eq!(fee1, 1_500_000);
     assert_eq!(refund1, 28_500_000);
 
     let after_first = client.get_prediction(&market_id, &predictor);
-    assert_eq!(after_first.stake_amount, stake - refund1);
+    assert_eq!(after_first.stake_amount, stake - w1);
 
+    let w2 = 20_000_000_i128;
     let (refund2, fee2) =
-        client.withdraw_position(&predictor, &market_id, &20_000_000_i128);
+        client.withdraw_position(&predictor, &market_id, &w2);
     assert_eq!(fee2, 1_000_000);
     assert_eq!(refund2, 19_000_000);
 
     let after_second = client.get_prediction(&market_id, &predictor);
-    assert_eq!(after_second.stake_amount, stake - refund1 - refund2);
+    assert_eq!(after_second.stake_amount, stake - w1 - w2);
 
     let market = client.get_market(&market_id);
-    assert_eq!(market.total_pool, stake - refund1 - refund2);
+    assert_eq!(market.total_pool, stake - w1 - w2);
 
     let token = TokenClient::new(&env, &xlm_token);
     assert_eq!(token.balance(&predictor), refund1 + refund2);
@@ -327,30 +326,22 @@ fn test_early_exit_fee_distributed_pro_rata_to_remaining_participants() {
     assert_eq!(fee, 500_000);
     assert_eq!(refund_a, 9_500_000);
 
-    // The fee is redistributed pro-rata across every current predictor,
-    // including A's own reduced position (A remains a "remaining
-    // participant" — they only exited part of their stake). The pool at
-    // redistribution time is A's reduced stake plus B's untouched stake.
+    // Pool and A's stake are reduced by withdrawal_amount. The fee is
+    // distributed only to *other* participants — B gets the entire fee.
+    let pool_after = stake_a + stake_b - withdrawal; // 70_000_000
     let a_reduced_stake = stake_a - withdrawal; // 40_000_000
-    let remaining_pool = a_reduced_stake + stake_b; // 70_000_000
 
-    let expected_share_a = fee * a_reduced_stake / remaining_pool;
-    let expected_share_b = fee * stake_b / remaining_pool;
+    // B is the sole remaining participant; pro-rata share = 100 %.
+    let expected_share_b = fee;
 
     let pred_a = client.get_prediction(&market_id, &predictor_a);
-    assert_eq!(pred_a.stake_amount, a_reduced_stake + expected_share_a);
+    assert_eq!(pred_a.stake_amount, a_reduced_stake);
 
     let pred_b = client.get_prediction(&market_id, &predictor_b);
     assert_eq!(pred_b.stake_amount, stake_b + expected_share_b);
 
-    // Only `refund_a` ever actually leaves the pool/escrow; the fee is
-    // reabsorbed (modulo integer-division dust, which stays in escrow but
-    // is not tracked against any individual position).
     let market = client.get_market(&market_id);
-    assert_eq!(
-        market.total_pool,
-        remaining_pool + expected_share_a + expected_share_b
-    );
+    assert_eq!(market.total_pool, pool_after + expected_share_b);
 
     let token = TokenClient::new(&env, &xlm_token);
     assert_eq!(token.balance(&predictor_a), refund_a);

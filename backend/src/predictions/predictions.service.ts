@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { Readable } from 'stream';
 import { Prediction } from './entities/prediction.entity';
 import {
@@ -19,6 +19,16 @@ import {
 import { ListFraudFlagsQueryDto } from './dto/list-fraud-flags-query.dto';
 import { SubmitPredictionDto } from './dto/submit-prediction.dto';
 import { SubmitPredictionResponseDto } from './dto/submit-prediction-response.dto';
+import {
+  BatchPredictionItemDto,
+  MAX_BATCH_PREDICTIONS,
+  SubmitBatchPredictionsDto,
+} from './dto/submit-batch-prediction.dto';
+import {
+  BATCH_PREDICTION_STATUS,
+  BatchPredictionResultDto,
+  BatchSubmitResponseDto,
+} from './dto/batch-submit-response.dto';
 import { UpdatePredictionNoteDto } from './dto/update-prediction-note.dto';
 import {
   ListMarketPredictionsDto,
@@ -228,6 +238,290 @@ export class PredictionsService {
       realized_price: realized_price || '0',
       shares_received: shares_received || '0',
     };
+  }
+
+  /**
+   * Submit a batch (slip) of predictions in a single call.
+   *
+   * Validation is performed up-front for every item. In atomic mode
+   * (default) any validation or on-chain failure rejects the whole slip
+   * before anything is persisted; in non-atomic mode valid items are still
+   * submitted and failures are reported per item in the response.
+   */
+  async submitBatch(
+    dto: SubmitBatchPredictionsDto,
+    user: User,
+  ): Promise<BatchSubmitResponseDto> {
+    const atomic = dto.atomic ?? true;
+    const items = dto.predictions;
+
+    if (items.length > MAX_BATCH_PREDICTIONS) {
+      throw new BadRequestException(
+        `Batch size exceeds the maximum of ${MAX_BATCH_PREDICTIONS} predictions`,
+      );
+    }
+
+    // Bulk-load every referenced market exactly once.
+    const marketIds = [...new Set(items.map((item) => item.market_id))];
+    const markets =
+      marketIds.length > 0
+        ? await this.marketsRepository.find({ where: { id: In(marketIds) } })
+        : [];
+    const marketById = new Map(markets.map((market) => [market.id, market]));
+
+    // Markets this user has already predicted on (duplicate guard).
+    const existingPredictions =
+      marketIds.length > 0
+        ? await this.predictionsRepository.find({
+            where: {
+              user: { id: user.id },
+              market: { id: In(marketIds) },
+            },
+          })
+        : [];
+    const predictedMarketIds = new Set(
+      existingPredictions.map((prediction) => prediction.market.id),
+    );
+
+    // Validate every item before touching the chain.
+    const seenInBatch = new Set<string>();
+    const failures = new Map<number, string>();
+    items.forEach((item, index) => {
+      const failure = this.getBatchItemFailure(
+        item,
+        marketById.get(item.market_id),
+        predictedMarketIds,
+        seenInBatch,
+      );
+      if (failure) {
+        failures.set(index, failure);
+      }
+    });
+
+    if (atomic && failures.size > 0) {
+      throw new BadRequestException({
+        message:
+          'Batch submission failed validation - no predictions were submitted',
+        errors: [...failures].map(([index, error]) => ({ index, error })),
+      });
+    }
+
+    // On-chain submissions + slippage checks for actionable items only.
+    const chainResults = new Map<
+      number,
+      { tx_hash: string; realized_price: string; shares_received: string }
+    >();
+
+    for (let index = 0; index < items.length; index++) {
+      if (failures.has(index)) continue;
+
+      const item = items[index];
+      const market = marketById.get(item.market_id) as Market;
+
+      try {
+        const result = await this.sorobanService.submitPrediction(
+          user.stellar_address,
+          market.on_chain_market_id,
+          item.chosen_outcome,
+          item.stake_amount_stroops,
+        );
+
+        if (
+          (item.maxPrice || item.minSharesOut) &&
+          result.realized_price &&
+          result.shares_received
+        ) {
+          this.slippageCheckerService.checkSlippage(
+            item.maxPrice,
+            item.minSharesOut,
+            result.realized_price,
+            result.shares_received,
+          );
+        }
+
+        chainResults.set(index, {
+          tx_hash: result.tx_hash,
+          realized_price: result.realized_price || '0',
+          shares_received: result.shares_received || '0',
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        failures.set(index, `On-chain submission failed: ${message}`);
+
+        if (atomic) {
+          throw new BadRequestException({
+            message:
+              'Batch submission failed on-chain - no predictions were persisted',
+            errors: [...failures].map(([i, error]) => ({ index: i, error })),
+          });
+        }
+      }
+    }
+
+    // Persist every successful item inside a single database transaction.
+    const persistedByIndex = await this.dataSource.transaction(
+      async (
+        manager,
+      ): Promise<Map<number, { prediction: Prediction; tx_hash: string }>> => {
+        const savedByIndex = new Map<
+          number,
+          { prediction: Prediction; tx_hash: string }
+        >();
+        let totalStake = 0n;
+
+        for (const [index, result] of chainResults) {
+          const item = items[index];
+          const market = marketById.get(item.market_id) as Market;
+          totalStake += BigInt(item.stake_amount_stroops);
+
+          const pred = manager.create(Prediction, {
+            user,
+            market,
+            chosen_outcome: item.chosen_outcome,
+            stake_amount_stroops: item.stake_amount_stroops,
+            tx_hash: result.tx_hash,
+            payout_claimed: false,
+            payout_amount_stroops: '0',
+          });
+
+          const saved = await manager.save(pred);
+          savedByIndex.set(index, {
+            prediction: saved,
+            tx_hash: result.tx_hash,
+          });
+
+          await manager
+            .createQueryBuilder()
+            .update(Market)
+            .set({
+              participant_count: () => 'participant_count + 1',
+              ...(BigInt(item.stake_amount_stroops) !== 0n
+                ? {
+                    total_pool_stroops: () =>
+                      'CAST(total_pool_stroops AS BIGINT) + :stakeAmount',
+                  }
+                : {}),
+            })
+            .where('id = :id', { id: market.id })
+            .setParameter(
+              'stakeAmount',
+              BigInt(item.stake_amount_stroops).toString(),
+            )
+            .execute();
+
+          this.logger.log(
+            `Batch item ${index}: prediction ${saved.id} saved for user ${user.id} on market ${market.id}`,
+          );
+        }
+
+        // Aggregate user counters once per slip.
+        if (chainResults.size > 0) {
+          await manager
+            .createQueryBuilder()
+            .update(User)
+            .set({
+              total_predictions: () =>
+                `total_predictions + ${chainResults.size}`,
+              ...(totalStake !== 0n
+                ? {
+                    total_staked_stroops: () =>
+                      'CAST(total_staked_stroops AS BIGINT) + :totalStake',
+                  }
+                : {}),
+            })
+            .where('id = :id', { id: user.id })
+            .setParameter('totalStake', totalStake.toString())
+            .execute();
+        }
+
+        return savedByIndex;
+      },
+    );
+
+    // Post-persist hooks are advisory-only and non-blocking.
+    this.evaluateFraudSignalsForUser(user.id).catch((err) => {
+      this.logger.error(
+        `Fraud signal evaluation failed for user ${user.id}`,
+        err,
+      );
+    });
+    this.usersService.recordQualifyingAction(user.id).catch((err) => {
+      this.logger.error(
+        `Referral qualifying-action tracking failed for user ${user.id}`,
+        err,
+      );
+    });
+
+    const results: BatchPredictionResultDto[] = items.map((item, index) => {
+      const saved = persistedByIndex.get(index);
+
+      if (!saved) {
+        return {
+          index,
+          market_id: item.market_id,
+          status: BATCH_PREDICTION_STATUS.REJECTED,
+          error: failures.get(index),
+        };
+      }
+
+      return {
+        index,
+        market_id: item.market_id,
+        status: BATCH_PREDICTION_STATUS.FULFILLED,
+        prediction: saved.prediction,
+        realized_price: chainResults.get(index)?.realized_price || '0',
+        shares_received: chainResults.get(index)?.shares_received || '0',
+      };
+    });
+
+    return {
+      results,
+      succeeded: results.filter(
+        (r) => r.status === BATCH_PREDICTION_STATUS.FULFILLED,
+      ).length,
+      failed: results.filter(
+        (r) => r.status === BATCH_PREDICTION_STATUS.REJECTED,
+      ).length,
+      atomic,
+    };
+  }
+
+  private getBatchItemFailure(
+    item: BatchPredictionItemDto,
+    market: Market | undefined,
+    predictedMarketIds: Set<string>,
+    seenInBatch: Set<string>,
+  ): string | null {
+    if (!market) {
+      return `Market "${item.market_id}" not found`;
+    }
+
+    if (market.is_paused) {
+      return 'Market is paused - predictions are no longer accepted';
+    }
+
+    if (
+      market.is_resolved ||
+      market.is_cancelled ||
+      new Date() > market.end_time
+    ) {
+      return 'Market is closed - predictions are no longer accepted';
+    }
+
+    if (!market.outcome_options.includes(item.chosen_outcome)) {
+      return `Invalid outcome "${item.chosen_outcome}". Valid options: ${market.outcome_options.join(', ')}`;
+    }
+
+    if (predictedMarketIds.has(market.id)) {
+      return 'You have already submitted a prediction for this market';
+    }
+
+    if (seenInBatch.has(market.id)) {
+      return 'Duplicate prediction for this market within the batch';
+    }
+    seenInBatch.add(market.id);
+
+    return null;
   }
 
   /**
