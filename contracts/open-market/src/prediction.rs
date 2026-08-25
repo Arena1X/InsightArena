@@ -1245,6 +1245,12 @@ pub fn claim_payout(
         .checked_sub(creator_fee)
         .ok_or(InsightArenaError::Overflow)?;
 
+    prediction.payout_claimed = true;
+    prediction.payout_amount = net_payout;
+    env.storage().persistent().remove(&prediction_key);
+    env.storage().temporary().set(&prediction_key, &prediction);
+    config::shorten_prediction_ttl_after_claim(env, market_id, &predictor);
+
     if net_payout > 0 {
         escrow::release_payout(env, &predictor, net_payout)?;
     }
@@ -1254,12 +1260,6 @@ pub fn claim_payout(
     if creator_fee > 0 {
         escrow::refund(env, &market.creator, creator_fee)?;
     }
-
-    prediction.payout_claimed = true;
-    prediction.payout_amount = net_payout;
-    env.storage().persistent().remove(&prediction_key);
-    env.storage().temporary().set(&prediction_key, &prediction);
-    config::shorten_prediction_ttl_after_claim(env, market_id, &predictor);
 
     let user_key = DataKey::User(predictor.clone());
     let mut profile: UserProfile = env
@@ -1435,6 +1435,14 @@ pub fn batch_distribute_payouts(
             market.creator_fee_bps,
         )?;
 
+        stored_prediction.payout_claimed = true;
+        stored_prediction.payout_amount = net_payout;
+        env.storage().persistent().remove(&prediction_key);
+        env.storage()
+            .temporary()
+            .set(&prediction_key, &stored_prediction);
+        config::shorten_prediction_ttl_after_claim(env, market_id, &stored_prediction.predictor);
+
         if net_payout > 0 {
             escrow::release_payout(env, &stored_prediction.predictor, net_payout)?;
         }
@@ -1444,14 +1452,6 @@ pub fn batch_distribute_payouts(
         if creator_fee > 0 {
             escrow::refund(env, &market.creator, creator_fee)?;
         }
-
-        stored_prediction.payout_claimed = true;
-        stored_prediction.payout_amount = net_payout;
-        env.storage().persistent().remove(&prediction_key);
-        env.storage()
-            .temporary()
-            .set(&prediction_key, &stored_prediction);
-        config::shorten_prediction_ttl_after_claim(env, market_id, &stored_prediction.predictor);
 
         apply_winner_payout(
             env,

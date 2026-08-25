@@ -378,11 +378,14 @@ fn test_claim_payout_already_claimed() {
     client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
 
     client.claim_payout(&predictor, &market_id);
+    let token = TokenClient::new(&env, &xlm_token);
+    let balance_after_first_claim = token.balance(&predictor);
     let result = client.try_claim_payout(&predictor, &market_id);
     assert!(matches!(
         result,
         Err(Ok(InsightArenaError::PayoutAlreadyClaimed))
     ));
+    assert_eq!(token.balance(&predictor), balance_after_first_claim);
 }
 
 #[test]
