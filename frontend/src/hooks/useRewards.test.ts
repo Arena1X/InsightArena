@@ -2,8 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor, act } from "@testing-library/react";
 import { useRewards } from "./useRewards";
 import { useWallet } from "@/context/WalletContext";
-import { claimRewards, getRewardsSummary } from "@/lib/rewards";
-import type { RewardsSummary } from "@/lib/rewards";
+import {
+  claimRewardItem,
+  claimRewards,
+  getRewardItems,
+  getRewardsSummary,
+} from "@/lib/rewards";
+import type { RewardItem, RewardsSummary } from "@/lib/rewards";
 
 vi.mock("@/context/WalletContext", () => ({
   useWallet: vi.fn(),
@@ -12,11 +17,15 @@ vi.mock("@/context/WalletContext", () => ({
 vi.mock("@/lib/rewards", () => ({
   getRewardsSummary: vi.fn(),
   claimRewards: vi.fn(),
+  getRewardItems: vi.fn(),
+  claimRewardItem: vi.fn(),
 }));
 
 const mockedUseWallet = vi.mocked(useWallet);
 const mockedGetRewardsSummary = vi.mocked(getRewardsSummary);
 const mockedClaimRewards = vi.mocked(claimRewards);
+const mockedGetRewardItems = vi.mocked(getRewardItems);
+const mockedClaimRewardItem = vi.mocked(claimRewardItem);
 
 function mockWallet(address: string | null, token: string | null = address ? "test-token" : null) {
   mockedUseWallet.mockReturnValue({
@@ -34,11 +43,25 @@ function buildSummary(overrides: Partial<RewardsSummary> = {}): RewardsSummary {
   };
 }
 
+function buildItem(overrides: Partial<RewardItem> = {}): RewardItem {
+  return {
+    id: "pred-1",
+    marketId: "market-1",
+    marketTitle: "Will BTC close above $100k?",
+    amountXlm: 50,
+    status: "claimable",
+    ...overrides,
+  };
+}
+
 describe("useRewards", () => {
   beforeEach(() => {
     mockedUseWallet.mockReset();
     mockedGetRewardsSummary.mockReset();
     mockedClaimRewards.mockReset();
+    mockedGetRewardItems.mockReset();
+    mockedClaimRewardItem.mockReset();
+    mockedGetRewardItems.mockResolvedValue([]);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
@@ -158,5 +181,194 @@ describe("useRewards", () => {
 
     expect(mockedClaimRewards).not.toHaveBeenCalled();
     expect(result.current.claimStatus).toBe("idle");
+  });
+
+  describe("claimable/vesting item split", () => {
+    it("splits fetched reward items into claimable and vesting buckets", async () => {
+      mockWallet("GADDRESS");
+      mockedGetRewardsSummary.mockResolvedValue(buildSummary());
+      mockedGetRewardItems.mockResolvedValue([
+        buildItem({ id: "pred-1", status: "claimable", amountXlm: 50 }),
+        buildItem({ id: "pred-2", status: "claimable", amountXlm: 100 }),
+        buildItem({ id: "pred-3", status: "vesting", amountXlm: 95 }),
+      ]);
+
+      const { result } = renderHook(() => useRewards());
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      expect(result.current.items).toHaveLength(3);
+      expect(result.current.claimableItems.map((i) => i.id)).toEqual([
+        "pred-1",
+        "pred-2",
+      ]);
+      expect(result.current.vestingItems.map((i) => i.id)).toEqual([
+        "pred-3",
+      ]);
+      expect(
+        result.current.items.every((item) => item.claimStatus === "idle"),
+      ).toBe(true);
+    });
+
+    it("returns empty claimable/vesting buckets when there are no items", async () => {
+      mockWallet("GADDRESS");
+      mockedGetRewardsSummary.mockResolvedValue(buildSummary());
+      mockedGetRewardItems.mockResolvedValue([]);
+
+      const { result } = renderHook(() => useRewards());
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      expect(result.current.claimableItems).toEqual([]);
+      expect(result.current.vestingItems).toEqual([]);
+    });
+  });
+
+  describe("claimItem", () => {
+    it("marks the item pending, then removes it and updates the summary on success", async () => {
+      mockWallet("GADDRESS");
+      mockedGetRewardsSummary.mockResolvedValue(buildSummary());
+      mockedGetRewardItems.mockResolvedValue([
+        buildItem({ id: "pred-1", status: "claimable", amountXlm: 50 }),
+      ]);
+      mockedClaimRewardItem.mockResolvedValue({
+        id: "pred-1",
+        claimedXlm: 48,
+        transactionHash: "tx_item_1",
+      });
+
+      const { result } = renderHook(() => useRewards());
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      await act(async () => {
+        await result.current.claimItem("pred-1");
+      });
+
+      expect(mockedClaimRewardItem).toHaveBeenCalledWith(
+        "test-token",
+        "pred-1",
+      );
+      expect(result.current.items).toHaveLength(0);
+      expect(result.current.summary?.claimableXlm).toBe(100);
+      expect(result.current.summary?.totalEarnedXlm).toBe(1288);
+    });
+
+    it("records a per-item error and leaves the item in the list on failure", async () => {
+      mockWallet("GADDRESS");
+      mockedGetRewardsSummary.mockResolvedValue(buildSummary());
+      mockedGetRewardItems.mockResolvedValue([
+        buildItem({ id: "pred-1", status: "claimable" }),
+      ]);
+      mockedClaimRewardItem.mockRejectedValue(new Error("Claim rejected"));
+
+      const { result } = renderHook(() => useRewards());
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      await act(async () => {
+        await result.current.claimItem("pred-1").catch(() => undefined);
+      });
+
+      expect(result.current.items).toHaveLength(1);
+      expect(result.current.items[0].claimStatus).toBe("error");
+      expect(result.current.items[0].claimError).toBe("Claim rejected");
+    });
+
+    it("does not call claimRewardItem for a vesting item", async () => {
+      mockWallet("GADDRESS");
+      mockedGetRewardsSummary.mockResolvedValue(buildSummary());
+      mockedGetRewardItems.mockResolvedValue([
+        buildItem({ id: "pred-1", status: "vesting" }),
+      ]);
+
+      const { result } = renderHook(() => useRewards());
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      await act(async () => {
+        await result.current.claimItem("pred-1");
+      });
+
+      expect(mockedClaimRewardItem).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("claimAllItems", () => {
+    it("triggers one per-item claim for every claimable item and leaves vesting items untouched", async () => {
+      mockWallet("GADDRESS");
+      mockedGetRewardsSummary.mockResolvedValue(buildSummary());
+      mockedGetRewardItems.mockResolvedValue([
+        buildItem({ id: "pred-1", status: "claimable", amountXlm: 50 }),
+        buildItem({ id: "pred-2", status: "claimable", amountXlm: 100 }),
+        buildItem({ id: "pred-3", status: "vesting", amountXlm: 95 }),
+      ]);
+      mockedClaimRewardItem.mockImplementation(async (_token, itemId) => ({
+        id: itemId,
+        claimedXlm: itemId === "pred-1" ? 48 : 97,
+        transactionHash: `tx_${itemId}`,
+      }));
+
+      const { result } = renderHook(() => useRewards());
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      await act(async () => {
+        await result.current.claimAllItems();
+      });
+
+      expect(mockedClaimRewardItem).toHaveBeenCalledTimes(2);
+      expect(mockedClaimRewardItem).toHaveBeenNthCalledWith(
+        1,
+        "test-token",
+        "pred-1",
+      );
+      expect(mockedClaimRewardItem).toHaveBeenNthCalledWith(
+        2,
+        "test-token",
+        "pred-2",
+      );
+      expect(result.current.claimableItems).toHaveLength(0);
+      expect(result.current.vestingItems).toHaveLength(1);
+      expect(result.current.isClaimingAll).toBe(false);
+    });
+
+    it("continues claiming remaining items when one item fails", async () => {
+      mockWallet("GADDRESS");
+      mockedGetRewardsSummary.mockResolvedValue(buildSummary());
+      mockedGetRewardItems.mockResolvedValue([
+        buildItem({ id: "pred-1", status: "claimable" }),
+        buildItem({ id: "pred-2", status: "claimable" }),
+      ]);
+      mockedClaimRewardItem.mockImplementation(async (_token, itemId) => {
+        if (itemId === "pred-1") {
+          throw new Error("Claim rejected");
+        }
+        return { id: itemId, claimedXlm: 10, transactionHash: "tx_pred-2" };
+      });
+
+      const { result } = renderHook(() => useRewards());
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      await act(async () => {
+        await result.current.claimAllItems();
+      });
+
+      expect(mockedClaimRewardItem).toHaveBeenCalledTimes(2);
+      expect(result.current.items).toHaveLength(1);
+      expect(result.current.items[0].id).toBe("pred-1");
+      expect(result.current.items[0].claimStatus).toBe("error");
+    });
+
+    it("does nothing when there are no claimable items", async () => {
+      mockWallet("GADDRESS");
+      mockedGetRewardsSummary.mockResolvedValue(buildSummary());
+      mockedGetRewardItems.mockResolvedValue([
+        buildItem({ id: "pred-1", status: "vesting" }),
+      ]);
+
+      const { result } = renderHook(() => useRewards());
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+      await act(async () => {
+        await result.current.claimAllItems();
+      });
+
+      expect(mockedClaimRewardItem).not.toHaveBeenCalled();
+    });
   });
 });
