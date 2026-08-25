@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use insightarena_contract::config::{self, ReputationDecayMode};
 use insightarena_contract::market::CreateMarketParams;
 use insightarena_contract::reputation::*;
 use insightarena_contract::storage_types::CreatorStats;
@@ -351,6 +352,124 @@ fn test_reputation_decay_over_time() {
         .set_timestamp(env.ledger().timestamp() + 86400 * 30);
     let stats_after_two_half_lives = client.get_creator_stats(&creator);
     assert_eq!(stats_after_two_half_lives.reputation_score, 150);
+}
+
+// ── Decay application (Issue #1681) ─────────────────────────────────────────
+
+#[test]
+fn apply_reputation_decay_no_op_when_zero_score_or_elapsed() {
+    assert_eq!(apply_reputation_decay(0, 1_000, 100, ReputationDecayMode::Linear), 0);
+    assert_eq!(apply_reputation_decay(500, 0, 100, ReputationDecayMode::Linear), 500);
+    assert_eq!(
+        apply_reputation_decay(500, 0, 100, ReputationDecayMode::Exponential),
+        500
+    );
+    assert_eq!(apply_reputation_decay(500, 1_000, 0, ReputationDecayMode::Linear), 500);
+}
+
+#[test]
+fn apply_reputation_decay_linear_scales_with_elapsed_time() {
+    let half = 1_000_u32;
+    assert_eq!(
+        apply_reputation_decay(1_000, 0, half, ReputationDecayMode::Linear),
+        1_000
+    );
+    assert_eq!(
+        apply_reputation_decay(1_000, 500, half, ReputationDecayMode::Linear),
+        750
+    );
+    assert_eq!(
+        apply_reputation_decay(1_000, 1_000, half, ReputationDecayMode::Linear),
+        500
+    );
+    assert_eq!(
+        apply_reputation_decay(1_000, 1_500, half, ReputationDecayMode::Linear),
+        250
+    );
+    assert_eq!(
+        apply_reputation_decay(1_000, 2_000, half, ReputationDecayMode::Linear),
+        0
+    );
+    assert_eq!(
+        apply_reputation_decay(1_000, 3_000, half, ReputationDecayMode::Linear),
+        0
+    );
+}
+
+#[test]
+fn apply_reputation_decay_exponential_halves_each_half_life() {
+    let half = 1_000_u32;
+    assert_eq!(
+        apply_reputation_decay(800, 1_000, half, ReputationDecayMode::Exponential),
+        400
+    );
+    assert_eq!(
+        apply_reputation_decay(800, 2_000, half, ReputationDecayMode::Exponential),
+        200
+    );
+}
+
+#[test]
+fn apply_reputation_decay_never_exceeds_input_score() {
+    let linear = apply_reputation_decay(600, 500, 1_000, ReputationDecayMode::Linear);
+    assert!(linear <= 600);
+    let exponential = apply_reputation_decay(600, 500, 1_000, ReputationDecayMode::Exponential);
+    assert!(exponential <= 600);
+}
+
+#[test]
+fn test_reputation_linear_decay_on_read() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    env.as_contract(&client.address, || {
+        config::set_reputation_decay_config(
+            &env,
+            admin.clone(),
+            86_400_u32 * 30,
+            ReputationDecayMode::Linear,
+        )
+    })
+    .unwrap();
+
+    let id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+    assert_eq!(client.get_reputation_score(&creator), 600);
+
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 86_400 * 30);
+    assert_eq!(client.get_reputation_score(&creator), 300);
+
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 86_400 * 30);
+    assert_eq!(client.get_reputation_score(&creator), 0);
+}
+
+#[test]
+fn test_stale_high_score_decays_below_creation_gate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, _) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    let id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+    assert_eq!(client.get_reputation_score(&creator), 600);
+
+    client.set_min_creator_reputation(&admin, &400_u32);
+    assert!(client.get_reputation_score(&creator) >= 400_u32);
+
+    // Two half-lives of inactivity (default exponential) should drop 600 -> 150.
+    // Do not create another market here — that would reset last_updated and
+    // change the raw formula score (1 resolved / 2 created = 300).
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 86_400 * 60);
+    assert_eq!(client.get_reputation_score(&creator), 150);
+    assert!(client.try_create_market(&creator, &default_params(&env)).is_err());
 }
 
 #[test]
