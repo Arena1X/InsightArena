@@ -419,8 +419,11 @@ describe('DisputesService', () => {
   });
 
   describe('findAll', () => {
-    const makeDispute = (id: string, createdAt: Date, status = DisputeStatus.PENDING): Dispute =>
-      ({ ...mockDispute, id, createdAt, status }) as Dispute;
+    const makeDispute = (
+      id: string,
+      createdAt: Date,
+      status = DisputeStatus.PENDING,
+    ): Dispute => ({ ...mockDispute, id, createdAt, status }) as Dispute;
 
     /** Builds a chainable queryBuilder mock; `getMany` resolves to `rows`. */
     const mockQueryBuilder = (
@@ -444,9 +447,10 @@ describe('DisputesService', () => {
 
     it('narrows results when filtering by status', async () => {
       const pending = makeDispute('d1', new Date('2024-01-02T00:00:00Z'));
-      const qb = mockQueryBuilder([pending], [
-        { status: DisputeStatus.PENDING, count: '1' },
-      ]);
+      const qb = mockQueryBuilder(
+        [pending],
+        [{ status: DisputeStatus.PENDING, count: '1' }],
+      );
       jest.spyOn(disputesRepository, 'createQueryBuilder').mockReturnValue(qb);
 
       const result = await service.findAll({
@@ -499,7 +503,10 @@ describe('DisputesService', () => {
 
     it('rejects a malformed cursor', async () => {
       await expect(
-        service.findAll({ cursor: 'not-valid-base64-cursor!!', limit: 20 } as any),
+        service.findAll({
+          cursor: 'not-valid-base64-cursor!!',
+          limit: 20,
+        } as any),
       ).rejects.toThrow(BadRequestException);
     });
   });

@@ -799,9 +799,7 @@ describe('IndexerService', () => {
         nested = { value: nested };
       }
 
-      expect(() =>
-        (service as any).unwrapIndexerValue(nested),
-      ).not.toThrow();
+      expect(() => (service as any).unwrapIndexerValue(nested)).not.toThrow();
     });
   });
 });

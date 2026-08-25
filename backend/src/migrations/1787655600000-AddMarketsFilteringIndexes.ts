@@ -11,9 +11,7 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * bitmap-and-sort. These composite indexes put the common filter columns
  * first and the sort columns after, so the planner can use them directly.
  */
-export class AddMarketsFilteringIndexes1787655600000
-  implements MigrationInterface
-{
+export class AddMarketsFilteringIndexes1787655600000 implements MigrationInterface {
   name = 'AddMarketsFilteringIndexes1787655600000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

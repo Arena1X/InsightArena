@@ -586,7 +586,11 @@ describe('MarketsService.findAllFiltered', () => {
         { provide: getRepositoryToken(Prediction), useValue: {} },
         {
           provide: getRepositoryToken(MarketPriceSnapshot),
-          useValue: { create: jest.fn(), save: jest.fn(), createQueryBuilder: jest.fn() },
+          useValue: {
+            create: jest.fn(),
+            save: jest.fn(),
+            createQueryBuilder: jest.fn(),
+          },
         },
         { provide: UsersService, useValue: {} },
         { provide: SorobanService, useValue: {} },
@@ -594,11 +598,19 @@ describe('MarketsService.findAllFiltered', () => {
         { provide: WebhookDispatcherService, useValue: { emit: jest.fn() } },
         {
           provide: CACHE_MANAGER,
-          useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn(), reset: jest.fn() },
+          useValue: {
+            get: jest.fn(),
+            set: jest.fn(),
+            del: jest.fn(),
+            reset: jest.fn(),
+          },
         },
         {
           provide: MarketSettlementScheduler,
-          useValue: { getDeadLetterQueue: jest.fn(), retrySettlement: jest.fn() },
+          useValue: {
+            getDeadLetterQueue: jest.fn(),
+            retrySettlement: jest.fn(),
+          },
         },
       ],
     }).compile();
