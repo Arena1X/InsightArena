@@ -5,6 +5,63 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+export interface CourseLesson {
+  id: string;
+  title: string;
+  href: string;
+}
+
+export const COURSE_PROGRESS_STORAGE_KEY = "insightarena.course-progress.v1";
+
+function readCourseProgress(): Record<string, string[]> {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const stored = window.localStorage.getItem(COURSE_PROGRESS_STORAGE_KEY);
+    const parsed: unknown = stored ? JSON.parse(stored) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        ([, lessonIds]) =>
+          Array.isArray(lessonIds) && lessonIds.every((lessonId) => typeof lessonId === "string"),
+      ),
+    ) as Record<string, string[]>;
+  } catch {
+    return {};
+  }
+}
+
+export function getViewedLessonIds(courseId: string): string[] {
+  return readCourseProgress()[courseId] ?? [];
+}
+
+export function markLessonViewed(courseId: string, lessonId: string): string[] {
+  const progress = readCourseProgress();
+  const viewedLessonIds = Array.from(new Set([...(progress[courseId] ?? []), lessonId]));
+
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(
+        COURSE_PROGRESS_STORAGE_KEY,
+        JSON.stringify({ ...progress, [courseId]: viewedLessonIds }),
+      );
+    } catch {
+      // Storage can be unavailable in private browsing or restricted embeds.
+    }
+  }
+
+  return viewedLessonIds;
+}
+
+export function getResumeLesson(
+  courseId: string,
+  lessons: CourseLesson[],
+): CourseLesson | undefined {
+  const viewedLessonIds = new Set(getViewedLessonIds(courseId));
+  return lessons.find((lesson) => !viewedLessonIds.has(lesson.id)) ?? lessons.at(-1);
+}
+
 const STROOPS_PER_XLM = 10_000_000;
 
 /**
