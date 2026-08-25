@@ -996,3 +996,177 @@ fn reset_creator_stats_fails_when_paused() {
     let result = client.try_reset_creator_stats(&admin, &creator);
     assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
 }
+
+// ── Season-inactivity decay (Issue #1513) ────────────────────────────────────
+
+#[test]
+fn apply_season_inactivity_decay_no_decay_within_grace() {
+    // Exactly at the grace boundary: no decay yet.
+    assert_eq!(apply_season_inactivity_decay(800, 1, 1, 1000), 800);
+    // Fewer inactive seasons than the grace period: no decay.
+    assert_eq!(apply_season_inactivity_decay(800, 0, 1, 1000), 800);
+}
+
+#[test]
+fn apply_season_inactivity_decay_compounds_per_season() {
+    // 1 season beyond a grace of 0, 10% (1000 bps) per season: 800 * 0.9 = 720.
+    assert_eq!(apply_season_inactivity_decay(800, 1, 0, 1000), 720);
+    // 2 seasons beyond grace: 800 * 0.9 * 0.9 = 648.
+    assert_eq!(apply_season_inactivity_decay(800, 2, 0, 1000), 648);
+    // 3 seasons beyond grace: 648 * 0.9 = 583 (integer truncation each step).
+    assert_eq!(apply_season_inactivity_decay(800, 3, 0, 1000), 583);
+}
+
+#[test]
+fn apply_season_inactivity_decay_zero_bps_disables_decay() {
+    assert_eq!(apply_season_inactivity_decay(800, 10, 0, 0), 800);
+}
+
+#[test]
+fn apply_season_inactivity_decay_never_exceeds_input_score() {
+    let decayed = apply_season_inactivity_decay(500, 5, 0, 1000);
+    assert!(decayed <= 500);
+}
+
+#[test]
+fn apply_season_inactivity_decay_floors_at_zero_never_negative() {
+    // Many inactive seasons should drive the score to 0, never below.
+    let decayed = apply_season_inactivity_decay(1000, 50, 0, 5000);
+    assert_eq!(decayed, 0);
+}
+
+#[test]
+fn apply_season_inactivity_decay_100_percent_zeroes_after_grace() {
+    assert_eq!(apply_season_inactivity_decay(800, 1, 0, 10_000), 0);
+}
+
+fn fund(env: &Env, token: &Address, recipient: &Address, amount: i128) {
+    StellarAssetClient::new(env, token).mint(recipient, &amount);
+}
+
+#[test]
+fn test_reputation_decays_over_n_inactive_seasons() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    fund(&env, &xlm_token, &admin, 1_000_000_000);
+
+    // Disable time-based decay so only season-inactivity decay is observed.
+    env.as_contract(&client.address, || {
+        config::set_reputation_decay_config(&env, admin.clone(), u32::MAX, ReputationDecayMode::Linear)
+    })
+    .unwrap();
+    env.as_contract(&client.address, || {
+        config::set_season_decay_config(&env, admin.clone(), 0, 1000)
+    })
+    .unwrap();
+
+    // Season 1 is active; creator resolves a market, becoming active in it.
+    client.create_season(&admin, &0, &3000, &10_000_000);
+    let id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(2000);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+    let baseline = client.get_reputation_score(&creator);
+    assert_eq!(baseline, 600);
+
+    // Advance through seasons 2 and 3 without the creator doing anything —
+    // two fully-elapsed inactive seasons relative to season 3.
+    env.ledger().set_timestamp(3000);
+    client.create_season(&admin, &3000, &4000, &10_000_000);
+    env.ledger().set_timestamp(4000);
+    client.create_season(&admin, &4000, &5000, &10_000_000);
+
+    // The near-infinite half-life still applies a negligible sliver of
+    // time-based decay over the 2000s elapsed since the market resolved;
+    // season-inactivity decay (2 seasons beyond a grace of 0, 10% each) then
+    // compounds on top of that, exactly as `reputation::decayed_score` does.
+    let time_decayed = apply_reputation_decay(600, 2000, u32::MAX, ReputationDecayMode::Linear);
+    let expected = apply_season_inactivity_decay(time_decayed, 2, 0, 1000);
+    assert_eq!(client.get_reputation_score(&creator), expected);
+    // Season-inactivity decay is still the dominant effect: materially below
+    // the undecayed baseline of 600.
+    assert!(expected < 550);
+}
+
+#[test]
+fn test_reputation_season_decay_active_users_unaffected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    fund(&env, &xlm_token, &admin, 1_000_000_000);
+
+    env.as_contract(&client.address, || {
+        config::set_reputation_decay_config(&env, admin.clone(), u32::MAX, ReputationDecayMode::Linear)
+    })
+    .unwrap();
+    env.as_contract(&client.address, || {
+        config::set_season_decay_config(&env, admin.clone(), 0, 1000)
+    })
+    .unwrap();
+
+    client.create_season(&admin, &0, &3000, &10_000_000);
+    let id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(2000);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+    assert_eq!(client.get_reputation_score(&creator), 600);
+
+    // Creator stays active in every season, including the currently active
+    // one, by resolving another market in each successive season.
+    env.ledger().set_timestamp(3000);
+    client.create_season(&admin, &3000, &6000, &10_000_000);
+    let id2 = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(5000);
+    client.resolve_market(&oracle, &id2, &symbol_short!("yes"));
+
+    // No season-inactivity decay: the creator was active in the currently
+    // active season (season 2), so `inactive_seasons` is 0 — never exceeding
+    // the grace period. Only the negligible time-based sliver applies
+    // (elapsed=0, since this read happens at the same timestamp as the
+    // resolve that reset `last_updated`).
+    assert_eq!(client.get_reputation_score(&creator), 600);
+}
+
+#[test]
+fn test_reputation_season_decay_never_below_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    fund(&env, &xlm_token, &admin, 1_000_000_000);
+
+    env.as_contract(&client.address, || {
+        config::set_reputation_decay_config(&env, admin.clone(), u32::MAX, ReputationDecayMode::Linear)
+    })
+    .unwrap();
+    env.as_contract(&client.address, || {
+        config::set_season_decay_config(&env, admin.clone(), 0, 10_000)
+    })
+    .unwrap();
+
+    client.create_season(&admin, &0, &3000, &10_000_000);
+    let id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(2000);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+    assert!(client.get_reputation_score(&creator) > 0);
+
+    env.ledger().set_timestamp(3000);
+    client.create_season(&admin, &3000, &4000, &10_000_000);
+
+    // 100% decay per inactive season zeroes the score immediately, and it
+    // must never underflow below 0 (u32 floor).
+    assert_eq!(client.get_reputation_score(&creator), 0);
+}
+
+#[test]
+fn set_season_decay_config_rejects_bps_above_10000() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _, _) = deploy(&env);
+
+    let result = env.as_contract(&client.address, || {
+        config::set_season_decay_config(&env, admin, 0, 10_001)
+    });
+    assert!(matches!(result, Err(InsightArenaError::InvalidInput)));
+}

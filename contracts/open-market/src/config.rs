@@ -350,6 +350,21 @@ pub struct Config {
     /// to remaining participants. Admin-configurable via `set_early_exit_fee_bps`.
     /// Defaults to `500` (5%) at initialization.
     pub early_exit_fee_bps: u32,
+    /// Number of fully-inactive seasons (no market created/resolved/disputed
+    /// by the creator) tolerated before season-based reputation decay begins
+    /// to apply. `0` means decay starts from the very first inactive season.
+    /// Applied lazily, at read time, on top of the existing time-based decay
+    /// (`reputation_half_life_seconds`). Admin-configurable via
+    /// `set_season_decay_config`. Defaults to `1` at initialization.
+    /// See `reputation::apply_season_inactivity_decay`.
+    pub reputation_season_decay_grace: u32,
+    /// Decay (bps, 0-10000) applied to a creator's reputation score for each
+    /// inactive season beyond `reputation_season_decay_grace`, compounding
+    /// multiplicatively (i.e. `score *= (10000 - bps) / 10000` per inactive
+    /// season). `0` disables season-based decay entirely. Admin-configurable
+    /// via `set_season_decay_config`. Defaults to `1000` (10% per season) at
+    /// initialization. See `reputation::apply_season_inactivity_decay`.
+    pub reputation_season_decay_bps: u32,
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -492,6 +507,8 @@ pub fn initialize(
         vesting_interval_seconds: 2_592_000, // ~30 days
         bond_amount: 0, // disabled by default; admin/governance opt in
         early_exit_fee_bps: 500, // 5% default early-exit fee
+        reputation_season_decay_grace: 1, // tolerate one inactive season before decaying
+        reputation_season_decay_bps: 1000, // 10% compounding decay per inactive season
     };
 
     env.storage().persistent().set(&DataKey::Config, &config);
@@ -833,6 +850,49 @@ fn emit_reputation_decay_config_updated(env: &Env, half_life_seconds: u32, mode:
     env.events().publish(
         (symbol_short!("cfg"), symbol_short!("rdk_upd")),
         (half_life_seconds, mode_sym),
+    );
+}
+
+fn validate_season_decay_bps(decay_bps: u32) -> Result<(), InsightArenaError> {
+    if decay_bps > 10_000 {
+        return Err(InsightArenaError::InvalidInput);
+    }
+    Ok(())
+}
+
+/// Update the season-inactivity reputation decay grace period and per-season
+/// rate. Caller must be the stored admin. See
+/// `reputation::apply_season_inactivity_decay`.
+pub fn set_season_decay_config(
+    env: &Env,
+    admin: Address,
+    grace_seasons: u32,
+    decay_bps: u32,
+) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
+    let mut config = load_config(env)?;
+
+    admin.require_auth();
+    if admin != config.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    validate_season_decay_bps(decay_bps)?;
+
+    config.reputation_season_decay_grace = grace_seasons;
+    config.reputation_season_decay_bps = decay_bps;
+    env.storage().persistent().set(&DataKey::Config, &config);
+    bump_config(env);
+
+    emit_season_decay_config_updated(env, grace_seasons, decay_bps);
+
+    Ok(())
+}
+
+fn emit_season_decay_config_updated(env: &Env, grace_seasons: u32, decay_bps: u32) {
+    env.events().publish(
+        (symbol_short!("cfg"), symbol_short!("sdk_upd")),
+        (grace_seasons, decay_bps),
     );
 }
 

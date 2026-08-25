@@ -217,7 +217,44 @@ price spikes.
   the TWAP of the market's primary outcome (`outcome_options[0]`), for
   consumers (indexer, UI) that track a single headline price per market.
 
-## 11) Links to Related Docs
+## 11) Reputation Decay Over Inactive Seasons
+
+A creator's reputation score (`reputation::calculate_creator_reputation`) is
+decayed lazily, at read time, in two layers — neither ever mutates stored
+counters, so there is no unbounded loop over elapsed time or seasons:
+
+1. **Time-based decay** (`reputation::apply_reputation_decay`) — decays
+   toward zero as seconds elapse since `CreatorStats::last_updated`, per the
+   governance-configured `reputation_half_life_seconds` /
+   `reputation_decay_mode` (Linear or Exponential).
+2. **Season-inactivity decay** (`reputation::apply_season_inactivity_decay`)
+   — for each season that has become the active season since the creator was
+   last active, beyond a configurable grace period, the score is multiplied
+   by `(10_000 - reputation_season_decay_bps) / 10_000`, compounding:
+
+   ```
+   decaying_seasons = inactive_seasons - grace_seasons   (0 if inactive_seasons <= grace_seasons)
+   score' = score * ((10_000 - decay_bps) / 10_000) ^ decaying_seasons
+   ```
+
+   `inactive_seasons` is `current_active_season_id - last_active_season_id`.
+   A creator's `last_active_season_id` is recorded (via a compact storage
+   key, not a new field) whenever they create, resolve, or have a dispute
+   raised against a market — the same hooks that already reset
+   `last_updated` for time-based decay. Both decay layers apply in sequence
+   (time-based first, then season-based) and neither can push the score
+   below `0` (`u32` floor) or above its pre-decay value.
+
+Governance parameters (`config.rs`, admin-settable via
+`set_season_decay_config`):
+
+- `reputation_season_decay_grace` — inactive seasons tolerated before decay
+  starts. Defaults to `1`.
+- `reputation_season_decay_bps` — decay rate per inactive season beyond the
+  grace period, in bps (0-10000). `0` disables season decay. Defaults to
+  `1000` (10%).
+
+## 12) Links to Related Docs
 - [Repository contribution guide](../backend/.github/CONTRIBUTING.md)
 - [Contract security audit notes](./SECURITY_AUDIT.md)
 - [Contract storage schema notes](./STORAGE_SCHEMA.md)
