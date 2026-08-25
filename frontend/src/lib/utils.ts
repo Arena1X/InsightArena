@@ -5,6 +5,55 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+// ── Route content pending signal ────────────────────────────────────────────
+//
+// Next.js updates the URL (usePathname/useSearchParams) as soon as a client
+// navigation is committed, even while the destination's loading.tsx Suspense
+// fallback is still showing. A route-change listener that treats "pathname
+// changed" as "route settled" therefore fires early on slow transitions.
+// Route-level loading.tsx files call `beginRouteContentLoad()` on mount and
+// release it on unmount so anything that needs to know when the *content*
+// (not just the URL) is actually ready — like RouteProgress — can wait for it.
+
+type RouteContentPendingListener = (pending: boolean) => void;
+
+let pendingRouteContentCount = 0;
+const routeContentPendingListeners = new Set<RouteContentPendingListener>();
+
+function notifyRouteContentPendingListeners() {
+  const pending = pendingRouteContentCount > 0;
+  routeContentPendingListeners.forEach((listener) => listener(pending));
+}
+
+export function isRouteContentPending(): boolean {
+  return pendingRouteContentCount > 0;
+}
+
+/** Marks route content as loading; call the returned function once it's ready. */
+export function beginRouteContentLoad(): () => void {
+  pendingRouteContentCount += 1;
+  notifyRouteContentPendingListeners();
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    pendingRouteContentCount = Math.max(0, pendingRouteContentCount - 1);
+    notifyRouteContentPendingListeners();
+  };
+}
+
+/** Subscribes to route-content-pending changes; returns an unsubscribe function. */
+export function subscribeRouteContentPending(
+  listener: RouteContentPendingListener,
+): () => void {
+  routeContentPendingListeners.add(listener);
+  listener(isRouteContentPending());
+  return () => {
+    routeContentPendingListeners.delete(listener);
+  };
+}
+
 export interface CourseLesson {
   id: string;
   title: string;

@@ -14,6 +14,8 @@ import ConnectWalletModal from "@/component/ConnectWalletModal";
 
 export interface AuthUser {
   username: string;
+  avatarUrl?: string;
+  bio?: string;
 }
 
 export interface WalletContextValue {
