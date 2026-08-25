@@ -14,6 +14,7 @@ import {
   FlagAttributeOperator,
 } from './entities/feature-flag.entity';
 import { CreateFeatureFlagDto } from './dto/create-feature-flag.dto';
+import { FlagEvaluationCacheService } from './flag-evaluation-cache.service';
 import * as crypto from 'crypto';
 
 export interface ResolvedFlagDto {
@@ -51,6 +52,7 @@ export class FeatureFlagsService {
     private readonly featureFlagsRepository: Repository<FeatureFlag>,
     @InjectRepository(AdminAuditLog)
     private readonly auditRepository: Repository<AdminAuditLog>,
+    private readonly evaluationCache: FlagEvaluationCacheService,
   ) {}
 
   async create(
@@ -228,16 +230,7 @@ export class FeatureFlagsService {
   async resolveFlagsForUser(user: User): Promise<ResolvedFlagDto[]> {
     const flags = await this.featureFlagsRepository.find();
 
-    return flags.map((flag) => {
-      const resolved = this.evaluateFlagForUser(flag, user);
-      return {
-        key: flag.key,
-        name: flag.name,
-        is_enabled: resolved,
-        targeting_type: flag.targeting_type,
-        targeting_rules: flag.targeting_rules,
-      };
-    });
+    return flags.map((flag) => this.resolveAndCache(flag, user));
   }
 
   /**
@@ -247,19 +240,35 @@ export class FeatureFlagsService {
     flagKey: string,
     user: User,
   ): Promise<ResolvedFlagDto | null> {
+    const cached = this.evaluationCache.get(flagKey, user.id);
+    if (cached) return cached;
+
     const flag = await this.featureFlagsRepository.findOne({
       where: { key: flagKey },
     });
     if (!flag) return null;
 
-    const resolved = this.evaluateFlagForUser(flag, user);
-    return {
+    return this.resolveAndCache(flag, user);
+  }
+
+  /**
+   * Evaluate a flag for a user and cache the result for the rest of this
+   * request, so a second lookup of the same flag/user pair (e.g. from a
+   * guard and the controller it guards) skips re-evaluation.
+   */
+  private resolveAndCache(flag: FeatureFlag, user: User): ResolvedFlagDto {
+    const cached = this.evaluationCache.get(flag.key, user.id);
+    if (cached) return cached;
+
+    const resolved: ResolvedFlagDto = {
       key: flag.key,
       name: flag.name,
-      is_enabled: resolved,
+      is_enabled: this.evaluateFlagForUser(flag, user),
       targeting_type: flag.targeting_type,
       targeting_rules: flag.targeting_rules,
     };
+    this.evaluationCache.set(flag.key, user.id, resolved);
+    return resolved;
   }
 
   private evaluateFlagForUser(flag: FeatureFlag, user: User): boolean {

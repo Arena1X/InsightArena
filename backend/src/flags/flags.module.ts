@@ -9,6 +9,7 @@ import { FlagsService } from './flags.service';
 import { FlagsController } from './flags.controller';
 import { FeatureFlagsService } from './feature-flags.service';
 import { FeatureFlagsController } from './feature-flags.controller';
+import { FlagEvaluationCacheService } from './flag-evaluation-cache.service';
 import { AnalyticsModule } from '../analytics/analytics.module';
 
 @Module({
@@ -17,7 +18,7 @@ import { AnalyticsModule } from '../analytics/analytics.module';
     AnalyticsModule,
   ],
   controllers: [FlagsController, FeatureFlagsController],
-  providers: [FlagsService, FeatureFlagsService],
+  providers: [FlagsService, FeatureFlagsService, FlagEvaluationCacheService],
   exports: [FlagsService, FeatureFlagsService],
 })
 export class FlagsModule {}
