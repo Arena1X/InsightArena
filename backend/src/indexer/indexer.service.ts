@@ -28,6 +28,15 @@ const CHECKPOINT_LEDGER_KEY_LATEST = 'indexer:latest_contract_ledger';
 const MAX_RETRIES = 5;
 const DLQ_THRESHOLD = 5;
 const BATCH_SIZE = 100;
+/**
+ * Version of the event decoder's output shape. Bumped when a field is
+ * renamed or removed (never for a purely additive change - new fields are
+ * forward-compatible by construction since {@link extractEventData}'s
+ * default case passes unrecognized fields through as-is). Stamped onto
+ * every decoded event's `data` so downstream consumers can tell which
+ * decoding rules produced a given row.
+ */
+export const EVENT_DECODER_VERSION = 1;
 const BACKFILL_BATCH_SIZE = 50;
 const DEFAULT_CREATOR_EVENT_CATEGORY = 'general';
 // Matches MAX_EVENT_DURATION_SECONDS in contracts/creator-event-manager.
@@ -251,7 +260,16 @@ export class IndexerService implements OnModuleInit {
           : fromLedger;
 
       const parsed = rawEvents
-        .map((raw: unknown, index: number) => this.parseRawEvent(raw, index))
+        .map((raw: unknown, index: number) => {
+          try {
+            return this.parseRawEvent(raw, index);
+          } catch (err) {
+            this.logger.warn(
+              `Skipping unparseable event at index ${index}: ${err instanceof Error ? err.message : 'Unknown error'}`,
+            );
+            return null;
+          }
+        })
         .filter((e) => e !== null);
 
       return { events: parsed, latestLedger };
@@ -299,7 +317,10 @@ export class IndexerService implements OnModuleInit {
           ? record.id
           : null;
 
-    const data = this.extractEventData(eventType, value);
+    const data = {
+      ...this.extractEventData(eventType, value),
+      _decoder_version: EVENT_DECODER_VERSION,
+    };
 
     return {
       id,
@@ -1683,13 +1704,26 @@ export class IndexerService implements OnModuleInit {
     return null;
   }
 
-  private unwrapIndexerValue(value: unknown): unknown {
+  /**
+   * Unwraps a Soroban XDR-JSON value (e.g. `{ symbol: "..." }`,
+   * `{ value: { u64: "..." } }`) down to its plain JS value. Depth is capped
+   * so a forward-incompatible or malformed nesting shape degrades to
+   * returning the wrapper as-is rather than blowing the call stack and
+   * aborting the whole event batch.
+   */
+  private unwrapIndexerValue(value: unknown, depth = 0): unknown {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return value;
+    }
+    if (depth >= 20) {
+      this.logger.warn('unwrapIndexerValue: max unwrap depth exceeded');
       return value;
     }
 
     const record = value as Record<string, unknown>;
-    if ('value' in record) return this.unwrapIndexerValue(record.value);
+    if ('value' in record) {
+      return this.unwrapIndexerValue(record.value, depth + 1);
+    }
 
     for (const key of [
       'symbol',
@@ -1706,7 +1740,9 @@ export class IndexerService implements OnModuleInit {
       'bool',
       'boolean',
     ]) {
-      if (key in record) return this.unwrapIndexerValue(record[key]);
+      if (key in record) {
+        return this.unwrapIndexerValue(record[key], depth + 1);
+      }
     }
 
     return value;
