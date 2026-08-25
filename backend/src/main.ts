@@ -1,8 +1,9 @@
 import { VersioningType } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
+import { DeprecationInterceptor } from './common/interceptors/deprecation.interceptor';
 
 import { Logger } from 'nestjs-pino';
 
@@ -22,7 +23,12 @@ async function bootstrap() {
   });
   app.useLogger(app.get(Logger));
 
-  // Enable URI-based versioning
+  // Enable URI-based versioning.
+  //
+  // Supported versions: v1 (current, default).
+  // Deprecated versions: none yet. When a version is deprecated, mark its
+  // routes with @Deprecated({ sunset, link }) (src/common/decorators)
+  // so DeprecationInterceptor emits Deprecation/Sunset response headers.
   app.enableVersioning({
     type: VersioningType.URI,
     defaultVersion: '1',
@@ -72,7 +78,10 @@ async function bootstrap() {
     process.exit(0);
   }
 
-  app.useGlobalInterceptors(new ResponseInterceptor());
+  app.useGlobalInterceptors(
+    new DeprecationInterceptor(app.get(Reflector)),
+    new ResponseInterceptor(),
+  );
   app.useGlobalFilters(new HttpExceptionFilter());
   await app.listen(env.PORT ?? 3000);
 }
