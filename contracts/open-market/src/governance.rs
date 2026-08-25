@@ -224,6 +224,13 @@ pub fn vote(
 /// `ready_at` (including a queued proposal's own queuing check re-run) then
 /// returns `TimelockNotElapsed`. Once `ready_at` is reached, a further call
 /// actually applies the effect.
+///
+/// The queueing check on that first call distinguishes two ways voting can
+/// fail to pass: `InvalidInput` if turnout fell below the configured quorum
+/// (`Config::governance_quorum_bps`), or `Unauthorized` if quorum was met but
+/// `votes_for <= votes_against`. Reused rather than dedicated variants
+/// because `InsightArenaError` is already at the 50-case XDR cap (see
+/// `errors.rs`).
 pub fn execute_proposal(
     env: &Env,
     executor: Address,
@@ -270,7 +277,17 @@ pub fn execute_proposal(
             actual_votes_scaled >= required_votes
         };
 
-        if !quorum_met || proposal.votes_for <= proposal.votes_against {
+        // A quorum failure (turnout too low to judge the vote at all) and a
+        // majority failure (turnout was sufficient, but the vote itself
+        // didn't pass) are distinct outcomes, surfaced via different errors.
+        // They can't be distinguished via `Proposal` state instead: a
+        // contract call that returns `Err` reverts every write it made (see
+        // this function's doc comment above), so nothing set here on the
+        // failing path would ever persist.
+        if !quorum_met {
+            return Err(InsightArenaError::InvalidInput);
+        }
+        if proposal.votes_for <= proposal.votes_against {
             return Err(InsightArenaError::Unauthorized);
         }
 

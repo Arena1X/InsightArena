@@ -1110,7 +1110,43 @@ fn test_swap_outcome_fails_below_min_amount_out() {
         &swap_amount,
         &1_000_000_000_i128,
     );
-    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+    assert!(matches!(result, Err(Ok(InsightArenaError::StakeTooLow))));
+}
+
+#[test]
+fn test_swap_outcome_at_exact_min_amount_out_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+    let trader = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let market_id = client.create_market(&_admin, &lp_market_params(&env));
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let liquidity = 1_000_000_i128;
+    sa.mint(&provider, &liquidity);
+    token.approve(&provider, &client.address, &liquidity, &9999);
+    client.add_liquidity(&provider, &market_id, &liquidity);
+
+    let swap_amount = 100_000_i128;
+    sa.mint(&trader, &swap_amount);
+    token.approve(&trader, &client.address, &swap_amount, &9999);
+
+    // Reserves are 500_000 / 500_000 (liquidity split across 2 outcomes) at the
+    // default volume-tier fee of 30 bps.
+    let expected_out = calculate_swap_output(swap_amount, 500_000, 500_000, 30).unwrap();
+
+    let result = client.try_swap_outcome(
+        &trader,
+        &market_id,
+        &symbol_short!("yes"),
+        &symbol_short!("no"),
+        &swap_amount,
+        &expected_out,
+    );
+    assert_eq!(result, Ok(Ok(expected_out)));
 }
 
 #[test]
