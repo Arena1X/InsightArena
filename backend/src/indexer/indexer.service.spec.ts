@@ -7,7 +7,7 @@ import {
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
-import { IndexerService } from './indexer.service';
+import { IndexerService, EVENT_DECODER_VERSION } from './indexer.service';
 import {
   ContractEvent,
   ContractEventStatus,
@@ -900,6 +900,84 @@ describe('IndexerService', () => {
 
       expect(contractEventRepository.delete).toHaveBeenCalled();
       expect(count).toBe(10);
+    });
+  });
+
+  describe('decoder robustness', () => {
+    it('stamps decoded events with the current decoder version', () => {
+      const parsed = (service as any).parseRawEvent(
+        {
+          ledger: 10,
+          log_index: 0,
+          topic: [{ symbol: 'event' }, { symbol: 'created' }],
+          value: { event_id: { u64: '1' } },
+        },
+        0,
+      );
+
+      expect(parsed).not.toBeNull();
+      expect(parsed.data._decoder_version).toBe(EVENT_DECODER_VERSION);
+    });
+
+    it('skips an unrecognized event shape without throwing', () => {
+      const parsed = (service as any).parseRawEvent(
+        { ledger: 10, log_index: 0, topic: [], value: {} },
+        0,
+      );
+
+      expect(parsed).toBeNull();
+    });
+
+    it('does not abort the whole batch when one raw event throws during parsing', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_RPC_URL') return 'https://rpc.example';
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      const goodEvent = {
+        ledger: 11,
+        log_index: 0,
+        topic: [{ symbol: 'event' }, { symbol: 'created' }],
+        value: { event_id: { u64: '1' } },
+      };
+
+      const originalParseRawEvent = (service as any).parseRawEvent.bind(
+        service,
+      );
+      jest
+        .spyOn(service as any, 'parseRawEvent')
+        .mockImplementationOnce(() => {
+          throw new Error('unexpected/new event shape');
+        })
+        .mockImplementationOnce(originalParseRawEvent);
+
+      const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          result: {
+            events: [{ malformed: true }, goodEvent],
+            latestLedger: 100,
+          },
+        }),
+      } as unknown as Response);
+
+      try {
+        const { events } = await (service as any).fetchEventsFromContract(1);
+        expect(events).toHaveLength(1);
+        expect(events[0].event_type).toBe('EventCreated');
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('unwrapIndexerValue does not overflow the stack on pathologically nested values', () => {
+      let nested: any = { symbol: 'leaf' };
+      for (let i = 0; i < 1000; i++) {
+        nested = { value: nested };
+      }
+
+      expect(() => (service as any).unwrapIndexerValue(nested)).not.toThrow();
     });
   });
 });

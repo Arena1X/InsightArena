@@ -14,6 +14,7 @@ import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { ChallengeResolutionDto } from './dto/challenge-resolution.dto';
 import { CreateMarketDto } from './dto/create-market.dto';
+import { MarketStatus } from './dto/list-markets.dto';
 import { ProposeResolutionDto } from './dto/propose-resolution.dto';
 import { ResolveChallengeDto } from './dto/resolve-challenge.dto';
 import { UpdateMarketDto } from './dto/update-market.dto';
@@ -539,6 +540,160 @@ describe('MarketsService.findFeaturedMarkets', () => {
 
     expect(mockQueryBuilder.skip).toHaveBeenCalledWith(10);
     expect(mockQueryBuilder.take).toHaveBeenCalledWith(10);
+  });
+});
+
+describe('MarketsService.findAllFiltered', () => {
+  let service: MarketsService;
+  let marketsRepository: jest.Mocked<Repository<Market>>;
+
+  const makeMarket = (overrides: Partial<Market> = {}): Market =>
+    ({
+      id: `market-${Math.random()}`,
+      on_chain_market_id: `on-chain-${Math.random()}`,
+      title: 'Test Market',
+      category: 'Crypto',
+      is_resolved: false,
+      is_cancelled: false,
+      is_public: true,
+      is_featured: false,
+      created_at: new Date(),
+      ...overrides,
+    }) as Market;
+
+  const buildMockQueryBuilder = () => ({
+    leftJoinAndSelect: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    addOrderBy: jest.fn().mockReturnThis(),
+    skip: jest.fn().mockReturnThis(),
+    take: jest.fn().mockReturnThis(),
+    getManyAndCount: jest.fn(),
+  });
+
+  beforeEach(async () => {
+    marketsRepository = {
+      createQueryBuilder: jest.fn(),
+    } as any;
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        MarketsService,
+        { provide: getRepositoryToken(Market), useValue: marketsRepository },
+        { provide: getRepositoryToken(Comment), useValue: {} },
+        { provide: getRepositoryToken(MarketTemplate), useValue: {} },
+        { provide: getRepositoryToken(UserBookmark), useValue: {} },
+        { provide: getRepositoryToken(Prediction), useValue: {} },
+        {
+          provide: getRepositoryToken(MarketPriceSnapshot),
+          useValue: {
+            create: jest.fn(),
+            save: jest.fn(),
+            createQueryBuilder: jest.fn(),
+          },
+        },
+        { provide: UsersService, useValue: {} },
+        { provide: SorobanService, useValue: {} },
+        { provide: DataSource, useValue: {} },
+        { provide: WebhookDispatcherService, useValue: { emit: jest.fn() } },
+        {
+          provide: CACHE_MANAGER,
+          useValue: {
+            get: jest.fn(),
+            set: jest.fn(),
+            del: jest.fn(),
+            reset: jest.fn(),
+          },
+        },
+        {
+          provide: MarketSettlementScheduler,
+          useValue: {
+            getDeadLetterQueue: jest.fn(),
+            retrySettlement: jest.fn(),
+          },
+        },
+      ],
+    }).compile();
+
+    service = module.get<MarketsService>(MarketsService);
+  });
+
+  it('filters on the indexed status columns for MarketStatus.Open', async () => {
+    const qb = buildMockQueryBuilder();
+    marketsRepository.createQueryBuilder.mockReturnValue(
+      qb as unknown as SelectQueryBuilder<Market>,
+    );
+    const openMarket = makeMarket();
+    qb.getManyAndCount.mockResolvedValue([[openMarket], 1]);
+
+    const result = await service.findAllFiltered({
+      status: MarketStatus.Open,
+      page: 1,
+      limit: 20,
+    } as any);
+
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      'market.is_resolved = false AND market.is_cancelled = false',
+    );
+    expect(result.data).toEqual([openMarket]);
+    expect(result.total).toBe(1);
+  });
+
+  it('combines category and status filters (indexed together via IDX_markets_category_status_sort)', async () => {
+    const qb = buildMockQueryBuilder();
+    marketsRepository.createQueryBuilder.mockReturnValue(
+      qb as unknown as SelectQueryBuilder<Market>,
+    );
+    qb.getManyAndCount.mockResolvedValue([[], 0]);
+
+    await service.findAllFiltered({
+      category: 'Crypto',
+      status: MarketStatus.Resolved,
+      page: 1,
+      limit: 20,
+    } as any);
+
+    expect(qb.andWhere).toHaveBeenCalledWith('market.category = :category', {
+      category: 'Crypto',
+    });
+    expect(qb.andWhere).toHaveBeenCalledWith('market.is_resolved = true');
+  });
+
+  it('sorts by the indexed is_featured/featured_at/created_at columns', async () => {
+    const qb = buildMockQueryBuilder();
+    marketsRepository.createQueryBuilder.mockReturnValue(
+      qb as unknown as SelectQueryBuilder<Market>,
+    );
+    qb.getManyAndCount.mockResolvedValue([[], 0]);
+
+    await service.findAllFiltered({ page: 1, limit: 20 } as any);
+
+    expect(qb.orderBy).toHaveBeenCalledWith('market.is_featured', 'DESC');
+    expect(qb.addOrderBy).toHaveBeenCalledWith('market.featured_at', 'DESC');
+    expect(qb.addOrderBy).toHaveBeenCalledWith('market.created_at', 'DESC');
+  });
+
+  it('paginates using page/limit consistently across pages', async () => {
+    const qb = buildMockQueryBuilder();
+    marketsRepository.createQueryBuilder.mockReturnValue(
+      qb as unknown as SelectQueryBuilder<Market>,
+    );
+    qb.getManyAndCount.mockResolvedValue([[], 30]);
+
+    const result = await service.findAllFiltered({
+      page: 2,
+      limit: 10,
+    } as any);
+
+    expect(qb.skip).toHaveBeenCalledWith(10);
+    expect(qb.take).toHaveBeenCalledWith(10);
+    expect(result).toEqual({
+      data: [],
+      total: 30,
+      page: 2,
+      limit: 10,
+      totalPages: 3,
+    });
   });
 });
 

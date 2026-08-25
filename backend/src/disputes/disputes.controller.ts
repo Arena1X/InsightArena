@@ -21,7 +21,11 @@ import { DisputesService } from './disputes.service';
 import { CreateDisputeDto } from './dto/create-dispute.dto';
 import { AttachEvidenceDto } from './dto/attach-evidence.dto';
 import { CastVoteDto } from './dto/cast-vote.dto';
-import { Dispute, DisputeStatus } from './entities/dispute.entity';
+import {
+  ListDisputesDto,
+  PaginatedDisputesResponse,
+} from './dto/list-disputes.dto';
+import { Dispute } from './entities/dispute.entity';
 import { DisputeEvidence } from './entities/dispute-evidence.entity';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { BanGuard } from '../common/guards/ban.guard';
@@ -109,43 +113,19 @@ export class DisputesController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all disputes with pagination' })
-  @ApiQuery({
-    name: 'page',
-    required: false,
-    type: Number,
-    description: 'Page number',
-  })
-  @ApiQuery({
-    name: 'limit',
-    required: false,
-    type: Number,
-    description: 'Items per page',
-  })
-  @ApiQuery({
-    name: 'status',
-    required: false,
-    enum: DisputeStatus,
-    description: 'Filter by dispute status',
+  @ApiOperation({
+    summary:
+      'List disputes with status/date filters and cursor pagination. ' +
+      'Response metadata includes counts by status.',
   })
   @ApiResponse({
     status: HttpStatus.OK,
     description: 'Disputes retrieved successfully',
   })
   async findAll(
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-    @Query('status') status?: DisputeStatus,
-  ): Promise<{
-    disputes: Dispute[];
-    total: number;
-    page: number;
-    limit: number;
-  }> {
-    const pageNum = page ? parseInt(page, 10) : 1;
-    const limitNum = limit ? parseInt(limit, 10) : 20;
-
-    return this.disputesService.findAll(pageNum, limitNum, status);
+    @Query() query: ListDisputesDto,
+  ): Promise<PaginatedDisputesResponse> {
+    return this.disputesService.findAll(query);
   }
 
   @Get('market/:marketId')

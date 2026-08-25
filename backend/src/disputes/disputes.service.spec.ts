@@ -88,6 +88,7 @@ describe('DisputesService', () => {
             findAndCount: jest.fn(),
             find: jest.fn(),
             update: jest.fn(),
+            createQueryBuilder: jest.fn(),
           },
         },
         {
@@ -418,46 +419,95 @@ describe('DisputesService', () => {
   });
 
   describe('findAll', () => {
-    it('should return paginated disputes', async () => {
-      const disputes = [mockDispute];
-      const mockFindAndCount = [disputes, 1];
-      jest
-        .spyOn(disputesRepository, 'findAndCount')
-        .mockResolvedValue(mockFindAndCount);
+    const makeDispute = (
+      id: string,
+      createdAt: Date,
+      status = DisputeStatus.PENDING,
+    ): Dispute => ({ ...mockDispute, id, createdAt, status }) as Dispute;
 
-      const result = await service.findAll(1, 20);
+    /** Builds a chainable queryBuilder mock; `getMany` resolves to `rows`. */
+    const mockQueryBuilder = (
+      rows: Dispute[],
+      countRows: Array<{ status: DisputeStatus; count: string }> = [],
+    ) => {
+      const qb: any = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue(rows),
+        getRawMany: jest.fn().mockResolvedValue(countRows),
+      };
+      return qb;
+    };
 
-      expect(result).toEqual({
-        disputes,
-        total: 1,
-        page: 1,
+    it('narrows results when filtering by status', async () => {
+      const pending = makeDispute('d1', new Date('2024-01-02T00:00:00Z'));
+      const qb = mockQueryBuilder(
+        [pending],
+        [{ status: DisputeStatus.PENDING, count: '1' }],
+      );
+      jest.spyOn(disputesRepository, 'createQueryBuilder').mockReturnValue(qb);
+
+      const result = await service.findAll({
+        status: DisputeStatus.PENDING,
         limit: 20,
+      } as any);
+
+      expect(qb.andWhere).toHaveBeenCalledWith('dispute.status = :status', {
+        status: DisputeStatus.PENDING,
       });
-      expect(disputesRepository.findAndCount).toHaveBeenCalledWith({
-        where: {},
-        relations: ['market', 'disputant', 'resolvedBy'],
-        order: { createdAt: 'DESC' },
-        skip: 0,
-        take: 20,
-      });
+      expect(result.disputes).toEqual([pending]);
+      expect(result.counts_by_status).toEqual({ pending: 1, resolved: 0 });
     });
 
-    it('should filter by status', async () => {
-      const disputes = [mockDispute];
-      const mockFindAndCount = [disputes, 1];
-      jest
-        .spyOn(disputesRepository, 'findAndCount')
-        .mockResolvedValue(mockFindAndCount);
+    it('paginates stably via cursor, requesting one extra row to detect more pages', async () => {
+      const rows = [
+        makeDispute('d3', new Date('2024-01-03T00:00:00Z')),
+        makeDispute('d2', new Date('2024-01-02T00:00:00Z')),
+        makeDispute('d1', new Date('2024-01-01T00:00:00Z')),
+      ];
+      const qb = mockQueryBuilder(rows);
+      jest.spyOn(disputesRepository, 'createQueryBuilder').mockReturnValue(qb);
 
-      await service.findAll(1, 20, DisputeStatus.PENDING);
+      const result = await service.findAll({ limit: 2 } as any);
 
-      expect(disputesRepository.findAndCount).toHaveBeenCalledWith({
-        where: { status: DisputeStatus.PENDING },
-        relations: ['market', 'disputant', 'resolvedBy'],
-        order: { createdAt: 'DESC' },
-        skip: 0,
-        take: 20,
-      });
+      expect(qb.take).toHaveBeenCalledWith(3);
+      expect(result.disputes).toHaveLength(2);
+      expect(result.has_more).toBe(true);
+      expect(result.next_cursor).toBeTruthy();
+    });
+
+    it('applies the decoded cursor as a strict less-than filter on createdAt/id', async () => {
+      const rows = [makeDispute('d1', new Date('2024-01-01T00:00:00Z'))];
+      const qb = mockQueryBuilder(rows);
+      jest.spyOn(disputesRepository, 'createQueryBuilder').mockReturnValue(qb);
+
+      const cursor = Buffer.from(
+        '2024-01-02T00:00:00.000Z:d2',
+        'utf-8',
+      ).toString('base64');
+
+      const result = await service.findAll({ cursor, limit: 20 } as any);
+
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('dispute.createdAt < :cursorCreatedAt'),
+        expect.objectContaining({ cursorId: 'd2' }),
+      );
+      expect(result.disputes).toEqual(rows);
+    });
+
+    it('rejects a malformed cursor', async () => {
+      await expect(
+        service.findAll({
+          cursor: 'not-valid-base64-cursor!!',
+          limit: 20,
+        } as any),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 

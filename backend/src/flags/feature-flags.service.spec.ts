@@ -2,11 +2,13 @@ import { NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { AdminAuditLog } from '../admin/entities/admin-audit-log.entity';
-import { FeatureFlag } from './entities/feature-flag.entity';
+import { FeatureFlag, FlagTargetType } from './entities/feature-flag.entity';
 import {
   FeatureFlagsService,
   FEATURE_FLAG_AUDIT_ACTIONS,
 } from './feature-flags.service';
+import { FlagEvaluationCacheService } from './flag-evaluation-cache.service';
+import { User } from '../users/entities/user.entity';
 
 describe('FeatureFlagsService - audit trail', () => {
   let service: FeatureFlagsService;
@@ -65,10 +67,11 @@ describe('FeatureFlagsService - audit trail', () => {
           provide: getRepositoryToken(AdminAuditLog),
           useValue: auditRepository,
         },
+        FlagEvaluationCacheService,
       ],
     }).compile();
 
-    service = module.get<FeatureFlagsService>(FeatureFlagsService);
+    service = await module.resolve<FeatureFlagsService>(FeatureFlagsService);
   });
 
   describe('update', () => {
@@ -217,5 +220,130 @@ describe('FeatureFlagsService - audit trail', () => {
         flagId: 'flag-1',
       });
     });
+  });
+});
+
+describe('FeatureFlagsService - rollout evaluation and per-request caching', () => {
+  let service: FeatureFlagsService;
+  let featureFlagsRepository: { find: jest.Mock; findOne: jest.Mock };
+
+  const buildFlag = (overrides: Partial<FeatureFlag> = {}): FeatureFlag =>
+    ({
+      id: 'flag-1',
+      key: 'new_slip_ui',
+      name: 'New Slip UI',
+      description: null,
+      is_enabled: true,
+      targeting_type: null,
+      targeting_rules: null,
+      rollout_percentage: 0,
+      created_at: new Date('2026-01-01T00:00:00Z'),
+      updated_at: new Date('2026-01-01T00:00:00Z'),
+      ...overrides,
+    }) as FeatureFlag;
+
+  const buildUser = (id: string): User => ({ id }) as User;
+
+  beforeEach(async () => {
+    featureFlagsRepository = { find: jest.fn(), findOne: jest.fn() };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        FeatureFlagsService,
+        {
+          provide: getRepositoryToken(FeatureFlag),
+          useValue: featureFlagsRepository,
+        },
+        {
+          provide: getRepositoryToken(AdminAuditLog),
+          useValue: { create: jest.fn(), save: jest.fn() },
+        },
+        FlagEvaluationCacheService,
+      ],
+    }).compile();
+
+    service = await module.resolve<FeatureFlagsService>(FeatureFlagsService);
+  });
+
+  it('buckets the same user into the same percentage-rollout outcome across repeated calls', async () => {
+    const flag = buildFlag({
+      targeting_type: FlagTargetType.PERCENTAGE,
+      rollout_percentage: 50,
+    });
+    featureFlagsRepository.findOne.mockResolvedValue(flag);
+    const user = buildUser('user-stable-bucket');
+
+    const first = await service.resolveFlagForUser('new_slip_ui', user);
+    const second = await service.resolveFlagForUser('new_slip_ui', user);
+
+    expect(first?.is_enabled).toBe(second?.is_enabled);
+  });
+
+  it('splits two different users deterministically at a 0/100% extreme without relying on hash luck', async () => {
+    const alwaysOff = buildFlag({
+      targeting_type: FlagTargetType.PERCENTAGE,
+      rollout_percentage: 0,
+    });
+    const alwaysOn = buildFlag({
+      targeting_type: FlagTargetType.PERCENTAGE,
+      rollout_percentage: 100,
+    });
+
+    featureFlagsRepository.findOne.mockResolvedValueOnce(alwaysOff);
+    const off = await service.resolveFlagForUser(
+      'new_slip_ui',
+      buildUser('user-a'),
+    );
+    expect(off?.is_enabled).toBe(false);
+
+    featureFlagsRepository.findOne.mockResolvedValueOnce(alwaysOn);
+    const on = await service.resolveFlagForUser(
+      'new_slip_ui',
+      buildUser('user-b'),
+    );
+    expect(on?.is_enabled).toBe(true);
+  });
+
+  it('applies user-list targeting overrides regardless of rollout percentage', async () => {
+    const flag = buildFlag({
+      targeting_type: FlagTargetType.USER_LIST,
+      targeting_rules: { user_ids: ['user-vip'] },
+    });
+    featureFlagsRepository.findOne.mockResolvedValue(flag);
+
+    const included = await service.resolveFlagForUser(
+      'new_slip_ui',
+      buildUser('user-vip'),
+    );
+    const excluded = await service.resolveFlagForUser(
+      'new_slip_ui',
+      buildUser('user-other'),
+    );
+
+    expect(included?.is_enabled).toBe(true);
+    expect(excluded?.is_enabled).toBe(false);
+  });
+
+  it('caches the evaluation for a flag/user pair so a second lookup skips the repository', async () => {
+    const flag = buildFlag();
+    featureFlagsRepository.findOne.mockResolvedValue(flag);
+    const user = buildUser('user-cache-1');
+
+    await service.resolveFlagForUser('new_slip_ui', user);
+    await service.resolveFlagForUser('new_slip_ui', user);
+
+    expect(featureFlagsRepository.findOne).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolveFlagsForUser populates the same cache resolveFlagForUser reads from', async () => {
+    const flag = buildFlag();
+    featureFlagsRepository.find.mockResolvedValue([flag]);
+    featureFlagsRepository.findOne.mockResolvedValue(flag);
+    const user = buildUser('user-cache-2');
+
+    await service.resolveFlagsForUser(user);
+    await service.resolveFlagForUser('new_slip_ui', user);
+
+    expect(featureFlagsRepository.findOne).not.toHaveBeenCalled();
   });
 });
