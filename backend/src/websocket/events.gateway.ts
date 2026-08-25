@@ -19,6 +19,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { OddsBroadcasterService } from './odds-broadcaster.service';
+import { BroadcastQueueService } from './broadcast-queue.service';
 
 interface AuthenticatedSocket extends Socket {
   userAddress?: string;
@@ -73,6 +74,7 @@ export class EventsGateway
     @Inject(forwardRef(() => AnalyticsService))
     private readonly analyticsService: AnalyticsService,
     @Optional() private readonly oddsBroadcaster?: OddsBroadcasterService,
+    @Optional() private readonly broadcastQueue?: BroadcastQueueService,
   ) {}
 
   async handleConnection(client: AuthenticatedSocket): Promise<void> {
@@ -213,6 +215,7 @@ export class EventsGateway
     this.rateLimits.delete(client.id);
     this.analyticsService.removeActiveSession(client.id);
     this.broadcastActiveUsers();
+    this.broadcastQueue?.removeSocket(client.id);
 
     const userAddress = this.connections.get(client.id);
     this.connections.delete(client.id);

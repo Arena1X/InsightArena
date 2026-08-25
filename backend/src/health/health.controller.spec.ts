@@ -2,6 +2,7 @@ jest.mock('./health.service', () => ({
   HealthService: class HealthService {},
 }));
 
+import { ServiceUnavailableException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { HealthController } from './health.controller';
 import { HealthService } from './health.service';
@@ -12,6 +13,8 @@ describe('HealthController', () => {
     checkHealth: jest.Mock;
     checkPing: jest.Mock;
     checkDetailed: jest.Mock;
+    checkLiveness: jest.Mock;
+    checkReadiness: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -23,6 +26,8 @@ describe('HealthController', () => {
         timestamp: new Date().toISOString(),
       }),
       checkDetailed: jest.fn(),
+      checkLiveness: jest.fn(),
+      checkReadiness: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -145,6 +150,48 @@ describe('HealthController', () => {
       await controller.checkDetailed('yes');
 
       expect(healthService.checkDetailed).toHaveBeenCalledWith(false);
+    });
+  });
+
+  describe('checkLive', () => {
+    it('delegates to HealthService.checkLiveness without probing dependencies', () => {
+      healthService.checkLiveness.mockReturnValue({
+        status: 'ok',
+        uptime_seconds: 10,
+      });
+
+      const result = controller.checkLive();
+
+      expect(healthService.checkLiveness).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ status: 'ok', uptime_seconds: 10 });
+    });
+  });
+
+  describe('checkReady', () => {
+    it('delegates to HealthService.checkReadiness and returns dependency detail', async () => {
+      const readyBody = {
+        status: 'healthy',
+        database: { status: 'up', latency_ms: 2 },
+        soroban: { status: 'up', latency_ms: 50 },
+        cache: { status: 'up', latency_ms: 1 },
+        uptime_seconds: 10,
+      };
+      healthService.checkReadiness.mockResolvedValue(readyBody);
+
+      const result = await controller.checkReady();
+
+      expect(healthService.checkReadiness).toHaveBeenCalledTimes(1);
+      expect(result).toEqual(readyBody);
+    });
+
+    it('propagates a not-ready (503) rejection from the service', async () => {
+      healthService.checkReadiness.mockRejectedValue(
+        new ServiceUnavailableException({ status: 'down' }),
+      );
+
+      await expect(controller.checkReady()).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
     });
   });
 

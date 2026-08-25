@@ -1,11 +1,7 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  Optional,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventsGateway } from './events.gateway';
+import { BroadcastQueueService } from './broadcast-queue.service';
 import { PredictionStatsDto } from '../markets/dto/prediction-stats.dto';
 
 export interface OddsUpdatePayload {
@@ -52,6 +48,7 @@ export class OddsBroadcasterService implements OnModuleDestroy {
 
   constructor(
     private readonly gateway: EventsGateway,
+    private readonly broadcastQueue: BroadcastQueueService,
     @Optional() private readonly configService?: ConfigService,
   ) {
     this.throttleMs =
@@ -124,10 +121,7 @@ export class OddsBroadcasterService implements OnModuleDestroy {
    *
    * No-ops when there are no subscribers, avoiding unnecessary allocations.
    */
-  broadcastOddsUpdate(
-    marketId: string,
-    odds: PredictionStatsDto[],
-  ): void {
+  broadcastOddsUpdate(marketId: string, odds: PredictionStatsDto[]): void {
     // Skip entirely when nobody is listening.
     if (!this.hasSubscribers(marketId)) {
       return;
@@ -195,10 +189,30 @@ export class OddsBroadcasterService implements OnModuleDestroy {
   // Private helpers
   // ---------------------------------------------------------------------------
 
+  /**
+   * Enqueues the update on each subscribed socket's own bounded outbound
+   * queue instead of a direct room-wide `emit`, so one slow client can't
+   * add latency to delivery for the rest of the room (see
+   * BroadcastQueueService for the backpressure policy).
+   */
   private emit(marketId: string, payload: OddsUpdatePayload): void {
-    this.gateway.server.to(`market:${marketId}`).emit('odds:update', payload);
+    const room = `market:${marketId}`;
+    const socketIds = this.gateway.server.sockets.adapter.rooms.get(room);
+
+    if (socketIds) {
+      for (const socketId of socketIds) {
+        this.broadcastQueue.enqueue(
+          this.gateway.server,
+          socketId,
+          `odds:${marketId}`,
+          'odds:update',
+          payload,
+        );
+      }
+    }
+
     this.logger.debug(
-      `[odds] emitted odds:update → market:${marketId} (${payload.odds.length} outcomes)`,
+      `[odds] queued odds:update → market:${marketId} (${payload.odds.length} outcomes, ${socketIds?.size ?? 0} subscriber(s))`,
     );
   }
 }

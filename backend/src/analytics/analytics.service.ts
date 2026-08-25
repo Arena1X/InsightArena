@@ -25,6 +25,7 @@ import {
 } from './dto/category-analytics.dto';
 import { CohortDataDto, RetentionResponseDto } from './dto/retention.dto';
 import { PlatformStatsDto } from './dto/platform-stats.dto';
+import { CacheService } from '../cache/cache.service';
 
 /** Tier thresholds: Bronze < 200, Silver < 500, Gold < 1000, Platinum ≥ 1000 */
 export function predictorTierFromReputation(reputationScore: number): string {
@@ -56,6 +57,7 @@ export class AnalyticsService {
     private readonly activityLogsRepository: Repository<ActivityLog>,
     @InjectRepository(MarketHistory)
     private readonly marketHistoryRepository: Repository<MarketHistory>,
+    private readonly cacheService: CacheService,
   ) {}
   private readonly activeSessions = new Map<string, number>();
   private readonly IDLE_WINDOW_MS = parseInt(
@@ -465,9 +467,16 @@ export class AnalyticsService {
   }
 
   /**
-   * Get category analytics with trending calculation
+   * Get category analytics with trending calculation.
+   * Cached (with stampede protection) since this scans every market row.
    */
   async getCategoryAnalytics(): Promise<CategoryAnalyticsResponseDto> {
+    return this.cacheService.getOrSet('analytics:category', 'all', () =>
+      this.computeCategoryAnalytics(),
+    );
+  }
+
+  private async computeCategoryAnalytics(): Promise<CategoryAnalyticsResponseDto> {
     const markets = await this.marketsRepository.find();
 
     const categoryMap = new Map<
@@ -543,7 +552,23 @@ export class AnalyticsService {
   /**
    * Get retention analysis by cohort
    */
+  /**
+   * Get retention analysis by cohort.
+   * Cached (with stampede protection) since this loads all users,
+   * predictions, and activity logs into memory to compute cohorts.
+   */
   async getRetention(
+    period: 'day' | 'week' | 'month' = 'week',
+    periods: number = 8,
+  ): Promise<RetentionResponseDto> {
+    return this.cacheService.getOrSet(
+      'analytics:retention',
+      `${period}:${periods}`,
+      () => this.computeRetention(period, periods),
+    );
+  }
+
+  private async computeRetention(
     period: 'day' | 'week' | 'month' = 'week',
     periods: number = 8,
   ): Promise<RetentionResponseDto> {
@@ -704,7 +729,14 @@ export class AnalyticsService {
     }
     return d;
   }
+  /** Cached (with stampede protection) — aggregates several count/sum queries. */
   async getPlatformStats(): Promise<PlatformStatsDto> {
+    return this.cacheService.getOrSet('analytics:platform-stats', 'all', () =>
+      this.computePlatformStats(),
+    );
+  }
+
+  private async computePlatformStats(): Promise<PlatformStatsDto> {
     const [total_markets, total_predictions, active_markets, active_users] =
       await Promise.all([
         this.marketsRepository.count(),
