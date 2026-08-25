@@ -511,7 +511,7 @@ fn test_set_guardian_requires_admin() {
 // ── AC1: Proposals below quorum cannot pass ───────────────────────────────────
 
 #[test]
-fn test_quorum_failure_returns_unauthorized() {
+fn test_quorum_failure_returns_invalid_input() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, _admin) = deploy(&env);
@@ -531,9 +531,12 @@ fn test_quorum_failure_returns_unauthorized() {
 
     let executor = Address::generate(&env);
     let result = client.try_execute_proposal(&executor, &id);
+    // Issue #1678: a quorum failure is distinguished from a majority failure
+    // via a distinct error code (InvalidInput vs. Unauthorized) rather than
+    // proposal state, since a call returning Err reverts every write it made.
     assert!(
-        matches!(result, Err(Ok(InsightArenaError::Unauthorized))),
-        "expected Unauthorized when votes < quorum, got {:?}",
+        matches!(result, Err(Ok(InsightArenaError::InvalidInput))),
+        "expected InvalidInput when votes < quorum, got {:?}",
         result
     );
 }
@@ -556,8 +559,8 @@ fn test_zero_votes_with_registered_users_fails_quorum() {
     let executor = Address::generate(&env);
     let result = client.try_execute_proposal(&executor, &id);
     assert!(
-        matches!(result, Err(Ok(InsightArenaError::Unauthorized))),
-        "expected Unauthorized when no votes cast, got {:?}",
+        matches!(result, Err(Ok(InsightArenaError::InvalidInput))),
+        "expected InvalidInput when no votes cast, got {:?}",
         result
     );
 }
@@ -585,8 +588,11 @@ fn test_majority_without_quorum_fails() {
 
     let executor = Address::generate(&env);
     let result = client.try_execute_proposal(&executor, &id);
+    // Turnout (5%) is below the 10% quorum, so this fails as a quorum
+    // failure (InvalidInput), not a majority failure — the majority-yes
+    // vote never gets evaluated because quorum is checked first.
     assert!(
-        matches!(result, Err(Ok(InsightArenaError::Unauthorized))),
+        matches!(result, Err(Ok(InsightArenaError::InvalidInput))),
         "majority alone (without quorum) must not pass"
     );
 }
@@ -722,7 +728,7 @@ fn test_higher_quorum_bps_rejects_borderline_participation() {
     let executor = Address::generate(&env);
     let result = client.try_execute_proposal(&executor, &id);
     assert!(
-        matches!(result, Err(Ok(InsightArenaError::Unauthorized))),
+        matches!(result, Err(Ok(InsightArenaError::InvalidInput))),
         "40% participation should fail a 50% quorum requirement"
     );
 }
@@ -911,5 +917,86 @@ fn test_full_governance_lifecycle_quorum_timelock_execute() {
         client.get_config().protocol_fee_bps,
         350,
         "fee must be updated after execution"
+    );
+}
+
+// ── Issue #1678: Distinguish quorum-fail from vote-fail ───────────────────────
+//
+// `execute_proposal` cannot record which failure occurred in `Proposal` state:
+// a Soroban call that returns `Err` reverts every write it made, so nothing
+// persisted on the failing path would survive. The distinction is therefore
+// made via the returned error instead (see `governance::execute_proposal`'s
+// doc comment): `InvalidInput` for a quorum failure, `Unauthorized` for a
+// majority failure once quorum is met.
+
+#[test]
+fn test_majority_failure_returns_unauthorized_when_quorum_met() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = deploy(&env);
+
+    // Quorum set to 0 so only the majority check can fail.
+    client.set_governance_quorum_bps(&admin, &0_u32);
+
+    let duration = 3_600_u64;
+    let proposer = Address::generate(&env);
+    let id = client.create_proposal(&proposer, &ProposalType::UpdateProtocolFee(400), &duration);
+
+    let voter_for = Address::generate(&env);
+    let voter_against = Address::generate(&env);
+    client.vote(&voter_for, &id, &true);
+    client.vote(&voter_against, &id, &false);
+    // Tie: votes_for (1) <= votes_against (1) fails majority, though quorum
+    // (0 bps) is trivially met.
+
+    env.ledger().with_mut(|l| l.timestamp += duration + 1);
+
+    let executor = Address::generate(&env);
+    let result = client.try_execute_proposal(&executor, &id);
+    assert!(
+        matches!(result, Err(Ok(InsightArenaError::Unauthorized))),
+        "a majority failure with quorum met must return Unauthorized, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_quorum_fail_and_majority_fail_return_different_errors() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let duration = 3_600_u64;
+
+    // Below-quorum proposal: 1 vote cast against 20 registered users (10%
+    // quorum requires 2).
+    let (client_a, _admin_a) = deploy(&env);
+    register_users(&env, &client_a, 20);
+    let proposer_a = Address::generate(&env);
+    let id_a =
+        client_a.create_proposal(&proposer_a, &ProposalType::UpdateProtocolFee(400), &duration);
+    let lone_voter = Address::generate(&env);
+    client_a.vote(&lone_voter, &id_a, &true);
+    env.ledger().with_mut(|l| l.timestamp += duration + 1);
+    let executor_a = Address::generate(&env);
+    let result_a = client_a.try_execute_proposal(&executor_a, &id_a);
+
+    // Quorum met (0 bps), but the vote itself is a tie.
+    let (client_b, admin_b) = deploy(&env);
+    client_b.set_governance_quorum_bps(&admin_b, &0_u32);
+    let proposer_b = Address::generate(&env);
+    let id_b =
+        client_b.create_proposal(&proposer_b, &ProposalType::UpdateProtocolFee(400), &duration);
+    let voter_for = Address::generate(&env);
+    let voter_against = Address::generate(&env);
+    client_b.vote(&voter_for, &id_b, &true);
+    client_b.vote(&voter_against, &id_b, &false);
+    env.ledger().with_mut(|l| l.timestamp += duration + 1);
+    let executor_b = Address::generate(&env);
+    let result_b = client_b.try_execute_proposal(&executor_b, &id_b);
+
+    assert!(matches!(result_a, Err(Ok(InsightArenaError::InvalidInput))));
+    assert!(matches!(result_b, Err(Ok(InsightArenaError::Unauthorized))));
+    assert_ne!(
+        result_a, result_b,
+        "quorum failure and majority failure must be distinguishable errors"
     );
 }

@@ -1008,8 +1008,11 @@ pub fn swap_outcome(
 
     let amount_out = calculate_swap_output(amount_in, from_reserve, to_reserve, effective_fee_bps)?;
 
+    // Slippage guard: reject if the computed output falls below the caller's
+    // minimum. See `InsightArenaError::StakeTooLow` for why this reuses that
+    // variant rather than adding a new one (the error enum is at its 50-case cap).
     if amount_out < min_amount_out {
-        return Err(InsightArenaError::InvalidInput);
+        return Err(InsightArenaError::StakeTooLow);
     }
 
     let fee_amount = amount_in

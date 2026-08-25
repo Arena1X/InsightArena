@@ -123,6 +123,12 @@ pub enum DataKey {
 /// the current ledger time rather than persisted directly.
 ///
 /// `Voting -> Queued -> Executable -> (Executed | Vetoed | Cancelled)`
+///
+/// Note: there is no terminal state for "voting closed without passing" —
+/// a Soroban contract call that returns `Err` reverts every write it made
+/// (see `governance::execute_proposal`), so a failed quorum/majority check
+/// can never persist a state transition. That distinction is instead made
+/// via the returned error: see `governance::execute_proposal`'s doc comment.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProposalState {

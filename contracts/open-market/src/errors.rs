@@ -85,6 +85,9 @@ pub enum InsightArenaError {
     AlreadyPredicted = 21,
     /// The submitted stake is below the market's `min_stake` threshold.
     /// Raised during prediction submission to enforce the minimum entry amount.
+    /// REUSED for AMM swap slippage protection: also raised by
+    /// `liquidity::swap_outcome` when the computed `amount_out` falls below
+    /// the caller-supplied `min_amount_out` guard.
     StakeTooLow = 22,
     /// The submitted stake exceeds the market's `max_stake` ceiling.
     /// Raised during prediction submission to enforce the maximum entry amount.
@@ -158,6 +161,9 @@ pub enum InsightArenaError {
     Paused = 101,
     /// A supplied argument fails basic validation that is not covered by a more
     /// specific error code (e.g. empty strings, zero-length outcome lists).
+    /// REUSED by `governance::execute_proposal`: also raised when a proposal's
+    /// voting window closes with turnout below `Config::governance_quorum_bps`,
+    /// distinguishing a quorum failure from a majority failure (`Unauthorized`).
     InvalidInput = 102,
 
     // ── Conditional Markets ───────────────────────────────────────────────────
