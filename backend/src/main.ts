@@ -9,8 +9,13 @@ import { Logger } from 'nestjs-pino';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { config as loadEnv } from 'dotenv';
+import { validate } from './config/env.validation';
 
 async function bootstrap() {
+  loadEnv();
+  const env = validate(process.env);
+
   const app = await NestFactory.create(AppModule, {
     bufferLogs: true,
     rawBody: true,
@@ -55,7 +60,7 @@ async function bootstrap() {
   SwaggerModule.setup('api/v1/docs', app, document);
 
   // If the SWAGGER_EXPORT env var is set, or in development mode, write current Swagger JSON
-  if (process.env.SWAGGER_EXPORT === 'true') {
+  if (env.SWAGGER_EXPORT === 'true') {
     const docsDir = path.join(process.cwd(), 'docs');
     if (!fs.existsSync(docsDir)) {
       fs.mkdirSync(docsDir, { recursive: true });
@@ -69,6 +74,6 @@ async function bootstrap() {
 
   app.useGlobalInterceptors(new ResponseInterceptor());
   app.useGlobalFilters(new HttpExceptionFilter());
-  await app.listen(process.env.PORT ?? 3000);
+  await app.listen(env.PORT ?? 3000);
 }
 void bootstrap();

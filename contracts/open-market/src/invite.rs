@@ -22,6 +22,7 @@ pub fn generate_invite_code(
     max_uses: u32,
     expires_in_seconds: u64,
 ) -> Result<Symbol, InsightArenaError> {
+    config::ensure_not_paused(&env)?;
     creator.require_auth();
 
     // 1. Fetch market and validate creator
@@ -94,6 +95,7 @@ pub fn redeem_invite_code(
     invitee: Address,
     code: Symbol,
 ) -> Result<u64, InsightArenaError> {
+    config::ensure_not_paused(&env)?;
     invitee.require_auth();
 
     let invite_key = DataKey::InviteCode(code.clone());
@@ -134,7 +136,10 @@ pub fn redeem_invite_code(
         .ok_or(InsightArenaError::Overflow)?;
     env.storage().persistent().set(&invite_key, &invite);
     config::extend_invite_ttl(&env, &code);
-    config::extend_market_ttl(&env, invite.market_id);
+    // Redemption is about to let the invitee join an active market, so keep
+    // its full hot-key set (market + escrow + accumulator) alive too, not
+    // just the market record. See Issue #1516.
+    config::extend_active_market_ttl(&env, invite.market_id);
 
     env.events().publish(
         (symbol_short!("invite"), symbol_short!("redeemd")),
@@ -188,6 +193,7 @@ pub fn revoke_invite_code(
     creator: Address,
     code: Symbol,
 ) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(&env)?;
     creator.require_auth();
 
     let invite_key = DataKey::InviteCode(code.clone());

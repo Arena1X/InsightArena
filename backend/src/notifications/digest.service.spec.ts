@@ -2,7 +2,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DigestService } from './digest.service';
+import {
+  DigestService,
+  aggregateDigestNotifications,
+  DIGEST_MAX_ITEMS,
+} from './digest.service';
 import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { User } from '../users/entities/user.entity';
 import { Notification } from './entities/notification.entity';
@@ -262,6 +266,61 @@ describe('DigestService', () => {
     });
   });
 
+  describe('aggregateDigestNotifications', () => {
+    it('groups items by category and de-duplicates within the window', () => {
+      const notifications = [
+        {
+          type: 'match_resolved',
+          title: 'Result posted',
+          message: 'Arsenal won',
+        },
+        {
+          type: 'match_resolved',
+          title: 'Result posted',
+          message: 'Arsenal won',
+        },
+        {
+          type: 'event_created',
+          title: 'New event',
+          message: 'Join now',
+        },
+      ] as Notification[];
+
+      const aggregated = aggregateDigestNotifications(notifications);
+
+      expect(aggregated.totalUnique).toBe(2);
+      expect(aggregated.groups).toEqual([
+        {
+          category: 'Results',
+          items: [{ title: 'Result posted', message: 'Arsenal won' }],
+        },
+        {
+          category: 'Events',
+          items: [{ title: 'New event', message: 'Join now' }],
+        },
+      ]);
+    });
+
+    it('caps visible items and reports overflow count', () => {
+      const notifications = Array.from(
+        { length: DIGEST_MAX_ITEMS + 4 },
+        (_, i) => ({
+          type: 'prediction_submitted',
+          title: `Prediction ${i + 1}`,
+          message: 'Submitted',
+        }),
+      ) as Notification[];
+
+      const aggregated = aggregateDigestNotifications(notifications);
+
+      expect(
+        aggregated.groups.reduce((sum, group) => sum + group.items.length, 0),
+      ).toBe(DIGEST_MAX_ITEMS);
+      expect(aggregated.overflowCount).toBe(4);
+      expect(aggregated.totalUnique).toBe(DIGEST_MAX_ITEMS + 4);
+    });
+  });
+
   // ── Digest content & idempotency ────────────────────────────────────────
 
   describe('runDigests / processUserDigest', () => {
@@ -269,9 +328,15 @@ describe('DigestService', () => {
       jest
         .spyOn(prefsRepo, 'find')
         .mockResolvedValue([mockPref as UserPreferences]);
-      jest
-        .spyOn(notificationRepo, 'find')
-        .mockResolvedValue([mockNotification as Notification]);
+      jest.spyOn(notificationRepo, 'find').mockResolvedValue([
+        mockNotification as Notification,
+        {
+          ...mockNotification,
+          type: 'event_created',
+          title: 'Event created',
+          message: 'Your event is live',
+        } as Notification,
+      ]);
 
       await service.sendDailyDigests(
         new Date('2024-01-15T08:00:00Z'),
@@ -280,6 +345,11 @@ describe('DigestService', () => {
       );
 
       expect(emailService.queueEmail).toHaveBeenCalledTimes(1);
+      expect(emailService.queueEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          html: expect.stringContaining('Events'),
+        }),
+      );
       expect(digestStateRepo.save).toHaveBeenCalledTimes(1);
     });
 

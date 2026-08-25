@@ -3,9 +3,11 @@
 /// Covers: verify_address, batch_verify_addresses, unverify_address, is_verified,
 /// and the M-of-N event-verification signer threshold (#1358).
 use creator_event_manager::CreatorEventManagerContractClient;
+use ed25519_dalek::{Signer, SigningKey};
+use rand::rngs::OsRng;
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::token::StellarAssetClient;
-use soroban_sdk::{Address, Env, String, Vec};
+use soroban_sdk::{Address, Bytes, BytesN, Env, String, Vec};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -394,9 +396,42 @@ fn test_is_verified_requires_no_auth() {
 
 // ===========================================================================
 // #1358 — M-of-N event verification (submit_verification / is_event_verified)
+// #1705 — Verification signature check
 // ===========================================================================
 
 const FEE: i128 = 1_000_000;
+
+/// A test signer's ed25519 keypair alongside the Soroban `Address` used as
+/// its identity in the verifier signer set / `require_auth`.
+struct VerifierKey {
+    address: Address,
+    signing_key: SigningKey,
+}
+
+fn generate_verifier_key(env: &Env) -> VerifierKey {
+    let signing_key = SigningKey::generate(&mut OsRng);
+    VerifierKey {
+        address: Address::generate(env),
+        signing_key,
+    }
+}
+
+fn public_key_bytes(env: &Env, key: &VerifierKey) -> BytesN<32> {
+    BytesN::from_array(env, key.signing_key.verifying_key().as_bytes())
+}
+
+/// Sign the same `event_id || data` payload that `submit_verification`
+/// verifies against.
+fn sign_verification(env: &Env, key: &VerifierKey, event_id: u64, data: &Bytes) -> BytesN<64> {
+    let mut payload = event_id.to_be_bytes().to_vec();
+    payload.extend(data.iter());
+    let signature = key.signing_key.sign(&payload);
+    BytesN::from_array(env, &signature.to_bytes())
+}
+
+fn sample_data(env: &Env) -> Bytes {
+    Bytes::from_array(env, &[1u8, 2, 3, 4])
+}
 
 fn fund(env: &Env, token: &Address, user: &Address, amount: i128) {
     StellarAssetClient::new(env, token).mint(user, &amount);
@@ -456,16 +491,19 @@ fn setup_with_event() -> (
 fn test_submit_verification_by_configured_signer_succeeds() {
     let (env, client, _contract_id, admin, event_id) = setup_with_event();
 
-    let signer1 = Address::generate(&env);
-    let signer2 = Address::generate(&env);
-    let signer3 = Address::generate(&env);
+    let signer1 = generate_verifier_key(&env);
+    let signer2 = generate_verifier_key(&env);
+    let signer3 = generate_verifier_key(&env);
     let mut signers = Vec::new(&env);
-    signers.push_back(signer1.clone());
-    signers.push_back(signer2.clone());
-    signers.push_back(signer3.clone());
+    signers.push_back(signer1.address.clone());
+    signers.push_back(signer2.address.clone());
+    signers.push_back(signer3.address.clone());
     client.set_verifier_config(&admin, &signers, &2u32);
+    client.set_verifier_public_key(&admin, &signer1.address, &public_key_bytes(&env, &signer1));
 
-    let count = client.submit_verification(&event_id, &signer1);
+    let data = sample_data(&env);
+    let signature = sign_verification(&env, &signer1, event_id, &data);
+    let count = client.submit_verification(&event_id, &signer1.address, &data, &signature);
     assert_eq!(count, 1);
 }
 
@@ -474,13 +512,15 @@ fn test_submit_verification_by_configured_signer_succeeds() {
 fn test_submit_verification_by_non_signer_is_rejected() {
     let (env, client, _contract_id, admin, event_id) = setup_with_event();
 
-    let signer1 = Address::generate(&env);
+    let signer1 = generate_verifier_key(&env);
     let mut signers = Vec::new(&env);
-    signers.push_back(signer1);
+    signers.push_back(signer1.address.clone());
     client.set_verifier_config(&admin, &signers, &1u32);
 
-    let not_a_signer = Address::generate(&env);
-    client.submit_verification(&event_id, &not_a_signer);
+    let not_a_signer = generate_verifier_key(&env);
+    let data = sample_data(&env);
+    let signature = sign_verification(&env, &not_a_signer, event_id, &data);
+    client.submit_verification(&event_id, &not_a_signer.address, &data, &signature);
 }
 
 #[test]
@@ -488,12 +528,15 @@ fn test_submit_verification_by_non_signer_is_rejected() {
 fn test_submit_verification_unknown_event_is_rejected() {
     let (env, client, _contract_id, admin, _event_id) = setup_with_event();
 
-    let signer1 = Address::generate(&env);
+    let signer1 = generate_verifier_key(&env);
     let mut signers = Vec::new(&env);
-    signers.push_back(signer1.clone());
+    signers.push_back(signer1.address.clone());
     client.set_verifier_config(&admin, &signers, &1u32);
+    client.set_verifier_public_key(&admin, &signer1.address, &public_key_bytes(&env, &signer1));
 
-    client.submit_verification(&999_999_u64, &signer1);
+    let data = sample_data(&env);
+    let signature = sign_verification(&env, &signer1, 999_999_u64, &data);
+    client.submit_verification(&999_999_u64, &signer1.address, &data, &signature);
 }
 
 #[test]
@@ -501,38 +544,102 @@ fn test_submit_verification_unknown_event_is_rejected() {
 fn test_submit_verification_duplicate_signer_is_rejected() {
     let (env, client, _contract_id, admin, event_id) = setup_with_event();
 
-    let signer1 = Address::generate(&env);
-    let signer2 = Address::generate(&env);
+    let signer1 = generate_verifier_key(&env);
+    let signer2 = generate_verifier_key(&env);
     let mut signers = Vec::new(&env);
-    signers.push_back(signer1.clone());
-    signers.push_back(signer2);
+    signers.push_back(signer1.address.clone());
+    signers.push_back(signer2.address.clone());
     client.set_verifier_config(&admin, &signers, &2u32);
+    client.set_verifier_public_key(&admin, &signer1.address, &public_key_bytes(&env, &signer1));
 
-    client.submit_verification(&event_id, &signer1);
+    let data = sample_data(&env);
+    let signature = sign_verification(&env, &signer1, event_id, &data);
+    client.submit_verification(&event_id, &signer1.address, &data, &signature);
     // Same signer submitting again must be rejected, even though the
     // threshold has not been reached yet.
-    client.submit_verification(&event_id, &signer1);
+    client.submit_verification(&event_id, &signer1.address, &data, &signature);
+}
+
+#[test]
+#[should_panic(expected = "no_public_key_configured")]
+fn test_submit_verification_without_bound_public_key_is_rejected() {
+    let (env, client, _contract_id, admin, event_id) = setup_with_event();
+
+    let signer1 = generate_verifier_key(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.address.clone());
+    client.set_verifier_config(&admin, &signers, &1u32);
+    // Deliberately skip set_verifier_public_key.
+
+    let data = sample_data(&env);
+    let signature = sign_verification(&env, &signer1, event_id, &data);
+    client.submit_verification(&event_id, &signer1.address, &data, &signature);
+}
+
+/// #1705 — a signature that does not verify against the signer's bound key
+/// (here: signed by an unrelated key) must be rejected rather than accepted.
+#[test]
+#[should_panic]
+fn test_submit_verification_with_invalid_signature_is_rejected() {
+    let (env, client, _contract_id, admin, event_id) = setup_with_event();
+
+    let signer1 = generate_verifier_key(&env);
+    let attacker_key = generate_verifier_key(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.address.clone());
+    client.set_verifier_config(&admin, &signers, &1u32);
+    client.set_verifier_public_key(&admin, &signer1.address, &public_key_bytes(&env, &signer1));
+
+    let data = sample_data(&env);
+    // Signed with a key that was never bound to signer1.
+    let bogus_signature = sign_verification(&env, &attacker_key, event_id, &data);
+    client.submit_verification(&event_id, &signer1.address, &data, &bogus_signature);
+}
+
+/// #1705 — a signature produced for a different event must not verify here,
+/// even though it is a genuinely valid signature by the correct key: the
+/// payload binds `event_id` so it cannot be replayed cross-event.
+#[test]
+#[should_panic]
+fn test_submit_verification_signature_bound_to_wrong_event_is_rejected() {
+    let (env, client, _contract_id, admin, event_id) = setup_with_event();
+
+    let signer1 = generate_verifier_key(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.address.clone());
+    client.set_verifier_config(&admin, &signers, &1u32);
+    client.set_verifier_public_key(&admin, &signer1.address, &public_key_bytes(&env, &signer1));
+
+    let data = sample_data(&env);
+    // Valid signature, but bound to a different event_id.
+    let signature_for_other_event = sign_verification(&env, &signer1, event_id + 1, &data);
+    client.submit_verification(&event_id, &signer1.address, &data, &signature_for_other_event);
 }
 
 #[test]
 fn test_event_not_verified_below_threshold() {
     let (env, client, _contract_id, admin, event_id) = setup_with_event();
 
-    let signer1 = Address::generate(&env);
-    let signer2 = Address::generate(&env);
-    let signer3 = Address::generate(&env);
+    let signer1 = generate_verifier_key(&env);
+    let signer2 = generate_verifier_key(&env);
+    let signer3 = generate_verifier_key(&env);
     let mut signers = Vec::new(&env);
-    signers.push_back(signer1.clone());
-    signers.push_back(signer2.clone());
-    signers.push_back(signer3);
+    signers.push_back(signer1.address.clone());
+    signers.push_back(signer2.address.clone());
+    signers.push_back(signer3.address.clone());
     client.set_verifier_config(&admin, &signers, &3u32);
+    client.set_verifier_public_key(&admin, &signer1.address, &public_key_bytes(&env, &signer1));
+    client.set_verifier_public_key(&admin, &signer2.address, &public_key_bytes(&env, &signer2));
 
     assert!(!client.is_event_verified(&event_id));
 
-    client.submit_verification(&event_id, &signer1);
+    let data = sample_data(&env);
+    let sig1 = sign_verification(&env, &signer1, event_id, &data);
+    client.submit_verification(&event_id, &signer1.address, &data, &sig1);
     assert!(!client.is_event_verified(&event_id));
 
-    client.submit_verification(&event_id, &signer2);
+    let sig2 = sign_verification(&env, &signer2, event_id, &data);
+    client.submit_verification(&event_id, &signer2.address, &data, &sig2);
     // 2 of 3 distinct signers submitted; threshold is 3 — still unverified.
     assert!(!client.is_event_verified(&event_id));
     assert_eq!(client.get_event_verification_count(&event_id), 2);
@@ -542,19 +649,24 @@ fn test_event_not_verified_below_threshold() {
 fn test_event_verified_at_exact_threshold() {
     let (env, client, _contract_id, admin, event_id) = setup_with_event();
 
-    let signer1 = Address::generate(&env);
-    let signer2 = Address::generate(&env);
-    let signer3 = Address::generate(&env);
+    let signer1 = generate_verifier_key(&env);
+    let signer2 = generate_verifier_key(&env);
+    let signer3 = generate_verifier_key(&env);
     let mut signers = Vec::new(&env);
-    signers.push_back(signer1.clone());
-    signers.push_back(signer2.clone());
-    signers.push_back(signer3);
+    signers.push_back(signer1.address.clone());
+    signers.push_back(signer2.address.clone());
+    signers.push_back(signer3.address.clone());
     client.set_verifier_config(&admin, &signers, &2u32);
+    client.set_verifier_public_key(&admin, &signer1.address, &public_key_bytes(&env, &signer1));
+    client.set_verifier_public_key(&admin, &signer2.address, &public_key_bytes(&env, &signer2));
 
-    client.submit_verification(&event_id, &signer1);
+    let data = sample_data(&env);
+    let sig1 = sign_verification(&env, &signer1, event_id, &data);
+    client.submit_verification(&event_id, &signer1.address, &data, &sig1);
     assert!(!client.is_event_verified(&event_id));
 
-    client.submit_verification(&event_id, &signer2);
+    let sig2 = sign_verification(&env, &signer2, event_id, &data);
+    client.submit_verification(&event_id, &signer2.address, &data, &sig2);
     // 2 of 3 distinct signers submitted; threshold is 2 — now verified.
     assert!(client.is_event_verified(&event_id));
     assert_eq!(client.get_event_verification_count(&event_id), 2);
@@ -573,16 +685,22 @@ fn test_event_not_verified_without_any_config() {
 fn test_get_event_verification_count_reflects_distinct_signers_only() {
     let (env, client, _contract_id, admin, event_id) = setup_with_event();
 
-    let signer1 = Address::generate(&env);
-    let signer2 = Address::generate(&env);
+    let signer1 = generate_verifier_key(&env);
+    let signer2 = generate_verifier_key(&env);
     let mut signers = Vec::new(&env);
-    signers.push_back(signer1.clone());
-    signers.push_back(signer2.clone());
+    signers.push_back(signer1.address.clone());
+    signers.push_back(signer2.address.clone());
     client.set_verifier_config(&admin, &signers, &2u32);
+    client.set_verifier_public_key(&admin, &signer1.address, &public_key_bytes(&env, &signer1));
+    client.set_verifier_public_key(&admin, &signer2.address, &public_key_bytes(&env, &signer2));
+
+    let data = sample_data(&env);
 
     assert_eq!(client.get_event_verification_count(&event_id), 0);
-    client.submit_verification(&event_id, &signer1);
+    let sig1 = sign_verification(&env, &signer1, event_id, &data);
+    client.submit_verification(&event_id, &signer1.address, &data, &sig1);
     assert_eq!(client.get_event_verification_count(&event_id), 1);
-    client.submit_verification(&event_id, &signer2);
+    let sig2 = sign_verification(&env, &signer2, event_id, &data);
+    client.submit_verification(&event_id, &signer2.address, &data, &sig2);
     assert_eq!(client.get_event_verification_count(&event_id), 2);
 }

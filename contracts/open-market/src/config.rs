@@ -534,6 +534,7 @@ pub fn get_config_readonly(env: &Env) -> Result<Config, InsightArenaError> {
 
 /// Update the protocol fee rate. Caller must be the stored admin.
 pub fn update_protocol_fee(env: &Env, new_fee_bps: u32) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     // Authorisation check — reverts the entire transaction if auth is absent.
@@ -615,6 +616,7 @@ fn emit_paused_toggled(env: &Env, actor: &Address, paused: bool, reason_code: u3
 }
 
 pub fn transfer_admin(env: &Env, new_admin: Address) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     // Auth against the *current* admin before overwriting.
@@ -635,6 +637,7 @@ pub fn update_oracle(
     admin: Address,
     new_oracle: Address,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     // Auth against the *current* admin.
@@ -671,6 +674,7 @@ pub fn set_timelock_delay(
     admin: Address,
     new_delay: u64,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -705,6 +709,7 @@ pub fn set_guardian(
     admin: Address,
     new_guardian: Address,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -738,6 +743,7 @@ pub fn set_min_creator_reputation(
     admin: Address,
     new_threshold: u32,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -799,6 +805,7 @@ pub fn set_reputation_decay_config(
     half_life_seconds: u32,
     mode: ReputationDecayMode,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -837,6 +844,7 @@ pub fn set_market_ttl_extension(
     admin: Address,
     new_extension: u32,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -875,6 +883,7 @@ pub fn set_stake_bounds(
     min_stake: i128,
     max_stake: i128,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -936,6 +945,7 @@ pub fn set_insurance_pool_share_bps(
     admin: Address,
     new_share_bps: u32,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -972,6 +982,7 @@ pub fn set_max_liquidity_per_outcome(
     admin: Address,
     new_cap: i128,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -1020,6 +1031,7 @@ pub fn set_treasury_split(
     treasury_split_bps: u32,
     lp_split_bps: u32,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -1086,6 +1098,7 @@ pub fn set_arbiter_config(
     slash_bps: u32,
     voting_period_seconds: u64,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -1140,6 +1153,7 @@ pub fn set_governance_quorum_bps(
     admin: Address,
     new_quorum_bps: u32,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -1264,6 +1278,7 @@ pub fn set_volume_fee_config(
     admin: Address,
     new_config: VolumeFeeConfig,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -1324,6 +1339,7 @@ pub fn set_oracle_stake_config(
     stake_amount: i128,
     reward_bps: u32,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -1370,6 +1386,7 @@ pub fn set_vesting_config(
     tranche_count: u32,
     interval_seconds: u64,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -1407,6 +1424,7 @@ pub fn set_bond_amount(
     admin: Address,
     new_bond_amount: i128,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();
@@ -1486,6 +1504,7 @@ pub fn set_early_exit_fee_bps(
     admin: Address,
     new_fee_bps: u32,
 ) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
     let mut config = load_config(env)?;
 
     admin.require_auth();

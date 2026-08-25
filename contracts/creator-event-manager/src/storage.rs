@@ -9,8 +9,8 @@
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::storage_types::{
-    CreatorVestingSchedule, DataKey, Event, FinalizationBond, Match, OracleSubmission,
-    ParticipantScore, Prediction, PrizeAllocation, StandingEntry,
+    CreatorVestingSchedule, DataKey, Event, FinalizationBond, Match, MatchResultSubmission,
+    OracleSubmission, ParticipantScore, Prediction, PrizeAllocation, StandingEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -494,6 +494,40 @@ pub fn get_oracle_submissions(env: &Env, match_id: u64) -> Vec<OracleSubmission>
 pub fn add_oracle_submission(env: &Env, match_id: u64, submission: &OracleSubmission) {
     let key = DataKey::OracleSubmissions(match_id);
     let mut list = get_oracle_submissions(env, match_id);
+    list.push_back(submission.clone());
+    env.storage().persistent().set(&key, &list);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+}
+
+// ---------------------------------------------------------------------------
+// Oracle consensus result proposals (#1698)
+// ---------------------------------------------------------------------------
+
+/// Return every scoreline proposal recorded for a match's consensus round, or
+/// an empty Vec if none have been submitted yet. Extends the TTL on success.
+pub fn get_match_result_proposals(env: &Env, match_id: u64) -> Vec<MatchResultSubmission> {
+    let key = DataKey::MatchResultProposals(match_id);
+    match env
+        .storage()
+        .persistent()
+        .get::<DataKey, Vec<MatchResultSubmission>>(&key)
+    {
+        Some(list) => {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+            list
+        }
+        None => Vec::new(env),
+    }
+}
+
+/// Append a scoreline proposal to a match's consensus round and set the TTL.
+pub fn add_match_result_proposal(env: &Env, match_id: u64, submission: &MatchResultSubmission) {
+    let key = DataKey::MatchResultProposals(match_id);
+    let mut list = get_match_result_proposals(env, match_id);
     list.push_back(submission.clone());
     env.storage().persistent().set(&key, &list);
     env.storage()

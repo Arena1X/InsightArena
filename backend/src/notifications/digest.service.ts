@@ -8,7 +8,85 @@ import { User } from '../users/entities/user.entity';
 import { Notification } from './entities/notification.entity';
 import { NotificationDigestState } from './entities/notification-digest-state.entity';
 import { EmailService } from './email.service';
-import { renderEmailTemplate, DigestItem } from './email-templates';
+import {
+  renderEmailTemplate,
+  DigestGroup,
+  DigestItem,
+} from './email-templates';
+
+/** Maximum notification rows shown in a single digest email. */
+export const DIGEST_MAX_ITEMS = 10;
+
+const DIGEST_CATEGORY_LABELS: Record<string, string> = {
+  event_created: 'Events',
+  match_added: 'Matches',
+  prediction_submitted: 'Predictions',
+  match_resolved: 'Results',
+  winner_verified: 'Wins',
+  event_cancelled: 'Events',
+  dispute_sla_approaching: 'Disputes',
+  dispute_sla_breached: 'Disputes',
+};
+
+export interface AggregatedDigest {
+  groups: DigestGroup[];
+  overflowCount: number;
+  totalUnique: number;
+}
+
+export function aggregateDigestNotifications(
+  notifications: Notification[],
+  maxItems: number = DIGEST_MAX_ITEMS,
+): AggregatedDigest {
+  const seen = new Set<string>();
+  const unique = notifications.filter((notification) => {
+    const key = `${notification.type}:${notification.title}:${notification.message}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+
+  const grouped = new Map<string, DigestItem[]>();
+  for (const notification of unique) {
+    const category =
+      DIGEST_CATEGORY_LABELS[notification.type] ?? 'Notifications';
+    if (!grouped.has(category)) {
+      grouped.set(category, []);
+    }
+    grouped.get(category)!.push({
+      title: notification.title,
+      message: notification.message,
+    });
+  }
+
+  const groups: DigestGroup[] = [];
+  let displayed = 0;
+  let overflowCount = 0;
+
+  for (const [category, items] of grouped.entries()) {
+    const visibleItems: DigestItem[] = [];
+    for (const item of items) {
+      if (displayed >= maxItems) {
+        overflowCount++;
+        continue;
+      }
+      visibleItems.push(item);
+      displayed++;
+    }
+
+    if (visibleItems.length > 0) {
+      groups.push({ category, items: visibleItems });
+    }
+  }
+
+  return {
+    groups,
+    overflowCount,
+    totalUnique: unique.length,
+  };
+}
 
 @Injectable()
 export class DigestService {
@@ -159,14 +237,12 @@ export class DigestService {
     // skip users with nothing to report — no email queued, no state written
     if (notifications.length === 0) return;
 
-    const items: DigestItem[] = notifications.map((n) => ({
-      title: n.title,
-      message: n.message,
-    }));
+    const aggregated = aggregateDigestNotifications(notifications);
 
     const rendered = renderEmailTemplate('digest', {
       digestFrequency: frequency,
-      digestItems: items,
+      digestGroups: aggregated.groups,
+      digestOverflowCount: aggregated.overflowCount,
       digestPeriod: periodKey,
     });
 
@@ -189,7 +265,7 @@ export class DigestService {
     await this.digestStateRepo.save(state);
 
     this.logger.log(
-      `Digest sent to ${user.email} (${frequency}, ${periodKey}, ${items.length} items)`,
+      `Digest sent to ${user.email} (${frequency}, ${periodKey}, ${aggregated.totalUnique} items, ${aggregated.overflowCount} overflow)`,
     );
   }
 

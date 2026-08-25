@@ -8,7 +8,7 @@
 /// and is independent of other contract state. Any address can be verified or
 /// unverified by the admin at any time, enabling flexible access control for
 /// features that require whitelisted participants.
-use soroban_sdk::{Address, Env, Symbol, Vec};
+use soroban_sdk::{Address, Bytes, BytesN, Env, Symbol, Vec};
 
 use crate::storage::TTL_LEDGERS;
 use crate::storage_types::DataKey;
@@ -39,6 +39,12 @@ pub enum VerificationError {
     DuplicateSigner = 7,
     /// No event exists for the given event_id.
     EventNotFound = 8,
+    /// No ed25519 public key has been bound to this signer via
+    /// `admin::set_verifier_public_key` (#1705).
+    NoPublicKeyConfigured = 9,
+    /// The supplied signature does not verify against the signer's bound
+    /// public key and the event-bound payload (#1705).
+    InvalidSignature = 10,
 }
 
 // ---------------------------------------------------------------------------
@@ -232,20 +238,44 @@ pub fn is_verified(env: &Env, address: Address) -> bool {
 // M-of-N event verification (#1358)
 // ---------------------------------------------------------------------------
 
-/// Submit a verifier signature for an event.
+/// Build the payload a verifier signs for [`submit_verification`]: the
+/// `event_id` as 8 big-endian bytes followed by the caller-supplied
+/// attestation `data`. Binding `event_id` into the signed bytes means a
+/// signature produced for one event cannot be replayed to verify a
+/// different one.
+fn verification_payload(env: &Env, event_id: u64, data: &Bytes) -> Bytes {
+    let mut payload = Bytes::from_array(env, &event_id.to_be_bytes());
+    payload.append(data);
+    payload
+}
+
+/// Submit a signed verifier attestation for an event.
 ///
 /// `signer` must be one of the addresses configured via
-/// `admin::set_verifier_config`. Each signer may submit at most once per
-/// event — a second submission from the same signer is rejected. Once `M`
-/// (the configured threshold) distinct signers have submitted, the event is
-/// considered verified; see [`is_event_verified`].
+/// `admin::set_verifier_config`, with an ed25519 public key bound via
+/// `admin::set_verifier_public_key`. `signature` must be a valid ed25519
+/// signature, by that bound key, over the payload
+/// `event_id (8 bytes, big-endian) || data` — see [`verification_payload`].
+/// Binding `event_id` into the signed payload means a signature cannot be
+/// replayed against a different event even if `data` happens to match.
+///
+/// Each signer may submit at most once per event — a second submission from
+/// the same signer is rejected. Once `M` (the configured threshold) distinct
+/// signers have submitted, the event is considered verified; see
+/// [`is_event_verified`].
 ///
 /// # Errors
 /// * [`VerificationError::EventNotFound`] — no event exists for `event_id`.
 /// * [`VerificationError::NotAVerifierSigner`] — `signer` is not in the
 ///   configured verifier signer set.
+/// * [`VerificationError::NoPublicKeyConfigured`] — `signer` has no ed25519
+///   public key bound via `admin::set_verifier_public_key`.
 /// * [`VerificationError::DuplicateSigner`] — `signer` already submitted
 ///   verification for this event.
+/// * Panics if `signature` does not verify against the signer's bound public
+///   key and the event-bound payload (an invalid ed25519 signature aborts
+///   the transaction rather than returning an error, per
+///   `env.crypto().ed25519_verify`).
 ///
 /// # Returns
 /// The number of distinct signers who have now submitted for this event.
@@ -257,6 +287,8 @@ pub fn submit_verification(
     env: &Env,
     event_id: u64,
     signer: Address,
+    data: Bytes,
+    signature: BytesN<64>,
 ) -> Result<u32, VerificationError> {
     signer.require_auth();
 
@@ -269,10 +301,18 @@ pub fn submit_verification(
         return Err(VerificationError::NotAVerifierSigner);
     }
 
+    let public_key = crate::admin::get_verifier_public_key(env, &signer)
+        .ok_or(VerificationError::NoPublicKeyConfigured)?;
+
     let mut submitted = crate::storage::get_event_verification_signers(env, event_id);
     if submitted.iter().any(|addr| addr == signer) {
         return Err(VerificationError::DuplicateSigner);
     }
+
+    // Reverts (panics) the whole call if the signature does not verify
+    // against `signer`'s bound key and the event-bound payload.
+    let payload = verification_payload(env, event_id, &data);
+    env.crypto().ed25519_verify(&public_key, &payload, &signature);
 
     crate::storage::add_event_verification_signer(env, event_id, &signer);
     submitted.push_back(signer.clone());

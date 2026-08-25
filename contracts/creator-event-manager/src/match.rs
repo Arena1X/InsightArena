@@ -2,8 +2,9 @@ use soroban_sdk::{Address, Env, String, Symbol, Vec};
 
 use crate::admin;
 use crate::event::{self, EventError};
+use crate::leaderboard;
 use crate::storage::{self};
-use crate::storage_types::Match;
+use crate::storage_types::{Match, MatchResult};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -31,6 +32,13 @@ pub enum MatchError {
     /// The configured lock lead-time would push `prediction_lock_time` to or
     /// before the current time, leaving no window to predict at all.
     InvalidLockLeadTime = 9,
+    /// overturn_match_result called on a match with no submitted result yet
+    /// (#1701).
+    ResultNotSubmitted = 10,
+    /// overturn_match_result called after the parent event has already been
+    /// finalized — prize payouts are already staged, so the result is
+    /// immutable at that point (#1701).
+    EventAlreadyFinalized = 11,
 }
 
 // ---------------------------------------------------------------------------
@@ -216,4 +224,110 @@ pub fn list_event_matches(env: &Env, event_id: u64) -> Result<Vec<Match>, EventE
 /// Returns [`MatchError::MatchNotFound`] if the match does not exist.
 pub fn get_match(env: &Env, match_id: u64) -> Result<Match, MatchError> {
     storage::get_match(env, match_id).map_err(|_| MatchError::MatchNotFound)
+}
+
+// ---------------------------------------------------------------------------
+// overturn_match_result (#1701)
+// ---------------------------------------------------------------------------
+
+/// Correct a previously submitted match result. This is the **only** path
+/// through which a match's result may change after `submit_match_result` —
+/// direct resubmission is rejected by [`Match::submit_result`] and
+/// `oracle::submit_match_result`.
+///
+/// Only the contract admin may call this, and only before the parent event
+/// has been finalized (once `finalize_event` runs, prize allocations are
+/// staged from the standings computed at that time, so the result becomes
+/// immutable).
+///
+/// Re-derives the winning outcome from the corrected scoreline, re-grades
+/// every prediction for the match, and recomputes the event's weighted
+/// standings so downstream leaderboard/payout reads reflect the correction.
+///
+/// # Errors
+/// * [`MatchError::Unauthorized`] — caller is not the admin.
+/// * [`MatchError::MatchNotFound`] — no match with the given id.
+/// * [`MatchError::ResultNotSubmitted`] — the match has no result to correct
+///   yet; use `submit_match_result` for the first submission.
+/// * [`MatchError::EventNotFound`] — the match's parent event is missing.
+/// * [`MatchError::EventAlreadyFinalized`] — the parent event has already
+///   been finalized.
+///
+/// # Events
+/// Emits `(Symbol("match"), Symbol("result_overturned"))` with data
+/// `(match_id, old_home_score, old_away_score, new_home_score, new_away_score)`.
+pub fn overturn_match_result(
+    env: &Env,
+    caller: Address,
+    match_id: u64,
+    new_home_score: u32,
+    new_away_score: u32,
+) -> Result<(), MatchError> {
+    caller.require_auth();
+    let is_admin = env
+        .storage()
+        .persistent()
+        .get::<crate::storage_types::DataKey, Address>(&crate::storage_types::DataKey::Admin(
+            caller.clone(),
+        ))
+        .is_some();
+    if !is_admin {
+        return Err(MatchError::Unauthorized);
+    }
+
+    let mut match_record: Match =
+        storage::get_match(env, match_id).map_err(|_| MatchError::MatchNotFound)?;
+
+    if !match_record.result_submitted {
+        return Err(MatchError::ResultNotSubmitted);
+    }
+
+    let parent_event =
+        event::get_event(env, match_record.event_id).map_err(|_| MatchError::EventNotFound)?;
+    if parent_event.is_finalized {
+        return Err(MatchError::EventAlreadyFinalized);
+    }
+
+    let old_home_score = match_record.home_score.unwrap_or(0);
+    let old_away_score = match_record.away_score.unwrap_or(0);
+
+    let result = MatchResult::from_scores(new_home_score, new_away_score);
+    match_record.winning_team = Some(result.to_u32());
+    match_record.home_score = Some(new_home_score);
+    match_record.away_score = Some(new_away_score);
+    match_record.submitted_at = Some(env.ledger().timestamp());
+    storage::set_match(env, match_id, &match_record);
+
+    // Re-grade every prediction against the corrected scoreline.
+    let prediction_ids = storage::get_match_predictions(env, match_id);
+    for prediction_id in prediction_ids.iter() {
+        if let Ok(mut prediction) = storage::get_prediction(env, prediction_id) {
+            prediction.grade(
+                new_home_score,
+                new_away_score,
+                match_record.points_multiplier,
+            );
+            storage::set_prediction(env, prediction_id, &prediction);
+        }
+    }
+
+    // Recompute standings so the leaderboard reflects the correction.
+    leaderboard::recompute_standings(env, match_record.event_id)
+        .map_err(|_| MatchError::EventNotFound)?;
+
+    env.events().publish(
+        (
+            Symbol::new(env, "match"),
+            Symbol::new(env, "result_overturned"),
+        ),
+        (
+            match_id,
+            old_home_score,
+            old_away_score,
+            new_home_score,
+            new_away_score,
+        ),
+    );
+
+    Ok(())
 }

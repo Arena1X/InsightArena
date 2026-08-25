@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Repository, SelectQueryBuilder } from 'typeorm';
 import { NotificationType } from '../notifications/entities/notification.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { User } from '../users/entities/user.entity';
@@ -16,6 +16,7 @@ import {
   ListSeasonsDto,
   PaginatedSeasonsResponse,
   SeasonListItemDto,
+  SeasonStatus,
   SeasonTopWinnerDto,
 } from './dto/list-seasons.dto';
 import { SorobanService } from '../soroban/soroban.service';
@@ -48,13 +49,18 @@ export class SeasonsService {
     const page = query.page ?? 1;
     const limit = Math.min(query.limit ?? 20, 50);
     const skip = (page - 1) * limit;
+    const now = new Date();
 
     const qb = this.seasonsRepository
       .createQueryBuilder('season')
       .leftJoinAndSelect('season.top_winner', 'winner')
-      .orderBy('season.season_number', 'DESC')
+      .orderBy('season.starts_at', 'DESC')
       .skip(skip)
       .take(limit);
+
+    if (query.status) {
+      this.applyStatusFilter(qb, query.status, now);
+    }
 
     const [rows, total] = await qb.getManyAndCount();
 
@@ -64,6 +70,32 @@ export class SeasonsService {
       page,
       limit,
     };
+  }
+
+  private applyStatusFilter(
+    query: SelectQueryBuilder<Season>,
+    status: SeasonStatus,
+    now: Date,
+  ): SelectQueryBuilder<Season> {
+    switch (status) {
+      case SeasonStatus.Active:
+        return query
+          .andWhere('season.is_active = :isActive', { isActive: true })
+          .andWhere('season.starts_at <= :now', { now })
+          .andWhere('season.ends_at > :now', { now });
+      case SeasonStatus.Upcoming:
+        return query
+          .andWhere('season.starts_at > :now', { now })
+          .andWhere('season.is_finalized = :isFinalized', {
+            isFinalized: false,
+          });
+      case SeasonStatus.Finalized:
+        return query.andWhere('season.is_finalized = :isFinalized', {
+          isFinalized: true,
+        });
+      default:
+        return query;
+    }
   }
 
   private toSeasonListItem(season: Season): SeasonListItemDto {

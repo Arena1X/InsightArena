@@ -147,7 +147,11 @@ export class UsersController {
 
   @Patch('me')
   @UsePipes(
-    new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }),
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
   )
   @ApiOperation({ summary: 'Update own profile (username, avatar_url)' })
   @ApiResponse({

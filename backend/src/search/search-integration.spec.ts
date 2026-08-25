@@ -6,6 +6,7 @@ import { SearchService } from './search.service';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
 import { Competition } from '../competitions/entities/competition.entity';
+import { CreatorEvent } from '../matches/entities/creator-event.entity';
 
 /**
  * Integration tests for wildcard escaping in suggestions endpoint.
@@ -36,6 +37,12 @@ describe('SearchService - Wildcard Escaping Integration', () => {
         },
         {
           provide: getRepositoryToken(Competition),
+          useValue: {
+            createQueryBuilder: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(CreatorEvent),
           useValue: {
             createQueryBuilder: jest.fn(),
           },

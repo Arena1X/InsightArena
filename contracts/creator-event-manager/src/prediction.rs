@@ -1,8 +1,9 @@
 use soroban_sdk::{token::Client as TokenClient, Address, Env, Symbol, Vec};
 
 use crate::admin;
+use crate::invite::{self, InviteError};
 use crate::storage::{self};
-use crate::storage_types::{DataKey, Event, Match, Prediction};
+use crate::storage_types::{Event, Match, Prediction};
 use crate::token::TokenHelper;
 
 /// Errors returned by event joining and prediction operations.
@@ -23,6 +24,21 @@ pub enum PredictionError {
     PredictionNotFound = 12,
     Overflow = 13,
     InsufficientEntryFeeBalance = 14,
+    /// The invite code's `expires_at` has passed (#1699).
+    InviteCodeExpired = 15,
+    /// The invite code has already been redeemed `max_uses` times (#1699).
+    InviteCodeUsesExceeded = 16,
+}
+
+impl From<InviteError> for PredictionError {
+    fn from(e: InviteError) -> Self {
+        match e {
+            InviteError::InvalidCode => PredictionError::InvalidInviteCode,
+            InviteError::CodeExpired => PredictionError::InviteCodeExpired,
+            InviteError::CodeUsesExceeded => PredictionError::InviteCodeUsesExceeded,
+            InviteError::CodeGenerationFailed => PredictionError::InvalidInviteCode,
+        }
+    }
 }
 
 fn emit_user_joined(env: &Env, event_id: u64, user: &Address) {
@@ -81,12 +97,10 @@ pub fn join_event(env: &Env, user: Address, invite_code: Symbol) -> Result<(), P
         return Err(PredictionError::Paused);
     }
 
-    let invite_key = DataKey::InviteCode(invite_code.clone());
-    let event_id: u64 = env
-        .storage()
-        .persistent()
-        .get(&invite_key)
-        .ok_or(PredictionError::InvalidInviteCode)?;
+    // Atomically validates expiry/use-cap and increments `use_count` — see
+    // `invite::redeem` (#1699).
+    let now = env.ledger().timestamp();
+    let event_id = invite::redeem(env, &invite_code, now)?;
 
     let mut event: Event =
         storage::get_event(env, event_id).map_err(|_| PredictionError::EventNotFound)?;
