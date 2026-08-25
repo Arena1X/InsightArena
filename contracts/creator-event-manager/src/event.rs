@@ -85,6 +85,8 @@ pub enum EventError {
     InviteCodeExpired = 32,
     /// The invite code has already been redeemed `max_uses` times (#1699).
     InviteCodeUsesExceeded = 33,
+    /// A fee/share computation overflowed `i128` (#1703).
+    Overflow = 34,
 }
 
 impl From<InviteError> for EventError {

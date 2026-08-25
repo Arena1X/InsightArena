@@ -105,6 +105,23 @@ fn read_match(env: &Env, contract_id: &Address, match_id: u64) -> Match {
 }
 
 // ---------------------------------------------------------------------------
+// Role separation (#1704)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "unauthorized")]
+fn test_configure_oracle_sources_non_admin_rejected() {
+    let (env, client, _contract_id, _admin, _xlm_token) = setup();
+
+    let non_admin = Address::generate(&env);
+    let source_a = Address::generate(&env);
+    let mut sources = Vec::new(&env);
+    sources.push_back(source_a);
+
+    client.configure_oracle_sources(&non_admin, &sources, &1u32);
+}
+
+// ---------------------------------------------------------------------------
 // Threshold reached finalizes
 // ---------------------------------------------------------------------------
 

@@ -434,14 +434,5 @@ pub fn challenge_finalization(
 // ---------------------------------------------------------------------------
 
 fn require_is_admin(env: &Env, caller: &Address) -> Result<(), VerificationError> {
-    caller.require_auth();
-    let is_admin = env
-        .storage()
-        .persistent()
-        .get::<DataKey, Address>(&DataKey::Admin(caller.clone()))
-        .is_some();
-    if !is_admin {
-        return Err(VerificationError::Unauthorized);
-    }
-    Ok(())
+    crate::admin::require_is_admin(env, caller).map_err(|_| VerificationError::Unauthorized)
 }

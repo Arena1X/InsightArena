@@ -3,9 +3,7 @@ use soroban_sdk::{Address, Env, Symbol, Vec};
 use crate::admin;
 use crate::leaderboard;
 use crate::storage::{self, StorageError};
-use crate::storage_types::{
-    DataKey, Event, Match, MatchResult, MatchResultSubmission, OracleSubmission,
-};
+use crate::storage_types::{Event, Match, MatchResult, MatchResultSubmission, OracleSubmission};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -328,16 +326,7 @@ pub fn configure_oracle_sources(
     sources: Vec<Address>,
     min_sources: u32,
 ) -> Result<(), OracleError> {
-    caller.require_auth();
-
-    let is_admin = env
-        .storage()
-        .persistent()
-        .get::<DataKey, Address>(&DataKey::Admin(caller.clone()))
-        .is_some();
-    if !is_admin {
-        return Err(OracleError::Unauthorized);
-    }
+    admin::require_is_admin(env, &caller).map_err(|_| OracleError::Unauthorized)?;
 
     let source_count = sources.len();
     if min_sources == 0 || min_sources > source_count {

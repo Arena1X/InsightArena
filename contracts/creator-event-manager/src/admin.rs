@@ -775,7 +775,12 @@ pub fn get_xlm_token(env: &Env) -> Option<Address> {
 /// Calls `caller.require_auth()` (Soroban signature check) then looks up
 /// `DataKey::Admin(caller)` in persistent storage. Returns
 /// [`AdminError::Unauthorized`] if the address is not found.
-fn require_is_admin(env: &Env, caller: &Address) -> Result<(), AdminError> {
+///
+/// This is the single centralized admin-role check (#1704) — other modules
+/// that gate a privileged action on the admin role (e.g.
+/// `oracle::configure_oracle_sources`) should call this rather than
+/// re-implementing the same storage lookup inline.
+pub(crate) fn require_is_admin(env: &Env, caller: &Address) -> Result<(), AdminError> {
     caller.require_auth();
     let is_admin = env
         .storage()

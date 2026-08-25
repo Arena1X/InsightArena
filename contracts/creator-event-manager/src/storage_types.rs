@@ -9,6 +9,12 @@ pub const MAX_REWARD_RANKS: u32 = 5;
 /// The reward distribution percentages must sum to exactly this value.
 pub const REWARD_PERCENT_TOTAL: u32 = 100;
 
+/// Upper bound (basis points, 0-10000) on any creator/platform fee share
+/// configured on this contract — e.g. `fee::set_creator_vesting_config`'s
+/// `vest_share_bps`. `10_000` bps = 100%, so this simply forbids configuring
+/// a share greater than the whole pool.
+pub const MAX_FEE_BPS: u32 = 10_000;
+
 /// Maximum length for event title (characters)
 pub const MAX_TITLE_LEN: u32 = 200;
 /// Maximum length for event description (characters)

@@ -306,3 +306,52 @@ fn test_withdraw_zero_amount_rejected() {
     let recipient = Address::generate(&env);
     client.withdraw_fees(&admin, &recipient, &0);
 }
+
+#[test]
+#[should_panic(expected = "invalid_config")]
+fn test_set_creator_vesting_config_over_max_bps_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(creator_event_manager::CreatorEventManagerContract, ());
+    let client = CreatorEventManagerContractClient::new(&env, &contract_id);
+    let client: CreatorEventManagerContractClient<'static> =
+        unsafe { core::mem::transmute(client) };
+
+    let admin = Address::generate(&env);
+    let ai_agent = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let xlm_token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    client.initialize(&admin, &ai_agent, &treasury, &xlm_token, &FEE);
+
+    // MAX_FEE_BPS is 10_000; anything above that must be rejected.
+    client.set_creator_vesting_config(&admin, &10_001u32, &0u64);
+}
+
+#[test]
+fn test_set_creator_vesting_config_at_max_bps_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(creator_event_manager::CreatorEventManagerContract, ());
+    let client = CreatorEventManagerContractClient::new(&env, &contract_id);
+    let client: CreatorEventManagerContractClient<'static> =
+        unsafe { core::mem::transmute(client) };
+
+    let admin = Address::generate(&env);
+    let ai_agent = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let xlm_token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+
+    client.initialize(&admin, &ai_agent, &treasury, &xlm_token, &FEE);
+
+    // Exactly MAX_FEE_BPS (100%) is a valid boundary value.
+    client.set_creator_vesting_config(&admin, &10_000u32, &0u64);
+}

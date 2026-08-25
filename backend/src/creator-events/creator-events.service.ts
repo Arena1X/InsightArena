@@ -1,5 +1,7 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
 import { In, Repository } from 'typeorm';
 import {
   ContractService,
@@ -98,7 +100,27 @@ export class CreatorEventsService {
     private readonly leaderboardEntryRepository: Repository<CreatorEventLeaderboardEntry>,
     @InjectRepository(CreatorEventPayout)
     private readonly creatorEventPayoutRepository: Repository<CreatorEventPayout>,
+    @Inject(CACHE_MANAGER)
+    private readonly cacheManager: Cache,
   ) {}
+
+  /**
+   * Evict the cached prediction-stats responses for an event (and, when
+   * given, a specific user's score within it) so a stale count isn't served
+   * after a prediction is edited or withdrawn. `getEventStats`/`getUserScore`
+   * are cached by `CacheInterceptor` under the raw request URL (#1650) — the
+   * keys below must match those routes exactly.
+   */
+  async invalidatePredictionStatsCache(
+    eventId: string,
+    address?: string,
+  ): Promise<void> {
+    const keys = [`/creator-events/${eventId}/stats`];
+    if (address) {
+      keys.push(`/creator-events/${eventId}/score/${address}`);
+    }
+    await Promise.all(keys.map((key) => this.cacheManager.del(key)));
+  }
 
   async searchEvents(
     query: SearchEventsQueryDto,
@@ -354,6 +376,10 @@ export class CreatorEventsService {
     const predictions = rawPredictions
       .map((raw) => {
         const normalized = normalizeContractPrediction(raw);
+        if (normalized.isWithdrawn) {
+          return null;
+        }
+
         const match = matchMap.get(normalized.matchId);
         if (!match) {
           return null;
@@ -511,13 +537,20 @@ export class CreatorEventsService {
     let correctPredictions = 0;
     let incorrectPredictions = 0;
     let pendingPredictions = 0;
+    let totalPredictions = 0;
 
     for (const prediction of userPredictions) {
       const normalized = normalizeContractPrediction(prediction);
+      // Withdrawn predictions no longer represent the user's current state
+      // for this event and must not contribute to any of the counts below.
+      if (normalized.isWithdrawn) continue;
+
       const match = matches.find(
         (m) => String(m.matchId) === normalized.matchId,
       );
       if (!match) continue;
+
+      totalPredictions++;
 
       if (!match.resolved) {
         pendingPredictions++;
@@ -529,8 +562,6 @@ export class CreatorEventsService {
         incorrectPredictions++;
       }
     }
-
-    const totalPredictions = userPredictions.length;
     const resolvedPredictions = correctPredictions + incorrectPredictions;
     const accuracyPercentage =
       resolvedPredictions > 0

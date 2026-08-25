@@ -6,6 +6,7 @@ export interface NormalizedPrediction {
   predictedOutcome: string;
   predictedAt: number;
   isCorrect: boolean | null;
+  isWithdrawn: boolean;
 }
 
 export function normalizeContractPrediction(
@@ -38,12 +39,15 @@ export function normalizeContractPrediction(
     isCorrect = isCorrectRaw;
   }
 
+  const isWithdrawn = (raw.isWithdrawn ?? raw.is_withdrawn) === true;
+
   return {
     predictionId,
     matchId,
     predictedOutcome,
     predictedAt,
     isCorrect,
+    isWithdrawn,
   };
 }
 

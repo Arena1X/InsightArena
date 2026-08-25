@@ -21,6 +21,7 @@ describe('prediction.util', () => {
         predictedOutcome: 'TEAM_A',
         predictedAt: 1_700_000_000,
         isCorrect: true,
+        isWithdrawn: false,
       });
     });
 
@@ -34,6 +35,23 @@ describe('prediction.util', () => {
 
       expect(result.predictedOutcome).toBe('DRAW');
       expect(result.isCorrect).toBeNull();
+      expect(result.isWithdrawn).toBe(false);
+    });
+
+    it('normalizes a withdrawn prediction from either field casing', () => {
+      const snakeCase = normalizeContractPrediction({
+        prediction_id: 1,
+        match_id: 1,
+        is_withdrawn: true,
+      } as ContractPrediction);
+      const camelCase = normalizeContractPrediction({
+        predictionId: '1',
+        matchId: '1',
+        isWithdrawn: true,
+      });
+
+      expect(snakeCase.isWithdrawn).toBe(true);
+      expect(camelCase.isWithdrawn).toBe(true);
     });
   });
 
