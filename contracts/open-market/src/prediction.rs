@@ -1554,6 +1554,14 @@ pub fn claim_cancel_refund(
         .get(&prediction_key)
         .ok_or(InsightArenaError::NotAParticipant)?;
 
+    if prediction.payout_claimed {
+        return Err(InsightArenaError::RefundAlreadyClaimed);
+    }
+
+    if prediction.stake_amount <= 0 {
+        return Err(InsightArenaError::NotAParticipant);
+    }
+
     let refund_amount = prediction.stake_amount;
 
     // ── Checks-Effects-Interactions: move record to temporary before transfer ─

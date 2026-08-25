@@ -863,11 +863,18 @@ pub fn resolve_market(
 
     let mut market = get_market(&env, market_id)?;
 
-    if let Some(parent_market_id) = env
+    let parent_id_opt = env
         .storage()
         .persistent()
         .get::<_, u64>(&DataKey::ConditionalParent(market_id))
-    {
+        .or_else(|| {
+            env.storage()
+                .persistent()
+                .get::<_, ConditionalMarket>(&DataKey::ConditionalMarket(market_id))
+                .map(|cm| cm.parent_market_id)
+        });
+
+    if let Some(parent_market_id) = parent_id_opt {
         let parent_market = get_market(&env, parent_market_id)?;
         if !parent_market.is_resolved {
             return Err(InsightArenaError::ParentNotResolved);
@@ -973,6 +980,9 @@ pub fn create_conditional_market(
     validate_conditional_params(env, parent_market_id, &required_outcome, &params)?;
 
     let parent_depth = calculate_conditional_depth(env, parent_market_id);
+    if parent_depth >= MAX_CONDITIONAL_DEPTH {
+        return Err(InsightArenaError::ConditionalDepthExceeded);
+    }
     let depth = parent_depth
         .checked_add(1)
         .ok_or(InsightArenaError::Overflow)?;
@@ -1057,6 +1067,12 @@ pub fn get_parent_market(env: &Env, market_id: u64) -> Result<Market, InsightAre
         .storage()
         .persistent()
         .get(&DataKey::ConditionalParent(market_id))
+        .or_else(|| {
+            env.storage()
+                .persistent()
+                .get::<_, ConditionalMarket>(&DataKey::ConditionalMarket(market_id))
+                .map(|cm| cm.parent_market_id)
+        })
         .ok_or(InsightArenaError::MarketNotFound)?;
 
     get_market(env, parent_market_id)
@@ -1090,6 +1106,12 @@ pub fn get_conditional_chain(
         .storage()
         .persistent()
         .get::<_, u64>(&DataKey::ConditionalParent(cursor))
+        .or_else(|| {
+            env.storage()
+                .persistent()
+                .get::<_, ConditionalMarket>(&DataKey::ConditionalMarket(cursor))
+                .map(|cm| cm.parent_market_id)
+        })
     {
         chain_ids.push_back(parent_id);
         cursor = parent_id;
@@ -1117,6 +1139,12 @@ pub fn calculate_conditional_depth(env: &Env, market_id: u64) -> u32 {
         .storage()
         .persistent()
         .get::<_, u64>(&DataKey::ConditionalParent(cursor))
+        .or_else(|| {
+            env.storage()
+                .persistent()
+                .get::<_, ConditionalMarket>(&DataKey::ConditionalMarket(cursor))
+                .map(|cm| cm.parent_market_id)
+        })
     {
         depth = depth.saturating_add(1);
         cursor = parent_id;
@@ -1142,7 +1170,13 @@ pub fn get_dependency_status(
     let parent_market_id = env
         .storage()
         .persistent()
-        .get::<_, u64>(&DataKey::ConditionalParent(market_id));
+        .get::<_, u64>(&DataKey::ConditionalParent(market_id))
+        .or_else(|| {
+            env.storage()
+                .persistent()
+                .get::<_, ConditionalMarket>(&DataKey::ConditionalMarket(market_id))
+                .map(|cm| cm.parent_market_id)
+        });
 
     let (is_conditional, parent_resolved) = match parent_market_id {
         Some(parent_id) => {
@@ -1210,6 +1244,12 @@ fn validate_no_circular_dependency(
             .storage()
             .persistent()
             .get::<_, u64>(&DataKey::ConditionalParent(current))
+            .or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get::<_, ConditionalMarket>(&DataKey::ConditionalMarket(current))
+                    .map(|cm| cm.parent_market_id)
+            })
         {
             current = next_parent;
         } else {

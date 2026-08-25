@@ -633,3 +633,31 @@ fn bonus_claim_payout_on_cancelled_market_is_rejected() {
         Err(Ok(InsightArenaError::MarketNotResolved))
     ));
 }
+
+/// A predictor who completely withdrew position has 0 stake and is rejected with `NotAParticipant`.
+#[test]
+fn cancel_refund_rejects_full_withdrawn_zero_stake_predictor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm_token) = deploy(&env);
+
+    let creator = Address::generate(&env);
+    let predictor = Address::generate(&env);
+    let stake = 20_000_000_i128;
+
+    let market_id = client.create_market(&creator, &default_params(&env));
+    fund(&env, &xlm_token, &predictor, stake);
+    client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
+
+    // Full withdrawal
+    client.withdraw_position(&predictor, &market_id, &stake);
+
+    client.cancel_market(&admin, &market_id);
+
+    let result = client.try_claim_cancel_refund(&predictor, &market_id);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::NotAParticipant))
+    ));
+}
+
