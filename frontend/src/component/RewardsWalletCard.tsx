@@ -1,9 +1,8 @@
 "use client";
 
-import { AlertCircle, Loader2, Wallet } from "lucide-react";
+import { AlertCircle, Clock, Loader2, Wallet } from "lucide-react";
 import { useWallet } from "@/context/WalletContext";
-import { useRewards } from "@/hooks/useRewards";
-import RewardStatusBadge from "@/component/rewards/RewardStatusBadge";
+import { useRewards, type WalletRewardItem } from "@/hooks/useRewards";
 
 function formatXlm(amount: number): string {
   return `${amount.toLocaleString(undefined, {
@@ -29,6 +28,56 @@ function CardShell({ children }: { children: React.ReactNode }) {
   );
 }
 
+interface ClaimableRewardRowProps {
+  item: WalletRewardItem;
+  onClaim: (itemId: string) => void;
+  disabled: boolean;
+}
+
+function ClaimableRewardRow({ item, onClaim, disabled }: ClaimableRewardRowProps) {
+  const isPending = item.claimStatus === "pending";
+
+  return (
+    <li className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm text-gray-200">{item.marketTitle}</p>
+          <p className="text-xs text-orange-400 font-medium">
+            {formatXlm(item.amountXlm)}
+          </p>
+        </div>
+
+        <button
+          onClick={() => onClaim(item.id)}
+          disabled={disabled || isPending}
+          className="flex-shrink-0 flex items-center gap-1.5 rounded-md bg-orange-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-orange-500"
+        >
+          {isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+          {isPending ? "Claiming…" : "Claim"}
+        </button>
+      </div>
+
+      {item.claimStatus === "error" && item.claimError && (
+        <p className="mt-1.5 text-xs text-rose-300">{item.claimError}</p>
+      )}
+    </li>
+  );
+}
+
+function VestingRewardRow({ item }: { item: WalletRewardItem }) {
+  return (
+    <li className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <p className="truncate text-sm text-gray-300">{item.marketTitle}</p>
+        <div className="flex-shrink-0 flex items-center gap-1.5 text-xs text-gray-400">
+          <Clock className="h-3 w-3" />
+          <span>{formatXlm(item.amountXlm)}</span>
+        </div>
+      </div>
+    </li>
+  );
+}
+
 export default function RewardsWalletCard() {
   const { address, openConnectModal } = useWallet();
   const {
@@ -36,9 +85,11 @@ export default function RewardsWalletCard() {
     isLoading,
     error,
     refetch,
-    claim,
-    claimStatus,
-    claimError,
+    claimableItems,
+    vestingItems,
+    claimItem,
+    claimAllItems,
+    isClaimingAll,
     hasClaimableRewards,
     isEmpty,
   } = useRewards();
@@ -119,8 +170,6 @@ export default function RewardsWalletCard() {
     );
   }
 
-  const isPending = claimStatus === "pending";
-
   return (
     <CardShell>
       {/* Total Earned */}
@@ -134,59 +183,58 @@ export default function RewardsWalletCard() {
         </div>
       </div>
 
-      {/* Line Items */}
-      <div className="mt-5 space-y-3 text-sm">
-        <div className="flex justify-between text-gray-300">
-          <span>Claimable Rewards</span>
-          <span className="text-orange-400">
-            {formatXlm(summary.claimableXlm)}
-          </span>
+      {/* Claimable Rewards */}
+      <div className="mt-5">
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+            Claimable ({claimableItems.length})
+          </h3>
+          {claimableItems.length > 0 && (
+            <button
+              onClick={claimAllItems}
+              disabled={!hasClaimableRewards || isClaimingAll}
+              className="flex items-center gap-1.5 rounded-md bg-orange-500/15 border border-orange-500/30 px-2.5 py-1 text-xs font-semibold text-orange-400 transition hover:bg-orange-500/25 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isClaimingAll && <Loader2 className="h-3 w-3 animate-spin" />}
+              {isClaimingAll ? "Claiming All…" : "Claim All"}
+            </button>
+          )}
         </div>
 
-        <div className="flex justify-between text-gray-300">
-          <span>Vesting Rewards</span>
-          <span>{formatXlm(summary.vestingXlm)}</span>
-        </div>
+        {claimableItems.length === 0 ? (
+          <p className="mt-2 text-xs text-gray-500">
+            Nothing claimable right now.
+          </p>
+        ) : (
+          <ul className="mt-2 space-y-2">
+            {claimableItems.map((item) => (
+              <ClaimableRewardRow
+                key={item.id}
+                item={item}
+                onClaim={claimItem}
+                disabled={isClaimingAll}
+              />
+            ))}
+          </ul>
+        )}
       </div>
 
-      {/* Transaction status */}
-      {claimStatus !== "idle" && (
-        <div className="mt-4 flex justify-center">
-          <RewardStatusBadge
-            status={
-              claimStatus === "pending"
-                ? "processing"
-                : claimStatus === "success"
-                  ? "claimed"
-                  : "failed"
-            }
-          />
-        </div>
-      )}
+      {/* Vesting Rewards */}
+      <div className="mt-5">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+          Vesting ({vestingItems.length})
+        </h3>
 
-      {claimStatus === "error" && claimError && (
-        <p className="mt-2 text-center text-xs text-rose-300">{claimError}</p>
-      )}
-
-      {claimStatus === "success" && (
-        <p className="mt-2 text-center text-xs text-emerald-300">
-          Rewards claimed successfully.
-        </p>
-      )}
-
-      {/* Button */}
-      <button
-        onClick={claim}
-        disabled={!hasClaimableRewards || isPending}
-        className="mt-6 w-full py-2 rounded-lg bg-orange-500 text-white font-semibold hover:bg-orange-600 transition disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-orange-500 flex items-center justify-center gap-2"
-      >
-        {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-        {isPending
-          ? "Claiming…"
-          : hasClaimableRewards
-            ? "Claim Rewards"
-            : "Nothing to Claim"}
-      </button>
+        {vestingItems.length === 0 ? (
+          <p className="mt-2 text-xs text-gray-500">No rewards vesting.</p>
+        ) : (
+          <ul className="mt-2 space-y-2">
+            {vestingItems.map((item) => (
+              <VestingRewardRow key={item.id} item={item} />
+            ))}
+          </ul>
+        )}
+      </div>
     </CardShell>
   );
 }
