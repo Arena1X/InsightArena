@@ -285,3 +285,152 @@ export function submitCourseCompletion(
     { ...options, headers: { 'Idempotency-Key': idempotencyKey, ...options.headers } },
   );
 }
+
+// ---------------------------------------------------------------------------
+// Leaderboard
+// ---------------------------------------------------------------------------
+
+/** Mirrors backend LeaderboardEntryResponse */
+export interface LeaderboardEntryResponse {
+  rank: number;
+  user_id: string;
+  username: string | null;
+  stellar_address: string;
+  reputation_score: number;
+  accuracy_rate: string;
+  total_winnings_stroops: string;
+  season_points?: number;
+  /**
+   * Signed rank change vs the most recent prior snapshot.
+   * Positive = moved up (lower rank number). Null when no prior snapshot.
+   */
+  rank_delta?: number | null;
+}
+
+export interface PaginatedLeaderboardResponse {
+  data: LeaderboardEntryResponse[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface LeaderboardQuery {
+  season_id?: string;
+  page?: number;
+  limit?: number;
+}
+
+/** Mirrors backend SnapshotRankingEntryResponse */
+export interface SnapshotRankingEntry {
+  rank: number;
+  user_id: string;
+  username: string | null;
+  stellar_address: string;
+  score: number;
+  captured_at: string;
+}
+
+export interface SnapshotRankingResponse {
+  data: SnapshotRankingEntry[];
+  snapshot_date: string;
+  total: number;
+  page: number;
+  limit: number;
+  message?: string;
+}
+
+export interface SnapshotQuery {
+  /** ISO date string YYYY-MM-DD */
+  date: string;
+  season_id?: string;
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Compute per-user rank deltas between two snapshot rankings.
+ * Returns a map of `stellar_address → delta` where a positive delta means
+ * the user moved up (their rank number decreased).
+ */
+export function computeSnapshotDeltas(
+  baseline: SnapshotRankingEntry[],
+  current: SnapshotRankingEntry[],
+): Map<string, number> {
+  const baselineRanks = new Map(
+    baseline.map((e) => [e.stellar_address, e.rank]),
+  );
+  const deltas = new Map<string, number>();
+  for (const entry of current) {
+    const prior = baselineRanks.get(entry.stellar_address);
+    if (prior !== undefined) {
+      // Positive delta = improved rank (rank number got smaller)
+      deltas.set(entry.stellar_address, prior - entry.rank);
+    }
+  }
+  return deltas;
+}
+
+/** `GET /api/leaderboard?season_id=...&page=...&limit=...` */
+export function getLeaderboard(
+  query: LeaderboardQuery = {},
+  options?: ApiOptions,
+): Promise<PaginatedLeaderboardResponse> {
+  const params = new URLSearchParams();
+  if (query.season_id) params.set('season_id', query.season_id);
+  if (query.page !== undefined) params.set('page', String(query.page));
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  const qs = params.toString();
+  return apiClient.get<PaginatedLeaderboardResponse>(
+    `/api/leaderboard${qs ? `?${qs}` : ''}`,
+    options,
+  );
+}
+
+/** `GET /api/leaderboard/snapshots?date=YYYY-MM-DD&season_id=...` */
+export function getLeaderboardSnapshot(
+  query: SnapshotQuery,
+  options?: ApiOptions,
+): Promise<SnapshotRankingResponse> {
+  const params = new URLSearchParams({ date: query.date });
+  if (query.season_id) params.set('season_id', query.season_id);
+  if (query.page !== undefined) params.set('page', String(query.page));
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  return apiClient.get<SnapshotRankingResponse>(
+    `/api/leaderboard/snapshots?${params.toString()}`,
+    options,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Seasons
+// ---------------------------------------------------------------------------
+
+export interface SeasonListItem {
+  id: string;
+  season_number: number;
+  name: string;
+  starts_at: string;
+  ends_at: string;
+  reward_pool_stroops: string;
+  is_active: boolean;
+  is_finalized: boolean;
+}
+
+export interface PaginatedSeasonsResponse {
+  data: SeasonListItem[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+/** `GET /api/seasons` — ordered by start date descending */
+export function getSeasons(
+  options?: ApiOptions,
+): Promise<PaginatedSeasonsResponse> {
+  return apiClient.get<PaginatedSeasonsResponse>('/api/seasons?limit=50', options);
+}
+
+/** `GET /api/seasons/active` — the currently active season */
+export function getActiveSeason(options?: ApiOptions): Promise<SeasonListItem> {
+  return apiClient.get<SeasonListItem>('/api/seasons/active', options);
+}
