@@ -434,3 +434,103 @@ export function getSeasons(
 export function getActiveSeason(options?: ApiOptions): Promise<SeasonListItem> {
   return apiClient.get<SeasonListItem>('/api/seasons/active', options);
 }
+
+// ---------------------------------------------------------------------------
+// Admin — Users
+// ---------------------------------------------------------------------------
+
+export interface AdminUser {
+  id: string;
+  stellar_address: string;
+  username: string | null;
+  role: string;
+  reputation_score: number;
+  total_predictions: number;
+  is_banned: boolean;
+  ban_reason: string | null;
+  banned_at: string | null;
+  is_flagged?: boolean;
+  created_at: string;
+}
+
+export interface AdminUsersQuery {
+  search?: string;
+  page?: number;
+  limit?: number;
+  sortBy?: string;
+  sortOrder?: 'ASC' | 'DESC';
+}
+
+export interface PaginatedAdminUsersResponse {
+  data: AdminUser[];
+  meta: {
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  };
+}
+
+function adminHeaders(token: string): HeadersInit {
+  return { Authorization: `Bearer ${token}` };
+}
+
+/** `GET /api/admin/users?search=&page=&limit=` */
+export function listAdminUsers(
+  query: AdminUsersQuery,
+  token: string,
+  options?: ApiOptions,
+): Promise<PaginatedAdminUsersResponse> {
+  const params = new URLSearchParams();
+  if (query.search) params.set('search', query.search);
+  if (query.page !== undefined) params.set('page', String(query.page));
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  if (query.sortBy) params.set('sortBy', query.sortBy);
+  if (query.sortOrder) params.set('sortOrder', query.sortOrder);
+  const qs = params.toString();
+  return apiClient.get<PaginatedAdminUsersResponse>(
+    `/api/admin/users${qs ? `?${qs}` : ''}`,
+    { ...options, headers: { ...adminHeaders(token), ...options?.headers } },
+  );
+}
+
+/** `PATCH /api/admin/users/:id/ban` — requires a non-empty reason */
+export function banAdminUser(
+  id: string,
+  reason: string,
+  token: string,
+  options?: ApiOptions,
+): Promise<AdminUser> {
+  return apiClient.patch<AdminUser>(
+    `/api/admin/users/${encodeURIComponent(id)}/ban`,
+    { reason },
+    { ...options, headers: { ...adminHeaders(token), ...options?.headers } },
+  );
+}
+
+/** `PATCH /api/admin/users/:id/unban` */
+export function unbanAdminUser(
+  id: string,
+  token: string,
+  options?: ApiOptions,
+): Promise<AdminUser> {
+  return apiClient.patch<AdminUser>(
+    `/api/admin/users/${encodeURIComponent(id)}/unban`,
+    undefined,
+    { ...options, headers: { ...adminHeaders(token), ...options?.headers } },
+  );
+}
+
+/** `POST /api/admin/users/bulk-action` with action='flag' */
+export function flagAdminUser(
+  id: string,
+  reason: string,
+  token: string,
+  options?: ApiOptions,
+): Promise<unknown> {
+  return apiClient.post<unknown>(
+    '/api/admin/users/bulk-action',
+    { user_ids: [id], action: 'flag', reason },
+    { ...options, headers: { ...adminHeaders(token), ...options?.headers } },
+  );
+}
