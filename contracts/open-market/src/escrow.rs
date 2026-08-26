@@ -29,6 +29,29 @@ pub fn test_simulate_reentrant_call(env: &Env) -> Result<(), InsightArenaError> 
     result
 }
 
+/// Invariant check shared by every outbound transfer path.
+///
+/// Returns `Err(EscrowEmpty)` when `escrow_balance == 0` (pool is fully
+/// drained or was never funded), and `Err(InsufficientFunds)` when the pool
+/// is non-zero but still too small to cover `amount`. Returns `Ok(())` when
+/// the balance is sufficient.
+///
+/// Pass the *current* live escrow balance (from `client.balance(&contract)`)
+/// so this helper stays pure and testable without touching storage itself.
+/// Call this before any state mutation or token transfer.
+fn assert_escrow_sufficient(
+    amount: i128,
+    escrow_balance: i128,
+) -> Result<(), InsightArenaError> {
+    if escrow_balance == 0 {
+        return Err(InsightArenaError::EscrowEmpty);
+    }
+    if escrow_balance < amount {
+        return Err(InsightArenaError::InsufficientFunds);
+    }
+    Ok(())
+}
+
 fn bump_treasury(env: &Env) {
     env.storage().persistent().extend_ttl(
         &DataKey::Treasury,
@@ -141,9 +164,9 @@ pub fn refund(env: &Env, to: &Address, amount: i128) -> Result<(), InsightArenaE
     let client = token::Client::new(env, &cfg.xlm_token);
     let contract = env.current_contract_address();
 
-    if client.balance(&contract) < amount {
+    if let Err(e) = assert_escrow_sufficient(amount, client.balance(&contract)) {
         release_escrow_lock(env);
-        return Err(InsightArenaError::EscrowEmpty);
+        return Err(e);
     }
 
     client.transfer(&contract, to, &amount);
@@ -173,9 +196,9 @@ pub fn release_payout(env: &Env, to: &Address, amount: i128) -> Result<(), Insig
     let client = token::Client::new(env, &cfg.xlm_token);
     let contract = env.current_contract_address();
 
-    if client.balance(&contract) < amount {
+    if let Err(e) = assert_escrow_sufficient(amount, client.balance(&contract)) {
         release_escrow_lock(env);
-        return Err(InsightArenaError::EscrowEmpty);
+        return Err(e);
     }
 
     client.transfer(&contract, to, &amount);
@@ -315,9 +338,7 @@ pub fn transfer_fee(
     let client = token::Client::new(env, &cfg.xlm_token);
     let contract = env.current_contract_address();
 
-    if client.balance(&contract) < amount {
-        return Err(InsightArenaError::EscrowEmpty);
-    }
+    assert_escrow_sufficient(amount, client.balance(&contract))?;
 
     client.transfer(&contract, to, &amount);
 
@@ -371,9 +392,7 @@ pub fn withdraw_treasury(env: Env, caller: Address, amount: i128) -> Result<(), 
     let client = token::Client::new(&env, &cfg.xlm_token);
     let contract = env.current_contract_address();
 
-    if client.balance(&contract) < amount {
-        return Err(InsightArenaError::EscrowEmpty);
-    }
+    assert_escrow_sufficient(amount, client.balance(&contract))?;
 
     client.transfer(&contract, &caller, &amount);
 
@@ -412,9 +431,9 @@ pub(crate) fn pay_oracle_reward(env: &Env, to: &Address, amount: i128) -> Result
     let client = token::Client::new(env, &cfg.xlm_token);
     let contract = env.current_contract_address();
 
-    if client.balance(&contract) < amount {
+    if let Err(e) = assert_escrow_sufficient(amount, client.balance(&contract)) {
         release_escrow_lock(env);
-        return Err(InsightArenaError::EscrowEmpty);
+        return Err(e);
     }
 
     client.transfer(&contract, to, &amount);
@@ -522,9 +541,7 @@ pub fn draw_insurance_pool(
 
     let client = token::Client::new(&env, &cfg.xlm_token);
     let contract = env.current_contract_address();
-    if client.balance(&contract) < amount {
-        return Err(InsightArenaError::EscrowEmpty);
-    }
+    assert_escrow_sufficient(amount, client.balance(&contract))?;
 
     client.transfer(&contract, &to, &amount);
 
@@ -656,9 +673,7 @@ pub fn refund_market_bond(
     let client = token::Client::new(env, &cfg.xlm_token);
     let contract = env.current_contract_address();
 
-    if client.balance(&contract) < amount {
-        return Err(InsightArenaError::EscrowEmpty);
-    }
+    assert_escrow_sufficient(amount, client.balance(&contract))?;
 
     client.transfer(&contract, creator, &amount);
 
