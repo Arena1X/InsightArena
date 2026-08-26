@@ -12,7 +12,7 @@ export interface LeaderboardFiltersState {
   category: Category;
   sortBy: SortBy;
   /** undefined = all-time / no season filter */
-  seasonId: string | undefined;
+  seasonId?: string | undefined;
 }
 
 interface LeaderboardFiltersProps {

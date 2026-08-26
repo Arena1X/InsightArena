@@ -5,7 +5,6 @@ import {
   getLeaderboard,
   getLeaderboardSnapshot,
   getSeasons,
-  computeSnapshotDeltas,
   type LeaderboardEntryResponse,
   type SeasonListItem,
   type SnapshotRankingEntry,
@@ -69,51 +68,56 @@ export function useLeaderboard(): UseLeaderboardReturn {
     new Map(),
   );
 
-  // Abort controller ref so we can cancel in-flight fetches when
-  // season / compare date changes.
+  // Abort controller refs so we can cancel in-flight fetches when the
+  // season or compare date changes before the previous request settles.
   const abortRef = useRef<AbortController | null>(null);
   const snapshotAbortRef = useRef<AbortController | null>(null);
+
+  // Keep a ref to the live entries so fetchSnapshot can read the latest value
+  // without needing entries in its dependency array (avoids re-creating the
+  // callback on every render).
+  const entriesRef = useRef<LeaderboardEntryResponse[]>(entries);
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   // ---------------------------------------------------------------------------
   // Load leaderboard entries + seasons list
   // ---------------------------------------------------------------------------
 
-  const fetchLeaderboard = useCallback(
-    async (sid: string | undefined) => {
-      abortRef.current?.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
-      const { signal } = controller;
+  const fetchLeaderboard = useCallback(async (sid: string | undefined) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
 
-      setIsLoading(true);
-      setError(null);
+    setIsLoading(true);
+    setError(null);
 
-      try {
-        // Fetch leaderboard + seasons in parallel.
-        const [leaderboardData, seasonsData] = await Promise.all([
-          getLeaderboard({ season_id: sid, limit: 100 }, { signal }),
-          getSeasons({ signal }),
-        ]);
+    try {
+      // Fetch leaderboard + seasons list in parallel.
+      const [leaderboardData, seasonsData] = await Promise.all([
+        getLeaderboard({ season_id: sid, limit: 100 }, { signal }),
+        getSeasons({ signal }),
+      ]);
 
-        if (signal.aborted) return;
+      if (signal.aborted) return;
 
-        setEntries(leaderboardData.data);
-        setSeasons(seasonsData.data);
-      } catch (err) {
-        if (signal.aborted) return;
-        setEntries([]);
-        setError(
-          logHookError(err, {
-            fallbackMessage: "Failed to load leaderboard.",
-            hookName: "useLeaderboard",
-          }),
-        );
-      } finally {
-        if (!signal.aborted) setIsLoading(false);
-      }
-    },
-    [],
-  );
+      setEntries(leaderboardData.data);
+      setSeasons(seasonsData.data);
+    } catch (err) {
+      if (signal.aborted) return;
+      setEntries([]);
+      setError(
+        logHookError(err, {
+          fallbackMessage: "Failed to load leaderboard.",
+          hookName: "useLeaderboard",
+        }),
+      );
+    } finally {
+      if (!signal.aborted) setIsLoading(false);
+    }
+  }, []);
 
   // Re-fetch whenever the season changes.
   useEffect(() => {
@@ -122,7 +126,7 @@ export function useLeaderboard(): UseLeaderboardReturn {
   }, [seasonId, fetchLeaderboard]);
 
   // ---------------------------------------------------------------------------
-  // Load snapshot for compare date
+  // Load snapshot for compare date and compute per-address rank deltas
   // ---------------------------------------------------------------------------
 
   const fetchSnapshot = useCallback(
@@ -147,36 +151,19 @@ export function useLeaderboard(): UseLeaderboardReturn {
 
         setSnapshotEntries(snapshot.data);
 
-        // Compute deltas: snapshot is the baseline, current live entries are "current".
-        // We re-read entries from state inside the callback — use a functional
-        // update so we always see the latest value.
-        setEntries((currentEntries) => {
-          // Build a synthetic LeaderboardEntryResponse list for delta computation.
-          // computeSnapshotDeltas needs stellar_address on both sides.
-          const deltas = computeSnapshotDeltas(snapshot.data, [
-            ...snapshot.data.map((s) => ({
-              stellar_address: s.stellar_address,
-              rank: s.rank,
-            })),
-          ]);
-
-          // Real deltas: compare snapshot ranks against current live ranks.
-          const liveMap = new Map(
-            currentEntries.map((e) => [e.stellar_address, e.rank]),
-          );
-          const realDeltas = new Map<string, number>();
-          for (const snap of snapshot.data) {
-            const liveRank = liveMap.get(snap.stellar_address);
-            if (liveRank !== undefined) {
-              // positive = moved up (rank number decreased)
-              realDeltas.set(snap.stellar_address, snap.rank - liveRank);
-            }
+        // Compute per-address deltas: snapshot rank − live rank.
+        // Positive value = the user moved up since the snapshot date.
+        const liveMap = new Map(
+          entriesRef.current.map((e) => [e.stellar_address, e.rank]),
+        );
+        const deltas = new Map<string, number>();
+        for (const snap of snapshot.data) {
+          const liveRank = liveMap.get(snap.stellar_address);
+          if (liveRank !== undefined) {
+            deltas.set(snap.stellar_address, snap.rank - liveRank);
           }
-
-          setSnapshotDeltas(realDeltas);
-          void deltas; // unused — computed above inline
-          return currentEntries; // don't change entries
-        });
+        }
+        setSnapshotDeltas(deltas);
       } catch (err) {
         if (signal.aborted) return;
         setSnapshotEntries([]);
@@ -212,8 +199,8 @@ export function useLeaderboard(): UseLeaderboardReturn {
 
   const setSeasonId = useCallback((id: string | undefined) => {
     setSeasonIdState(id);
-    // Clear any compare snapshot when the season changes — the dates may not
-    // be valid for the new season.
+    // Clear any compare snapshot when the season changes — the snapshot dates
+    // from one season may not be valid for another.
     setCompareDateState(null);
   }, []);
 

@@ -107,12 +107,12 @@ function Top3Podium({ top3 }: { top3: LeaderboardEntry[] }) {
           return (
             <div key={entry.rank} className="flex flex-col items-center gap-2">
               <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 border border-white/10 text-sm font-bold text-white">
-                {(entry.username ?? entry.stellar_address)
+                {(entry.username ?? entry.stellar_address ?? "??")
                   .slice(0, 2)
                   .toUpperCase()}
               </span>
               <p className="text-xs text-gray-300 font-medium max-w-[72px] truncate text-center">
-                {entry.username ?? entry.stellar_address.slice(0, 8) + "…"}
+                {entry.username ?? (entry.stellar_address ? entry.stellar_address.slice(0, 8) + "…" : "Unknown")}
               </p>
               <p className="text-xs text-gray-500">
                 {entry.points.toLocaleString()} pts

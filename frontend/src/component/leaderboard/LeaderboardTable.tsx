@@ -11,7 +11,8 @@ import { ReactNode } from "react";
 export interface LeaderboardEntry {
   rank: number;
   username: string | null;
-  stellar_address: string;
+  /** Stellar address — required for API-backed entries, optional for static/demo data. */
+  stellar_address?: string;
   /** Reputation / season score used as the display points value. */
   points: number;
   winRate: number; // 0–100, derived from accuracy_rate string
@@ -194,10 +195,10 @@ export default function LeaderboardTable({
                 const isCurrentUser =
                   currentUser &&
                   (entry.username === currentUser ||
-                    entry.stellar_address === currentUser);
+                    (entry.stellar_address && entry.stellar_address === currentUser));
                 return (
                   <tr
-                    key={`${entry.rank}-${entry.stellar_address}`}
+                    key={`${entry.rank}-${entry.stellar_address ?? entry.username ?? entry.rank}`}
                     className={`transition hover:bg-white/[0.03] ${rowAccent} ${entry.rank <= 3 ? "bg-white/[0.02]" : ""} ${isCurrentUser ? "bg-orange-500/10 ring-1 ring-inset ring-orange-500/20" : ""}`}
                   >
                     <td className="px-4 py-3.5">
@@ -212,7 +213,7 @@ export default function LeaderboardTable({
                       <div className="flex items-center gap-3">
                         <Avatar username={entry.username} />
                         <span className="text-sm font-medium text-white truncate max-w-[140px]">
-                          {entry.username ?? entry.stellar_address.slice(0, 8) + "…"}
+                          {entry.username ?? (entry.stellar_address ? entry.stellar_address.slice(0, 8) + "…" : "Unknown")}
                           {isCurrentUser && (
                             <span className="ml-2 text-[10px] font-semibold text-orange-400 uppercase tracking-wider">
                               You
