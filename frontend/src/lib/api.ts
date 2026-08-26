@@ -1,3 +1,8 @@
+import { env } from './env';
+
+// ---------------------------------------------------------------------------
+// Error type
+// ---------------------------------------------------------------------------
 
 export type ApiErrorKind = 'network' | 'parse' | 'http';
 
@@ -10,7 +15,7 @@ export class ApiError extends Error {
     message: string,
     kind: ApiErrorKind,
     path: string,
-    status: number | null = null
+    status: number | null = null,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -20,23 +25,108 @@ export class ApiError extends Error {
   }
 }
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || '';
+// ---------------------------------------------------------------------------
+// Retry utilities (frontend mirror of backend/src/common/retry.util.ts)
+// ---------------------------------------------------------------------------
 
-if (!BASE_URL) {
-  console.warn('NEXT_PUBLIC_API_URL is not set. API calls may fail.');
+const JITTER_FACTOR = 0.2;
+
+export interface RetryOptions {
+  /** Maximum number of attempts, including the first. Default 3. */
+  maxAttempts?: number;
+  /** Base delay in ms for the first backoff interval. Default 300. */
+  baseDelayMs?: number;
+  /** Called before each retry sleep, useful for logging/telemetry. */
+  onRetry?: (error: unknown, attempt: number, delayMs: number) => void;
 }
+
+/**
+ * Delay before retry `attemptIndex` (0-based):
+ *   baseDelayMs × 2^attemptIndex  ±20% jitter
+ *
+ * Examples with baseDelayMs=300:
+ *   attempt 0 → ~300 ms
+ *   attempt 1 → ~600 ms
+ *   attempt 2 → ~1200 ms
+ */
+export function computeBackoffDelay(baseDelayMs: number, attemptIndex: number): number {
+  const exponential = baseDelayMs * Math.pow(2, attemptIndex);
+  const jitter = exponential * JITTER_FACTOR * (Math.random() * 2 - 1);
+  return Math.max(0, Math.round(exponential + jitter));
+}
+
+/**
+ * Returns true for errors that are safe to retry on a GET:
+ *   - Network-level failures (fetch threw, no response received)
+ *   - HTTP 429 Too Many Requests
+ *   - HTTP 5xx server errors  (except 501 Not Implemented)
+ *
+ * Non-idempotent method calls (POST / PATCH / DELETE) are never passed to
+ * this function — the retry wrapper is only applied to GET.
+ */
+export function isTransientApiError(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  if (error.kind === 'network') return true;
+  if (error.kind === 'http' && error.status !== null) {
+    return error.status === 429 || (error.status >= 500 && error.status !== 501);
+  }
+  return false;
+}
+
+/**
+ * Retries `fn` with exponential backoff while `isTransientApiError` returns
+ * true for the thrown error, up to `maxAttempts` total attempts.
+ *
+ * - Non-transient errors are re-thrown immediately (no delay, no counter
+ *   increment).
+ * - After all attempts are exhausted the last error is re-thrown so callers
+ *   always receive a typed `ApiError`.
+ */
+export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
+  const maxAttempts = options.maxAttempts ?? 3;
+  const baseDelayMs = options.baseDelayMs ?? 300;
+
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+
+      const isLast = attempt === maxAttempts - 1;
+      if (isLast || !isTransientApiError(error)) {
+        throw error;
+      }
+
+      const delayMs = computeBackoffDelay(baseDelayMs, attempt);
+      options.onRetry?.(error, attempt + 1, delayMs);
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  throw lastError;
+}
+
+// ---------------------------------------------------------------------------
+// Core fetch wrapper
+// ---------------------------------------------------------------------------
 
 export interface ApiOptions extends Omit<RequestInit, 'body'> {
   body?: unknown;
   signal?: AbortSignal;
+  /** Override retry settings for this request. Pass `{ maxAttempts: 1 }` to disable retries. */
+  retry?: RetryOptions;
 }
 
-async function request<T>(
+const IDEMPOTENT_METHODS = new Set<string>(['GET']);
+
+async function requestOnce<T>(
   path: string,
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
-  options: ApiOptions = {}
+  method: string,
+  options: ApiOptions,
 ): Promise<T> {
-  const { body, headers, signal, ...rest } = options;
+  const { body, headers, signal, retry: _retry, ...rest } = options;
 
   const config: RequestInit = {
     method,
@@ -55,7 +145,7 @@ async function request<T>(
   let response: Response;
 
   try {
-    response = await fetch(`${BASE_URL}${path}`, config);
+    response = await fetch(`${env.API_URL}${path}`, config);
   } catch (error) {
     if (error instanceof Error) {
       throw new ApiError(`Network error: ${error.message}`, 'network', path);
@@ -92,14 +182,52 @@ async function request<T>(
   }
 }
 
+/**
+ * Central request dispatcher.
+ *
+ * GET requests are automatically retried with exponential backoff on transient
+ * errors (network failures, 429, 5xx). All other methods are executed once —
+ * retrying non-idempotent mutations automatically risks double-submission.
+ *
+ * Callers can customise or disable retry behaviour via `options.retry`:
+ *   // disable retries for a specific GET
+ *   apiClient.get('/path', { retry: { maxAttempts: 1 } });
+ *
+ *   // increase attempts for a critical GET
+ *   apiClient.get('/path', { retry: { maxAttempts: 5 } });
+ */
+async function request<T>(
+  path: string,
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  options: ApiOptions = {},
+): Promise<T> {
+  const shouldRetry = IDEMPOTENT_METHODS.has(method);
+
+  if (shouldRetry) {
+    return withRetry(() => requestOnce<T>(path, method, options), options.retry);
+  }
+
+  return requestOnce<T>(path, method, options);
+}
+
+// ---------------------------------------------------------------------------
+// Public API client
+// ---------------------------------------------------------------------------
+
 export const apiClient = {
-  get: <T>(path: string, options?: ApiOptions) => request<T>(path, 'GET', options),
-  post: <T>(path: string, body?: unknown, options?: ApiOptions) => request<T>(path, 'POST', { ...options, body }),
-  patch: <T>(path: string, body?: unknown, options?: ApiOptions) => request<T>(path, 'PATCH', { ...options, body }),
-  delete: <T>(path: string, options?: ApiOptions) => request<T>(path, 'DELETE', options),
+  get: <T>(path: string, options?: ApiOptions) =>
+    request<T>(path, 'GET', options),
+  post: <T>(path: string, body?: unknown, options?: ApiOptions) =>
+    request<T>(path, 'POST', { ...options, body }),
+  patch: <T>(path: string, body?: unknown, options?: ApiOptions) =>
+    request<T>(path, 'PATCH', { ...options, body }),
+  delete: <T>(path: string, options?: ApiOptions) =>
+    request<T>(path, 'DELETE', options),
 };
 
-// ── Profile completeness ────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Profile completeness
+// ---------------------------------------------------------------------------
 
 export interface ProfileFieldValues {
   username?: string;
@@ -127,7 +255,9 @@ export function getMissingProfileFields(
   return REQUIRED_PROFILE_FIELDS.filter((field) => !user[field.key]?.trim());
 }
 
-// ── Course completion ───────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Course completion
+// ---------------------------------------------------------------------------
 
 export interface CourseCompletionResponse {
   courseId: string;
