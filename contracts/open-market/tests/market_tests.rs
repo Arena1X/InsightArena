@@ -2018,3 +2018,108 @@ fn test_nway_market_5_outcomes_end_to_end() {
     let err2 = client.try_claim_payout(&u2, &market_id);
     assert!(matches!(err2, Err(Ok(InsightArenaError::InvalidOutcome))));
 }
+
+// ── Reputation gate — market_tests.rs (AC-1 / AC-2 / AC-4) ──────────────────
+//
+// These tests exercise the reputation gate that lives inside create_market
+// (Guard 6 in market.rs). AC-3 (MarketCreationDenied event) is covered by
+// denial_emits_event_with_attempted_creator in reputation_tests.rs, which
+// runs in a binary where Soroban's test SDK reliably captures failed-call
+// events.
+
+/// AC-1 + AC-2: a creator whose reputation score is 0 and who is NOT on the
+/// trusted-creator allowlist is rejected with InsufficientReputation, no
+/// market record is written, and the market counter stays at 0.
+#[test]
+fn create_market_denied_writes_no_state_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle) = deploy_with_actors(&env);
+    let creator = Address::generate(&env);
+
+    // Raise threshold above a brand-new creator's score of 0.
+    client.set_min_creator_reputation(&admin, &1_u32);
+
+    // Must fail with InsufficientReputation.
+    let result = client.try_create_market(&creator, &default_params(&env));
+    assert!(
+        matches!(result, Err(Ok(InsightArenaError::InsufficientReputation))),
+        "expected InsufficientReputation, got {:?}",
+        result
+    );
+
+    // AC-2: no state written — counter stays at 0, no market record exists.
+    assert_eq!(
+        client.get_market_count(),
+        0,
+        "market counter must remain 0 after a denied create_market"
+    );
+    assert!(
+        matches!(
+            client.try_get_market(&1_u64),
+            Err(Ok(InsightArenaError::MarketNotFound))
+        ),
+        "market ID 1 must not exist after a denied create_market"
+    );
+}
+
+/// AC-1 + AC-4 (allowlist path): a creator on the trusted-creator allowlist
+/// succeeds even when their reputation score is 0 and the threshold is 1000.
+/// The market is persisted and the counter increments.
+#[test]
+fn create_market_allowed_for_trusted_creator_regardless_of_score() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle) = deploy_with_actors(&env);
+    let creator = Address::generate(&env);
+
+    client.set_min_creator_reputation(&admin, &1_000_u32);
+    client.add_trusted_creator(&admin, &creator);
+
+    let result = client.try_create_market(&creator, &default_params(&env));
+    assert!(
+        result.is_ok(),
+        "trusted creator must be allowed to create a market regardless of score"
+    );
+
+    assert_eq!(client.get_market_count(), 1);
+    assert_eq!(client.get_market(&1_u64).creator, creator);
+}
+
+/// AC-1 + AC-4 (reputation path): a creator who meets min_creator_reputation
+/// directly — without being on the allowlist — is also allowed. Confirms the
+/// OR logic works in both directions.
+#[test]
+fn create_market_allowed_when_reputation_meets_threshold_directly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle) = deploy_with_actors(&env);
+    let creator = Address::generate(&env);
+
+    // Build score of 600: create a market, advance past resolution_time, resolve.
+    let seed_params = default_params(&env);
+    let resolution_time = seed_params.resolution_time;
+    let seed_id = client.create_market(&creator, &seed_params);
+    env.ledger().set_timestamp(resolution_time + 1);
+    client.resolve_market(&oracle, &seed_id, &symbol_short!("yes"));
+    assert_eq!(client.get_reputation_score(&creator), 600);
+
+    // Set threshold to exactly 600 — score meets it.
+    client.set_min_creator_reputation(&admin, &600_u32);
+
+    // NOT on the allowlist.
+    assert!(!client.is_trusted_creator(&creator));
+
+    // Build params relative to the now-advanced ledger timestamp.
+    let now = env.ledger().timestamp();
+    let mut params = default_params(&env);
+    params.end_time = now + 1000;
+    params.resolution_time = now + 2000;
+
+    let result = client.try_create_market(&creator, &params);
+    assert!(
+        result.is_ok(),
+        "creator whose score meets the threshold must succeed without being on the allowlist"
+    );
+    assert_eq!(client.get_market_count(), 2);
+}
