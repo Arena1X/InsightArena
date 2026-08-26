@@ -1,5 +1,6 @@
 import { ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { ThrottlerException } from '@nestjs/throttler';
 import { TieredThrottlerGuard } from './tiered-throttler.guard';
 import { THROTTLE_TIER_KEY } from '../decorators/throttle-tier.decorator';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
@@ -162,6 +163,65 @@ describe('TieredThrottlerGuard', () => {
       const key = (guard as any).generateKey(context, 'suffix', 'auth');
       expect(key).toContain('throttle:auth:192.168.1.1');
       expect(key).toContain('suffix');
+    });
+  });
+
+  describe('throwThrottlingException', () => {
+    it('sets standard rate-limit headers (unsuffixed) before throwing', async () => {
+      const setHeader = jest.fn();
+      const context = {
+        switchToHttp: () => ({
+          getRequest: () => ({ headers: {}, ip: '127.0.0.1' }),
+          getResponse: () => ({ setHeader }),
+        }),
+      } as unknown as ExecutionContext;
+
+      await expect(
+        (guard as any).throwThrottlingException(context, {
+          limit: 10,
+          ttl: 60000,
+          key: 'k',
+          tracker: 'user:1',
+          totalHits: 11,
+          timeToExpire: 42,
+          isBlocked: true,
+          timeToBlockExpire: 55,
+        }),
+      ).rejects.toBeInstanceOf(ThrottlerException);
+
+      expect(setHeader).toHaveBeenCalledWith('X-RateLimit-Limit', '10');
+      expect(setHeader).toHaveBeenCalledWith('X-RateLimit-Remaining', '0');
+      expect(setHeader).toHaveBeenCalledWith('X-RateLimit-Reset', '42');
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '55');
+    });
+
+    it('reports numerically correct headers exactly at the limit boundary', async () => {
+      const setHeader = jest.fn();
+      const context = {
+        switchToHttp: () => ({
+          getRequest: () => ({ headers: {}, ip: '127.0.0.1' }),
+          getResponse: () => ({ setHeader }),
+        }),
+      } as unknown as ExecutionContext;
+
+      // The request that trips the limit: limit=100, this was the 101st hit.
+      await expect(
+        (guard as any).throwThrottlingException(context, {
+          limit: 100,
+          ttl: 60000,
+          key: 'k',
+          tracker: 'user:1',
+          totalHits: 101,
+          timeToExpire: 30,
+          isBlocked: true,
+          timeToBlockExpire: 30,
+        }),
+      ).rejects.toBeInstanceOf(ThrottlerException);
+
+      expect(setHeader).toHaveBeenCalledWith('X-RateLimit-Limit', '100');
+      expect(setHeader).toHaveBeenCalledWith('X-RateLimit-Remaining', '0');
+      expect(setHeader).toHaveBeenCalledWith('X-RateLimit-Reset', '30');
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '30');
     });
   });
 

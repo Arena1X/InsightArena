@@ -13,6 +13,7 @@ export enum DeliveryStatus {
   PENDING = 'pending',
   SUCCESS = 'success',
   FAILED = 'failed',
+  DEAD_LETTER = 'dead_letter',
 }
 
 @Entity('webhook_delivery_logs')
