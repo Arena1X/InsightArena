@@ -1190,3 +1190,139 @@ fn test_escrow_operations_resume_after_unpause() {
     let token = TokenClient::new(&env, &xlm_token);
     assert_eq!(token.balance(&client.address), amount);
 }
+
+// ── Escrow invariant: assert_escrow_sufficient ────────────────────────────────
+//
+// AC-1: every payout/refund path enforces a shared balance invariant.
+// AC-2: zero escrow  → EscrowEmpty; insufficient-but-nonzero → InsufficientFunds.
+// AC-3: exact-balance payout succeeds (boundary must not be incorrectly rejected).
+
+/// Payout attempt for more than the tracked escrow balance reverts with
+/// `InsufficientFunds`, and no transfer occurs.
+#[test]
+fn test_release_payout_over_balance_returns_insufficient_funds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+    let recipient = Address::generate(&env);
+
+    // Fund the contract with a smaller amount than what will be requested.
+    let escrow_balance = 5_000_000_i128;
+    let requested_payout = 10_000_000_i128;
+    fund(&env, &xlm_token, &client.address, escrow_balance);
+
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let result = env.as_contract(&client.address, || {
+        release_payout(&env, &recipient, requested_payout)
+    });
+
+    // Must return InsufficientFunds (not EscrowEmpty — balance is nonzero).
+    assert_eq!(result, Err(InsightArenaError::InsufficientFunds));
+
+    // No tokens must have moved.
+    assert_eq!(token.balance(&client.address), escrow_balance);
+    assert_eq!(token.balance(&recipient), 0);
+}
+
+/// Payout attempt against an empty escrow pool reverts with `EscrowEmpty`
+/// specifically (not `InsufficientFunds`), and no transfer occurs.
+#[test]
+fn test_release_payout_against_empty_escrow_returns_escrow_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+    let recipient = Address::generate(&env);
+
+    // Contract has zero balance — do not call fund().
+    let token = TokenClient::new(&env, &xlm_token);
+    assert_eq!(token.balance(&client.address), 0);
+
+    let result = env.as_contract(&client.address, || {
+        release_payout(&env, &recipient, 10_000_000_i128)
+    });
+
+    // Must return EscrowEmpty specifically because balance == 0.
+    assert_eq!(result, Err(InsightArenaError::EscrowEmpty));
+
+    // Recipient balance must remain zero.
+    assert_eq!(token.balance(&recipient), 0);
+}
+
+/// Payout for exactly the available escrow balance succeeds — the invariant
+/// check must not incorrectly reject valid payouts at the boundary.
+#[test]
+fn test_release_payout_exact_balance_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+    let recipient = Address::generate(&env);
+
+    let exact_amount = 20_000_000_i128;
+    fund(&env, &xlm_token, &client.address, exact_amount);
+
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let result = env.as_contract(&client.address, || {
+        release_payout(&env, &recipient, exact_amount)
+    });
+
+    // Must succeed — escrow_balance == amount is a valid payout.
+    assert_eq!(result, Ok(()));
+
+    // Full amount transferred; contract balance drained to zero.
+    assert_eq!(token.balance(&recipient), exact_amount);
+    assert_eq!(token.balance(&client.address), 0);
+}
+
+/// Refund attempt for more than the tracked escrow balance reverts with
+/// `InsufficientFunds`, and no transfer occurs.
+#[test]
+fn test_refund_over_balance_returns_insufficient_funds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+    let recipient = Address::generate(&env);
+
+    let escrow_balance = 3_000_000_i128;
+    let requested_refund = 9_000_000_i128;
+    fund(&env, &xlm_token, &client.address, escrow_balance);
+
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let result = env.as_contract(&client.address, || {
+        refund(&env, &recipient, requested_refund)
+    });
+
+    assert_eq!(result, Err(InsightArenaError::InsufficientFunds));
+
+    // No tokens must have moved.
+    assert_eq!(token.balance(&client.address), escrow_balance);
+    assert_eq!(token.balance(&recipient), 0);
+}
+
+/// Refund attempt against an empty escrow pool reverts with `EscrowEmpty`,
+/// and no transfer occurs.
+#[test]
+fn test_refund_against_empty_escrow_returns_escrow_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+    let recipient = Address::generate(&env);
+
+    // Contract has zero balance.
+    let token = TokenClient::new(&env, &xlm_token);
+    assert_eq!(token.balance(&client.address), 0);
+
+    let result = env.as_contract(&client.address, || {
+        refund(&env, &recipient, 5_000_000_i128)
+    });
+
+    assert_eq!(result, Err(InsightArenaError::EscrowEmpty));
+    assert_eq!(token.balance(&recipient), 0);
+}
