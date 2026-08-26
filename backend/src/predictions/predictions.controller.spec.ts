@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PredictionsController } from './predictions.controller';
 import { PredictionsService } from './predictions.service';
 import { IDEMPOTENT_KEY } from '../common/idempotency/idempotent.decorator';
+import { IdempotencyService } from '../common/idempotency/idempotency.service';
 
 describe('PredictionsController — idempotency', () => {
   let controller: PredictionsController;
@@ -20,6 +21,10 @@ describe('PredictionsController — idempotency', () => {
       controllers: [PredictionsController],
       providers: [
         { provide: PredictionsService, useValue: predictionsService },
+        {
+          provide: IdempotencyService,
+          useValue: { acquire: jest.fn(), complete: jest.fn(), release: jest.fn() },
+        },
       ],
     }).compile();
 

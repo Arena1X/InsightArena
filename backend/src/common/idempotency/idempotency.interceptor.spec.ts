@@ -5,6 +5,7 @@ import {
   ConflictException,
   ExecutionContext,
 } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { of } from 'rxjs';
 import { IdempotencyInterceptor } from './idempotency.interceptor';
 import { IdempotencyService } from './idempotency.service';
@@ -77,9 +78,7 @@ describe('IdempotencyInterceptor', () => {
   });
 
   it('returns 409 when a request with the same key and same body is already in progress', async () => {
-    const crypto = await import('crypto');
-    const expectedHash = crypto
-      .createHash('sha256')
+    const expectedHash = createHash('sha256')
       .update(`POST:/predictions:${JSON.stringify({ a: 1 })}`)
       .digest('hex');
     idempotencyService.acquire.mockResolvedValue({
@@ -99,9 +98,7 @@ describe('IdempotencyInterceptor', () => {
   });
 
   it('replays the stored response for a completed duplicate with a matching body', async () => {
-    const crypto = await import('crypto');
-    const expectedHash = crypto
-      .createHash('sha256')
+    const expectedHash = createHash('sha256')
       .update(`POST:/predictions:${JSON.stringify({ a: 1 })}`)
       .digest('hex');
     idempotencyService.acquire.mockResolvedValue({
