@@ -62,6 +62,7 @@ describe('UsersService', () => {
           provide: getRepositoryToken(User),
           useValue: {
             findOneBy: jest.fn(),
+            findOne: jest.fn(),
             save: jest.fn(),
             find: jest.fn(),
           },
@@ -156,20 +157,20 @@ describe('UsersService', () => {
 
   describe('findByAddress', () => {
     it('should return a user when found', async () => {
-      const findOneByMock = jest
-        .spyOn(repository, 'findOneBy')
+      const findOneMock = jest
+        .spyOn(repository, 'findOne')
         .mockResolvedValue(mockUser);
 
       const result = await service.findByAddress(mockUser.stellar_address);
 
       expect(result).toEqual(mockUser);
-      expect(findOneByMock).toHaveBeenCalledWith({
-        stellar_address: mockUser.stellar_address,
+      expect(findOneMock).toHaveBeenCalledWith({
+        where: { stellar_address: mockUser.stellar_address, deleted_at: expect.anything() },
       });
     });
 
-    it('should throw NotFoundException when user not found', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(null);
+    it('should throw NotFoundException when user not found or soft-deleted', async () => {
+      jest.spyOn(repository, 'findOne').mockResolvedValue(null);
 
       await expect(
         service.findByAddress('NONEXISTENT_ADDRESS'),
@@ -177,9 +178,21 @@ describe('UsersService', () => {
     });
   });
 
+  describe('findAll', () => {
+    it('should exclude soft-deleted users', async () => {
+      const findMock = jest.spyOn(repository, 'find').mockResolvedValue([mockUser]);
+      const result = await service.findAll();
+      expect(result).toEqual([mockUser]);
+      expect(findMock).toHaveBeenCalledWith({
+        where: { deleted_at: expect.anything() },
+      });
+    });
+  });
+
+
   describe('findUserCompetitions', () => {
     it('should return paginated user competitions', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const queryBuilder = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -233,7 +246,7 @@ describe('UsersService', () => {
 
   describe('findPublicPredictionsByAddress', () => {
     it('should push outcome filter to SQL when outcome is set', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const queryBuilder = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -265,7 +278,7 @@ describe('UsersService', () => {
     });
 
     it('should reject self-follow with BadRequestException', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const queryBuilder = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -294,7 +307,7 @@ describe('UsersService', () => {
     });
 
     it('should reject duplicate follow with ConflictException', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const queryBuilder = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -331,7 +344,7 @@ describe('UsersService', () => {
     });
 
     it('should return only resolved-market predictions with outcome mapping', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const now = new Date('2025-02-01T00:00:00.000Z');
       const queryBuilder = {
@@ -422,7 +435,7 @@ describe('UsersService', () => {
     });
 
     it('should scope markets to creator and return pagination', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
       queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
       jest
         .spyOn(marketsRepository, 'createQueryBuilder')
@@ -449,7 +462,7 @@ describe('UsersService', () => {
     });
 
     it('should filter active markets', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
       queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
       jest
         .spyOn(marketsRepository, 'createQueryBuilder')
@@ -469,7 +482,7 @@ describe('UsersService', () => {
     });
 
     it('should filter resolved markets', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
       queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
       jest
         .spyOn(marketsRepository, 'createQueryBuilder')
@@ -489,7 +502,7 @@ describe('UsersService', () => {
     });
 
     it('should filter cancelled markets', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
       queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
       jest
         .spyOn(marketsRepository, 'createQueryBuilder')
@@ -509,7 +522,7 @@ describe('UsersService', () => {
     });
 
     it('should sort by participant_count and order asc', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
       queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
       jest
         .spyOn(marketsRepository, 'createQueryBuilder')
@@ -533,7 +546,7 @@ describe('UsersService', () => {
 
   describe('getMyStats', () => {
     it('should return lightweight stats with computed accuracy and tier', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const result = await service.getMyStats(mockUser.id);
 
@@ -557,7 +570,7 @@ describe('UsersService', () => {
         correct_predictions: 0,
       };
       jest
-        .spyOn(repository, 'findOneBy')
+        .spyOn(repository, 'findOne')
         .mockResolvedValue(userWithNoPredictions);
 
       const result = await service.getMyStats(mockUser.id);
@@ -567,7 +580,7 @@ describe('UsersService', () => {
     });
 
     it('should throw NotFoundException when user not found', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(null);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(null);
 
       await expect(service.getMyStats('missing-id')).rejects.toThrow(
         NotFoundException,
@@ -578,10 +591,10 @@ describe('UsersService', () => {
   describe('followUser', () => {
     it('should throw BadRequestException if user tries to follow themselves', async () => {
       jest
-        .spyOn(repository, 'findOneBy')
+        .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria.id === mockUser.id) return mockUser;
-          if (criteria.stellar_address === mockUser.stellar_address)
+          if (criteria?.where?.id === mockUser.id || criteria?.id === mockUser.id) return mockUser;
+          if (criteria?.where?.stellar_address === mockUser.stellar_address || criteria?.stellar_address === mockUser.stellar_address)
             return mockUser;
           return null;
         });
@@ -598,10 +611,10 @@ describe('UsersService', () => {
         stellar_address: 'G_ANOTHER',
       } as User;
       jest
-        .spyOn(repository, 'findOneBy')
+        .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria.id === mockUser.id) return mockUser;
-          if (criteria.stellar_address === mockUserB.stellar_address)
+          if (criteria?.where?.id === mockUser.id || criteria?.id === mockUser.id) return mockUser;
+          if (criteria?.where?.stellar_address === mockUserB.stellar_address || criteria?.stellar_address === mockUserB.stellar_address)
             return mockUserB;
           return null;
         });
@@ -630,9 +643,9 @@ describe('UsersService', () => {
         getRepositoryToken(UserFollow),
       );
       jest
-        .spyOn(repository, 'findOneBy')
+        .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria.stellar_address === mockUser.stellar_address)
+          if (criteria?.where?.stellar_address === mockUser.stellar_address || criteria?.stellar_address === mockUser.stellar_address)
             return mockUser;
           return null;
         });
@@ -658,7 +671,7 @@ describe('UsersService', () => {
     });
 
     it('should throw NotFoundException if user does not exist', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(null);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(null);
 
       await expect(
         service.getFollowStats('non-existent-address'),
@@ -670,9 +683,9 @@ describe('UsersService', () => {
         getRepositoryToken(UserFollow),
       );
       jest
-        .spyOn(repository, 'findOneBy')
+        .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria.stellar_address === mockUser.stellar_address)
+          if (criteria?.where?.stellar_address === mockUser.stellar_address || criteria?.stellar_address === mockUser.stellar_address)
             return mockUser;
           return null;
         });
@@ -700,7 +713,7 @@ describe('UsersService', () => {
 
   describe('claimReferral', () => {
     it('records a referral relationship', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue({
+      jest.spyOn(repository, 'findOne').mockResolvedValue({
         id: 'referrer-1',
       } as User);
       jest.spyOn(referralsRepository, 'findOne').mockResolvedValue(null);
@@ -722,11 +735,11 @@ describe('UsersService', () => {
       await expect(service.claimReferral('user-1', 'user-1')).rejects.toThrow(
         BadRequestException,
       );
-      expect(repository.findOneBy).not.toHaveBeenCalled();
+      expect(repository.findOne).not.toHaveBeenCalled();
     });
 
     it('throws NotFoundException when the referrer does not exist', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(null);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(null);
 
       await expect(
         service.claimReferral('referred-1', 'missing-referrer'),
@@ -734,7 +747,7 @@ describe('UsersService', () => {
     });
 
     it('rejects duplicate attribution when a referral already exists', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue({
+      jest.spyOn(repository, 'findOne').mockResolvedValue({
         id: 'referrer-1',
       } as User);
       jest.spyOn(referralsRepository, 'findOne').mockResolvedValue({
@@ -834,7 +847,7 @@ describe('UsersService', () => {
         avatar_url: 'https://example.com/original.png',
       } as User;
 
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(existingUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(existingUser);
       jest.spyOn(repository, 'save').mockImplementation(async (user) => user);
 
       const result = await service.updateProfile(existingUser.id, {
@@ -858,7 +871,7 @@ describe('UsersService', () => {
         avatar_url: 'https://example.com/original.png',
       } as User;
 
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(existingUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(existingUser);
       jest.spyOn(repository, 'save').mockImplementation(async (user) => user);
 
       const result = await service.updateProfile(existingUser.id, {});

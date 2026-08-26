@@ -5,7 +5,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import {
   ListUserPredictionsDto,
@@ -82,7 +82,7 @@ export class UsersService {
   ) {}
 
   async findAll(): Promise<User[]> {
-    return this.usersRepository.find();
+    return this.usersRepository.find({ where: { deleted_at: IsNull() } });
   }
 
   async getMyStats(userId: string): Promise<UserStatsResponseDto> {
@@ -102,7 +102,9 @@ export class UsersService {
   }
 
   async findById(id: string): Promise<User> {
-    const user = await this.usersRepository.findOneBy({ id });
+    const user = await this.usersRepository.findOne({
+      where: { id, deleted_at: IsNull() },
+    });
     if (!user) {
       throw new NotFoundException(`User with id ${id} not found`);
     }
@@ -110,7 +112,9 @@ export class UsersService {
   }
 
   async findByAddress(stellar_address: string): Promise<User> {
-    const user = await this.usersRepository.findOneBy({ stellar_address });
+    const user = await this.usersRepository.findOne({
+      where: { stellar_address, deleted_at: IsNull() },
+    });
     if (!user) {
       throw new NotFoundException(
         `User with address ${stellar_address} not found`,
@@ -118,6 +122,7 @@ export class UsersService {
     }
     return user;
   }
+
 
   async findPublicPredictionsByAddress(
     stellar_address: string,
@@ -591,7 +596,9 @@ export class UsersService {
       throw new BadRequestException('You cannot refer yourself');
     }
 
-    const referrer = await this.usersRepository.findOneBy({ id: referrerId });
+    const referrer = await this.usersRepository.findOne({
+      where: { id: referrerId, deleted_at: IsNull() },
+    });
     if (!referrer) {
       throw new NotFoundException('Referrer not found');
     }
