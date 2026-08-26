@@ -4,6 +4,7 @@ import { Repository, SelectQueryBuilder } from 'typeorm';
 import { OracleService } from './oracle.service';
 import { CreatorEventMatch } from '../creator-events/entities/creator-event-match.entity';
 import { CreatorEvent } from '../creator-events/entities/creator-event.entity';
+import { MatchResultDivergence } from '../matches/entities/match-result-divergence.entity';
 import { ListPendingMatchesQueryDto } from './dto/list-pending-matches-query.dto';
 
 type MockRepo = jest.Mocked<
@@ -18,6 +19,7 @@ function createMockQueryBuilder<T>(
     andWhere: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
     addOrderBy: jest.fn().mockReturnThis(),
+    leftJoinAndSelect: jest.fn().mockReturnThis(),
     skip: jest.fn().mockReturnThis(),
     take: jest.fn().mockReturnThis(),
     getManyAndCount: jest.fn().mockResolvedValue(returnValue),
@@ -34,6 +36,7 @@ describe('OracleService', () => {
   let service: OracleService;
   let matchRepo: MockRepo;
   let eventRepo: MockRepo;
+  let divergenceRepo: MockRepo;
 
   const mockEvent = {
     id: 'event-1',
@@ -82,11 +85,22 @@ describe('OracleService', () => {
       findByIds: jest.fn(),
     };
 
+    divergenceRepo = {
+      findOne: jest.fn(),
+      createQueryBuilder: jest.fn(),
+      find: jest.fn(),
+      findByIds: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OracleService,
         { provide: getRepositoryToken(CreatorEventMatch), useValue: matchRepo },
         { provide: getRepositoryToken(CreatorEvent), useValue: eventRepo },
+        {
+          provide: getRepositoryToken(MatchResultDivergence),
+          useValue: divergenceRepo,
+        },
       ],
     }).compile();
 
@@ -403,6 +417,58 @@ describe('OracleService', () => {
         'm.result_submitted = :submitted',
         { submitted: true },
       );
+    });
+  });
+
+  describe('getDivergences', () => {
+    it('returns paginated unresolved divergences ordered by most recent', async () => {
+      const rows = [
+        {
+          id: 'div-1',
+          match: { id: 'match-1' },
+          source_a_name: 'match_submitted_result',
+          source_a_value: { home_score: 1 },
+          source_b_name: 'external_feed',
+          source_b_value: { home_score: 2 },
+          created_at: new Date('2026-01-01T00:00:00Z'),
+        },
+        {
+          id: 'div-2',
+          match: { id: 'match-2' },
+          source_a_name: 'queued_external_result',
+          source_a_value: { home_score: 3 },
+          source_b_name: 'external_feed',
+          source_b_value: { home_score: 4 },
+          created_at: new Date('2026-01-02T00:00:00Z'),
+        },
+      ];
+      const qb = createMockQueryBuilder<MatchResultDivergence>([rows, 2]);
+      divergenceRepo.createQueryBuilder.mockReturnValue(
+        qb as unknown as SelectQueryBuilder<MatchResultDivergence>,
+      );
+
+      const result = await service.getDivergences({ page: 1, limit: 20 });
+
+      expect(qb.where).toHaveBeenCalledWith('d.resolved = false');
+      expect(result.data).toHaveLength(2);
+      expect(result.total).toBe(2);
+      expect(result.page).toBe(1);
+      expect(result.limit).toBe(20);
+      expect(result.data[0]).toEqual(
+        expect.objectContaining({ id: 'div-1', match_id: 'match-1' }),
+      );
+    });
+
+    it('returns an empty page when there are no unresolved divergences', async () => {
+      const qb = createMockQueryBuilder<MatchResultDivergence>([[], 0]);
+      divergenceRepo.createQueryBuilder.mockReturnValue(
+        qb as unknown as SelectQueryBuilder<MatchResultDivergence>,
+      );
+
+      const result = await service.getDivergences({ page: 1, limit: 20 });
+
+      expect(result.data).toHaveLength(0);
+      expect(result.total).toBe(0);
     });
   });
 });

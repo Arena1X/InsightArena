@@ -5,6 +5,10 @@ import { DataSource, Repository } from 'typeorm';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SeasonsService } from './seasons.service';
 import { Season } from './entities/season.entity';
+import {
+  DistributionLedgerStatus,
+  SeasonDistributionLedgerEntry,
+} from './entities/season-distribution-ledger.entity';
 import { SorobanService } from '../soroban/soroban.service';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
 import { CreateSeasonDto } from './dto/create-season.dto';
@@ -19,6 +23,14 @@ describe('SeasonsService', () => {
     >
   >;
   let sorobanService: { createSeason: jest.Mock };
+  let notificationsService: { create: jest.Mock };
+  let distributionLedgerRepository: {
+    findOne: jest.Mock;
+    create: jest.Mock;
+    save: jest.Mock;
+    update: jest.Mock;
+    find: jest.Mock;
+  };
 
   beforeEach(async () => {
     seasonsRepository = {
@@ -34,14 +46,28 @@ describe('SeasonsService', () => {
       createSeason: jest.fn(),
     };
 
+    notificationsService = { create: jest.fn().mockResolvedValue(undefined) };
+
+    distributionLedgerRepository = {
+      findOne: jest.fn().mockResolvedValue(null),
+      create: jest.fn((value) => value),
+      save: jest.fn().mockImplementation(async (v) => ({ id: 'ledger-1', ...v })),
+      update: jest.fn().mockResolvedValue(undefined),
+      find: jest.fn().mockResolvedValue([]),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SeasonsService,
         { provide: getRepositoryToken(Season), useValue: seasonsRepository },
+        {
+          provide: getRepositoryToken(SeasonDistributionLedgerEntry),
+          useValue: distributionLedgerRepository,
+        },
         { provide: SorobanService, useValue: sorobanService },
         {
           provide: NotificationsService,
-          useValue: { create: jest.fn().mockResolvedValue(undefined) },
+          useValue: notificationsService,
         },
         {
           provide: DataSource,
@@ -731,6 +757,126 @@ describe('SeasonsService', () => {
       );
       expect(result.skipped).toBe(true);
       expect(processed.rollover_processed_at).toBeTruthy();
+    });
+  });
+
+  describe('computeSeasonRewards', () => {
+    const winner = {
+      id: 'winner-1',
+      username: 'winner',
+      stellar_address: 'GWINNER',
+      season_points: 10,
+    } as Season['top_winner'];
+
+    const season: Season = {
+      id: 'season-1',
+      season_number: 1,
+      name: 'Season 1',
+      starts_at: new Date('2020-01-01T00:00:00.000Z'),
+      ends_at: new Date('2020-06-01T00:00:00.000Z'),
+      reward_pool_stroops: '100',
+      is_active: false,
+      is_finalized: true,
+      participant_count: 0,
+      top_winner: winner,
+      on_chain_season_id: null,
+      soroban_tx_hash: null,
+      rollover_processed_at: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+
+    it('writes a PENDING ledger row before payout and marks it SUCCEEDED after', async () => {
+      await service.computeSeasonRewards(season);
+
+      expect(distributionLedgerRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: DistributionLedgerStatus.PENDING,
+          amount_stroops: '100',
+          recipient_stellar_address: 'GWINNER',
+        }),
+      );
+      expect(notificationsService.create).toHaveBeenCalled();
+      expect(distributionLedgerRepository.update).toHaveBeenCalledWith(
+        'ledger-1',
+        expect.objectContaining({ status: DistributionLedgerStatus.SUCCEEDED }),
+      );
+    });
+
+    it('resumes without re-paying when a SUCCEEDED ledger row already exists for the recipient', async () => {
+      distributionLedgerRepository.findOne.mockResolvedValue({
+        id: 'existing-id',
+        status: DistributionLedgerStatus.SUCCEEDED,
+      });
+
+      const result = await service.computeSeasonRewards(season);
+
+      expect(result).toBe(true);
+      expect(notificationsService.create).not.toHaveBeenCalled();
+      expect(distributionLedgerRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('marks the ledger row FAILED and rethrows when the payout step throws', async () => {
+      notificationsService.create.mockRejectedValue(new Error('boom'));
+
+      await expect(service.computeSeasonRewards(season)).rejects.toThrow(
+        'boom',
+      );
+
+      expect(distributionLedgerRepository.update).toHaveBeenCalledWith(
+        'ledger-1',
+        expect.objectContaining({
+          status: DistributionLedgerStatus.FAILED,
+          failure_reason: 'boom',
+        }),
+      );
+    });
+
+    it('retries a previously FAILED ledger row instead of creating a duplicate', async () => {
+      distributionLedgerRepository.findOne.mockResolvedValue({
+        id: 'failed-id',
+        status: DistributionLedgerStatus.FAILED,
+      });
+
+      await service.computeSeasonRewards(season);
+
+      expect(distributionLedgerRepository.save).not.toHaveBeenCalled();
+      expect(notificationsService.create).toHaveBeenCalled();
+      expect(distributionLedgerRepository.update).toHaveBeenCalledWith(
+        'failed-id',
+        expect.objectContaining({ status: DistributionLedgerStatus.SUCCEEDED }),
+      );
+    });
+  });
+
+  describe('reconcileSeasonDistribution', () => {
+    it('reconciles total distributed against the pool and flags a mismatch', async () => {
+      distributionLedgerRepository.find.mockResolvedValue([
+        { amount_stroops: '40', status: DistributionLedgerStatus.SUCCEEDED },
+      ]);
+
+      const result = await service.reconcileSeasonDistribution(
+        'season-1',
+        100n,
+      );
+
+      expect(result.matches).toBe(false);
+      expect(result.totalDistributed).toBe('40');
+    });
+
+    it('reports a match when the distributed total equals the pool', async () => {
+      distributionLedgerRepository.find.mockResolvedValue([
+        { amount_stroops: '60', status: DistributionLedgerStatus.SUCCEEDED },
+        { amount_stroops: '40', status: DistributionLedgerStatus.SUCCEEDED },
+      ]);
+
+      const result = await service.reconcileSeasonDistribution(
+        'season-1',
+        100n,
+      );
+
+      expect(result.matches).toBe(true);
+      expect(result.totalDistributed).toBe('100');
     });
   });
 });

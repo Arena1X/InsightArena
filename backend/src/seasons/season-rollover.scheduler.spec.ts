@@ -44,4 +44,15 @@ describe('SeasonRolloverScheduler', () => {
 
     expect(seasonsService.processSeasonRollover).toHaveBeenCalledTimes(1);
   });
+
+  it('does not swallow a failed rollover — the mutex releases so the next tick retries it', async () => {
+    seasonsService.processSeasonRollover.mockRejectedValueOnce(
+      new Error('payout failed'),
+    );
+
+    await scheduler.handleRolloverTick();
+    await scheduler.handleRolloverTick();
+
+    expect(seasonsService.processSeasonRollover).toHaveBeenCalledTimes(2);
+  });
 });

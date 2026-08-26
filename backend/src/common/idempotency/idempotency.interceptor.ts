@@ -5,7 +5,6 @@ import {
   ExecutionContext,
   Injectable,
   NestInterceptor,
-  UnprocessableEntityException,
 } from '@nestjs/common';
 import { createHash } from 'crypto';
 import type { Request } from 'express';
@@ -49,7 +48,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     if (!result.acquired) {
       const { record } = result;
       if (record.request_hash !== requestHash) {
-        throw new UnprocessableEntityException(
+        throw new ConflictException(
           'Idempotency-Key was already used with a different request body',
         );
       }

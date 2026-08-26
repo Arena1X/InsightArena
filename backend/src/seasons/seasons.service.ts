@@ -11,6 +11,10 @@ import { NotificationType } from '../notifications/entities/notification.entity'
 import { NotificationsService } from '../notifications/notifications.service';
 import { User } from '../users/entities/user.entity';
 import { Season } from './entities/season.entity';
+import {
+  DistributionLedgerStatus,
+  SeasonDistributionLedgerEntry,
+} from './entities/season-distribution-ledger.entity';
 import { CreateSeasonDto } from './dto/create-season.dto';
 import {
   ListSeasonsDto,
@@ -37,6 +41,8 @@ export class SeasonsService {
   constructor(
     @InjectRepository(Season)
     private readonly seasonsRepository: Repository<Season>,
+    @InjectRepository(SeasonDistributionLedgerEntry)
+    private readonly distributionLedgerRepository: Repository<SeasonDistributionLedgerEntry>,
     private readonly sorobanService: SorobanService,
     private readonly notificationsService: NotificationsService,
     private readonly dataSource: DataSource,
@@ -451,6 +457,12 @@ export class SeasonsService {
   /**
    * Finalize reward computation for a closed season using its reward pool.
    * Standings must already be finalized (top_winner set) before calling.
+   *
+   * Resumable: a ledger row is written PENDING before the payout side effect
+   * and flipped to SUCCEEDED/FAILED after, keyed uniquely per
+   * (season, recipient). Re-running this after a crash finds the existing
+   * row and either skips (already SUCCEEDED) or retries (PENDING/FAILED) —
+   * it never re-creates a duplicate or double-pays.
    */
   async computeSeasonRewards(season: Season): Promise<boolean> {
     const pool = BigInt(season.reward_pool_stroops || '0');
@@ -470,11 +482,40 @@ export class SeasonsService {
         })
       )?.top_winner;
 
-    this.logger.log(
-      `Computed season rewards for ${season.id}: pool=${pool.toString()} winner=${withWinner?.id ?? 'none'}`,
-    );
+    if (!withWinner?.stellar_address) {
+      this.logger.log(
+        `Season ${season.id} has no winner with a stellar address; skipping reward computation`,
+      );
+      return false;
+    }
 
-    if (withWinner?.stellar_address) {
+    let ledgerEntry = await this.distributionLedgerRepository.findOne({
+      where: { season: { id: season.id }, recipient: { id: withWinner.id } },
+    });
+
+    if (ledgerEntry?.status === DistributionLedgerStatus.SUCCEEDED) {
+      this.logger.log(
+        `Season ${season.id} payout to ${withWinner.id} already succeeded; skipping (resumed rollover)`,
+      );
+      return true;
+    }
+
+    if (!ledgerEntry) {
+      ledgerEntry = await this.distributionLedgerRepository.save(
+        this.distributionLedgerRepository.create({
+          season,
+          recipient: withWinner,
+          recipient_stellar_address: withWinner.stellar_address,
+          amount_stroops: pool.toString(),
+          status: DistributionLedgerStatus.PENDING,
+        }),
+      );
+    }
+
+    try {
+      this.logger.log(
+        `Computed season rewards for ${season.id}: pool=${pool.toString()} winner=${withWinner.id}`,
+      );
       await this.notificationsService.create(
         withWinner.stellar_address,
         'season_rewards',
@@ -486,9 +527,57 @@ export class SeasonsService {
           reward_pool_stroops: pool.toString(),
         },
       );
+
+      await this.distributionLedgerRepository.update(ledgerEntry.id, {
+        status: DistributionLedgerStatus.SUCCEEDED,
+      });
+    } catch (err) {
+      await this.distributionLedgerRepository.update(ledgerEntry.id, {
+        status: DistributionLedgerStatus.FAILED,
+        failure_reason: err instanceof Error ? err.message : String(err),
+      });
+      this.logger.error(
+        `Season ${season.id} payout to ${withWinner.id} failed`,
+        err as Error,
+      );
+      throw err;
     }
 
+    await this.reconcileSeasonDistribution(season.id, pool);
     return true;
+  }
+
+  /**
+   * Sums SUCCEEDED ledger rows for a season and compares to its reward
+   * pool, logging a mismatch instead of failing silently.
+   */
+  async reconcileSeasonDistribution(
+    seasonId: string,
+    pool: bigint,
+  ): Promise<{ matches: boolean; totalDistributed: string }> {
+    const succeeded = await this.distributionLedgerRepository.find({
+      where: { season: { id: seasonId }, status: DistributionLedgerStatus.SUCCEEDED },
+    });
+    const totalDistributed = succeeded.reduce(
+      (sum, entry) => sum + BigInt(entry.amount_stroops),
+      0n,
+    );
+    const matches = totalDistributed === pool;
+    if (!matches) {
+      this.logger.error(
+        `Season ${seasonId} distribution mismatch: distributed=${totalDistributed.toString()} pool=${pool.toString()}`,
+      );
+    }
+    return { matches, totalDistributed: totalDistributed.toString() };
+  }
+
+  async getDistributionLedger(
+    seasonId: string,
+  ): Promise<SeasonDistributionLedgerEntry[]> {
+    return this.distributionLedgerRepository.find({
+      where: { season: { id: seasonId } },
+      order: { created_at: 'ASC' },
+    });
   }
 
   private async emitRolloverEvents(

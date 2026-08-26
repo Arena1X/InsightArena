@@ -11,6 +11,7 @@ import { Match } from '../matches/entities/match.entity';
 import { MatchPrediction } from '../matches/entities/match-prediction.entity';
 import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { User } from '../users/entities/user.entity';
+import { Role } from '../common/enums/role.enum';
 
 export interface NotificationBatch {
   notifications: Array<{
@@ -28,6 +29,12 @@ export interface DisputeSlaNotificationInput {
   marketTitle: string;
   slaDeadline: Date;
   recipientAddresses: string[];
+}
+
+export interface OracleDivergenceNotificationInput {
+  matchId: string;
+  sourceAName: string;
+  sourceBName: string;
 }
 
 @Injectable()
@@ -367,6 +374,37 @@ export class NotificationGeneratorService implements OnModuleDestroy {
         market_id: input.marketId,
         sla_deadline: input.slaDeadline.toISOString(),
         escalated: input.escalated,
+      },
+    }));
+
+    await this.queueBatchNotifications(notifications);
+  }
+
+  /**
+   * Alerts admins that two result sources disagree for a match, which has
+   * been quarantined (marked DISPUTED_SOURCE) pending manual review.
+   */
+  async notifyOracleDivergence(
+    input: OracleDivergenceNotificationInput,
+  ): Promise<void> {
+    const admins = await this.userRepository.find({
+      where: { role: Role.Admin },
+    });
+    const addresses = admins
+      .map((admin) => admin.stellar_address)
+      .filter((address): address is string => Boolean(address));
+
+    if (addresses.length === 0) return;
+
+    const notifications = addresses.map((address) => ({
+      userAddress: address,
+      type: NotificationType.OracleResultDivergence,
+      title: 'Oracle Result Divergence Detected',
+      message: `Match ${input.matchId} has conflicting results from ${input.sourceAName} and ${input.sourceBName}. The match is quarantined pending manual review.`,
+      data: {
+        match_id: input.matchId,
+        source_a: input.sourceAName,
+        source_b: input.sourceBName,
       },
     }));
 

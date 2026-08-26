@@ -42,6 +42,10 @@ import {
   ReviewSubmissionDto,
   ReviewResultResponse,
 } from './dto/anomaly-detection.dto';
+import {
+  ListDivergencesQueryDto,
+  PaginatedDivergencesResponse,
+} from './dto/list-divergences.dto';
 
 @ApiTags('Oracle')
 @Controller('oracle')
@@ -147,6 +151,23 @@ export class OracleController {
   @ApiResponse({ status: 401, description: 'Unauthorized - invalid API key' })
   async getSourceReliability() {
     return this.reliabilityService.getScores();
+  }
+
+  @Get('divergences')
+  @UseGuards(OracleAuthGuard)
+  @ApiSecurity('api-key')
+  @ApiOperation({
+    summary: 'List unresolved two-source result divergences for admin review',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Paginated list of unresolved divergences',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - invalid API key' })
+  async getDivergences(
+    @Query() query: ListDivergencesQueryDto,
+  ): Promise<PaginatedDivergencesResponse> {
+    return this.oracleService.getDivergences(query);
   }
 
   @Post('submissions/:id/review')

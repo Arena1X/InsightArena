@@ -3,7 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { getDataSourceToken } from '@nestjs/typeorm';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { ConfigService } from '@nestjs/config';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { LeaderboardService } from './leaderboard.service';
 import { LeaderboardEntry } from './entities/leaderboard-entry.entity';
 import { LeaderboardHistory } from './entities/leaderboard-history.entity';
@@ -305,6 +305,68 @@ describe('LeaderboardService', () => {
         'snap.season_id = :seasonId',
         { seasonId: 'season-1' },
       );
+    });
+  });
+
+  describe('getLeaderboardCursor', () => {
+    function makeEntry(rank: number, userId: string, score: number) {
+      return {
+        ...mockEntry,
+        rank,
+        user_id: userId,
+        reputation_score: score,
+        user: { ...mockUser, id: userId } as User,
+      };
+    }
+
+    it('round-trips an opaque cursor and returns no duplicated/skipped rows across two pages', async () => {
+      const row1 = makeEntry(1, 'u1', 100);
+      const row2 = makeEntry(2, 'u2', 90);
+      const row3 = makeEntry(3, 'u3', 80);
+
+      mockQb.getMany
+        .mockResolvedValueOnce([row1, row2, row3])
+        .mockResolvedValueOnce([row3]);
+
+      const page1 = await service.getLeaderboardCursor({ limit: 2 });
+      expect(page1.hasMore).toBe(true);
+      expect(page1.nextCursor).toEqual(expect.any(String));
+      expect(page1.nextCursor).not.toMatch(/^\d+:/); // opaque, not a raw "rank:id" string
+
+      const page2 = await service.getLeaderboardCursor({
+        limit: 2,
+        cursor: page1.nextCursor!,
+      });
+
+      const ids1 = page1.data.map((e) => e.user_id);
+      const ids2 = page2.data.map((e) => e.user_id);
+      expect(ids1).toEqual(['u1', 'u2']);
+      expect(ids2).toEqual(['u3']);
+      expect(ids1.filter((id) => ids2.includes(id))).toHaveLength(0);
+      expect(page2.hasMore).toBe(false);
+      expect(page2.nextCursor).toBeNull();
+    });
+
+    it('returns hasMore=false and nextCursor=null on the last page', async () => {
+      mockQb.getMany.mockResolvedValueOnce([makeEntry(1, 'u1', 100)]);
+
+      const result = await service.getLeaderboardCursor({ limit: 20 });
+
+      expect(result.hasMore).toBe(false);
+      expect(result.nextCursor).toBeNull();
+    });
+
+    it('throws BadRequestException for a malformed cursor', async () => {
+      const malformedCursor = Buffer.from('bogus', 'utf-8').toString(
+        'base64',
+      );
+
+      await expect(
+        service.getLeaderboardCursor({
+          cursor: malformedCursor,
+          limit: 20,
+        }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 
