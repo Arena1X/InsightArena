@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { createHash } from 'crypto';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { IdempotencyInterceptor } from './idempotency.interceptor';
 import { IdempotencyService } from '../idempotency/idempotency.service';
 import { IdempotencyKey } from '../idempotency/idempotency-key.entity';
@@ -190,8 +190,6 @@ describe('IdempotencyInterceptor', () => {
     });
 
     it('releases the key when the handler throws, so the client can retry', async () => {
-      const { throwError } = await import('rxjs');
-
       const freshRecord = makeRecord({ id: 'record-throw', in_progress: true });
       idempotencyService.acquire.mockResolvedValue({
         acquired: true,
