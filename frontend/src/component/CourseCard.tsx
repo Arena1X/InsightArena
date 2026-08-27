@@ -1,5 +1,12 @@
 import React from 'react';
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
+import {
+  CourseLesson,
+  getResumeLesson,
+  getViewedLessonIds,
+  markLessonViewed,
+} from '../lib/utils';
 
 interface CourseCardProps {
   title: string;
@@ -8,6 +15,8 @@ interface CourseCardProps {
   duration: number;
   level: string;
   tags?: string[] | null;
+  courseId?: string;
+  lessons?: CourseLesson[];
 }
 
 const CourseCard: React.FC<CourseCardProps> = ({
@@ -17,7 +26,18 @@ const CourseCard: React.FC<CourseCardProps> = ({
   duration,
   level,
   tags,
+  courseId = title.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+  lessons = [],
 }) => {
+  const [viewedLessonIds, setViewedLessonIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    setViewedLessonIds(getViewedLessonIds(courseId));
+  }, [courseId]);
+
+  const resumeLesson = getResumeLesson(courseId, lessons);
+  const viewedLessonSet = new Set(viewedLessonIds);
+
   return (
     <div className="bg-black border border-gray-800 rounded-2xl p-6 flex flex-col shadow-md hover:shadow-purple-800/20 transition-shadow">
       {/* Header Row: Title + Tags */}
@@ -55,16 +75,37 @@ const CourseCard: React.FC<CourseCardProps> = ({
         </div>
       </div>
 
+      {lessons.length > 0 && (
+        <div className="mb-4" aria-label="Course lesson progress">
+          <p className="text-xs text-gray-400 mb-2">
+            {viewedLessonIds.filter((id) => lessons.some((lesson) => lesson.id === id)).length}/{lessons.length} lessons viewed
+          </p>
+          <div className="flex gap-1" role="list" aria-label="Viewed lessons">
+            {lessons.map((lesson) => (
+              <span
+                key={lesson.id}
+                role="listitem"
+                aria-label={`${lesson.title}: ${viewedLessonSet.has(lesson.id) ? 'viewed' : 'not viewed'}`}
+                className={`h-1.5 flex-1 rounded-full ${viewedLessonSet.has(lesson.id) ? 'bg-purple-400' : 'bg-gray-700'}`}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Footer Row */}
       <div className="flex items-center justify-between mt-auto pt-4 border-t border-gray-800">
         <span className="text-xs bg-purple-700 text-white px-2 py-1 rounded-full">
           {level}
         </span>
         <Link
-          href="/courses/crypto-101"
+          href={resumeLesson?.href ?? "/courses/crypto-101"}
+          onClick={() => {
+            if (resumeLesson) setViewedLessonIds(markLessonViewed(courseId, resumeLesson.id));
+          }}
           className="text-sm font-semibold text-purple-400 hover:underline"
         >
-          Start Learning →
+          {resumeLesson && viewedLessonIds.length > 0 ? "Resume where you left off" : "Start Learning"} →
         </Link>
       </div>
     </div>

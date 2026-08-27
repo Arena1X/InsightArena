@@ -59,6 +59,25 @@ export class ApiKeyListItemDto {
   @ApiPropertyOptional({ nullable: true })
   revoked_at: Date | null;
 
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Set once this key has been rotated out',
+  })
+  rotated_at: Date | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'End of the grace window during which a rotated key still validates',
+  })
+  grace_expires_at: Date | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'ID of the key that replaced this one via rotation',
+  })
+  replaced_by_id: string | null;
+
   @ApiProperty()
   created_at: Date;
 }

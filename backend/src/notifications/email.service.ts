@@ -10,9 +10,14 @@ import { Repository } from 'typeorm';
 import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { User } from '../users/entities/user.entity';
 import {
+  NotificationCategoryPreference,
+  NotificationCategory,
+} from './entities/notification-category-preference.entity';
+import {
   EmailTemplateContext,
   EmailTemplateType,
   renderEmailTemplate,
+  validateEmailTemplateContext,
 } from './email-templates';
 
 export interface QueuedEmail {
@@ -68,8 +73,15 @@ export function isNetworkError(error: unknown): boolean {
     const code = (cause as { code?: unknown }).code;
     if (
       typeof code === 'string' &&
-      ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND',
-       'EPIPE', 'EHOSTUNREACH', 'EAI_AGAIN'].includes(code)
+      [
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'ENOTFOUND',
+        'EPIPE',
+        'EHOSTUNREACH',
+        'EAI_AGAIN',
+      ].includes(code)
     ) {
       return true;
     }
@@ -152,6 +164,8 @@ export class EmailService implements OnModuleInit, OnModuleDestroy {
     private readonly userRepository: Repository<User>,
     @InjectRepository(UserPreferences)
     private readonly preferencesRepository: Repository<UserPreferences>,
+    @InjectRepository(NotificationCategoryPreference)
+    private readonly categoryPreferencesRepository: Repository<NotificationCategoryPreference>,
   ) {}
 
   onModuleInit(): void {
@@ -182,7 +196,13 @@ export class EmailService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const { subject, html, text } = renderEmailTemplate(template, context);
+    const strict =
+      (this.configService.get<string>('NODE_ENV') ?? 'development') !==
+      'production';
+    validateEmailTemplateContext(template, context, { strict });
+    const { subject, html, text } = renderEmailTemplate(template, context, {
+      strict,
+    });
 
     return this.queueEmail({ to, subject, html, text, userAddress });
   }
@@ -241,27 +261,45 @@ export class EmailService implements OnModuleInit, OnModuleDestroy {
       where: { userId: user.id },
     });
 
-    if (!prefs) {
-      return true;
-    }
-
-    if (!prefs.email_notifications) {
+    if (prefs && !prefs.email_notifications) {
       return false;
     }
 
-    if (template === 'event_cancelled' || template === 'event_created') {
-      return prefs.competition_notifications;
+    // Check category-level legacy preferences
+    if (prefs) {
+      if (template === 'event_cancelled' || template === 'event_created') {
+        if (!prefs.competition_notifications) return false;
+      }
+      if (template === 'match_result_available') {
+        if (!prefs.market_resolution_notifications) return false;
+      }
+      if (template === 'event_won') {
+        if (!prefs.leaderboard_notifications) return false;
+      }
     }
 
-    if (template === 'match_result_available') {
-      return prefs.market_resolution_notifications;
-    }
-
-    if (template === 'event_won') {
-      return prefs.leaderboard_notifications;
+    // Check per-category preference for email channel
+    const category = this.mapTemplateToCategory(template);
+    if (category) {
+      const catPref = await this.categoryPreferencesRepository.findOne({
+        where: { userId: user.id, category },
+      });
+      if (catPref && !catPref.email) return false;
     }
 
     return true;
+  }
+
+  private mapTemplateToCategory(
+    template?: EmailTemplateType,
+  ): NotificationCategory | null {
+    const map: Record<string, NotificationCategory> = {
+      event_created: NotificationCategory.EventCreated,
+      event_cancelled: NotificationCategory.EventCancelled,
+      match_result_available: NotificationCategory.MatchResolved,
+      event_won: NotificationCategory.WinnerVerified,
+    };
+    return template ? (map[template] ?? null) : null;
   }
 
   private async processQueue(): Promise<void> {

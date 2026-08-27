@@ -188,13 +188,38 @@ Stored at `DataKey::InviteCode(code)`.
 
 ### `Dispute`
 
-Stored at `DataKey::Dispute(market_id)`.
+Stored at `DataKey::Dispute(market_id)`. Removed from storage once resolved
+(via `resolve_dispute`) or finalized (via `finalize_arbiter_vote`).
 
 | Field | Type | Description |
 |---|---|---|
 | `disputer` | `Address` | Wallet that filed the dispute |
 | `bond` | `i128` | XLM bond posted with the dispute in stroops |
 | `filed_at` | `u64` | Ledger timestamp when the dispute was filed |
+| `appeal_tier` | `u32` | Number of times this dispute has been appealed (max 2) |
+| `appealer` | `Option<Address>` | Wallet that filed the current appeal, if any |
+| `appeal_bond` | `i128` | XLM bond posted with the current appeal, in stroops |
+| `arbiters` | `Vec<ArbiterAssignment>` | Weighted arbiter panel assigned via `assign_arbiters`; empty until assigned |
+| `quorum_bps` | `u32` | Quorum threshold (bps of total assigned weight) snapshotted at assignment |
+| `voting_deadline` | `u64` | Ledger timestamp after which `finalize_arbiter_vote` becomes callable |
+| `arbiters_finalized` | `bool` | True once the arbiter panel has been finalized |
+
+#### `ArbiterAssignment` (embedded in `Dispute.arbiters`)
+
+| Field | Type | Description |
+|---|---|---|
+| `arbiter` | `Address` | The assigned arbiter's wallet |
+| `weight` | `i128` | Voting weight snapshotted at assignment (stake × reputation multiplier) |
+| `voted` | `bool` | Whether this arbiter has cast their vote |
+| `vote_uphold` | `bool` | The vote itself; meaningful only when `voted` is true |
+
+#### Arbiter stake (raw tuple key, not a `DataKey` variant)
+
+`DataKey` is a `#[contracttype]` union already at its 50-variant XDR cap (see
+`reputation::trusted_creator_key` for the established precedent), so each
+arbiter's staked bond is stored under a raw `(Symbol("arbstk"), Address)`
+tuple key rather than a new `DataKey` variant. Value: `i128`, deposited via
+`stake_as_arbiter` and read via `get_arbiter_stake`.
 
 ---
 

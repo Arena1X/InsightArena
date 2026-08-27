@@ -2,11 +2,16 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Notification, NotificationType } from './entities/notification.entity';
+import {
+  NotificationCategoryPreference,
+  NotificationCategory,
+} from './entities/notification-category-preference.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
 import { Match } from '../matches/entities/match.entity';
 import { MatchPrediction } from '../matches/entities/match-prediction.entity';
 import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { User } from '../users/entities/user.entity';
+import { Role } from '../common/enums/role.enum';
 
 export interface NotificationBatch {
   notifications: Array<{
@@ -16,6 +21,20 @@ export interface NotificationBatch {
     message: string;
     data?: Record<string, unknown>;
   }>;
+}
+
+export interface DisputeSlaNotificationInput {
+  disputeId: string;
+  marketId: string;
+  marketTitle: string;
+  slaDeadline: Date;
+  recipientAddresses: string[];
+}
+
+export interface OracleDivergenceNotificationInput {
+  matchId: string;
+  sourceAName: string;
+  sourceBName: string;
 }
 
 @Injectable()
@@ -30,6 +49,8 @@ export class NotificationGeneratorService implements OnModuleDestroy {
   constructor(
     @InjectRepository(Notification)
     private readonly notificationsRepository: Repository<Notification>,
+    @InjectRepository(NotificationCategoryPreference)
+    private readonly categoryPreferencesRepository: Repository<NotificationCategoryPreference>,
     @InjectRepository(CreatorEvent)
     private readonly creatorEventRepository: Repository<CreatorEvent>,
     @InjectRepository(Match)
@@ -303,6 +324,93 @@ export class NotificationGeneratorService implements OnModuleDestroy {
     await this.queueBatchNotifications(notifications);
   }
 
+  /**
+   * Advisory reminder that a pending dispute's current SLA stage is close
+   * to its deadline. Sent to the assigned arbiter (if any) and admins.
+   */
+  async notifyDisputeSlaApproaching(
+    input: DisputeSlaNotificationInput,
+  ): Promise<void> {
+    if (input.recipientAddresses.length === 0) return;
+
+    const notifications = input.recipientAddresses.map((address) => ({
+      userAddress: address,
+      type: NotificationType.DisputeSlaApproaching,
+      title: 'Dispute SLA Approaching',
+      message: `Dispute for market "${input.marketTitle}" must be reviewed before ${input.slaDeadline.toISOString()}.`,
+      data: {
+        dispute_id: input.disputeId,
+        market_id: input.marketId,
+        sla_deadline: input.slaDeadline.toISOString(),
+      },
+    }));
+
+    await this.queueBatchNotifications(notifications);
+  }
+
+  /**
+   * Sent when a pending dispute's SLA deadline has passed. `escalated`
+   * indicates the dispute was moved into the next SLA stage as a result.
+   */
+  async notifyDisputeSlaBreached(
+    input: DisputeSlaNotificationInput & { escalated: boolean },
+  ): Promise<void> {
+    if (input.recipientAddresses.length === 0) return;
+
+    const title = input.escalated
+      ? 'Dispute SLA Breached — Escalated'
+      : 'Dispute SLA Breached';
+    const message = `Dispute for market "${input.marketTitle}" missed its SLA deadline (${input.slaDeadline.toISOString()})${
+      input.escalated ? ' and has been escalated' : ''
+    }.`;
+
+    const notifications = input.recipientAddresses.map((address) => ({
+      userAddress: address,
+      type: NotificationType.DisputeSlaBreached,
+      title,
+      message,
+      data: {
+        dispute_id: input.disputeId,
+        market_id: input.marketId,
+        sla_deadline: input.slaDeadline.toISOString(),
+        escalated: input.escalated,
+      },
+    }));
+
+    await this.queueBatchNotifications(notifications);
+  }
+
+  /**
+   * Alerts admins that two result sources disagree for a match, which has
+   * been quarantined (marked DISPUTED_SOURCE) pending manual review.
+   */
+  async notifyOracleDivergence(
+    input: OracleDivergenceNotificationInput,
+  ): Promise<void> {
+    const admins = await this.userRepository.find({
+      where: { role: Role.Admin },
+    });
+    const addresses = admins
+      .map((admin) => admin.stellar_address)
+      .filter((address): address is string => Boolean(address));
+
+    if (addresses.length === 0) return;
+
+    const notifications = addresses.map((address) => ({
+      userAddress: address,
+      type: NotificationType.OracleResultDivergence,
+      title: 'Oracle Result Divergence Detected',
+      message: `Match ${input.matchId} has conflicting results from ${input.sourceAName} and ${input.sourceBName}. The match is quarantined pending manual review.`,
+      data: {
+        match_id: input.matchId,
+        source_a: input.sourceAName,
+        source_b: input.sourceBName,
+      },
+    }));
+
+    await this.queueBatchNotifications(notifications);
+  }
+
   // eslint-disable-next-line @typescript-eslint/require-await
   private async queueNotification(notification: {
     userAddress: string;
@@ -387,41 +495,71 @@ export class NotificationGeneratorService implements OnModuleDestroy {
     notificationType: NotificationType,
   ): Promise<boolean> {
     try {
+      // Check legacy per-type preferences (UserPreferences)
       const user = await this.userRepository.findOne({
         where: { stellar_address: userAddress },
         relations: ['preferences'],
       });
 
-      if (!user || !user.preferences) {
-        return true; // Default to sending if no preferences found
+      if (user?.preferences) {
+        const prefs = user.preferences;
+        switch (notificationType) {
+          case NotificationType.EventCreated:
+            if (prefs.event_created_notifications === false) return false;
+            break;
+          case NotificationType.MatchAdded:
+            if (prefs.match_added_notifications === false) return false;
+            break;
+          case NotificationType.PredictionSubmitted:
+            if (prefs.prediction_submitted_notifications === false)
+              return false;
+            break;
+          case NotificationType.MatchResolved:
+            if (prefs.match_resolved_notifications === false) return false;
+            break;
+          case NotificationType.WinnerVerified:
+            if (prefs.winner_verified_notifications === false) return false;
+            break;
+          case NotificationType.EventCancelled:
+            if (prefs.event_cancelled_notifications === false) return false;
+            break;
+        }
       }
 
-      const prefs = user.preferences;
-
-      // Check specific notification type preferences
-      switch (notificationType) {
-        case NotificationType.EventCreated:
-          return prefs.event_created_notifications !== false;
-        case NotificationType.MatchAdded:
-          return prefs.match_added_notifications !== false;
-        case NotificationType.PredictionSubmitted:
-          return prefs.prediction_submitted_notifications !== false;
-        case NotificationType.MatchResolved:
-          return prefs.match_resolved_notifications !== false;
-        case NotificationType.WinnerVerified:
-          return prefs.winner_verified_notifications !== false;
-        case NotificationType.EventCancelled:
-          return prefs.event_cancelled_notifications !== false;
-        default:
-          return true;
+      // Check per-category preference for in_app channel
+      if (user?.id) {
+        const category = this.mapTypeToCategory(notificationType);
+        if (category) {
+          const catPref = await this.categoryPreferencesRepository.findOne({
+            where: { userId: user.id, category },
+          });
+          if (catPref && !catPref.in_app) return false;
+        }
       }
+
+      return true;
     } catch (error) {
       this.logger.error(
         `Error checking notification preferences for ${userAddress}`,
         error,
       );
-      return true; // Default to sending on error
+      return true;
     }
+  }
+
+  private mapTypeToCategory(
+    type: NotificationType,
+  ): NotificationCategory | null {
+    const map: Record<string, NotificationCategory> = {
+      [NotificationType.EventCreated]: NotificationCategory.EventCreated,
+      [NotificationType.MatchAdded]: NotificationCategory.MatchAdded,
+      [NotificationType.PredictionSubmitted]:
+        NotificationCategory.PredictionSubmitted,
+      [NotificationType.MatchResolved]: NotificationCategory.MatchResolved,
+      [NotificationType.WinnerVerified]: NotificationCategory.WinnerVerified,
+      [NotificationType.EventCancelled]: NotificationCategory.EventCancelled,
+    };
+    return map[type] ?? null;
   }
 
   private async getEventParticipants(eventId: number): Promise<string[]> {

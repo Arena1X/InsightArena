@@ -9,6 +9,7 @@ import { AnalyticsController } from './analytics.controller';
 import { AnalyticsService } from './analytics.service';
 import { ActivityLog } from './entities/activity-log.entity';
 import { MarketHistory } from './entities/market-history.entity';
+import { CacheServiceModule } from '../cache/cache.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { MarketHistory } from './entities/market-history.entity';
       MarketHistory,
     ]),
     CacheModule.register(),
+    CacheServiceModule,
   ],
   controllers: [AnalyticsController],
   providers: [AnalyticsService],

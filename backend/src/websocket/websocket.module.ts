@@ -5,6 +5,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventsGateway } from './events.gateway';
 import { BroadcasterService } from './broadcaster.service';
 import { NotificationBroadcasterService } from './notification-broadcaster.service';
+import { OddsBroadcasterService } from './odds-broadcaster.service';
+import { BroadcastQueueService } from './broadcast-queue.service';
 
 @Module({
   imports: [
@@ -21,7 +23,14 @@ import { NotificationBroadcasterService } from './notification-broadcaster.servi
     EventsGateway,
     BroadcasterService,
     NotificationBroadcasterService,
+    OddsBroadcasterService,
+    BroadcastQueueService,
   ],
-  exports: [BroadcasterService, NotificationBroadcasterService],
+  exports: [
+    BroadcasterService,
+    NotificationBroadcasterService,
+    OddsBroadcasterService,
+    BroadcastQueueService,
+  ],
 })
 export class WebsocketModule {}

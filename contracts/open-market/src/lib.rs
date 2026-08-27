@@ -26,12 +26,13 @@ pub use crate::storage_types::ProposalState;
 pub use crate::liquidity::{calculate_liquidity_value, calculate_lp_tokens, calculate_swap_output};
 pub use crate::market::CreateMarketParams;
 pub use crate::storage_types::{
-    BatchPredictionRequest,
+    ArbiterAssignment, ArbiterTally, BatchPredictionRequest,
     ConditionalChain, ConditionalMarket, CreatorLeaderboardEntry, CreatorStats, DataKey,
     DependencyStatus, Dispute, Event, EventMatch, EventPrediction, FeeTier, FeeTierConfig,
-    InviteCode, LPPosition, LeaderboardEntry, LeaderboardSnapshot, LiquidityPool, Market,
-    MarketFeeInfo, MarketStats, PlatformStats, Prediction, PriceAccumulator, PriceObservation,
-    Season, SwapRecord, UserProfile, VolatilityState, Winner,
+    InviteCode, InviteCodeInfo, LPPosition, LeaderboardEntry, LeaderboardSnapshot, LiquidityPool,
+    Market, MarketFeeInfo, MarketStats, OracleSubmission, PlatformStats, Prediction,
+    PriceAccumulator, PriceObservation, Season, SwapRecord, UserProfile, VestingSchedule,
+    VolatilityState, Winner,
 };
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
@@ -81,7 +82,10 @@ impl InsightArenaContract {
         config::update_protocol_fee(&env, new_fee_bps)
     }
 
-    /// Pause or resume the contract. Caller must be the stored admin.
+    /// Pause or resume the contract. Only the stored **guardian** may pause
+    /// (`paused = true`); only the stored **admin** may unpause
+    /// (`paused = false`) — a deliberate separation of duties so no single
+    /// role can both trigger and clear an emergency halt.
     /// `reason_code` is recorded on the emitted event for auditing.
     pub fn set_paused(env: Env, paused: bool, reason_code: u32) -> Result<(), InsightArenaError> {
         config::set_paused(&env, paused, reason_code)
@@ -183,9 +187,28 @@ impl InsightArenaContract {
         market::get_market(&env, market_id)
     }
 
+    /// Return the immutable off-chain metadata content hash stored at market creation.
+    pub fn get_metadata_hash(
+        env: Env,
+        market_id: u64,
+    ) -> Result<soroban_sdk::BytesN<32>, InsightArenaError> {
+        market::get_metadata_hash(&env, market_id)
+    }
+
     /// Return the total number of markets ever created (0 if none yet).
     pub fn get_market_count(env: Env) -> u64 {
         market::get_market_count(&env)
+    }
+
+    /// Permissionless TTL maintenance for an active market (Issue #1516).
+    ///
+    /// Callable by **anyone** with no authorization, so participants or keepers
+    /// can keep a live market alive by extending the TTL on its hot keys — the
+    /// market record, its escrow/liquidity pool, and its price accumulator —
+    /// preventing them from being archived mid-lifecycle. Returns
+    /// `MarketNotFound` if the market does not exist.
+    pub fn bump_market_ttl(env: Env, market_id: u64) -> Result<(), InsightArenaError> {
+        market::bump_market_ttl(&env, market_id)
     }
 
     /// Return a paginated list of markets in creation order.
@@ -350,6 +373,116 @@ impl InsightArenaContract {
         dispute::get_open_dispute_count(&env)
     }
 
+    // ── Weighted arbiter quorum voting ───────────────────────────────────────
+
+    /// Deposit a bond making `arbiter` eligible for panel assignment via
+    /// `assign_arbiters`. Cumulative; no withdrawal path in this iteration.
+    pub fn stake_as_arbiter(env: Env, arbiter: Address, amount: i128) -> Result<(), InsightArenaError> {
+        dispute::stake_as_arbiter(env, arbiter, amount)
+    }
+
+    /// Return `arbiter`'s current staked bond (stroops). `0` if never staked.
+    pub fn get_arbiter_stake(env: Env, arbiter: Address) -> i128 {
+        dispute::get_arbiter_stake(&env, &arbiter)
+    }
+
+    /// Assign a weighted arbiter panel to a pending dispute (admin-only).
+    /// Each address must have a positive arbiter stake; weight is snapshotted
+    /// at assignment time from stake and current reputation.
+    pub fn assign_arbiters(
+        env: Env,
+        admin: Address,
+        market_id: u64,
+        arbiters: Vec<Address>,
+    ) -> Result<(), InsightArenaError> {
+        dispute::assign_arbiters(env, admin, market_id, arbiters)
+    }
+
+    /// Cast a single vote as an assigned arbiter on a dispute.
+    pub fn cast_arbiter_vote(
+        env: Env,
+        arbiter: Address,
+        market_id: u64,
+        uphold: bool,
+    ) -> Result<(), InsightArenaError> {
+        dispute::cast_arbiter_vote(env, arbiter, market_id, uphold)
+    }
+
+    /// Read-only tally, quorum progress, and per-arbiter participation for a
+    /// dispute's arbiter panel.
+    pub fn get_arbiter_tally(
+        env: Env,
+        market_id: u64,
+    ) -> Result<crate::storage_types::ArbiterTally, InsightArenaError> {
+        dispute::get_arbiter_tally(env, market_id)
+    }
+
+    /// Finalize a dispute's arbiter panel (admin-only): requires the voting
+    /// window closed and quorum met, slashes non-voters and redistributes to
+    /// voters, then settles the dispute per the vote outcome.
+    pub fn finalize_arbiter_vote(
+        env: Env,
+        caller: Address,
+        market_id: u64,
+    ) -> Result<(), InsightArenaError> {
+        dispute::finalize_arbiter_vote(env, caller, market_id)
+    }
+
+    /// Update the arbiter quorum threshold, slash share, and voting period
+    /// (admin-only). Only affects panels assigned after this call.
+    pub fn set_arbiter_config(
+        env: Env,
+        admin: Address,
+        quorum_bps: u32,
+        slash_bps: u32,
+        voting_period_seconds: u64,
+    ) -> Result<(), InsightArenaError> {
+        config::set_arbiter_config(&env, admin, quorum_bps, slash_bps, voting_period_seconds)
+    }
+
+    // ── Oracle Submission Staking ────────────────────────────────────────────
+
+    /// Submit a market resolution backed by a mandatory locked oracle stake
+    /// (`Config::oracle_stake_amount`). Reverts if the oracle cannot cover
+    /// the stake. The stake is held through the market's dispute window and
+    /// settled via `resolve_dispute` / `finalize_arbiter_vote` (if disputed)
+    /// or `claim_oracle_stake` (if never disputed).
+    pub fn submit_resolution_with_stake(
+        env: Env,
+        oracle: Address,
+        market_id: u64,
+        resolved_outcome: Symbol,
+    ) -> Result<(), InsightArenaError> {
+        dispute::submit_resolution_with_stake(env, oracle, market_id, resolved_outcome)
+    }
+
+    /// Claim a staked oracle submission's stake plus reward once the
+    /// market's dispute window has elapsed with no dispute ever filed.
+    /// Permissionless: the payout always goes to the recorded oracle, not
+    /// the caller.
+    pub fn claim_oracle_stake(env: Env, market_id: u64) -> Result<(), InsightArenaError> {
+        dispute::claim_oracle_stake(env, market_id)
+    }
+
+    /// Read-only lookup of a market's staked oracle submission, if any.
+    pub fn get_oracle_submission(
+        env: Env,
+        market_id: u64,
+    ) -> Option<crate::storage_types::OracleSubmission> {
+        dispute::get_oracle_submission_info(env, market_id)
+    }
+
+    /// Update the required oracle submission stake and the reward (bps of
+    /// stake) paid when a submission stands. Caller must be the current admin.
+    pub fn set_oracle_stake_config(
+        env: Env,
+        admin: Address,
+        stake_amount: i128,
+        reward_bps: u32,
+    ) -> Result<(), InsightArenaError> {
+        config::set_oracle_stake_config(&env, admin, stake_amount, reward_bps)
+    }
+
     // ── Prediction ────────────────────────────────────────────────────────────
 
     /// Submit a prediction for an open market by staking XLM on a chosen outcome.
@@ -416,6 +549,48 @@ impl InsightArenaContract {
         shares: i128,
     ) -> Result<(), InsightArenaError> {
         prediction::transfer_prediction(&env, market_id, from, to, shares)
+    }
+
+    /// Withdraw part of an open position before market lock time.
+    ///
+    /// Allows a predictor to reduce exposure if conviction changes, improving
+    /// capital efficiency. An early-exit fee is deducted and redistributed
+    /// pro-rata to remaining participants.
+    ///
+    /// # Arguments
+    /// - `predictor`: Address withdrawing the position (must authorize)
+    /// - `market_id`: The market ID
+    /// - `withdrawal_amount`: Amount to withdraw (stroops)
+    ///
+    /// # Returns
+    /// - `(refund_amount, fee_amount)`: Tuple of (amount to be refunded, fee deducted)
+    ///   where `refund_amount + fee_amount = withdrawal_amount`
+    ///
+    /// # Errors
+    /// - `WithdrawalAfterLockTime`: Attempted withdrawal after market.end_time
+    /// - `InvalidWithdrawalAmount`: Amount is zero or negative
+    /// - `WithdrawalExceedsStake`: Attempting to withdraw more than current stake
+    /// - `MarketNotFound`, `PredictionNotFound`: Market or position doesn't exist
+    /// - `MarketAlreadyResolved`, `MarketAlreadyCancelled`: Market state doesn't allow withdrawal
+    pub fn withdraw_position(
+        env: Env,
+        predictor: Address,
+        market_id: u64,
+        withdrawal_amount: i128,
+    ) -> Result<(i128, i128), InsightArenaError> {
+        prediction::withdraw_position(&env, predictor, market_id, withdrawal_amount)
+    }
+
+    /// Estimate early-exit fee and refund for a given withdrawal amount.
+    /// Pure view function; does not modify state.
+    ///
+    /// Returns `(refund_amount, fee_amount)` where fee is calculated from the
+    /// current `Config::early_exit_fee_bps`.
+    pub fn get_early_exit_fee_estimate(
+        env: Env,
+        withdrawal_amount: i128,
+    ) -> Result<(i128, i128), InsightArenaError> {
+        prediction::get_early_exit_fee_estimate(&env, withdrawal_amount)
     }
 
     /// Return the stored [`Prediction`] for a given `(market_id, predictor)` pair.
@@ -566,6 +741,22 @@ impl InsightArenaContract {
         config::set_guardian(&env, admin, new_guardian)
     }
 
+    /// Update the governance proposal quorum threshold (bps of total registered
+    /// users that must participate for a proposal to pass). Caller must be the
+    /// current admin. For the timelocked governance path, use
+    /// `ProposalType::UpdateQuorum` via `create_proposal`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` if `admin` is not the stored admin.
+    /// - `InvalidInput` if `new_quorum_bps > 10_000`.
+    pub fn set_governance_quorum_bps(
+        env: Env,
+        admin: Address,
+        new_quorum_bps: u32,
+    ) -> Result<(), InsightArenaError> {
+        config::set_governance_quorum_bps(&env, admin, new_quorum_bps)
+    }
+
     /// Return the total protocol fees accumulated in the treasury.
     pub fn get_treasury_balance(env: Env) -> i128 {
         escrow::get_treasury_balance(&env)
@@ -579,6 +770,28 @@ impl InsightArenaContract {
         amount: i128,
     ) -> Result<(), InsightArenaError> {
         escrow::transfer_fee(&env, &admin, &to, amount)
+    }
+
+    /// Update the protocol treasury address and the split (bps) of the
+    /// protocol's fee cut between the treasury and liquidity providers.
+    /// Caller must be the current admin. Reverts with `InvalidFee` if
+    /// `treasury_split_bps + lp_split_bps != 10_000`. See
+    /// `liquidity::swap_outcome` for where the split is applied and its
+    /// `(fee, split)` event emitted.
+    pub fn set_treasury_split(
+        env: Env,
+        admin: Address,
+        treasury_address: Address,
+        treasury_split_bps: u32,
+        lp_split_bps: u32,
+    ) -> Result<(), InsightArenaError> {
+        config::set_treasury_split(
+            &env,
+            admin,
+            treasury_address,
+            treasury_split_bps,
+            lp_split_bps,
+        )
     }
 
     // ── Slashed-funds insurance pool ─────────────────────────────────────────
@@ -624,6 +837,29 @@ impl InsightArenaContract {
         new_cap: i128,
     ) -> Result<(), InsightArenaError> {
         config::set_max_liquidity_per_outcome(&env, admin, new_cap)
+    }
+
+    /// Update the global maximum number of outcomes allowed per market.
+    /// Caller must be the current admin.
+    pub fn set_max_outcomes(
+        env: Env,
+        admin: Address,
+        new_max: u32,
+    ) -> Result<(), InsightArenaError> {
+        config::set_max_outcomes(&env, admin, new_max)
+    }
+
+    /// Update the early-exit fee rate (bps) applied to partial position withdrawals.
+    /// Caller must be the current admin. Default is 500 bps (5%).
+    ///
+    /// The fee is deducted from withdrawal amounts and redistributed pro-rata
+    /// to remaining participants, improving liquidity for those who stay.
+    pub fn set_early_exit_fee_bps(
+        env: Env,
+        admin: Address,
+        new_fee_bps: u32,
+    ) -> Result<(), InsightArenaError> {
+        config::set_early_exit_fee_bps(&env, admin, new_fee_bps)
     }
 
     /// Set a per-market override for the maximum liquidity a single
@@ -677,6 +913,15 @@ impl InsightArenaContract {
         code: Symbol,
     ) -> Result<(), InsightArenaError> {
         invite::revoke_invite_code(env, creator, code)
+    }
+
+    /// Return an invite code's remaining redemption budget (uses left before
+    /// `max_uses`) and its expiry. Read-only; does not mutate storage.
+    pub fn get_invite_code_info(
+        env: Env,
+        code: Symbol,
+    ) -> Result<crate::storage_types::InviteCodeInfo, InsightArenaError> {
+        invite::get_invite_code_info(&env, code)
     }
 
     /// List all season IDs which have snapshots available.
@@ -765,10 +1010,70 @@ impl InsightArenaContract {
         season::reset_season_points(&env, admin, new_season_id)
     }
 
+    // ── Season Reward Vesting ─────────────────────────────────────────────────
+
+    /// Claim every currently-unlocked, not-yet-claimed tranche of the
+    /// caller's season reward. Returns the amount transferred (`0` if
+    /// nothing new has unlocked since the last claim).
+    pub fn claim_vested_reward(
+        env: Env,
+        user: Address,
+        season_id: u32,
+    ) -> Result<i128, InsightArenaError> {
+        season::claim_vested_reward(&env, user, season_id)
+    }
+
+    /// Return the vesting schedule for `user` in `season_id`: total awarded,
+    /// tranche layout, and claimed-vs-unclaimed progress.
+    pub fn get_vesting_schedule(
+        env: Env,
+        season_id: u32,
+        user: Address,
+    ) -> Result<crate::storage_types::VestingSchedule, InsightArenaError> {
+        season::get_vesting_schedule(&env, season_id, user)
+    }
+
+    /// Update the number and spacing of tranches used to vest season
+    /// rewards. Caller must be the current admin. Only affects schedules
+    /// created by `finalize_season` calls made after this update.
+    pub fn set_vesting_config(
+        env: Env,
+        admin: Address,
+        tranche_count: u32,
+        interval_seconds: u64,
+    ) -> Result<(), InsightArenaError> {
+        config::set_vesting_config(&env, admin, tranche_count, interval_seconds)
+    }
+
     /// Season points for `user` in `season_id` (snapshot if finalized, else live profile when applicable).
     /// Returns `0` for unknown users. Never panics.
     pub fn get_user_season_points(env: Env, user: Address, season_id: u32) -> u32 {
         season::get_user_season_points(&env, user, season_id)
+    }
+
+    /// Set the market-creation anti-spam bond amount (stroops). A value of `0`
+    /// disables the bond requirement. Caller must be the stored admin.
+    ///
+    /// When `bond_amount > 0`, callers must pre-approve the contract address for
+    /// at least `bond_amount` via the XLM token contract before calling
+    /// `create_market`.
+    ///
+    /// # Errors
+    /// - `Unauthorized` if `admin` is not the stored admin.
+    /// - `InvalidInput` if `new_bond_amount` is negative.
+    pub fn set_bond_amount(
+        env: Env,
+        admin: Address,
+        new_bond_amount: i128,
+    ) -> Result<(), InsightArenaError> {
+        config::set_bond_amount(&env, admin, new_bond_amount)
+    }
+
+    /// Return the bond amount currently held in escrow for `market_id`.
+    /// Returns `0` if no bond was deposited (bond disabled at creation time
+    /// or bond already settled by resolution/cancellation).
+    pub fn get_market_bond(env: Env, market_id: u64) -> i128 {
+        escrow::get_market_bond(&env, market_id)
     }
 
     // ── Reputation ────────────────────────────────────────────────────────────
@@ -916,6 +1221,21 @@ impl InsightArenaContract {
         liquidity::get_lp_position_public(&env, provider, market_id)
     }
 
+    /// Return the current impermanent loss (bps, always `<= 0`) for an open LP
+    /// position, computed live against the pool's current reserves relative to
+    /// the position's immutable entry-price snapshot. See
+    /// `liquidity::calculate_impermanent_loss_bps` for the formula and
+    /// `liquidity::get_position_il` for how it differs from the
+    /// `LPPosition::cumulative_il_bps` field (which only reflects the last
+    /// withdrawal).
+    pub fn get_position_il(
+        env: Env,
+        provider: Address,
+        market_id: u64,
+    ) -> Result<i128, InsightArenaError> {
+        liquidity::get_position_il(&env, provider, market_id)
+    }
+
     /// Get all active LP positions for a market.
     pub fn get_all_lp_providers(env: Env, market_id: u64) -> Vec<crate::storage_types::LPPosition> {
         liquidity::get_all_lp_providers(&env, market_id)
@@ -952,6 +1272,17 @@ impl InsightArenaContract {
         liquidity::get_twap(&env, market_id, outcome, window)
     }
 
+    /// Compute the time-weighted average price over the trailing
+    /// `window_seconds` for `market_id`'s primary outcome. See
+    /// `liquidity::get_market_twap` for details.
+    pub fn get_market_twap(
+        env: Env,
+        market_id: u64,
+        window_seconds: u64,
+    ) -> Result<i128, InsightArenaError> {
+        liquidity::get_market_twap(&env, market_id, window_seconds)
+    }
+
     // ── Dynamic Swap Fee ──────────────────────────────────────────────────────
 
     /// Return the current dynamic fee tier and effective swap fee for a market.
@@ -974,5 +1305,21 @@ impl InsightArenaContract {
         new_config: crate::storage_types::FeeTierConfig,
     ) -> Result<(), InsightArenaError> {
         liquidity::set_fee_tier_config(&env, admin, new_config)
+    }
+
+    // ── Volume-Based Fee Tiers (#1326) ──────────────────────────────────────────
+
+    /// Return the current volume-based fee tier schedule.
+    pub fn get_volume_fee_config(env: Env) -> crate::storage_types::VolumeFeeConfig {
+        config::get_volume_fee_config(&env)
+    }
+
+    /// Update the volume-based fee tier schedule. Caller must be the platform admin.
+    pub fn update_volume_fee_config(
+        env: Env,
+        admin: Address,
+        new_config: crate::storage_types::VolumeFeeConfig,
+    ) -> Result<(), InsightArenaError> {
+        config::set_volume_fee_config(&env, admin, new_config)
     }
 }

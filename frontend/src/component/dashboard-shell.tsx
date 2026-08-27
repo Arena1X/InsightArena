@@ -2,6 +2,7 @@
 
 import RewardsWalletCard from "@/component/RewardsWalletCard";
 import NotificationsCard from "@/component/NotificationsCard";
+import CoachCard from "@/component/CoachCard";
 import { useWallet } from "@/context/WalletContext";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useToast } from "@/hooks/useToast";
@@ -311,6 +312,7 @@ export function DashboardShell({ children }: DashboardShellProps) {
             {pathname === "/dashboard" && (
               <aside className="xl:block w-[300px] space-y-6">
                 <RewardsWalletCard />
+                <CoachCard />
                 <NotificationsCard />
               </aside>
             )}

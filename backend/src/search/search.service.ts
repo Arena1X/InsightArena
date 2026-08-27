@@ -1,14 +1,16 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { Cache } from 'cache-manager';
-import { Repository } from 'typeorm';
+import { Brackets, DataSource, Repository } from 'typeorm';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
 import {
   Competition,
   CompetitionVisibility,
 } from '../competitions/entities/competition.entity';
+import { CreatorEvent } from '../matches/entities/creator-event.entity';
+import { CreatorEventSearchStatus } from '../creator-events/dto/search-events-query.dto';
 import {
   GlobalSearchDto,
   GlobalSearchResponseDto,
@@ -18,6 +20,11 @@ import {
   SearchType,
   SuggestionsResponseDto,
 } from './dto/global-search.dto';
+import {
+  FuzzySearchDto,
+  FuzzySearchItemDto,
+  FuzzySearchResponseDto,
+} from './dto/fuzzy-search.dto';
 import { escapeLikeWildcards } from './dto/search-query.dto';
 import {
   MAX_SUGGEST_LIMIT,
@@ -44,6 +51,24 @@ const TRGM_SIMILARITY_THRESHOLD = 0.1;
 /** How long a prefix's suggestion results are cached for */
 const SUGGEST_CACHE_TTL_MS = 30_000;
 
+export interface CreatorEventSearchParams {
+  query: string;
+  skip: number;
+  limit: number;
+  status?: CreatorEventSearchStatus;
+  creator?: string;
+}
+
+export interface CreatorEventSearchHit {
+  event: CreatorEvent;
+  searchRank: number;
+}
+
+export interface CreatorEventSearchResult {
+  data: CreatorEventSearchHit[];
+  total: number;
+}
+
 interface ScoredSuggestion {
   id: string;
   label: string;
@@ -53,6 +78,8 @@ interface ScoredSuggestion {
 
 @Injectable()
 export class SearchService {
+  private readonly logger = new Logger(SearchService.name);
+
   constructor(
     @InjectRepository(Market)
     private readonly marketsRepository: Repository<Market>,
@@ -60,7 +87,10 @@ export class SearchService {
     private readonly usersRepository: Repository<User>,
     @InjectRepository(Competition)
     private readonly competitionsRepository: Repository<Competition>,
+    @InjectRepository(CreatorEvent)
+    private readonly creatorEventsRepository: Repository<CreatorEvent>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
+    private readonly dataSource: DataSource,
   ) {}
 
   async search(dto: GlobalSearchDto): Promise<GlobalSearchResponseDto> {
@@ -256,6 +286,123 @@ export class SearchService {
       label: c.title,
       score: parseFloat(c.score ?? '0'),
       type: 'competition' as const,
+    }));
+  }
+
+  /**
+   * Fuzzy search using trigram similarity. Ranks exact matches above fuzzy
+   * ones and filters by a configurable similarity threshold.
+   */
+  async fuzzySearch(dto: FuzzySearchDto): Promise<FuzzySearchResponseDto> {
+    const query = dto.query;
+    const threshold = dto.threshold ?? 0.1;
+    const limit = Math.min(dto.limit ?? 20, 50);
+
+    const [markets, users, competitions] = await Promise.all([
+      this.fuzzySearchMarkets(query, threshold, limit),
+      this.fuzzySearchUsers(query, threshold, limit),
+      this.fuzzySearchCompetitions(query, threshold, limit),
+    ]);
+
+    const all: FuzzySearchItemDto[] = [...markets, ...users, ...competitions]
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, limit);
+
+    return { data: all, total: all.length, query };
+  }
+
+  private async fuzzySearchMarkets(
+    query: string,
+    threshold: number,
+    limit: number,
+  ): Promise<FuzzySearchItemDto[]> {
+    const rows = await this.marketsRepository
+      .createQueryBuilder('market')
+      .select(['market.id', 'market.title', 'market.description'])
+      .addSelect(
+        `greatest(similarity(market.title, :query), similarity(coalesce(market.description, ''), :query))`,
+        'sim',
+      )
+      .where('market.is_public = :isPublic', { isPublic: true })
+      .andWhere(
+        `greatest(similarity(market.title, :query), similarity(coalesce(market.description, ''), :query)) >= :threshold`,
+        { query, threshold },
+      )
+      .setParameter('query', query)
+      .orderBy('sim', 'DESC')
+      .addOrderBy('market.title', 'ASC')
+      .take(limit)
+      .getMany();
+
+    return rows.map((m: any) => ({
+      id: m.id,
+      type: 'market' as const,
+      title: m.title,
+      similarity: parseFloat(m.sim ?? '0'),
+      description: m.description,
+    }));
+  }
+
+  private async fuzzySearchUsers(
+    query: string,
+    threshold: number,
+    limit: number,
+  ): Promise<FuzzySearchItemDto[]> {
+    const rows = await this.usersRepository
+      .createQueryBuilder('user')
+      .select(['user.id', 'user.username'])
+      .addSelect(`similarity(user.username, :query)`, 'sim')
+      .where('user.is_banned = :banned', { banned: false })
+      .andWhere('user.username IS NOT NULL')
+      .andWhere(`similarity(user.username, :query) >= :threshold`, {
+        query,
+        threshold,
+      })
+      .setParameter('query', query)
+      .orderBy('sim', 'DESC')
+      .addOrderBy('user.username', 'ASC')
+      .take(limit)
+      .getMany();
+
+    return rows.map((u: any) => ({
+      id: u.id,
+      type: 'user' as const,
+      title: u.username as string,
+      similarity: parseFloat(u.sim ?? '0'),
+    }));
+  }
+
+  private async fuzzySearchCompetitions(
+    query: string,
+    threshold: number,
+    limit: number,
+  ): Promise<FuzzySearchItemDto[]> {
+    const rows = await this.competitionsRepository
+      .createQueryBuilder('competition')
+      .select(['competition.id', 'competition.title', 'competition.description'])
+      .addSelect(
+        `greatest(similarity(competition.title, :query), similarity(coalesce(competition.description, ''), :query))`,
+        'sim',
+      )
+      .where('competition.visibility = :visibility', {
+        visibility: CompetitionVisibility.Public,
+      })
+      .andWhere(
+        `greatest(similarity(competition.title, :query), similarity(coalesce(competition.description, ''), :query)) >= :threshold`,
+        { query, threshold },
+      )
+      .setParameter('query', query)
+      .orderBy('sim', 'DESC')
+      .addOrderBy('competition.title', 'ASC')
+      .take(limit)
+      .getMany();
+
+    return rows.map((c: any) => ({
+      id: c.id,
+      type: 'competition' as const,
+      title: c.title,
+      similarity: parseFloat(c.sim ?? '0'),
+      description: c.description,
     }));
   }
 
@@ -653,6 +800,104 @@ export class SearchService {
     return [this.mapCompetitionsWithScore(trgmRaw, skip, limit), trgmCount];
   }
 
+  // ---------------------------------------------------------------------------
+  // Creator events
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Index-backed full-text search over creator events (title, description,
+   * category, creator address). Ranks by relevance with recency tie-break.
+   */
+  async searchCreatorEvents(
+    params: CreatorEventSearchParams,
+  ): Promise<CreatorEventSearchResult> {
+    const searchTerm = params.query.trim();
+    const tsQuery = `websearch_to_tsquery('english', :searchTerm)`;
+    const escapedTerm = escapeLikeWildcards(searchTerm);
+
+    const qb = this.creatorEventsRepository
+      .createQueryBuilder('creatorEvent')
+      .addSelect(
+        `ts_rank_cd(creatorEvent.search_vector, ${tsQuery})`,
+        'search_rank',
+      )
+      .where(
+        new Brackets((inner) => {
+          inner
+            .where(`creatorEvent.search_vector @@ ${tsQuery}`)
+            .orWhere(
+              "creatorEvent.creator_address ILIKE :creatorAddressSearch ESCAPE '\\'",
+            )
+            .orWhere("creatorEvent.category ILIKE :categorySearch ESCAPE '\\'");
+        }),
+      )
+      .setParameter('searchTerm', searchTerm)
+      .setParameter('creatorAddressSearch', `%${escapedTerm}%`)
+      .setParameter('categorySearch', `%${escapedTerm}%`);
+
+    this.applyCreatorEventStatusFilter(
+      qb,
+      params.status ?? CreatorEventSearchStatus.All,
+    );
+
+    if (params.creator?.trim()) {
+      qb.andWhere('LOWER(creatorEvent.creator_address) = LOWER(:creator)', {
+        creator: params.creator.trim(),
+      });
+    }
+
+    const total = await qb.clone().getCount();
+    const { entities, raw } = await qb
+      .orderBy('search_rank', 'DESC')
+      .addOrderBy('creatorEvent.created_at', 'DESC')
+      .skip(params.skip)
+      .take(params.limit)
+      .getRawAndEntities<{ search_rank?: string | number }>();
+
+    return {
+      data: entities.map((event, index) => ({
+        event,
+        searchRank: Number(raw[index]?.search_rank ?? 0),
+      })),
+      total,
+    };
+  }
+
+  private applyCreatorEventStatusFilter(
+    queryBuilder: ReturnType<Repository<CreatorEvent>['createQueryBuilder']>,
+    status: CreatorEventSearchStatus,
+  ): void {
+    switch (status) {
+      case CreatorEventSearchStatus.Active:
+        queryBuilder.andWhere('creatorEvent.is_active = :isActive', {
+          isActive: true,
+        });
+        queryBuilder.andWhere('creatorEvent.is_cancelled = :isCancelled', {
+          isCancelled: false,
+        });
+        break;
+      case CreatorEventSearchStatus.Finished:
+        queryBuilder.andWhere(
+          new Brackets((qb) => {
+            qb.where('creatorEvent.end_time < :now', {
+              now: new Date(),
+            }).orWhere('creatorEvent.is_active = :isActive', {
+              isActive: false,
+            });
+          }),
+        );
+        break;
+      case CreatorEventSearchStatus.Upcoming:
+        queryBuilder.andWhere('creatorEvent.start_time > :now', {
+          now: new Date(),
+        });
+        break;
+      case CreatorEventSearchStatus.All:
+      default:
+        break;
+    }
+  }
+
   private mapCompetitionsWithScore(
     raw: (Competition & {
       fts_rank?: string;
@@ -674,5 +919,38 @@ export class SearchService {
         parseFloat(c.fts_rank ?? '0') + parseFloat(c.trgm_score ?? '0'),
       highlight: c.headline ?? c.title,
     }));
+  }
+
+  /**
+   * Refresh the search_vector for a single market after its title or
+   * description has been updated so FTS results stay in sync.
+   */
+  async refreshMarketSearchVector(marketId: string): Promise<void> {
+    await this.dataSource.query(
+      `UPDATE markets
+         SET search_vector =
+           setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+           setweight(to_tsvector('english', coalesce(description, '')), 'B')
+       WHERE id = $1`,
+      [marketId],
+    );
+    this.logger.debug(`Refreshed search_vector for market ${marketId}`);
+  }
+
+  /**
+   * Backfill search_vector for every market row that has a NULL or empty
+   * vector. Useful after a migration or when enabling FTS for the first time.
+   */
+  async backfillMarketSearchVectors(): Promise<number> {
+    const result = await this.dataSource.query(
+      `UPDATE markets
+         SET search_vector =
+           setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+           setweight(to_tsvector('english', coalesce(description, '')), 'B')
+       WHERE search_vector IS NULL OR search_vector = ''::tsvector`,
+    );
+    const count = result[1] ?? 0;
+    this.logger.log(`Backfilled search_vector for ${count} market(s)`);
+    return count;
   }
 }

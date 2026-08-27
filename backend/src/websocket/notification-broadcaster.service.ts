@@ -27,6 +27,24 @@ export interface EventWinnerPayload {
   total_matches: number;
 }
 
+export interface AchievementUnlockedPayload {
+  achievement_id: string;
+  type: string;
+  title: string;
+  description: string;
+  icon_url: string;
+  reward_points: number;
+  unlocked_at: Date;
+}
+
+export interface AchievementProgressPayload {
+  achievement_id: string;
+  type: string;
+  current_progress: number;
+  threshold: number;
+  progress_percentage: number;
+}
+
 @Injectable()
 export class NotificationBroadcasterService implements OnModuleDestroy {
   private readonly logger = new Logger(NotificationBroadcasterService.name);
@@ -117,6 +135,60 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
     this.gateway.server.to(`user:${userAddress}`).emit('event:winner', payload);
     this.logger.log(
       `Broadcast event:winner → user:${userAddress} (event=${winner.event_id}, rank=${winner.rank})`,
+    );
+  }
+
+  /**
+   * Notify user that an achievement was unlocked
+   */
+  broadcastAchievementUnlocked(
+    userAddress: string,
+    achievement: AchievementUnlockedPayload,
+  ): void {
+    const payload = {
+      event: 'achievement:unlocked',
+      data: {
+        achievement_id: achievement.achievement_id,
+        type: achievement.type,
+        title: achievement.title,
+        description: achievement.description,
+        icon_url: achievement.icon_url,
+        reward_points: achievement.reward_points,
+        unlocked_at: achievement.unlocked_at,
+        timestamp: new Date(),
+      },
+    };
+    this.gateway.server
+      .to(`user:${userAddress}`)
+      .emit('achievement:unlocked', payload);
+    this.logger.log(
+      `Broadcast achievement:unlocked → user:${userAddress} (achievement=${achievement.achievement_id})`,
+    );
+  }
+
+  /**
+   * Notify user of updated progress toward a locked achievement
+   */
+  broadcastAchievementProgress(
+    userAddress: string,
+    progress: AchievementProgressPayload,
+  ): void {
+    const payload = {
+      event: 'achievement:progress',
+      data: {
+        achievement_id: progress.achievement_id,
+        type: progress.type,
+        current_progress: progress.current_progress,
+        threshold: progress.threshold,
+        progress_percentage: progress.progress_percentage,
+        timestamp: new Date(),
+      },
+    };
+    this.gateway.server
+      .to(`user:${userAddress}`)
+      .emit('achievement:progress', payload);
+    this.logger.log(
+      `Broadcast achievement:progress → user:${userAddress} (achievement=${progress.achievement_id}, pct=${progress.progress_percentage})`,
     );
   }
 

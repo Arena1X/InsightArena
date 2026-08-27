@@ -13,6 +13,10 @@ import {
   GlobalSearchResponseDto,
   SuggestionsResponseDto,
 } from './dto/global-search.dto';
+import {
+  FuzzySearchDto,
+  FuzzySearchResponseDto,
+} from './dto/fuzzy-search.dto';
 import { SearchQueryDto } from './dto/search-query.dto';
 import { SuggestQueryDto, SuggestResponseDto } from './dto/suggest-query.dto';
 import { SearchService } from './search.service';
@@ -89,5 +93,28 @@ export class SearchController {
     @Query() query: GlobalSearchDto,
   ): Promise<GlobalSearchResponseDto> {
     return this.searchService.search(query);
+  }
+
+  @Public()
+  @Get('fuzzy')
+  @UsePipes(
+    new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: true,
+    }),
+  )
+  @ApiOperation({
+    summary: 'Typo-tolerant fuzzy search using trigram similarity (public)',
+    description:
+      'Returns results ranked by trigram similarity score. Exact matches rank above fuzzy ones. ' +
+      'Use the threshold parameter to control minimum similarity (default 0.1).',
+  })
+  @ApiResponse({ status: 200, type: FuzzySearchResponseDto })
+  @ApiResponse({ status: 400, description: 'Invalid search query' })
+  async fuzzySearch(
+    @Query() query: FuzzySearchDto,
+  ): Promise<FuzzySearchResponseDto> {
+    return this.searchService.fuzzySearch(query);
   }
 }

@@ -33,8 +33,12 @@ describe('NotificationsController', () => {
           useValue: {
             findAllForUser: jest.fn(),
             markAsRead: jest.fn(),
-            markAllAsRead: jest.fn().mockResolvedValue({ updated: 0 }),
-            markMultipleAsRead: jest.fn().mockResolvedValue({ updated: 0 }),
+            markAllAsRead: jest.fn().mockResolvedValue({ unreadCount: 0 }),
+            markAllAsUnread: jest.fn().mockResolvedValue({ unreadCount: 0 }),
+            markMultipleAsRead: jest.fn().mockResolvedValue({ unreadCount: 0 }),
+            markMultipleAsUnread: jest
+              .fn()
+              .mockResolvedValue({ unreadCount: 0 }),
             remove: jest.fn(),
           },
         },
@@ -142,17 +146,102 @@ describe('NotificationsController', () => {
   });
 
   describe('markAllAsRead', () => {
-    it('should return updated count from service', async () => {
+    it('should return unreadCount from service', async () => {
       const spy = jest
         .spyOn(service, 'markAllAsRead')
-        .mockResolvedValue({ updated: 3 });
+        .mockResolvedValue({ unreadCount: 0 });
 
       const result = await controller.markAllAsRead(mockUser as User);
 
       expect(spy).toHaveBeenCalledWith(
         'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
       );
-      expect(result).toEqual({ updated: 3 });
+      expect(result).toEqual({ unreadCount: 0 });
+    });
+  });
+
+  describe('markAllAsUnread', () => {
+    it('should call service markAllAsUnread and return unreadCount', async () => {
+      const spy = jest
+        .spyOn(service, 'markAllAsUnread')
+        .mockResolvedValue({ unreadCount: 5 });
+
+      const result = await controller.markAllAsUnread(mockUser as User);
+
+      expect(spy).toHaveBeenCalledWith(
+        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+      );
+      expect(result).toEqual({ unreadCount: 5 });
+    });
+  });
+
+  describe('markMultipleAsRead', () => {
+    it('should call service markMultipleAsRead with ids and return unreadCount', async () => {
+      const spy = jest
+        .spyOn(service, 'markMultipleAsRead')
+        .mockResolvedValue({ unreadCount: 3 });
+
+      const dto = { notificationIds: [1, 2, 3] };
+      const result = await controller.markMultipleAsRead(mockUser as User, dto);
+
+      expect(spy).toHaveBeenCalledWith(
+        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+        [1, 2, 3],
+      );
+      expect(result).toEqual({ unreadCount: 3 });
+    });
+
+    it('should handle empty notificationIds array', async () => {
+      const spy = jest
+        .spyOn(service, 'markMultipleAsRead')
+        .mockResolvedValue({ unreadCount: 5 });
+
+      const dto = { notificationIds: [] };
+      const result = await controller.markMultipleAsRead(mockUser as User, dto);
+
+      expect(spy).toHaveBeenCalledWith(
+        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+        [],
+      );
+      expect(result).toEqual({ unreadCount: 5 });
+    });
+  });
+
+  describe('markMultipleAsUnread', () => {
+    it('should call service markMultipleAsUnread with ids and return unreadCount', async () => {
+      const spy = jest
+        .spyOn(service, 'markMultipleAsUnread')
+        .mockResolvedValue({ unreadCount: 7 });
+
+      const dto = { notificationIds: [4, 5] };
+      const result = await controller.markMultipleAsUnread(
+        mockUser as User,
+        dto,
+      );
+
+      expect(spy).toHaveBeenCalledWith(
+        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+        [4, 5],
+      );
+      expect(result).toEqual({ unreadCount: 7 });
+    });
+
+    it('should handle empty notificationIds array', async () => {
+      const spy = jest
+        .spyOn(service, 'markMultipleAsUnread')
+        .mockResolvedValue({ unreadCount: 5 });
+
+      const dto = { notificationIds: [] };
+      const result = await controller.markMultipleAsUnread(
+        mockUser as User,
+        dto,
+      );
+
+      expect(spy).toHaveBeenCalledWith(
+        'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+        [],
+      );
+      expect(result).toEqual({ unreadCount: 5 });
     });
   });
 

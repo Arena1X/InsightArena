@@ -6,16 +6,20 @@ import type { Cache } from 'cache-manager';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { MarketStatus } from '../markets/dto/list-markets.dto';
 import { MarketsService } from '../markets/markets.service';
+import { LeaderboardService } from '../leaderboard/leaderboard.service';
 import {
   CacheWarmingStrategy,
   getCacheWarmingStrategy,
 } from './cache-warming.config';
 import { CACHE_WARMING_KEYS } from './cache-warming.keys';
 
-interface CacheWarmResult {
+interface WarmMetrics {
   warmed: string[];
   failed: Array<{ key: string; reason: string }>;
+  duration_ms: number;
 }
+
+type CacheWarmResult = Omit<WarmMetrics, 'duration_ms'>;
 
 @Injectable()
 export class CacheWarmingService {
@@ -26,6 +30,7 @@ export class CacheWarmingService {
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
     private readonly marketsService: MarketsService,
     private readonly analyticsService: AnalyticsService,
+    private readonly leaderboardService: LeaderboardService,
     configService: ConfigService,
   ) {
     this.strategy = getCacheWarmingStrategy(configService);
@@ -38,6 +43,7 @@ export class CacheWarmingService {
       return { warmed: [], failed: [] };
     }
 
+    const start = Date.now();
     this.logger.log('Cache warming started');
     const result: CacheWarmResult = { warmed: [], failed: [] };
 
@@ -45,15 +51,37 @@ export class CacheWarmingService {
       this.warmActiveEvents(result),
       this.warmTrendingEvents(result),
       this.warmPlatformStatistics(result),
+      this.warmLeaderboard(result),
     ]);
 
     await this.warmPopularEventDetails(result, trendingEvents?.data ?? []);
 
+    const duration_ms = Date.now() - start;
     this.logger.log(
-      `Cache warming finished: warmed=${result.warmed.length}, failed=${result.failed.length}`,
+      `Cache warming finished: warmed=${result.warmed.length}, failed=${result.failed.length}, duration=${duration_ms}ms`,
     );
 
     return result;
+  }
+
+  /** Warm leaderboard top-N slices for all configured seasons. */
+  async warmLeaderboard(result: CacheWarmResult): Promise<void> {
+    const seasonIds: Array<string | undefined> = [
+      undefined,
+      ...this.strategy.leaderboardSeasonIds,
+    ];
+
+    await Promise.all(
+      this.strategy.leaderboardTopN.flatMap((n) =>
+        seasonIds.map((seasonId) =>
+          this.captureWarmOperation(
+            CACHE_WARMING_KEYS.leaderboardTopN(n, seasonId ?? null),
+            () => this.leaderboardService.getTopN(n, seasonId),
+            result,
+          ),
+        ),
+      ),
+    );
   }
 
   private async warmActiveEvents(

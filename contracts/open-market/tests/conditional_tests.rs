@@ -4,7 +4,7 @@ use insightarena_contract::market::CreateMarketParams;
 use insightarena_contract::storage_types::{ConditionalMarket, DataKey, Market};
 use insightarena_contract::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
+use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol, BytesN};
 
 fn register_token(env: &Env) -> Address {
     let token_admin = Address::generate(env);
@@ -87,6 +87,7 @@ fn default_params(env: &Env) -> CreateMarketParams {
         min_stake: 10_000_000,
         max_stake: 100_000_000,
         is_public: true,
+        metadata_hash: BytesN::from_array(env, &[0u8; 32]),
     }
 }
 
@@ -108,6 +109,7 @@ fn conditional_params(
         min_stake: 10_000_000,
         max_stake: 100_000_000,
         is_public: true,
+        metadata_hash: BytesN::from_array(env, &[0u8; 32]),
     }
 }
 
@@ -815,6 +817,7 @@ fn test_check_conditional_activation_multiple_outcomes() {
         min_stake: 10_000_000,
         max_stake: 100_000_000,
         is_public: true,
+        metadata_hash: BytesN::from_array(&env, &[0u8; 32]),
     };
 
     let parent_id = client.create_market(&creator, &parent_params);

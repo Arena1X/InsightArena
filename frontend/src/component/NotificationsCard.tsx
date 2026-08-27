@@ -1,6 +1,7 @@
 "use client";
 
-import { TrendingUp, Trophy, Gift, Users } from "lucide-react";
+import { TrendingUp, Trophy, Gift, Users, Bell } from "lucide-react";
+import { EmptyState } from "@/component/ui/empty-state";
 
 interface NotificationItem {
   id: string;
@@ -68,8 +69,14 @@ const iconBgMap = {
   users: "bg-white/10",
 };
 
-export default function NotificationsCard() {
-  const unreadCount = mockNotifications.filter((n) => !n.isRead).length;
+interface NotificationsCardProps {
+  notifications?: NotificationItem[];
+}
+
+export default function NotificationsCard({
+  notifications = mockNotifications,
+}: NotificationsCardProps) {
+  const unreadCount = notifications.filter((n) => !n.isRead).length;
 
   return (
     <div className="relative rounded-2xl border border-white/10 bg-white/5 p-6 w-full overflow-hidden">
@@ -85,40 +92,48 @@ export default function NotificationsCard() {
       </div>
 
       {/* Notifications List */}
-      <div className="space-y-0">
-        {mockNotifications.map((notification, index) => {
-          const IconComponent = iconMap[notification.icon];
-          const isLast = index === mockNotifications.length - 1;
+      {notifications.length === 0 ? (
+        <EmptyState
+          icon={<Bell className="h-7 w-7" />}
+          title="No notifications yet"
+          description="We'll let you know when there's something new for you."
+        />
+      ) : (
+        <div className="space-y-0">
+          {notifications.map((notification, index) => {
+            const IconComponent = iconMap[notification.icon];
+            const isLast = index === notifications.length - 1;
 
-          return (
-            <div key={notification.id}>
-              <div className="flex items-start gap-4 py-4">
-                {/* Icon Box */}
-                <div
-                  className={`flex-shrink-0 w-10 h-10 rounded-xl ${iconBgMap[notification.icon]} flex items-center justify-center`}
-                >
-                  <IconComponent
-                    className={`h-5 w-5 ${iconColorMap[notification.icon]}`}
-                  />
+            return (
+              <div key={notification.id}>
+                <div className="flex items-start gap-4 py-4">
+                  {/* Icon Box */}
+                  <div
+                    className={`flex-shrink-0 w-10 h-10 rounded-xl ${iconBgMap[notification.icon]} flex items-center justify-center`}
+                  >
+                    <IconComponent
+                      className={`h-5 w-5 ${iconColorMap[notification.icon]}`}
+                    />
+                  </div>
+
+                  {/* Content */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-gray-300 text-sm leading-relaxed mb-1">
+                      {notification.message}
+                    </p>
+                    <span className="text-xs text-gray-500">
+                      {notification.timestamp}
+                    </span>
+                  </div>
                 </div>
 
-                {/* Content */}
-                <div className="flex-1 min-w-0">
-                  <p className="text-gray-300 text-sm leading-relaxed mb-1">
-                    {notification.message}
-                  </p>
-                  <span className="text-xs text-gray-500">
-                    {notification.timestamp}
-                  </span>
-                </div>
+                {/* Divider line (subtle, matching Figma stroke color) */}
+                {!isLast && <div className="border-b border-white/5 ml-14" />}
               </div>
-
-              {/* Divider line (subtle, matching Figma stroke color) */}
-              {!isLast && <div className="border-b border-white/5 ml-14" />}
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

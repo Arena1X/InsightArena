@@ -7,6 +7,8 @@ import {
   LeaderboardQueryDto,
   PaginatedLeaderboardResponse,
 } from './dto/leaderboard-query.dto';
+import { CoachInsightsResponse } from './dto/coach-insights.dto';
+import { User } from '../users/entities/user.entity';
 
 describe('LeaderboardController', () => {
   let controller: LeaderboardController;
@@ -47,10 +49,13 @@ describe('LeaderboardController', () => {
           useValue: {
             getTopLeaderboard: jest.fn(),
             getLeaderboard: jest.fn(),
+            getLeaderboardCursor: jest.fn(),
             getUserRank: jest.fn(),
             getHistory: jest.fn(),
             getHistoryForAddress: jest.fn(),
             getRankHistory: jest.fn(),
+            getSnapshots: jest.fn(),
+            getCoachInsights: jest.fn(),
           },
         },
       ],
@@ -93,6 +98,37 @@ describe('LeaderboardController', () => {
         expect.objectContaining({ season_id: 'season-1' }),
       );
     });
+
+    it('delegates to getLeaderboardCursor when a cursor query param is present', async () => {
+      const cursorSpy = jest
+        .spyOn(service, 'getLeaderboardCursor')
+        .mockResolvedValue({
+          data: [],
+          nextCursor: null,
+          hasMore: false,
+          limit: 20,
+        });
+      const offsetSpy = jest.spyOn(service, 'getLeaderboard');
+      const query: LeaderboardQueryDto = { cursor: 'abc', limit: 20 };
+
+      await controller.getLeaderboard(query);
+
+      expect(cursorSpy).toHaveBeenCalledWith(query);
+      expect(offsetSpy).not.toHaveBeenCalled();
+    });
+
+    it('delegates to getLeaderboard (offset) when no cursor is present', async () => {
+      const offsetSpy = jest
+        .spyOn(service, 'getLeaderboard')
+        .mockResolvedValue(mockResponse);
+      const cursorSpy = jest.spyOn(service, 'getLeaderboardCursor');
+      const query: LeaderboardQueryDto = { page: 1, limit: 20 };
+
+      await controller.getLeaderboard(query);
+
+      expect(offsetSpy).toHaveBeenCalledWith(query);
+      expect(cursorSpy).not.toHaveBeenCalled();
+    });
   });
 
   describe('getTopLeaderboard', () => {
@@ -131,6 +167,8 @@ describe('LeaderboardController', () => {
       expect(spy).toHaveBeenCalledWith(
         'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
         30,
+        undefined,
+        undefined,
       );
       expect(result).toEqual(mockHistory);
     });
@@ -156,6 +194,8 @@ describe('LeaderboardController', () => {
 
       expect(spy).toHaveBeenCalledWith(
         'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+        undefined,
+        undefined,
         undefined,
       );
     });
@@ -229,6 +269,109 @@ describe('LeaderboardController', () => {
       await expect(
         controller.getRankHistory('INVALID_ADDRESS', {}),
       ).rejects.toThrow();
+    });
+  });
+
+  describe('getSnapshots', () => {
+    it('should return snapshot rankings for a given date', async () => {
+      const mockSnapshotResponse = {
+        data: [
+          {
+            rank: 1,
+            user_id: 'user-uuid-1',
+            username: 'testuser',
+            stellar_address: 'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+            score: 100,
+            captured_at: new Date('2026-07-01T12:00:00Z'),
+          },
+        ],
+        snapshot_date: new Date('2026-07-01T12:00:00Z'),
+        total: 1,
+        page: 1,
+        limit: 20,
+      };
+      const spy = jest
+        .spyOn(service, 'getSnapshots')
+        .mockResolvedValue(mockSnapshotResponse);
+
+      const result = await controller.getSnapshots({ date: '2026-07-15' });
+
+      expect(spy).toHaveBeenCalledWith({ date: '2026-07-15' });
+      expect(result).toEqual(mockSnapshotResponse);
+    });
+
+    it('should return a message when no snapshots exist', async () => {
+      const mockEmptyResponse = {
+        data: [],
+        snapshot_date: new Date('2026-01-01'),
+        total: 0,
+        page: 1,
+        limit: 20,
+        message: 'No snapshots found on or before 2026-01-01.',
+      };
+      jest.spyOn(service, 'getSnapshots').mockResolvedValue(mockEmptyResponse);
+
+      const result = await controller.getSnapshots({ date: '2026-01-01' });
+
+      expect(result.data).toEqual([]);
+      expect(result.message).toContain('No snapshots found');
+    });
+  });
+
+  describe('getCoachInsights', () => {
+    const coachUser = { id: 'user-uuid-1' } as User;
+
+    it('should return tailored insights scoped to the authenticated user', async () => {
+      const insightsResponse: CoachInsightsResponse = {
+        has_history: true,
+        message: null,
+        insights: {
+          accuracy_trend: {
+            direction: 'improving',
+            recent_accuracy: 80,
+            prior_accuracy: 50,
+          },
+          best_category: {
+            category: 'Crypto',
+            predictions: 5,
+            correct: 4,
+            accuracy_rate: '80.0',
+          },
+          worst_category: null,
+          current_streak: 3,
+          longest_streak: 5,
+          total_resolved: 12,
+          generated_at: new Date('2026-08-19T10:00:00Z').toISOString(),
+        },
+      };
+      const spy = jest
+        .spyOn(service, 'getCoachInsights')
+        .mockResolvedValue(insightsResponse);
+
+      const result = await controller.getCoachInsights(coachUser);
+
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith(coachUser);
+      expect(result.has_history).toBe(true);
+      expect(result.insights?.best_category?.category).toBe('Crypto');
+    });
+
+    it('should pass through the new-user shape unchanged', async () => {
+      const onboardingResponse: CoachInsightsResponse = {
+        has_history: false,
+        message:
+          'Make a few more predictions to unlock your personalised coach insights.',
+        insights: null,
+      };
+      jest
+        .spyOn(service, 'getCoachInsights')
+        .mockResolvedValue(onboardingResponse);
+
+      const result = await controller.getCoachInsights(coachUser);
+
+      expect(result.has_history).toBe(false);
+      expect(result.insights).toBeNull();
+      expect(result.message).toContain('predictions');
     });
   });
 });

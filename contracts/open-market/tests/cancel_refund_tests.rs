@@ -12,7 +12,7 @@ use insightarena_contract::storage_types::{DataKey, Prediction};
 use insightarena_contract::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
+use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol, BytesN};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -48,6 +48,7 @@ fn default_params(env: &Env) -> CreateMarketParams {
         min_stake: 10_000_000,
         max_stake: 500_000_000,
         is_public: true,
+        metadata_hash: BytesN::from_array(env, &[0u8; 32]),
     }
 }
 
@@ -475,6 +476,139 @@ fn bonus_resolve_after_cancel_is_rejected() {
     ));
 }
 
+// ── Partial withdrawal + cancel refund accounting (issue #1511) ───────────────
+
+/// A predictor who partially withdraws before cancellation must be refunded
+/// only the remaining stake (original stake minus the amount already
+/// withdrawn), never the original stake amount.
+#[test]
+fn partial_withdrawal_then_cancel_refunds_only_remainder() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm_token) = deploy(&env);
+
+    let creator = Address::generate(&env);
+    let predictor = Address::generate(&env);
+    let stake = 100_000_000_i128;
+
+    let market_id = client.create_market(&creator, &default_params(&env));
+    fund(&env, &xlm_token, &predictor, stake);
+    client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
+
+    // Predictor withdraws 40% of their stake before the market locks.
+    let withdrawal_amount = 40_000_000_i128;
+    let (withdrawn_refund, fee) =
+        client.withdraw_position(&predictor, &market_id, &withdrawal_amount);
+    let remaining_stake = stake - withdrawal_amount;
+
+    // Sanity: the early-exit refund plus fee reconstitutes the withdrawal.
+    assert_eq!(withdrawn_refund + fee, withdrawal_amount);
+
+    // Confirm the predictor's on-chain position now reflects the remainder.
+    let pred = client.get_prediction(&market_id, &predictor);
+    assert_eq!(pred.stake_amount, remaining_stake);
+
+    client.cancel_market(&admin, &market_id);
+
+    let token = TokenClient::new(&env, &xlm_token);
+    let balance_before_claim = token.balance(&predictor);
+
+    let refunded = client.claim_cancel_refund(&predictor, &market_id);
+
+    // Refund must equal the remaining stake, never the original stake.
+    assert_eq!(
+        refunded, remaining_stake,
+        "cancel refund must equal original stake minus already-withdrawn amount"
+    );
+    assert_ne!(
+        refunded, stake,
+        "cancel refund must not equal the original (pre-withdrawal) stake"
+    );
+    assert_eq!(token.balance(&predictor), balance_before_claim + remaining_stake);
+}
+
+/// After a partial-withdrawal-then-cancel refund, a second claim is rejected
+/// and does not pay out again.
+#[test]
+fn partial_withdrawal_then_cancel_double_claim_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm_token) = deploy(&env);
+
+    let creator = Address::generate(&env);
+    let predictor = Address::generate(&env);
+    let stake = 60_000_000_i128;
+
+    let market_id = client.create_market(&creator, &default_params(&env));
+    fund(&env, &xlm_token, &predictor, stake);
+    client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
+
+    let withdrawal_amount = 20_000_000_i128;
+    client.withdraw_position(&predictor, &market_id, &withdrawal_amount);
+    let remaining_stake = stake - withdrawal_amount;
+
+    client.cancel_market(&admin, &market_id);
+
+    let refunded = client.claim_cancel_refund(&predictor, &market_id);
+    assert_eq!(refunded, remaining_stake);
+
+    let token = TokenClient::new(&env, &xlm_token);
+    let balance_after_first_claim = token.balance(&predictor);
+
+    let result = client.try_claim_cancel_refund(&predictor, &market_id);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::RefundAlreadyClaimed))
+    ));
+
+    // No extra funds moved on the rejected second claim.
+    assert_eq!(token.balance(&predictor), balance_after_first_claim);
+}
+
+/// Escrow invariant with a mix of partial withdrawals and full stakes: the
+/// contract balance never goes negative and every refund claim succeeds
+/// without over- or under-paying.
+#[test]
+fn partial_withdrawal_then_cancel_escrow_invariant_holds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm_token) = deploy(&env);
+
+    let creator = Address::generate(&env);
+    let market_id = client.create_market(&creator, &default_params(&env));
+    let token = TokenClient::new(&env, &xlm_token);
+
+    let predictor_a = Address::generate(&env);
+    let predictor_b = Address::generate(&env);
+    let stake_a = 80_000_000_i128;
+    let stake_b = 50_000_000_i128;
+
+    fund(&env, &xlm_token, &predictor_a, stake_a);
+    fund(&env, &xlm_token, &predictor_b, stake_b);
+    client.submit_prediction(&predictor_a, &market_id, &symbol_short!("yes"), &stake_a);
+    client.submit_prediction(&predictor_b, &market_id, &symbol_short!("no"), &stake_b);
+
+    // A partially withdraws; B never withdraws.
+    let withdrawal_amount = 30_000_000_i128;
+    client.withdraw_position(&predictor_a, &market_id, &withdrawal_amount);
+    let remaining_a = stake_a - withdrawal_amount;
+
+    // B may have received a pro-rata early-exit fee credit; read the live stake.
+    let pred_b = client.get_prediction(&market_id, &predictor_b);
+    let remaining_b = pred_b.stake_amount;
+
+    client.cancel_market(&admin, &market_id);
+
+    // Escrow must never go negative through either claim.
+    let refund_a = client.claim_cancel_refund(&predictor_a, &market_id);
+    assert_eq!(refund_a, remaining_a);
+    assert!(token.balance(&client.address) >= 0);
+
+    let refund_b = client.claim_cancel_refund(&predictor_b, &market_id);
+    assert_eq!(refund_b, remaining_b);
+    assert!(token.balance(&client.address) >= 0);
+}
+
 /// `claim_payout` on a cancelled market fails with `MarketNotResolved`, not a
 /// panic — the resolved-payout path is correctly gated.
 #[test]
@@ -499,3 +633,31 @@ fn bonus_claim_payout_on_cancelled_market_is_rejected() {
         Err(Ok(InsightArenaError::MarketNotResolved))
     ));
 }
+
+/// A predictor who completely withdrew position has 0 stake and is rejected with `NotAParticipant`.
+#[test]
+fn cancel_refund_rejects_full_withdrawn_zero_stake_predictor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm_token) = deploy(&env);
+
+    let creator = Address::generate(&env);
+    let predictor = Address::generate(&env);
+    let stake = 20_000_000_i128;
+
+    let market_id = client.create_market(&creator, &default_params(&env));
+    fund(&env, &xlm_token, &predictor, stake);
+    client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
+
+    // Full withdrawal
+    client.withdraw_position(&predictor, &market_id, &stake);
+
+    client.cancel_market(&admin, &market_id);
+
+    let result = client.try_claim_cancel_refund(&predictor, &market_id);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::NotAParticipant))
+    ));
+}
+

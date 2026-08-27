@@ -9,6 +9,9 @@ export class SearchHighlightsDto {
 
   @ApiProperty({ required: false })
   creator_address?: string;
+
+  @ApiProperty({ required: false })
+  category?: string;
 }
 
 export class SearchEventResultDto {

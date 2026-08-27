@@ -10,4 +10,6 @@ export const CACHE_WARMING_KEYS = {
     `leaderboard:cursor:${seasonId ?? 'all'}:page:*`,
   leaderboardTopN: (n: number, seasonId: string | null) =>
     `leaderboard:top:${n}:${seasonId ?? 'all'}`,
+  coachInsights: (userId: string, weekId: string) =>
+    `leaderboard:coach:${userId}:${weekId}`,
 } as const;

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 
-import { cn } from "@/lib/utils";
+import { cn, isRouteContentPending, subscribeRouteContentPending } from "@/lib/utils";
 
 /** Navigations that resolve within this window never show the bar. */
 const SHOW_DELAY_MS = 150;
@@ -33,6 +33,9 @@ export function RouteProgress() {
   const [value, setValue] = useState(0);
 
   const isNavigating = useRef(false);
+  // True once the URL has settled on the destination route, even if its
+  // loading.tsx fallback is still mounted (content not actually ready yet).
+  const routeSettled = useRef(true);
   const showTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const trickleTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -45,12 +48,17 @@ export function RouteProgress() {
       if (showTimer.current) clearTimeout(showTimer.current);
       if (trickleTimer.current) clearInterval(trickleTimer.current);
       if (hideTimer.current) clearTimeout(hideTimer.current);
+      showTimer.current = null;
+      trickleTimer.current = null;
+      hideTimer.current = null;
     }
 
     function start() {
-      if (isNavigating.current) return;
-      isNavigating.current = true;
+      // A new navigation cancels and resets any in-flight one, rather than
+      // letting a stale trickle silently continue (or jumping to complete).
       clearAllTimers();
+      isNavigating.current = true;
+      routeSettled.current = false;
       setValue(0);
 
       showTimer.current = setTimeout(() => {
@@ -66,11 +74,12 @@ export function RouteProgress() {
       }, SHOW_DELAY_MS);
     }
 
-    function finish() {
-      if (!isNavigating.current) return;
+    function finishNow() {
       isNavigating.current = false;
       if (showTimer.current) clearTimeout(showTimer.current);
       if (trickleTimer.current) clearInterval(trickleTimer.current);
+      showTimer.current = null;
+      trickleTimer.current = null;
 
       setValue(100);
       hideTimer.current = setTimeout(
@@ -81,6 +90,21 @@ export function RouteProgress() {
         reducedMotion ? 0 : FINISH_HOLD_MS,
       );
     }
+
+    function finish() {
+      if (!isNavigating.current) return;
+      routeSettled.current = true;
+      // The URL commits before a slow destination's loading.tsx unmounts —
+      // don't call it "done" until that content-pending signal clears too.
+      if (isRouteContentPending()) return;
+      finishNow();
+    }
+
+    const unsubscribeContentPending = subscribeRouteContentPending((pending) => {
+      if (!pending && isNavigating.current && routeSettled.current) {
+        finishNow();
+      }
+    });
 
     const originalPushState = window.history.pushState.bind(window.history);
     const originalReplaceState = window.history.replaceState.bind(window.history);
@@ -104,6 +128,7 @@ export function RouteProgress() {
       window.history.pushState = originalPushState;
       window.history.replaceState = originalReplaceState;
       window.removeEventListener("popstate", start);
+      unsubscribeContentPending();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeKey, reducedMotion]);

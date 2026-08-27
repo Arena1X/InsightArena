@@ -19,9 +19,11 @@ import {
   ApiResponse,
   ApiBearerAuth,
 } from '@nestjs/swagger';
+import { ThrottleTier } from '../common/decorators/throttle-tier.decorator';
 import { CompetitionsService } from './competitions.service';
 import { CreateCompetitionDto } from './dto/create-competition.dto';
 import { UpdateCompetitionDto } from './dto/update-competition.dto';
+import { GenerateBracketDto } from './dto/generate-bracket.dto';
 import {
   ListCompetitionsDto,
   PaginatedCompetitionsResponse,
@@ -33,7 +35,9 @@ import {
 import { UserRankResponseDto } from './dto/user-rank-response.dto';
 import { JoinCompetitionResponseDto } from './dto/join-competition.dto';
 import { LeaveCompetitionResponseDto } from './dto/leave-competition.dto';
+import { BracketResponseDto } from './dto/bracket-response.dto';
 import { Competition } from './entities/competition.entity';
+import { CompetitionBracket } from './entities/competition-bracket.entity';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
 import { User } from '../users/entities/user.entity';
@@ -45,6 +49,7 @@ export class CompetitionsController {
 
   @Post()
   @UseGuards(BanGuard)
+  @ThrottleTier('write')
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create a new competition' })
@@ -66,6 +71,7 @@ export class CompetitionsController {
 
   @Get()
   @Public()
+  @ThrottleTier('read')
   @ApiOperation({ summary: 'List competitions with pagination and filters' })
   @ApiResponse({ status: 200, type: PaginatedCompetitionsResponse })
   async listCompetitions(
@@ -176,6 +182,80 @@ export class CompetitionsController {
       competition_id: id,
       participant_id: participant.id,
     };
+  }
+
+  @Post(':id/bracket')
+  @UseGuards(BanGuard)
+  @ThrottleTier('write')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Generate a single-elimination bracket for a competition',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Bracket generated',
+    type: CompetitionBracket,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Not enough participants',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Only the creator can generate a bracket',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Competition not found',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Bracket already exists',
+  })
+  async generateBracket(
+    @Param('id') id: string,
+    @Body() dto: GenerateBracketDto,
+    @CurrentUser() user: User,
+  ): Promise<CompetitionBracket> {
+    return this.competitionsService.generateBracket(id, dto, user.id);
+  }
+
+  @Get(':id/bracket')
+  @Public()
+  @ThrottleTier('read')
+  @ApiOperation({ summary: 'Get the bracket for a competition' })
+  @ApiResponse({
+    status: 200,
+    description: 'Full bracket with rounds and matchups',
+    type: BracketResponseDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'No bracket found for this competition',
+  })
+  async getBracket(@Param('id') id: string): Promise<BracketResponseDto> {
+    return this.competitionsService.getBracket(id);
+  }
+
+  @Post(':id/cancel')
+  @UseGuards(BanGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Cancel a competition (creator only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Competition cancelled',
+    type: Competition,
+  })
+  @ApiResponse({ status: 403, description: 'Only the creator can cancel' })
+  @ApiResponse({ status: 404, description: 'Competition not found' })
+  @ApiResponse({ status: 409, description: 'Competition already cancelled' })
+  async cancelCompetition(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<Competition> {
+    return this.competitionsService.cancel(id, user.id);
   }
 
   @Delete(':id/leave')

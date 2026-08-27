@@ -7,7 +7,7 @@ import {
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
-import { IndexerService } from './indexer.service';
+import { IndexerService, EVENT_DECODER_VERSION } from './indexer.service';
 import {
   ContractEvent,
   ContractEventStatus,
@@ -23,6 +23,17 @@ import { User } from '../users/entities/user.entity';
 import { NotificationGeneratorService } from '../notifications/notification-generator.service';
 import { BroadcasterService } from '../websocket/broadcaster.service';
 import { ReconciliationService } from './reconciliation.service';
+
+const makeUpdateQueryBuilder = () => {
+  const qb: any = {
+    update: jest.fn().mockReturnThis(),
+    set: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    setParameter: jest.fn().mockReturnThis(),
+    execute: jest.fn().mockResolvedValue({ affected: 1 }),
+  };
+  return qb;
+};
 
 describe('IndexerService', () => {
   let service: IndexerService;
@@ -259,6 +270,15 @@ describe('IndexerService', () => {
   });
 
   describe('EventCreated campaign metadata', () => {
+    const makeOverlapQueryBuilder = (count: number) => {
+      const qb: any = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(count),
+      };
+      return qb;
+    };
+
     beforeEach(() => {
       creatorEventRepository.findOne.mockResolvedValue(null);
       (creatorEventRepository.create as jest.Mock).mockImplementation(
@@ -266,6 +286,9 @@ describe('IndexerService', () => {
       );
       (creatorEventRepository.save as jest.Mock).mockImplementation(
         async (event: unknown) => event as CreatorEvent,
+      );
+      creatorEventRepository.createQueryBuilder.mockReturnValue(
+        makeOverlapQueryBuilder(0),
       );
     });
 
@@ -540,6 +563,67 @@ describe('IndexerService', () => {
         }),
       );
     });
+
+    it('rejects a new campaign whose window overlaps an existing active campaign for the same creator', async () => {
+      creatorEventRepository.createQueryBuilder.mockReturnValue(
+        makeOverlapQueryBuilder(1),
+      );
+
+      await (service as any).handleEventCreated({
+        event_id: '50',
+        creator: 'GCREATOR',
+        title: 'Overlapping Campaign',
+        description: 'Should be rejected',
+        created_at: 1710000000,
+        start_time: 1710003600,
+        end_time: 1710086400,
+      });
+
+      expect(creatorEventRepository.create).not.toHaveBeenCalled();
+      expect(creatorEventRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('accepts a new campaign whose window does not overlap any active campaign for the same creator', async () => {
+      creatorEventRepository.createQueryBuilder.mockReturnValue(
+        makeOverlapQueryBuilder(0),
+      );
+
+      await (service as any).handleEventCreated({
+        event_id: '51',
+        creator: 'GCREATOR',
+        title: 'Non-overlapping Campaign',
+        description: 'Should be indexed',
+        created_at: 1710000000,
+        start_time: 1710003600,
+        end_time: 1710086400,
+      });
+
+      expect(creatorEventRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ on_chain_event_id: 51 }),
+      );
+      expect(creatorEventRepository.save).toHaveBeenCalled();
+    });
+
+    it('scopes the overlap query to the same creator and non-cancelled campaigns', async () => {
+      const qb = makeOverlapQueryBuilder(0);
+      creatorEventRepository.createQueryBuilder.mockReturnValue(qb);
+
+      await (service as any).handleEventCreated({
+        event_id: '52',
+        creator: 'GCREATOR',
+        title: 'Scoped Campaign',
+        description: 'Checks query scoping',
+        created_at: 1710000000,
+        start_time: 1710003600,
+        end_time: 1710086400,
+      });
+
+      expect(qb.where).toHaveBeenCalledWith(
+        'event.creator_address = :creatorAddress',
+        { creatorAddress: 'GCREATOR' },
+      );
+      expect(qb.andWhere).toHaveBeenCalledWith('event.is_cancelled = false');
+    });
   });
 
   describe('handleUserJoinedEvent', () => {
@@ -569,15 +653,10 @@ describe('IndexerService', () => {
       expect(data).toMatchObject({ entry_fee_paid: '0' });
     });
 
-    it('adds the entry fee paid to prize_pool and total_entry_fees_collected', async () => {
-      const event = {
-        on_chain_event_id: 7,
-        participant_count: 2,
-        prize_pool: '5000000000',
-        total_entry_fees_collected: '20000000',
-      } as CreatorEvent;
-      creatorEventRepository.findOne.mockResolvedValue(event);
-      creatorEventRepository.save.mockResolvedValue(event);
+    it('issues a single atomic SQL update instead of read-modify-write', async () => {
+      creatorEventRepository.count.mockResolvedValue(1);
+      const qb = makeUpdateQueryBuilder();
+      creatorEventRepository.createQueryBuilder.mockReturnValue(qb);
 
       await (service as any).handleUserJoinedEvent({
         user_address: 'GUSER',
@@ -586,32 +665,131 @@ describe('IndexerService', () => {
         entry_fee_paid: '10000000',
       });
 
-      expect(event.participant_count).toBe(3);
-      expect(event.prize_pool).toBe('5010000000');
-      expect(event.total_entry_fees_collected).toBe('30000000');
-      expect(creatorEventRepository.save).toHaveBeenCalledWith(event);
+      // No read-modify-write: findOne/save must not be used for the mutation.
+      expect(creatorEventRepository.findOne).not.toHaveBeenCalled();
+      expect(creatorEventRepository.save).not.toHaveBeenCalled();
+
+      expect(qb.update).toHaveBeenCalled();
+      expect(qb.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          participant_count: expect.any(Function),
+          prize_pool: expect.any(Function),
+          total_entry_fees_collected: expect.any(Function),
+        }),
+      );
+      expect(qb.where).toHaveBeenCalledWith(
+        'on_chain_event_id = :onChainEventId',
+        { onChainEventId: 7 },
+      );
+      expect(qb.setParameter).toHaveBeenCalledWith('entryFeePaid', '10000000');
+      expect(qb.execute).toHaveBeenCalled();
     });
 
-    it('leaves prize_pool and total_entry_fees_collected unchanged for free events', async () => {
-      const event = {
-        on_chain_event_id: 7,
-        participant_count: 0,
-        prize_pool: '5000000000',
-        total_entry_fees_collected: '0',
-      } as CreatorEvent;
-      creatorEventRepository.findOne.mockResolvedValue(event);
-      creatorEventRepository.save.mockResolvedValue(event);
+    it('runs concurrent joins as independent atomic updates without lost updates', async () => {
+      creatorEventRepository.count.mockResolvedValue(1);
+      const builders = [makeUpdateQueryBuilder(), makeUpdateQueryBuilder()];
+      creatorEventRepository.createQueryBuilder
+        .mockReturnValueOnce(builders[0])
+        .mockReturnValueOnce(builders[1]);
+
+      await Promise.all([
+        (service as any).handleUserJoinedEvent({
+          user_address: 'GUSER1',
+          event_id: '7',
+          joined_at: 1710000000,
+          entry_fee_paid: '10000000',
+        }),
+        (service as any).handleUserJoinedEvent({
+          user_address: 'GUSER2',
+          event_id: '7',
+          joined_at: 1710000001,
+          entry_fee_paid: '10000000',
+        }),
+      ]);
+
+      // Each concurrent join executes its own atomic UPDATE — the DB, not
+      // application code, performs the increment, so neither call can clobber
+      // the other's write.
+      expect(builders[0].execute).toHaveBeenCalled();
+      expect(builders[1].execute).toHaveBeenCalled();
+    });
+
+    it('skips the update when the event does not exist', async () => {
+      creatorEventRepository.count.mockResolvedValue(0);
 
       await (service as any).handleUserJoinedEvent({
         user_address: 'GUSER',
         event_id: '7',
         joined_at: 1710000000,
-        entry_fee_paid: '0',
+        entry_fee_paid: '10000000',
       });
 
-      expect(event.participant_count).toBe(1);
-      expect(event.prize_pool).toBe('5000000000');
-      expect(event.total_entry_fees_collected).toBe('0');
+      expect(creatorEventRepository.createQueryBuilder).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('recomputeEntryFeeTotals', () => {
+    it('recomputes total_entry_fees_collected from entry_fee * participant_count', async () => {
+      const event = {
+        on_chain_event_id: 7,
+        entry_fee: '10000000',
+        participant_count: 5,
+        total_entry_fees_collected: '40000000', // drifted from actual
+      } as CreatorEvent;
+      creatorEventRepository.findOne.mockResolvedValue(event);
+      const qb = makeUpdateQueryBuilder();
+      creatorEventRepository.createQueryBuilder.mockReturnValue(qb);
+
+      await service.recomputeEntryFeeTotals(7);
+
+      expect(qb.set).toHaveBeenCalledWith({
+        total_entry_fees_collected: '50000000',
+      });
+      expect(qb.where).toHaveBeenCalledWith(
+        'on_chain_event_id = :onChainEventId',
+        { onChainEventId: 7 },
+      );
+      expect(qb.execute).toHaveBeenCalled();
+    });
+
+    it('does nothing when the event is not found', async () => {
+      creatorEventRepository.findOne.mockResolvedValue(null);
+
+      await service.recomputeEntryFeeTotals(999);
+
+      expect(creatorEventRepository.createQueryBuilder).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleEventFinalized - entry fee reconciliation', () => {
+    it('recomputes entry fee totals before processing payouts', async () => {
+      const event = {
+        on_chain_event_id: 7,
+        is_finalized: false,
+        entry_fee: '10000000',
+        participant_count: 3,
+        total_entry_fees_collected: '20000000',
+      } as CreatorEvent;
+
+      creatorEventRepository.findOne
+        .mockResolvedValueOnce(event) // initial lookup in handleEventFinalized
+        .mockResolvedValueOnce(event); // lookup inside recomputeEntryFeeTotals
+      creatorEventRepository.save.mockResolvedValue(event);
+      const qb = makeUpdateQueryBuilder();
+      creatorEventRepository.createQueryBuilder.mockReturnValue(qb);
+
+      const payoutRepo = (service as any).creatorEventPayoutRepository;
+      payoutRepo.count.mockResolvedValue(0);
+
+      await (service as any).handleEventFinalized({
+        event_id: '7',
+        leaderboard: [],
+      });
+
+      expect(qb.set).toHaveBeenCalledWith({
+        total_entry_fees_collected: '30000000',
+      });
+      expect(qb.execute).toHaveBeenCalled();
     });
   });
 
@@ -722,6 +900,84 @@ describe('IndexerService', () => {
 
       expect(contractEventRepository.delete).toHaveBeenCalled();
       expect(count).toBe(10);
+    });
+  });
+
+  describe('decoder robustness', () => {
+    it('stamps decoded events with the current decoder version', () => {
+      const parsed = (service as any).parseRawEvent(
+        {
+          ledger: 10,
+          log_index: 0,
+          topic: [{ symbol: 'event' }, { symbol: 'created' }],
+          value: { event_id: { u64: '1' } },
+        },
+        0,
+      );
+
+      expect(parsed).not.toBeNull();
+      expect(parsed.data._decoder_version).toBe(EVENT_DECODER_VERSION);
+    });
+
+    it('skips an unrecognized event shape without throwing', () => {
+      const parsed = (service as any).parseRawEvent(
+        { ledger: 10, log_index: 0, topic: [], value: {} },
+        0,
+      );
+
+      expect(parsed).toBeNull();
+    });
+
+    it('does not abort the whole batch when one raw event throws during parsing', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_RPC_URL') return 'https://rpc.example';
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      const goodEvent = {
+        ledger: 11,
+        log_index: 0,
+        topic: [{ symbol: 'event' }, { symbol: 'created' }],
+        value: { event_id: { u64: '1' } },
+      };
+
+      const originalParseRawEvent = (service as any).parseRawEvent.bind(
+        service,
+      );
+      jest
+        .spyOn(service as any, 'parseRawEvent')
+        .mockImplementationOnce(() => {
+          throw new Error('unexpected/new event shape');
+        })
+        .mockImplementationOnce(originalParseRawEvent);
+
+      const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          result: {
+            events: [{ malformed: true }, goodEvent],
+            latestLedger: 100,
+          },
+        }),
+      } as unknown as Response);
+
+      try {
+        const { events } = await (service as any).fetchEventsFromContract(1);
+        expect(events).toHaveLength(1);
+        expect(events[0].event_type).toBe('EventCreated');
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+
+    it('unwrapIndexerValue does not overflow the stack on pathologically nested values', () => {
+      let nested: any = { symbol: 'leaf' };
+      for (let i = 0; i < 1000; i++) {
+        nested = { value: nested };
+      }
+
+      expect(() => (service as any).unwrapIndexerValue(nested)).not.toThrow();
     });
   });
 });

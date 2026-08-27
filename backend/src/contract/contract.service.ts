@@ -61,6 +61,8 @@ export interface ContractPrediction {
   claimed?: boolean;
   isCorrect?: boolean | null;
   is_correct?: boolean | null;
+  isWithdrawn?: boolean;
+  is_withdrawn?: boolean;
 }
 
 export interface ContractEventStatistics {

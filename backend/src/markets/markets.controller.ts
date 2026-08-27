@@ -20,7 +20,7 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { Throttle } from '@nestjs/throttler';
+import { ThrottleTier } from '../common/decorators/throttle-tier.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { DateRangeQueryDto } from '../common/dto/date-range-query.dto';
 import { Public } from '../common/decorators/public.decorator';
@@ -41,6 +41,7 @@ import {
   ListMarketsDto,
   PaginatedMarketsResponse,
 } from './dto/list-markets.dto';
+import { PriceHistoryQueryDto } from './dto/price-history-query.dto';
 import { PredictionStatsDto } from './dto/prediction-stats.dto';
 import {
   PaginatedTrendingMarketsResponse,
@@ -105,6 +106,20 @@ export class MarketsController {
     return this.marketsService.getPredictionStats(id);
   }
 
+  @Get(':id/price-history')
+  @Public()
+  @ApiOperation({ summary: 'Get price history time-series for a market' })
+  @ApiResponse({
+    status: 200,
+    description: 'Bucketed price history points over time',
+  })
+  async getPriceHistory(
+    @Param('id') id: string,
+    @Query() query: PriceHistoryQueryDto,
+  ): Promise<any[]> {
+    return this.marketsService.getPriceHistory(id, query);
+  }
+
   @Get(':id/analytics')
   @Public()
   @ApiOperation({ summary: 'Get market analytics and statistics' })
@@ -158,7 +173,7 @@ export class MarketsController {
 
   @Post('bulk')
   @UseGuards(BanGuard)
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @ThrottleTier('write')
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @UseInterceptors(OptionalIdempotencyInterceptor)
@@ -220,6 +235,7 @@ export class MarketsController {
 
   @Get()
   @Public()
+  @ThrottleTier('read')
   @ApiOperation({ summary: 'List and filter markets with pagination' })
   @ApiResponse({
     status: 200,
@@ -408,6 +424,7 @@ export class MarketsController {
 
   @Post(':id/comments')
   @UseGuards(BanGuard)
+  @ThrottleTier('write')
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Post a comment on a market' })

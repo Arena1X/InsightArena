@@ -199,8 +199,9 @@ pub fn finalize_event(
     // giving the creator an ongoing stake in the event's dispute outcome.
     let refund_to_creator = prize_pool - total_distributed;
     if refund_to_creator > 0 {
-        let vest_share_bps = fee::get_creator_vest_share_bps(env) as i128;
-        let vested_amount = refund_to_creator * vest_share_bps / 10_000;
+        let vest_share_bps = fee::get_creator_vest_share_bps(env);
+        let vested_amount = fee::calculate_bounded_fee(refund_to_creator, vest_share_bps)
+            .map_err(|_| EventError::Overflow)?;
         let immediate_amount = refund_to_creator - vested_amount;
 
         if immediate_amount > 0 {
@@ -301,12 +302,17 @@ pub fn claim_prize(env: &Env, winner: Address, event_id: u64) -> Result<i128, Ev
         return Err(EventError::AlreadyClaimed);
     }
 
+    if allocation.amount <= 0 {
+        return Err(EventError::NoAllocation);
+    }
+
+    // Mark as claimed in storage before external interaction (Checks-Effects-Interactions pattern)
+    allocation.claimed = true;
+    storage::set_prize_allocation(env, &allocation);
+
     let xlm_token = admin::get_xlm_token(env).unwrap_or_else(|| panic!("not_initialized"));
     TokenHelper::distribute_winnings(env, &xlm_token, &winner, allocation.amount)
         .map_err(|_| EventError::TransferFailed)?;
-
-    allocation.claimed = true;
-    storage::set_prize_allocation(env, &allocation);
 
     env.events().publish(
         (Symbol::new(env, "prize"), Symbol::new(env, "claimed")),

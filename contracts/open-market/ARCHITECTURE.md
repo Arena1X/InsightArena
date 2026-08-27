@@ -18,7 +18,7 @@ The backend calls the contract via Soroban RPC (using the `@stellar/stellar-sdk`
 | `escrow.rs` | XLM locking, refunds, payouts, reentrancy guard, treasury | `lock_stake`, `refund`, `release_payout`, `get_contract_balance`, `assert_escrow_solvent`, `add_to_treasury_balance` |
 | `season.rs` | Seasons, leaderboard snapshots, reward distribution, season points | `create_season`, `finalize_season`, `update_leaderboard`, `get_leaderboard`, `reset_season_points`, `calculate_points` |
 | `invite.rs` | Invite code generation, redemption, revocation | `generate_invite_code`, `redeem_invite_code`, `revoke_invite_code` |
-| `dispute.rs` | Dispute filing and resolution | `raise_dispute`, `resolve_dispute` |
+| `dispute.rs` | Dispute filing/resolution, appeals, and weighted arbiter quorum voting | `raise_dispute`, `resolve_dispute`, `appeal_dispute`, `resolve_appeal`, `stake_as_arbiter`, `assign_arbiters`, `cast_arbiter_vote`, `finalize_arbiter_vote`, `get_arbiter_tally` |
 | `governance.rs` | Proposals, voting, execution | `create_proposal`, `vote`, `execute_proposal` |
 | `liquidity.rs` | AMM pool, LP tokens, swaps, fee distribution | `add_liquidity`, `remove_liquidity`, `swap_outcome`, `get_outcome_price` |
 | `reputation.rs` | Creator stats and reputation scoring | `on_market_created`, `on_market_resolved`, `calculate_creator_reputation`, `get_creator_stats` |

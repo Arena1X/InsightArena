@@ -1,10 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
+import { JwtModule } from '@nestjs/jwt';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { AchievementsModule } from './achievements/achievements.module';
 import { AdminModule } from './admin/admin.module';
@@ -37,6 +38,7 @@ import { CacheWarmingModule } from './cache/cache-warming.module';
 import { WebsocketModule } from './websocket/websocket.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { AccountModule } from './account/account.module';
+import { TieredThrottlerGuard } from './common/guards/tiered-throttler.guard';
 
 @Module({
   imports: [
@@ -49,17 +51,32 @@ import { AccountModule } from './account/account.module';
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => [
-        {
-          ttl: 60000,
-          limit: 100,
-        },
-        {
-          name: 'auth',
-          ttl: config.get<number>('AUTH_THROTTLE_TTL_MS') ?? 60000,
-          limit: config.get<number>('AUTH_THROTTLE_LIMIT') ?? 5,
-        },
-      ],
+      useFactory: (configService: ConfigService) => ({
+        throttlers: [
+          {
+            name: 'default',
+            ttl:
+              configService.get<number>('RATE_LIMIT_DEFAULT_TTL_MS') ?? 60_000,
+            limit: configService.get<number>('RATE_LIMIT_DEFAULT_LIMIT') ?? 100,
+          },
+          {
+            name: 'auth',
+            ttl: configService.get<number>('RATE_LIMIT_AUTH_TTL_MS') ?? 60_000,
+            limit: configService.get<number>('RATE_LIMIT_AUTH_LIMIT') ?? 10,
+          },
+          {
+            name: 'read',
+            ttl: configService.get<number>('RATE_LIMIT_READ_TTL_MS') ?? 60_000,
+            limit: configService.get<number>('RATE_LIMIT_READ_LIMIT') ?? 200,
+          },
+          {
+            name: 'write',
+            ttl: configService.get<number>('RATE_LIMIT_WRITE_TTL_MS') ?? 60_000,
+            limit: configService.get<number>('RATE_LIMIT_WRITE_LIMIT') ?? 30,
+          },
+        ],
+        setHeaders: true,
+      }),
     }),
     LoggerModule.forRoot({
       pinoHttp: {
@@ -113,6 +130,13 @@ import { AccountModule } from './account/account.module';
     WebsocketModule,
     WebhooksModule,
     AccountModule,
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.get<string>('JWT_SECRET'),
+      }),
+    }),
   ],
 
   controllers: [AppController],
@@ -120,7 +144,7 @@ import { AccountModule } from './account/account.module';
     AppService,
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: TieredThrottlerGuard,
     },
     {
       provide: APP_GUARD,

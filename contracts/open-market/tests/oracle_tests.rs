@@ -1,5 +1,5 @@
 use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol};
+use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol, BytesN};
 
 use insightarena_contract::market::CreateMarketParams;
 use insightarena_contract::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
@@ -35,6 +35,7 @@ fn default_params(env: &Env) -> CreateMarketParams {
         min_stake: 10_000_000,
         max_stake: 100_000_000,
         is_public: true,
+        metadata_hash: BytesN::from_array(env, &[0u8; 32]),
     }
 }
 

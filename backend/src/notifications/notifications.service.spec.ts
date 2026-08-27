@@ -8,6 +8,10 @@ import {
   NotificationChannel,
   NotificationFrequency,
 } from './entities/notification-preference.entity';
+import {
+  NotificationCategoryPreference,
+  NotificationCategory,
+} from './entities/notification-category-preference.entity';
 import { NotificationBroadcasterService } from '../websocket/notification-broadcaster.service';
 
 // ---------------------------------------------------------------------------
@@ -65,6 +69,13 @@ const mockPreferencesRepo = {
   save: jest.fn(),
 };
 
+const mockCategoryPreferencesRepo = {
+  find: jest.fn(),
+  findOne: jest.fn(),
+  create: jest.fn(),
+  save: jest.fn(),
+};
+
 const mockNotificationBroadcaster = {
   broadcastNewNotification: jest.fn(),
   broadcastNotificationRead: jest.fn(),
@@ -88,6 +99,10 @@ describe('NotificationsService', () => {
         {
           provide: getRepositoryToken(NotificationPreference),
           useValue: mockPreferencesRepo,
+        },
+        {
+          provide: getRepositoryToken(NotificationCategoryPreference),
+          useValue: mockCategoryPreferencesRepo,
         },
         {
           provide: NotificationBroadcasterService,
@@ -628,6 +643,147 @@ describe('NotificationsService', () => {
     });
   });
 
+  describe('markAllAsRead', () => {
+    it('marks all unread as read and returns unread count (zero)', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 3 });
+      mockNotificationRepo.count.mockResolvedValue(0);
+
+      const result = await service.markAllAsRead('GBRPYHIL');
+
+      expect(mockNotificationRepo.update).toHaveBeenCalledWith(
+        { user_address: 'GBRPYHIL', read: false },
+        { read: true },
+      );
+      expect(result).toEqual({ unreadCount: 0 });
+    });
+
+    it('is idempotent — second call still returns zero', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 0 });
+      mockNotificationRepo.count.mockResolvedValue(0);
+
+      const result = await service.markAllAsRead('GBRPYHIL');
+      expect(result).toEqual({ unreadCount: 0 });
+    });
+  });
+
+  describe('markAllAsUnread', () => {
+    it('marks all read as unread and returns total count as unread', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 5 });
+      mockNotificationRepo.count.mockResolvedValue(5);
+
+      const result = await service.markAllAsUnread('GBRPYHIL');
+
+      expect(mockNotificationRepo.update).toHaveBeenCalledWith(
+        { user_address: 'GBRPYHIL', read: true },
+        { read: false },
+      );
+      expect(result).toEqual({ unreadCount: 5 });
+    });
+
+    it('is idempotent', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 0 });
+      mockNotificationRepo.count.mockResolvedValue(5);
+
+      const result = await service.markAllAsUnread('GBRPYHIL');
+      expect(result).toEqual({ unreadCount: 5 });
+    });
+  });
+
+  describe('markMultipleAsRead', () => {
+    it('marks specified notifications as read and returns updated unread count', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 2 });
+      mockNotificationRepo.count.mockResolvedValue(3);
+
+      const result = await service.markMultipleAsRead('GBRPYHIL', [1, 2, 3]);
+
+      expect(mockNotificationRepo.update).toHaveBeenCalledWith(
+        { user_address: 'GBRPYHIL', id: expect.any(Object) },
+        { read: true },
+      );
+      expect(result).toEqual({ unreadCount: 3 });
+    });
+
+    it('handles empty array gracefully (no-op)', async () => {
+      mockNotificationRepo.count.mockResolvedValue(5);
+
+      const result = await service.markMultipleAsRead('GBRPYHIL', []);
+
+      expect(mockNotificationRepo.update).not.toHaveBeenCalled();
+      expect(result).toEqual({ unreadCount: 5 });
+    });
+
+    it('is idempotent — marking already-read notifications changes nothing', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 0 });
+      mockNotificationRepo.count.mockResolvedValue(2);
+
+      const result = await service.markMultipleAsRead('GBRPYHIL', [1, 2]);
+      expect(result).toEqual({ unreadCount: 2 });
+    });
+
+    it('scopes to the authenticated user only', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 0 });
+      mockNotificationRepo.count.mockResolvedValue(0);
+
+      // Even if IDs exist for another user, they won't match
+      await service.markMultipleAsRead('GBRPYHIL', [99, 100]);
+
+      expect(mockNotificationRepo.update).toHaveBeenCalledWith(
+        {
+          user_address: 'GBRPYHIL',
+          id: expect.any(Object),
+        },
+        { read: true },
+      );
+    });
+  });
+
+  describe('markMultipleAsUnread', () => {
+    it('marks specified notifications as unread and returns updated unread count', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 2 });
+      mockNotificationRepo.count.mockResolvedValue(7);
+
+      const result = await service.markMultipleAsUnread('GBRPYHIL', [4, 5]);
+
+      expect(mockNotificationRepo.update).toHaveBeenCalledWith(
+        { user_address: 'GBRPYHIL', id: expect.any(Object) },
+        { read: false },
+      );
+      expect(result).toEqual({ unreadCount: 7 });
+    });
+
+    it('handles empty array gracefully (no-op)', async () => {
+      mockNotificationRepo.count.mockResolvedValue(5);
+
+      const result = await service.markMultipleAsUnread('GBRPYHIL', []);
+
+      expect(mockNotificationRepo.update).not.toHaveBeenCalled();
+      expect(result).toEqual({ unreadCount: 5 });
+    });
+
+    it('is idempotent — marking already-unread notifications changes nothing', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 0 });
+      mockNotificationRepo.count.mockResolvedValue(3);
+
+      const result = await service.markMultipleAsUnread('GBRPYHIL', [1, 2]);
+      expect(result).toEqual({ unreadCount: 3 });
+    });
+
+    it('scopes to the authenticated user only', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 0 });
+      mockNotificationRepo.count.mockResolvedValue(1);
+
+      await service.markMultipleAsUnread('GBRPYHIL', [99, 100]);
+
+      expect(mockNotificationRepo.update).toHaveBeenCalledWith(
+        {
+          user_address: 'GBRPYHIL',
+          id: expect.any(Object),
+        },
+        { read: false },
+      );
+    });
+  });
+
   describe('remove', () => {
     it('soft-deletes when found', async () => {
       mockNotificationRepo.findOne.mockResolvedValue(makeNotification());
@@ -643,6 +799,144 @@ describe('NotificationsService', () => {
       await expect(service.remove(1, 'GBRPYHIL')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Category preferences
+  // -------------------------------------------------------------------------
+
+  describe('getCategoryPreferences', () => {
+    it('returns existing preferences and creates missing defaults', async () => {
+      const existingPrefs = [
+        {
+          id: '1',
+          userId: 'user-1',
+          category: NotificationCategory.EventCreated,
+          in_app: true,
+          email: true,
+          push: false,
+        },
+      ];
+      mockCategoryPreferencesRepo.find.mockResolvedValue(existingPrefs);
+      mockCategoryPreferencesRepo.create.mockImplementation((opts) => opts);
+      mockCategoryPreferencesRepo.save.mockImplementation((opts) =>
+        Promise.resolve(
+          opts.map((p: any, i: number) => ({
+            ...p,
+            id: `new-${i}`,
+          })),
+        ),
+      );
+
+      const result = await service.getCategoryPreferences('user-1');
+
+      expect(result.length).toBe(Object.values(NotificationCategory).length);
+      expect(mockCategoryPreferencesRepo.find).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+      });
+    });
+
+    it('returns all defaults when no preferences exist', async () => {
+      mockCategoryPreferencesRepo.find.mockResolvedValue([]);
+      mockCategoryPreferencesRepo.create.mockImplementation((opts) => opts);
+      mockCategoryPreferencesRepo.save.mockImplementation((opts) =>
+        Promise.resolve(
+          opts.map((p: any, i: number) => ({
+            ...p,
+            id: `new-${i}`,
+          })),
+        ),
+      );
+
+      const result = await service.getCategoryPreferences('user-1');
+
+      expect(result.length).toBe(Object.values(NotificationCategory).length);
+      expect(result.every((p) => p.in_app === true)).toBe(true);
+      expect(result.every((p) => p.push === false)).toBe(true);
+    });
+  });
+
+  describe('upsertCategoryPreference', () => {
+    it('creates a new preference when none exists', async () => {
+      mockCategoryPreferencesRepo.findOne.mockResolvedValue(null);
+      mockCategoryPreferencesRepo.create.mockImplementation((opts) => opts);
+      mockCategoryPreferencesRepo.save.mockImplementation((opts) =>
+        Promise.resolve({ ...opts, id: 'new-id' }),
+      );
+
+      const result = await service.upsertCategoryPreference('user-1', {
+        category: NotificationCategory.MatchResolved,
+        in_app: false,
+        email: true,
+      });
+
+      expect(result.in_app).toBe(false);
+      expect(result.email).toBe(true);
+      expect(result.push).toBe(false);
+    });
+
+    it('updates an existing preference', async () => {
+      const existing = {
+        id: 'existing-id',
+        userId: 'user-1',
+        category: NotificationCategory.EventCreated,
+        in_app: true,
+        email: true,
+        push: false,
+      };
+      mockCategoryPreferencesRepo.findOne.mockResolvedValue(existing);
+      mockCategoryPreferencesRepo.save.mockImplementation((opts) =>
+        Promise.resolve(opts),
+      );
+
+      const result = await service.upsertCategoryPreference('user-1', {
+        category: NotificationCategory.EventCreated,
+        in_app: false,
+      });
+
+      expect(result.in_app).toBe(false);
+      expect(result.email).toBe(true);
+    });
+  });
+
+  describe('isCategoryEnabled', () => {
+    it('returns true when no preference exists (default)', async () => {
+      mockCategoryPreferencesRepo.findOne.mockResolvedValue(null);
+      const result = await service.isCategoryEnabled(
+        'user-1',
+        NotificationCategory.EventCreated,
+        'in_app',
+      );
+      expect(result).toBe(true);
+    });
+
+    it('returns the in_app value from preference', async () => {
+      mockCategoryPreferencesRepo.findOne.mockResolvedValue({
+        in_app: false,
+        email: true,
+        push: false,
+      });
+      const result = await service.isCategoryEnabled(
+        'user-1',
+        NotificationCategory.EventCreated,
+        'in_app',
+      );
+      expect(result).toBe(false);
+    });
+
+    it('returns the email value from preference', async () => {
+      mockCategoryPreferencesRepo.findOne.mockResolvedValue({
+        in_app: true,
+        email: false,
+        push: false,
+      });
+      const result = await service.isCategoryEnabled(
+        'user-1',
+        NotificationCategory.MatchAdded,
+        'email',
+      );
+      expect(result).toBe(false);
     });
   });
 });

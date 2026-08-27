@@ -2,9 +2,10 @@
 
 import { useState, useMemo } from "react";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, BarChart3 } from "lucide-react";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useToast } from "@/hooks/useToast";
+import { EmptyState } from "@/component/ui/empty-state";
 
 type PredictionStatus = "Active" | "Won" | "Lost" | "Pending";
 type FilterTab = "All" | "Active" | "Won" | "Lost" | "Pending";
@@ -339,25 +340,16 @@ export default function MyPredictionsPage() {
         )}
 
         {paginatedPredictions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-center">
-            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-white/5">
-              <span className="text-3xl">📊</span>
-            </div>
-            <h3 className="mb-2 text-xl font-semibold text-white">
-              No predictions found
-            </h3>
-            <p className="mb-6 max-w-md text-sm text-gray-400">
-              {activeFilter === "All"
+          <EmptyState
+            icon={<BarChart3 className="h-7 w-7" />}
+            title="No predictions found"
+            description={
+              activeFilter === "All"
                 ? "You haven't made any predictions yet. Start by browsing available markets."
-                : `You don't have any ${activeFilter.toLowerCase()} predictions.`}
-            </p>
-            <Link
-              href="/markets"
-              className="inline-flex rounded-xl bg-orange-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-orange-600"
-            >
-              Browse Markets
-            </Link>
-          </div>
+                : `You don't have any ${activeFilter.toLowerCase()} predictions.`
+            }
+            action={{ label: "Browse Markets", href: "/markets" }}
+          />
         ) : (
           <div className="space-y-4">
             {paginatedPredictions.map((prediction) => (

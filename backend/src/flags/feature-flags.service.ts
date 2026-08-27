@@ -7,12 +7,14 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
+import { AdminAuditLog } from '../admin/entities/admin-audit-log.entity';
 import {
   FeatureFlag,
   FlagTargetType,
   FlagAttributeOperator,
 } from './entities/feature-flag.entity';
 import { CreateFeatureFlagDto } from './dto/create-feature-flag.dto';
+import { FlagEvaluationCacheService } from './flag-evaluation-cache.service';
 import * as crypto from 'crypto';
 
 export interface ResolvedFlagDto {
@@ -23,6 +25,24 @@ export interface ResolvedFlagDto {
   targeting_rules: Record<string, unknown> | null;
 }
 
+/** Field-level before/after diff recorded for an audited flag change. */
+export interface FlagAuditFieldDiff {
+  from: unknown;
+  to: unknown;
+}
+
+export interface FlagAuditMetadata {
+  key: string;
+  changes: Record<string, FlagAuditFieldDiff>;
+}
+
+export const FEATURE_FLAG_AUDIT_ACTIONS = {
+  CREATED: 'FEATURE_FLAG_CREATED',
+  TOGGLED: 'FEATURE_FLAG_TOGGLED',
+  UPDATED: 'FEATURE_FLAG_UPDATED',
+  DELETED: 'FEATURE_FLAG_DELETED',
+} as const;
+
 @Injectable()
 export class FeatureFlagsService {
   private readonly logger = new Logger(FeatureFlagsService.name);
@@ -30,9 +50,15 @@ export class FeatureFlagsService {
   constructor(
     @InjectRepository(FeatureFlag)
     private readonly featureFlagsRepository: Repository<FeatureFlag>,
+    @InjectRepository(AdminAuditLog)
+    private readonly auditRepository: Repository<AdminAuditLog>,
+    private readonly evaluationCache: FlagEvaluationCacheService,
   ) {}
 
-  async create(dto: CreateFeatureFlagDto): Promise<FeatureFlag> {
+  async create(
+    dto: CreateFeatureFlagDto,
+    actorId?: string,
+  ): Promise<FeatureFlag> {
     const existing = await this.featureFlagsRepository.findOne({
       where: { key: dto.key },
     });
@@ -52,17 +78,29 @@ export class FeatureFlagsService {
       rollout_percentage: dto.rollout_percentage ?? 0,
     });
 
-    return this.featureFlagsRepository.save(flag);
+    const saved = await this.featureFlagsRepository.save(flag);
+
+    await this.writeAuditEntry(
+      actorId,
+      FEATURE_FLAG_AUDIT_ACTIONS.CREATED,
+      saved,
+      {},
+    );
+
+    return saved;
   }
 
   async update(
     id: string,
     dto: Partial<CreateFeatureFlagDto>,
+    actorId?: string,
   ): Promise<FeatureFlag> {
     const flag = await this.featureFlagsRepository.findOne({ where: { id } });
     if (!flag) {
       throw new NotFoundException(`Feature flag "${id}" not found`);
     }
+
+    const before = this.snapshot(flag);
 
     if (dto.key !== undefined) flag.key = dto.key;
     if (dto.name !== undefined) flag.name = dto.name;
@@ -75,14 +113,100 @@ export class FeatureFlagsService {
     if (dto.rollout_percentage !== undefined)
       flag.rollout_percentage = dto.rollout_percentage;
 
-    return this.featureFlagsRepository.save(flag);
+    const after = this.snapshot(flag);
+    const changes = diffSnapshots(before, after);
+
+    const saved = await this.featureFlagsRepository.save(flag);
+
+    const onlyToggled =
+      Object.keys(changes).length > 0 &&
+      Object.keys(changes).every((field) => field === 'is_enabled');
+
+    await this.writeAuditEntry(
+      actorId,
+      onlyToggled
+        ? FEATURE_FLAG_AUDIT_ACTIONS.TOGGLED
+        : FEATURE_FLAG_AUDIT_ACTIONS.UPDATED,
+      saved,
+      changes,
+    );
+
+    return saved;
   }
 
-  async delete(id: string): Promise<void> {
+  async delete(id: string, actorId?: string): Promise<void> {
+    const flag = await this.featureFlagsRepository.findOne({ where: { id } });
+    if (!flag) {
+      throw new NotFoundException(`Feature flag "${id}" not found`);
+    }
+
     const result = await this.featureFlagsRepository.delete(id);
     if (result.affected === 0) {
       throw new NotFoundException(`Feature flag "${id}" not found`);
     }
+
+    await this.writeAuditEntry(
+      actorId,
+      FEATURE_FLAG_AUDIT_ACTIONS.DELETED,
+      flag,
+      {},
+    );
+  }
+
+  /**
+   * Read the audit trail for feature flag changes, newest first.
+   * Optionally filtered to a single flag id.
+   */
+  async getAuditTrail(flagId?: string, limit = 100): Promise<AdminAuditLog[]> {
+    const qb = this.auditRepository
+      .createQueryBuilder('entry')
+      .where('entry.target_type = :targetType', { targetType: 'feature_flag' })
+      .orderBy('entry.created_at', 'DESC')
+      .take(Math.min(Math.max(limit, 1), 500));
+
+    if (flagId) {
+      qb.andWhere('entry.target_id = :flagId', { flagId });
+    }
+
+    return qb.getMany();
+  }
+
+  private async writeAuditEntry(
+    actorId: string | undefined,
+    action: string,
+    flag: FeatureFlag,
+    changes: Record<string, FlagAuditFieldDiff>,
+  ): Promise<void> {
+    try {
+      const metadata: FlagAuditMetadata = { key: flag.key, changes };
+      await this.auditRepository.save(
+        this.auditRepository.create({
+          actor_id: actorId ?? 'system',
+          action,
+          target_type: 'feature_flag',
+          target_id: flag.id,
+          metadata: metadata as unknown as Record<string, unknown>,
+        }),
+      );
+    } catch (err) {
+      // Auditing must never break the mutation it records; surface for ops.
+      this.logger.error(
+        `Failed to write feature-flag audit entry (${action}) for flag ${flag.id}`,
+        err,
+      );
+    }
+  }
+
+  private snapshot(flag: FeatureFlag): Record<string, unknown> {
+    return {
+      key: flag.key,
+      name: flag.name,
+      description: flag.description,
+      is_enabled: flag.is_enabled,
+      targeting_type: flag.targeting_type,
+      targeting_rules: flag.targeting_rules,
+      rollout_percentage: flag.rollout_percentage,
+    };
   }
 
   async findAll(): Promise<FeatureFlag[]> {
@@ -106,16 +230,7 @@ export class FeatureFlagsService {
   async resolveFlagsForUser(user: User): Promise<ResolvedFlagDto[]> {
     const flags = await this.featureFlagsRepository.find();
 
-    return flags.map((flag) => {
-      const resolved = this.evaluateFlagForUser(flag, user);
-      return {
-        key: flag.key,
-        name: flag.name,
-        is_enabled: resolved,
-        targeting_type: flag.targeting_type,
-        targeting_rules: flag.targeting_rules,
-      };
-    });
+    return flags.map((flag) => this.resolveAndCache(flag, user));
   }
 
   /**
@@ -125,19 +240,35 @@ export class FeatureFlagsService {
     flagKey: string,
     user: User,
   ): Promise<ResolvedFlagDto | null> {
+    const cached = this.evaluationCache.get(flagKey, user.id);
+    if (cached) return cached;
+
     const flag = await this.featureFlagsRepository.findOne({
       where: { key: flagKey },
     });
     if (!flag) return null;
 
-    const resolved = this.evaluateFlagForUser(flag, user);
-    return {
+    return this.resolveAndCache(flag, user);
+  }
+
+  /**
+   * Evaluate a flag for a user and cache the result for the rest of this
+   * request, so a second lookup of the same flag/user pair (e.g. from a
+   * guard and the controller it guards) skips re-evaluation.
+   */
+  private resolveAndCache(flag: FeatureFlag, user: User): ResolvedFlagDto {
+    const cached = this.evaluationCache.get(flag.key, user.id);
+    if (cached) return cached;
+
+    const resolved: ResolvedFlagDto = {
       key: flag.key,
       name: flag.name,
-      is_enabled: resolved,
+      is_enabled: this.evaluateFlagForUser(flag, user),
       targeting_type: flag.targeting_type,
       targeting_rules: flag.targeting_rules,
     };
+    this.evaluationCache.set(flag.key, user.id, resolved);
+    return resolved;
   }
 
   private evaluateFlagForUser(flag: FeatureFlag, user: User): boolean {
@@ -264,4 +395,43 @@ export class FeatureFlagsService {
     const intVal = parseInt(first8, 16);
     return intVal % 100;
   }
+}
+
+/**
+ * Shallow-compare two flag snapshots and return a per-field before/after
+ * diff for every changed field.
+ */
+function diffSnapshots(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Record<string, FlagAuditFieldDiff> {
+  const changes: Record<string, FlagAuditFieldDiff> = {};
+
+  for (const field of Object.keys(before)) {
+    const from = before[field];
+    const to = after[field];
+
+    if (!isEqualValue(from, to)) {
+      changes[field] = { from, to };
+    }
+  }
+
+  return changes;
+}
+
+function isEqualValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (
+    typeof a === 'object' &&
+    typeof b === 'object' &&
+    a !== null &&
+    b !== null
+  ) {
+    try {
+      return JSON.stringify(a) === JSON.stringify(b);
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
