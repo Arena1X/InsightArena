@@ -375,6 +375,10 @@ describe('SearchService', () => {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
           },
+          {
+            provide: DataSource,
+            useValue: mockDataSource,
+          },
         ],
       }).compile();
 
@@ -427,6 +431,10 @@ describe('SearchService', () => {
           {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
+          },
+          {
+            provide: DataSource,
+            useValue: mockDataSource,
           },
         ],
       }).compile();
@@ -484,6 +492,10 @@ describe('SearchService', () => {
           {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
+          },
+          {
+            provide: DataSource,
+            useValue: mockDataSource,
           },
         ],
       }).compile();
@@ -678,6 +690,10 @@ describe('SearchService', () => {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
           },
+          {
+            provide: DataSource,
+            useValue: mockDataSource,
+          },
         ],
       }).compile();
 
@@ -737,6 +753,10 @@ describe('SearchService', () => {
           {
             provide: CACHE_MANAGER,
             useValue: mockCacheManager,
+          },
+          {
+            provide: DataSource,
+            useValue: mockDataSource,
           },
         ],
       }).compile();
