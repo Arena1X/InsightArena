@@ -6,7 +6,10 @@ import type { ThrottlerLimitDetail } from '@nestjs/throttler/dist/throttler.guar
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { THROTTLE_TIER_KEY } from '../decorators/throttle-tier.decorator';
-import { setRateLimitHeaders } from '../rate-limit-headers.util';
+import {
+  RateLimitHeaderResponse,
+  setRateLimitHeaders,
+} from '../rate-limit-headers.util';
 
 @Injectable()
 export class TieredThrottlerGuard extends ThrottlerGuard {
@@ -72,7 +75,7 @@ export class TieredThrottlerGuard extends ThrottlerGuard {
     throttlerLimitDetail: ThrottlerLimitDetail,
   ): Promise<void> {
     const { res } = this.getRequestResponse(context);
-    setRateLimitHeaders(res, {
+    setRateLimitHeaders(res as RateLimitHeaderResponse, {
       limit: throttlerLimitDetail.limit,
       remaining: 0,
       resetSeconds: throttlerLimitDetail.timeToExpire,
