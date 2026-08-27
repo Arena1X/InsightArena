@@ -104,7 +104,12 @@ export class WebhookDispatcherService {
     const attempt = log.attempt_count + 1;
 
     try {
-      const signature = this.generateSignature(payload, endpoint.secret_key);
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const signature = this.generateSignature(
+        payload,
+        endpoint.secret_key,
+        timestamp,
+      );
 
       const response = await this.httpService.axiosRef.post(
         endpoint.url,
@@ -113,6 +118,7 @@ export class WebhookDispatcherService {
           headers: {
             'Content-Type': 'application/json',
             'X-Webhook-Signature': signature,
+            'X-Webhook-Timestamp': timestamp,
             'X-Webhook-Event': event_type,
             'X-Delivery-Attempt': String(attempt),
           },
@@ -155,19 +161,24 @@ export class WebhookDispatcherService {
       log.status = DeliveryStatus.FAILED;
       log.next_retry_at = null;
     } else {
-      const backoffMs = Math.min(Math.pow(2, attempt - 1) * 1000, 3600000); // cap at 1 hour
-      log.next_retry_at = new Date(Date.now() + backoffMs);
+      const baseMs = Math.min(Math.pow(2, attempt - 1) * 1000, 3600000);
+      const jitterMs = Math.random() * baseMs * 0.5;
+      log.next_retry_at = new Date(Date.now() + baseMs + jitterMs);
     }
   }
 
-  private generateSignature(
+  generateSignature(
     payload: Record<string, unknown>,
     secretKey: string,
+    timestamp?: string,
   ): string {
     const payloadStr = JSON.stringify(payload);
+    const signedPayload = timestamp
+      ? `${timestamp}.${payloadStr}`
+      : payloadStr;
     return crypto
       .createHmac('sha256', secretKey)
-      .update(payloadStr)
+      .update(signedPayload)
       .digest('hex');
   }
 }
