@@ -46,6 +46,7 @@ import { UserBookmark } from './entities/user-bookmark.entity';
 import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
+import { SearchService } from '../search/search.service';
 import {
   PriceHistoryQueryDto,
   TimeRange,
@@ -84,6 +85,7 @@ export class MarketsService {
     private readonly sorobanService: SorobanService,
     private readonly dataSource: DataSource,
     private readonly webhookDispatcher: WebhookDispatcherService,
+    private readonly searchService: SearchService,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
     @Inject(forwardRef(() => MarketSettlementScheduler))
     private readonly settlementScheduler: MarketSettlementScheduler,
@@ -477,6 +479,11 @@ export class MarketsService {
 
     const saved = await this.marketsRepository.save(market);
     await this.invalidateMarketCaches(saved.id);
+
+    if (dto.title !== undefined || dto.description !== undefined) {
+      await this.searchService.refreshMarketSearchVector(saved.id);
+    }
+
     return saved;
   }
 

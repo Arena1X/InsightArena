@@ -11,6 +11,10 @@ import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { User } from '../users/entities/user.entity';
 import { Notification } from './entities/notification.entity';
 import { NotificationDigestState } from './entities/notification-digest-state.entity';
+import {
+  NotificationCategoryPreference,
+  NotificationCategory,
+} from './entities/notification-category-preference.entity';
 import { EmailService } from './email.service';
 
 describe('DigestService', () => {
@@ -19,6 +23,7 @@ describe('DigestService', () => {
   let userRepo: Repository<User>;
   let notificationRepo: Repository<Notification>;
   let digestStateRepo: Repository<NotificationDigestState>;
+  let categoryPreferencesRepo: Repository<NotificationCategoryPreference>;
   let emailService: EmailService;
   let config: ConfigService;
 
@@ -80,6 +85,12 @@ describe('DigestService', () => {
           },
         },
         {
+          provide: getRepositoryToken(NotificationCategoryPreference),
+          useValue: {
+            find: jest.fn().mockResolvedValue([]),
+          },
+        },
+        {
           provide: EmailService,
           useValue: {
             queueEmail: jest.fn().mockResolvedValue(undefined),
@@ -105,6 +116,9 @@ describe('DigestService', () => {
     digestStateRepo = module.get<Repository<NotificationDigestState>>(
       getRepositoryToken(NotificationDigestState),
     );
+    categoryPreferencesRepo = module.get<
+      Repository<NotificationCategoryPreference>
+    >(getRepositoryToken(NotificationCategoryPreference));
     emailService = module.get<EmailService>(EmailService);
     config = module.get<ConfigService>(ConfigService);
 
@@ -413,6 +427,71 @@ describe('DigestService', () => {
           digest_hour: 9,
         },
       });
+    });
+
+    it('excludes notifications whose category has email delivery turned off', async () => {
+      jest
+        .spyOn(prefsRepo, 'find')
+        .mockResolvedValue([mockPref as UserPreferences]);
+      jest.spyOn(notificationRepo, 'find').mockResolvedValue([
+        { ...mockNotification, type: 'event_created' } as Notification,
+        {
+          ...mockNotification,
+          type: 'match_resolved',
+          title: 'Result posted',
+          message: 'Arsenal won',
+        } as Notification,
+      ]);
+      jest.spyOn(categoryPreferencesRepo, 'find').mockResolvedValue([
+        {
+          userId: 'user-1',
+          category: NotificationCategory.EventCreated,
+          in_app: true,
+          email: false,
+          push: false,
+        } as NotificationCategoryPreference,
+      ]);
+
+      await service.sendDailyDigests(
+        new Date('2024-01-15T08:00:00Z'),
+        'UTC',
+        8,
+      );
+
+      expect(emailService.queueEmail).toHaveBeenCalledTimes(1);
+      const html = (emailService.queueEmail as jest.Mock).mock.calls[0][0]
+        .html as string;
+      expect(html).toContain('Results');
+      expect(html).not.toContain('New event');
+    });
+
+    it('sends no email when every category in the window has email delivery turned off', async () => {
+      jest
+        .spyOn(prefsRepo, 'find')
+        .mockResolvedValue([mockPref as UserPreferences]);
+      jest
+        .spyOn(notificationRepo, 'find')
+        .mockResolvedValue([
+          { ...mockNotification, type: 'event_created' } as Notification,
+        ]);
+      jest.spyOn(categoryPreferencesRepo, 'find').mockResolvedValue([
+        {
+          userId: 'user-1',
+          category: NotificationCategory.EventCreated,
+          in_app: true,
+          email: false,
+          push: false,
+        } as NotificationCategoryPreference,
+      ]);
+
+      await service.sendDailyDigests(
+        new Date('2024-01-15T08:00:00Z'),
+        'UTC',
+        8,
+      );
+
+      expect(emailService.queueEmail).not.toHaveBeenCalled();
+      expect(digestStateRepo.save).not.toHaveBeenCalled();
     });
 
     it('skips a user with no stored email', async () => {

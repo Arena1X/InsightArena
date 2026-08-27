@@ -36,7 +36,9 @@ describe('UsersController', () => {
             findByAddress: jest.fn(),
             findPublicPredictionsByAddress: jest.fn(),
             getMyStats: jest.fn(),
-            getFeed: jest.fn(),
+            findUserBookmarks: jest.fn(),
+            addBookmark: jest.fn(),
+            removeBookmark: jest.fn(),
           },
         },
       ],
@@ -173,56 +175,34 @@ describe('UsersController', () => {
     });
   });
 
-  describe('getMyFeed', () => {
-    const mockFeedResponse: FeedResponseDto = {
-      data: [
-        {
-          id: 'pred-feed-1',
-          chosen_outcome: 'YES',
-          stake_amount_stroops: '500',
-          payout_claimed: false,
-          payout_amount_stroops: '0',
-          tx_hash: null,
-          note: null,
-          submitted_at: new Date('2025-06-01'),
-          market: {
-            id: 'market-feed-1',
-            title: 'Will ETH flip BTC?',
-            end_time: new Date('2025-12-31'),
-            resolved_outcome: null,
-            is_resolved: false,
-            is_cancelled: false,
-          },
-          author: {
-            stellar_address: 'G_FOLLOWED_USER',
-            username: 'followed_user',
-            avatar_url: null,
-            reputation_score: 42,
-          },
-        },
-      ],
-      total: 1,
-      page: 1,
-      limit: 20,
-    };
+  describe('createBookmark', () => {
+    it('creates a bookmark scoped to the authenticated user', async () => {
+      const bookmark = { id: 'bookmark-uuid', user: { id: mockUser.id } };
+      jest.spyOn(service, 'addBookmark').mockResolvedValue(bookmark as never);
 
-    it('should delegate to usersService.getFeed and return the result', async () => {
-      jest.spyOn(service, 'getFeed').mockResolvedValue(mockFeedResponse);
+      const result = await controller.createBookmark(mockUser, {
+        market_id: 'market-uuid',
+      });
 
-      const result = await controller.getMyFeed(mockUser, { page: 1, limit: 20 });
-
-      expect(service.getFeed).toHaveBeenCalledWith(mockUser.id, { page: 1, limit: 20 });
-      expect(result).toEqual(mockFeedResponse);
+      expect(service.addBookmark).toHaveBeenCalledWith(
+        mockUser.id,
+        'market-uuid',
+      );
+      expect(result).toEqual(bookmark);
     });
+  });
 
-    it('should return an empty feed when the user follows nobody', async () => {
-      const emptyFeed: FeedResponseDto = { data: [], total: 0, page: 1, limit: 20 };
-      jest.spyOn(service, 'getFeed').mockResolvedValue(emptyFeed);
+  describe('deleteBookmark', () => {
+    it('deletes a bookmark owned by the authenticated user', async () => {
+      jest.spyOn(service, 'removeBookmark').mockResolvedValue(undefined);
 
-      const result = await controller.getMyFeed(mockUser, { page: 1, limit: 20 });
+      const result = await controller.deleteBookmark(mockUser, 'bookmark-uuid');
 
-      expect(result.data).toHaveLength(0);
-      expect(result.total).toBe(0);
+      expect(service.removeBookmark).toHaveBeenCalledWith(
+        mockUser.id,
+        'bookmark-uuid',
+      );
+      expect(result).toEqual({ success: true });
     });
   });
 });

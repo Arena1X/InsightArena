@@ -33,6 +33,7 @@ describe('UsersService', () => {
   let participantsRepository: Repository<CompetitionParticipant>;
   let marketsRepository: Repository<Market>;
   let referralsRepository: Repository<UserReferral>;
+  let bookmarksRepository: Repository<UserBookmark>;
 
   const mockUser: User = {
     id: '123e4567-e89b-12d3-a456-426614174000',
@@ -95,6 +96,7 @@ describe('UsersService', () => {
           provide: getRepositoryToken(Market),
           useValue: {
             find: jest.fn(),
+            findOneBy: jest.fn(),
             createQueryBuilder: jest.fn(),
           },
         },
@@ -148,6 +150,9 @@ describe('UsersService', () => {
     );
     referralsRepository = module.get<Repository<UserReferral>>(
       getRepositoryToken(UserReferral),
+    );
+    bookmarksRepository = module.get<Repository<UserBookmark>>(
+      getRepositoryToken(UserBookmark),
     );
   });
 
@@ -1049,6 +1054,87 @@ describe('UsersService', () => {
 
       expect(result.username).toBe('keep_me');
       expect(result.avatar_url).toBe('https://example.com/original.png');
+    });
+  });
+
+  describe('addBookmark', () => {
+    const market = { id: 'market-uuid' } as Market;
+
+    it('creates a bookmark scoped to the authenticated user', async () => {
+      jest.spyOn(marketsRepository, 'findOneBy').mockResolvedValue(market);
+      jest.spyOn(bookmarksRepository, 'findOne').mockResolvedValue(null);
+      const created = {
+        id: 'bookmark-uuid',
+        user: { id: mockUser.id },
+        market,
+      };
+      jest
+        .spyOn(bookmarksRepository, 'create')
+        .mockReturnValue(created as UserBookmark);
+      jest
+        .spyOn(bookmarksRepository, 'save')
+        .mockResolvedValue(created as UserBookmark);
+
+      const result = await service.addBookmark(mockUser.id, market.id);
+
+      expect(result).toEqual(created);
+      expect(bookmarksRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user: { id: mockUser.id },
+          market,
+        }),
+      );
+    });
+
+    it('throws NotFoundException when the market does not exist', async () => {
+      jest.spyOn(marketsRepository, 'findOneBy').mockResolvedValue(null);
+
+      await expect(
+        service.addBookmark(mockUser.id, 'missing-market'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('rejects duplicate bookmarks of the same market with ConflictException', async () => {
+      jest.spyOn(marketsRepository, 'findOneBy').mockResolvedValue(market);
+      jest.spyOn(bookmarksRepository, 'findOne').mockResolvedValue({
+        id: 'existing-bookmark',
+        user: { id: mockUser.id },
+        market,
+      } as UserBookmark);
+
+      await expect(service.addBookmark(mockUser.id, market.id)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(bookmarksRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('removeBookmark', () => {
+    it('deletes a bookmark owned by the authenticated user', async () => {
+      jest.spyOn(bookmarksRepository, 'findOne').mockResolvedValue({
+        id: 'bookmark-uuid',
+        user: { id: mockUser.id },
+      } as UserBookmark);
+      const deleteSpy = jest
+        .spyOn(bookmarksRepository, 'delete')
+        .mockResolvedValue({ affected: 1 } as never);
+
+      await service.removeBookmark(mockUser.id, 'bookmark-uuid');
+
+      expect(bookmarksRepository.findOne).toHaveBeenCalledWith({
+        where: { id: 'bookmark-uuid', user: { id: mockUser.id } },
+      });
+      expect(deleteSpy).toHaveBeenCalledWith({ id: 'bookmark-uuid' });
+    });
+
+    it('enforces ownership — a bookmark owned by another user is not found', async () => {
+      jest.spyOn(bookmarksRepository, 'findOne').mockResolvedValue(null);
+      const deleteSpy = jest.spyOn(bookmarksRepository, 'delete');
+
+      await expect(
+        service.removeBookmark(mockUser.id, 'other-users-bookmark'),
+      ).rejects.toThrow(NotFoundException);
+      expect(deleteSpy).not.toHaveBeenCalled();
     });
   });
 });

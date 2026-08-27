@@ -23,6 +23,8 @@ export class ReconciliationService {
   private isRunning = false;
   private lastRunAt: Date | null = null;
   private lastBackfillCount = 0;
+  private lastReorgDepth = 0;
+  private lastReorgRescannedLedgerCount = 0;
 
   constructor(
     private readonly configService: ConfigService,
@@ -73,7 +75,14 @@ export class ReconciliationService {
       return;
     }
 
-    await this.detectAndHandleReorg(contractId, checkpoint, rpcUrl);
+    const reorgEvent = await this.detectAndHandleReorg(
+      contractId,
+      checkpoint,
+      rpcUrl,
+    );
+    if (reorgEvent) {
+      this.lastReorgDepth = reorgEvent.previous_ledger - reorgEvent.fork_ledger;
+    }
 
     const chainHead = await this.fetchChainHead(rpcUrl, contractId);
     if (chainHead === null) return;
@@ -100,6 +109,10 @@ export class ReconciliationService {
       fromLedger,
       toLedger,
     );
+
+    if (reorgEvent) {
+      this.lastReorgRescannedLedgerCount = toLedger - fromLedger + 1;
+    }
 
     checkpoint.last_reconciled_from = fromLedger;
     checkpoint.last_reconciled_to = toLedger;
@@ -423,12 +436,16 @@ export class ReconciliationService {
     is_running: boolean;
     last_run_at: string | null;
     last_backfill_count: number;
+    last_reorg_depth: number;
+    last_reorg_rescanned_ledger_count: number;
   } {
     return {
       enabled: this.isEnabled(),
       is_running: this.isRunning,
       last_run_at: this.lastRunAt?.toISOString() ?? null,
       last_backfill_count: this.lastBackfillCount,
+      last_reorg_depth: this.lastReorgDepth,
+      last_reorg_rescanned_ledger_count: this.lastReorgRescannedLedgerCount,
     };
   }
 

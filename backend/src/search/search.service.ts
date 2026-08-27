@@ -1,8 +1,8 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { Cache } from 'cache-manager';
-import { Brackets, Repository } from 'typeorm';
+import { Brackets, DataSource, Repository } from 'typeorm';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
 import {
@@ -20,6 +20,11 @@ import {
   SearchType,
   SuggestionsResponseDto,
 } from './dto/global-search.dto';
+import {
+  FuzzySearchDto,
+  FuzzySearchItemDto,
+  FuzzySearchResponseDto,
+} from './dto/fuzzy-search.dto';
 import { escapeLikeWildcards } from './dto/search-query.dto';
 import {
   MAX_SUGGEST_LIMIT,
@@ -73,6 +78,8 @@ interface ScoredSuggestion {
 
 @Injectable()
 export class SearchService {
+  private readonly logger = new Logger(SearchService.name);
+
   constructor(
     @InjectRepository(Market)
     private readonly marketsRepository: Repository<Market>,
@@ -83,6 +90,7 @@ export class SearchService {
     @InjectRepository(CreatorEvent)
     private readonly creatorEventsRepository: Repository<CreatorEvent>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
+    private readonly dataSource: DataSource,
   ) {}
 
   async search(dto: GlobalSearchDto): Promise<GlobalSearchResponseDto> {
@@ -278,6 +286,123 @@ export class SearchService {
       label: c.title,
       score: parseFloat(c.score ?? '0'),
       type: 'competition' as const,
+    }));
+  }
+
+  /**
+   * Fuzzy search using trigram similarity. Ranks exact matches above fuzzy
+   * ones and filters by a configurable similarity threshold.
+   */
+  async fuzzySearch(dto: FuzzySearchDto): Promise<FuzzySearchResponseDto> {
+    const query = dto.query;
+    const threshold = dto.threshold ?? 0.1;
+    const limit = Math.min(dto.limit ?? 20, 50);
+
+    const [markets, users, competitions] = await Promise.all([
+      this.fuzzySearchMarkets(query, threshold, limit),
+      this.fuzzySearchUsers(query, threshold, limit),
+      this.fuzzySearchCompetitions(query, threshold, limit),
+    ]);
+
+    const all: FuzzySearchItemDto[] = [...markets, ...users, ...competitions]
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, limit);
+
+    return { data: all, total: all.length, query };
+  }
+
+  private async fuzzySearchMarkets(
+    query: string,
+    threshold: number,
+    limit: number,
+  ): Promise<FuzzySearchItemDto[]> {
+    const rows = await this.marketsRepository
+      .createQueryBuilder('market')
+      .select(['market.id', 'market.title', 'market.description'])
+      .addSelect(
+        `greatest(similarity(market.title, :query), similarity(coalesce(market.description, ''), :query))`,
+        'sim',
+      )
+      .where('market.is_public = :isPublic', { isPublic: true })
+      .andWhere(
+        `greatest(similarity(market.title, :query), similarity(coalesce(market.description, ''), :query)) >= :threshold`,
+        { query, threshold },
+      )
+      .setParameter('query', query)
+      .orderBy('sim', 'DESC')
+      .addOrderBy('market.title', 'ASC')
+      .take(limit)
+      .getMany();
+
+    return rows.map((m: any) => ({
+      id: m.id,
+      type: 'market' as const,
+      title: m.title,
+      similarity: parseFloat(m.sim ?? '0'),
+      description: m.description,
+    }));
+  }
+
+  private async fuzzySearchUsers(
+    query: string,
+    threshold: number,
+    limit: number,
+  ): Promise<FuzzySearchItemDto[]> {
+    const rows = await this.usersRepository
+      .createQueryBuilder('user')
+      .select(['user.id', 'user.username'])
+      .addSelect(`similarity(user.username, :query)`, 'sim')
+      .where('user.is_banned = :banned', { banned: false })
+      .andWhere('user.username IS NOT NULL')
+      .andWhere(`similarity(user.username, :query) >= :threshold`, {
+        query,
+        threshold,
+      })
+      .setParameter('query', query)
+      .orderBy('sim', 'DESC')
+      .addOrderBy('user.username', 'ASC')
+      .take(limit)
+      .getMany();
+
+    return rows.map((u: any) => ({
+      id: u.id,
+      type: 'user' as const,
+      title: u.username as string,
+      similarity: parseFloat(u.sim ?? '0'),
+    }));
+  }
+
+  private async fuzzySearchCompetitions(
+    query: string,
+    threshold: number,
+    limit: number,
+  ): Promise<FuzzySearchItemDto[]> {
+    const rows = await this.competitionsRepository
+      .createQueryBuilder('competition')
+      .select(['competition.id', 'competition.title', 'competition.description'])
+      .addSelect(
+        `greatest(similarity(competition.title, :query), similarity(coalesce(competition.description, ''), :query))`,
+        'sim',
+      )
+      .where('competition.visibility = :visibility', {
+        visibility: CompetitionVisibility.Public,
+      })
+      .andWhere(
+        `greatest(similarity(competition.title, :query), similarity(coalesce(competition.description, ''), :query)) >= :threshold`,
+        { query, threshold },
+      )
+      .setParameter('query', query)
+      .orderBy('sim', 'DESC')
+      .addOrderBy('competition.title', 'ASC')
+      .take(limit)
+      .getMany();
+
+    return rows.map((c: any) => ({
+      id: c.id,
+      type: 'competition' as const,
+      title: c.title,
+      similarity: parseFloat(c.sim ?? '0'),
+      description: c.description,
     }));
   }
 
@@ -794,5 +919,38 @@ export class SearchService {
         parseFloat(c.fts_rank ?? '0') + parseFloat(c.trgm_score ?? '0'),
       highlight: c.headline ?? c.title,
     }));
+  }
+
+  /**
+   * Refresh the search_vector for a single market after its title or
+   * description has been updated so FTS results stay in sync.
+   */
+  async refreshMarketSearchVector(marketId: string): Promise<void> {
+    await this.dataSource.query(
+      `UPDATE markets
+         SET search_vector =
+           setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+           setweight(to_tsvector('english', coalesce(description, '')), 'B')
+       WHERE id = $1`,
+      [marketId],
+    );
+    this.logger.debug(`Refreshed search_vector for market ${marketId}`);
+  }
+
+  /**
+   * Backfill search_vector for every market row that has a NULL or empty
+   * vector. Useful after a migration or when enabling FTS for the first time.
+   */
+  async backfillMarketSearchVectors(): Promise<number> {
+    const result = await this.dataSource.query(
+      `UPDATE markets
+         SET search_vector =
+           setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+           setweight(to_tsvector('english', coalesce(description, '')), 'B')
+       WHERE search_vector IS NULL OR search_vector = ''::tsvector`,
+    );
+    const count = result[1] ?? 0;
+    this.logger.log(`Backfilled search_vector for ${count} market(s)`);
+    return count;
   }
 }

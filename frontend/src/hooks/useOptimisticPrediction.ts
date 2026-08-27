@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { usePredictionSlip, type SlipItem } from "@/context/PredictionSlipContext";
 import { useToast } from "./useToast";
-import { useTransactionTracker, type TxStatus } from "./useTransactionTracker";
+import { useTransactionTracker } from "./useTransactionTracker";
 
 export interface OptimisticPredictionState {
   id: string;
@@ -35,7 +35,7 @@ interface SubmissionResult {
   transaction?: {
     hash: string;
     description?: string;
-    pollFn: (hash: string) => Promise<TxStatus>;
+    pollFn: (hash: string) => Promise<"pending" | "confirmed" | "failed">;
   };
 }
 
