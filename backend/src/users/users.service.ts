@@ -323,6 +323,49 @@ export class UsersService {
     return { data, total, page, limit };
   }
 
+  /**
+   * Bookmark a market on behalf of the authenticated user.
+   * Throws NotFoundException when the market does not exist and
+   * ConflictException when the market is already bookmarked by the user.
+   */
+  async addBookmark(userId: string, marketId: string): Promise<UserBookmark> {
+    const market = await this.marketsRepository.findOneBy({ id: marketId });
+    if (!market) {
+      throw new NotFoundException(`Market with ID "${marketId}" not found`);
+    }
+
+    const existing = await this.userBookmarksRepository.findOne({
+      where: { user: { id: userId }, market: { id: marketId } },
+    });
+    if (existing) {
+      throw new ConflictException('Market is already bookmarked');
+    }
+
+    const bookmark = this.userBookmarksRepository.create({
+      user: { id: userId } as User,
+      market,
+    });
+
+    return this.userBookmarksRepository.save(bookmark);
+  }
+
+  /**
+   * Remove a bookmark owned by the authenticated user.
+   * Ownership is enforced by scoping the lookup to the caller's userId —
+   * another user's bookmark is indistinguishable from a missing one (404).
+   */
+  async removeBookmark(userId: string, bookmarkId: string): Promise<void> {
+    const bookmark = await this.userBookmarksRepository.findOne({
+      where: { id: bookmarkId, user: { id: userId } },
+    });
+
+    if (!bookmark) {
+      throw new NotFoundException('Bookmark not found');
+    }
+
+    await this.userBookmarksRepository.delete({ id: bookmarkId });
+  }
+
   async exportUserData(userId: string) {
     const user = await this.findById(userId);
 
