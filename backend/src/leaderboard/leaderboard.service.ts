@@ -40,6 +40,7 @@ import {
   LeaderboardHistoryQueryDto,
   LeaderboardHistoryEntryResponse,
   PaginatedLeaderboardHistoryResponse,
+  PaginatedAddressHistoryResponse,
 } from './dto/leaderboard-history.dto';
 import { UserRankDto } from './dto/user-rank.dto';
 import {
@@ -691,8 +692,16 @@ export class LeaderboardService {
   /**
    * Get user history snapshots for a specific Stellar address
    */
-  async getHistoryForAddress(address: string, days: number = 30) {
+  async getHistoryForAddress(
+    address: string,
+    days: number = 30,
+    page: number = 1,
+    limit: number = 20,
+  ): Promise<PaginatedAddressHistoryResponse> {
     const validDays = Math.min(Math.max(days || 30, 1), 90);
+    const validLimit = Math.min(Math.max(limit || 20, 1), 100);
+    const validPage = Math.max(page || 1, 1);
+    const skip = (validPage - 1) * validLimit;
 
     const user = await this.usersService.findByAddress(address);
     if (!user) {
@@ -702,20 +711,27 @@ export class LeaderboardService {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - validDays);
 
-    const history = await this.historyRepository.find({
+    const [history, total] = await this.historyRepository.findAndCount({
       where: {
         user_id: user.id,
         snapshot_date: MoreThanOrEqual(cutoffDate),
       },
       order: { snapshot_date: 'DESC' },
+      skip,
+      take: validLimit,
     });
 
-    return history.map((h) => ({
-      snapshot_date: h.snapshot_date,
-      rank: h.rank,
-      reputation_score: h.reputation_score,
-      season_points: h.season_points,
-    }));
+    return {
+      data: history.map((h) => ({
+        snapshot_date: h.snapshot_date,
+        rank: h.rank,
+        reputation_score: h.reputation_score,
+        season_points: h.season_points,
+      })),
+      total,
+      page: validPage,
+      limit: validLimit,
+    };
   }
 
   /**

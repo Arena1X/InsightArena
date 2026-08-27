@@ -18,6 +18,7 @@ import { PaginatedCursorResponse } from './dto/cursor-pagination.dto';
 import {
   LeaderboardHistoryQueryDto,
   PaginatedLeaderboardHistoryResponse,
+  PaginatedAddressHistoryResponse,
 } from './dto/leaderboard-history.dto';
 import { UserRankDto } from './dto/user-rank.dto';
 import {
@@ -131,11 +132,13 @@ export class LeaderboardController {
   })
   async getHistory(
     @Query() query: LeaderboardHistoryQueryDto,
-  ): Promise<PaginatedLeaderboardHistoryResponse | any[]> {
+  ): Promise<PaginatedLeaderboardHistoryResponse | PaginatedAddressHistoryResponse> {
     if (query.address) {
       return this.leaderboardService.getHistoryForAddress(
         query.address,
         query.days,
+        query.page,
+        query.limit,
       );
     }
     return this.leaderboardService.getHistory(query);

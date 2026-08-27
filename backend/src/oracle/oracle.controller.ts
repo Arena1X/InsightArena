@@ -20,6 +20,7 @@ import {
 import { OracleService } from './oracle.service';
 import { OracleAuthGuard } from './guards/oracle-auth.guard';
 import { WebhookAuthGuard } from './guards/webhook-auth.guard';
+import { OracleAssignmentGuard } from './guards/oracle-assignment.guard';
 import { OracleReliabilityService } from './oracle-reliability.service';
 import {
   ListPendingMatchesQueryDto,
@@ -73,7 +74,7 @@ export class OracleController {
   }
 
   @Post('webhooks/match-result')
-  @UseGuards(WebhookAuthGuard)
+  @UseGuards(WebhookAuthGuard, OracleAssignmentGuard)
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiSecurity('webhook-signature')
   @ApiOperation({ summary: 'Submit match result via webhook' })
@@ -84,6 +85,11 @@ export class OracleController {
     type: WebhookResponseDto,
   })
   @ApiResponse({ status: 401, description: 'Unauthorized - invalid signature' })
+  @ApiResponse({
+    status: 403,
+    description:
+      "Data source is not a registered oracle, or is not assigned to this match's event",
+  })
   @ApiResponse({ status: 404, description: 'Match not found' })
   @ApiResponse({
     status: 409,

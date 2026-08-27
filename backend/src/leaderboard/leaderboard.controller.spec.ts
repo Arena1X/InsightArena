@@ -167,6 +167,8 @@ describe('LeaderboardController', () => {
       expect(spy).toHaveBeenCalledWith(
         'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
         30,
+        undefined,
+        undefined,
       );
       expect(result).toEqual(mockHistory);
     });
@@ -192,6 +194,8 @@ describe('LeaderboardController', () => {
 
       expect(spy).toHaveBeenCalledWith(
         'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+        undefined,
+        undefined,
         undefined,
       );
     });
