@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { DataSource } from 'typeorm';
 import { SearchController } from '../search.controller';
 import { SearchService } from '../search.service';
 import { Market } from '../../markets/entities/market.entity';
@@ -21,7 +22,11 @@ describe('Fuzzy search endpoint', () => {
         { provide: getRepositoryToken(User), useValue: {} },
         { provide: getRepositoryToken(Competition), useValue: {} },
         { provide: getRepositoryToken(CreatorEvent), useValue: {} },
-        { provide: CACHE_MANAGER, useValue: { get: jest.fn(), set: jest.fn() } },
+        {
+          provide: CACHE_MANAGER,
+          useValue: { get: jest.fn(), set: jest.fn() },
+        },
+        { provide: DataSource, useValue: { query: jest.fn() } },
       ],
     }).compile();
 
@@ -31,7 +36,14 @@ describe('Fuzzy search endpoint', () => {
 
   it('delegates fuzzy search to the service', async () => {
     const mockResult = {
-      data: [{ id: '1', type: 'market' as const, title: 'Prediction Market', similarity: 0.45 }],
+      data: [
+        {
+          id: '1',
+          type: 'market' as const,
+          title: 'Prediction Market',
+          similarity: 0.45,
+        },
+      ],
       total: 1,
       query: 'preidction',
     };

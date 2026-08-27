@@ -1,8 +1,8 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { Cache } from 'cache-manager';
-import { Brackets, Repository } from 'typeorm';
+import { Brackets, DataSource, Repository } from 'typeorm';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
 import {
@@ -78,6 +78,8 @@ interface ScoredSuggestion {
 
 @Injectable()
 export class SearchService {
+  private readonly logger = new Logger(SearchService.name);
+
   constructor(
     @InjectRepository(Market)
     private readonly marketsRepository: Repository<Market>,
@@ -88,6 +90,7 @@ export class SearchService {
     @InjectRepository(CreatorEvent)
     private readonly creatorEventsRepository: Repository<CreatorEvent>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
+    private readonly dataSource: DataSource,
   ) {}
 
   async search(dto: GlobalSearchDto): Promise<GlobalSearchResponseDto> {
@@ -916,5 +919,38 @@ export class SearchService {
         parseFloat(c.fts_rank ?? '0') + parseFloat(c.trgm_score ?? '0'),
       highlight: c.headline ?? c.title,
     }));
+  }
+
+  /**
+   * Refresh the search_vector for a single market after its title or
+   * description has been updated so FTS results stay in sync.
+   */
+  async refreshMarketSearchVector(marketId: string): Promise<void> {
+    await this.dataSource.query(
+      `UPDATE markets
+         SET search_vector =
+           setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+           setweight(to_tsvector('english', coalesce(description, '')), 'B')
+       WHERE id = $1`,
+      [marketId],
+    );
+    this.logger.debug(`Refreshed search_vector for market ${marketId}`);
+  }
+
+  /**
+   * Backfill search_vector for every market row that has a NULL or empty
+   * vector. Useful after a migration or when enabling FTS for the first time.
+   */
+  async backfillMarketSearchVectors(): Promise<number> {
+    const result = await this.dataSource.query(
+      `UPDATE markets
+         SET search_vector =
+           setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+           setweight(to_tsvector('english', coalesce(description, '')), 'B')
+       WHERE search_vector IS NULL OR search_vector = ''::tsvector`,
+    );
+    const count = result[1] ?? 0;
+    this.logger.log(`Backfilled search_vector for ${count} market(s)`);
+    return count;
   }
 }

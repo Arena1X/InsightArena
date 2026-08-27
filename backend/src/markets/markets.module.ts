@@ -12,6 +12,7 @@ import { UsersModule } from '../users/users.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
 import { DisputesModule } from '../disputes/disputes.module';
 import { WebhooksModule } from '../webhooks/webhooks.module';
+import { SearchModule } from '../search/search.module';
 import { CommonModule } from '../common/common.module';
 import { OptionalIdempotencyInterceptor } from '../common/idempotency/optional-idempotency.interceptor';
 import { AuthModule } from '../auth/auth.module';
@@ -36,6 +37,7 @@ import { SettlementAttempt } from './entities/settlement-attempt.entity';
     AnalyticsModule,
     DisputesModule,
     WebhooksModule,
+    SearchModule,
     CommonModule,
     AuthModule,
   ],
