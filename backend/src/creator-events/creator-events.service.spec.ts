@@ -1,8 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Repository, SelectQueryBuilder } from 'typeorm';
 import { NotFoundException } from '@nestjs/common';
 import { ContractService } from '../contract/contract.service';
+import { SearchService } from '../search/search.service';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
 import { CreatorEventLeaderboardEntry } from '../matches/entities/creator-event-leaderboard-entry.entity';
 import { CreatorEventPayout } from '../matches/entities/creator-event-payout.entity';
@@ -12,31 +14,9 @@ import { User } from '../users/entities/user.entity';
 import { CreatorEventsService } from './creator-events.service';
 import { CreatorEventSearchStatus } from './dto/search-events-query.dto';
 
-type MockSearchQueryBuilder = jest.Mocked<
-  Pick<
-    SelectQueryBuilder<CreatorEvent>,
-    | 'addSelect'
-    | 'where'
-    | 'andWhere'
-    | 'setParameter'
-    | 'clone'
-    | 'orderBy'
-    | 'addOrderBy'
-    | 'skip'
-    | 'take'
-    | 'getRawAndEntities'
-  >
-> & {
-  getCount: jest.Mock;
-};
-
 describe('CreatorEventsService searchEvents', () => {
   let service: CreatorEventsService;
-  let creatorEventRepository: jest.Mocked<
-    Pick<Repository<CreatorEvent>, 'createQueryBuilder'>
-  >;
-  let queryBuilder: MockSearchQueryBuilder;
-  let countQueryBuilder: { getCount: jest.Mock };
+  let searchService: jest.Mocked<Pick<SearchService, 'searchCreatorEvents'>>;
 
   const makeEvent = (overrides: Partial<CreatorEvent> = {}): CreatorEvent =>
     ({
@@ -53,35 +33,18 @@ describe('CreatorEventsService searchEvents', () => {
       max_participants: 500,
       participant_count: 42,
       match_count: 3,
+      category: 'football',
       matches: [],
       created_at: new Date('2026-05-01T00:00:00.000Z'),
       ...overrides,
     }) as CreatorEvent;
 
   beforeEach(async () => {
-    countQueryBuilder = {
-      getCount: jest.fn().mockResolvedValue(1),
-    };
-
-    queryBuilder = {
-      addSelect: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      andWhere: jest.fn().mockReturnThis(),
-      setParameter: jest.fn().mockReturnThis(),
-      clone: jest.fn().mockReturnValue(countQueryBuilder),
-      orderBy: jest.fn().mockReturnThis(),
-      addOrderBy: jest.fn().mockReturnThis(),
-      skip: jest.fn().mockReturnThis(),
-      take: jest.fn().mockReturnThis(),
-      getRawAndEntities: jest.fn().mockResolvedValue({
-        entities: [makeEvent()],
-        raw: [{ search_rank: '0.98' }],
+    searchService = {
+      searchCreatorEvents: jest.fn().mockResolvedValue({
+        data: [{ event: makeEvent(), searchRank: 0.98 }],
+        total: 1,
       }),
-      getCount: jest.fn(),
-    };
-
-    creatorEventRepository = {
-      createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -92,8 +55,12 @@ describe('CreatorEventsService searchEvents', () => {
           useValue: {},
         },
         {
+          provide: SearchService,
+          useValue: searchService,
+        },
+        {
           provide: getRepositoryToken(CreatorEvent),
-          useValue: creatorEventRepository,
+          useValue: {},
         },
         {
           provide: getRepositoryToken(CreatorEventLeaderboardEntry),
@@ -115,13 +82,17 @@ describe('CreatorEventsService searchEvents', () => {
           provide: getRepositoryToken(CreatorEventPayout),
           useValue: {},
         },
+        {
+          provide: CACHE_MANAGER,
+          useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
+        },
       ],
     }).compile();
 
     service = module.get<CreatorEventsService>(CreatorEventsService);
   });
 
-  it('returns ranked full-text search results with highlights', async () => {
+  it('returns ranked search results with highlights across indexed fields', async () => {
     const result = await service.searchEvents({
       q: 'champions',
       page: 1,
@@ -129,25 +100,13 @@ describe('CreatorEventsService searchEvents', () => {
       status: CreatorEventSearchStatus.All,
     });
 
-    expect(creatorEventRepository.createQueryBuilder).toHaveBeenCalledWith(
-      'creatorEvent',
-    );
-    expect(queryBuilder.addSelect).toHaveBeenCalledWith(
-      expect.stringContaining('ts_rank_cd'),
-      'search_rank',
-    );
-    expect(queryBuilder.where).toHaveBeenCalled();
-    expect(queryBuilder.setParameter).toHaveBeenCalledWith(
-      'searchTerm',
-      'champions',
-    );
-    expect(queryBuilder.orderBy).toHaveBeenCalledWith('search_rank', 'DESC');
-    expect(queryBuilder.addOrderBy).toHaveBeenCalledWith(
-      'creatorEvent.participant_count',
-      'DESC',
-    );
-    expect(queryBuilder.skip).toHaveBeenCalledWith(0);
-    expect(queryBuilder.take).toHaveBeenCalledWith(20);
+    expect(searchService.searchCreatorEvents).toHaveBeenCalledWith({
+      query: 'champions',
+      skip: 0,
+      limit: 20,
+      status: CreatorEventSearchStatus.All,
+      creator: undefined,
+    });
     expect(result).toEqual({
       data: [
         expect.objectContaining({
@@ -156,6 +115,7 @@ describe('CreatorEventsService searchEvents', () => {
           highlights: expect.objectContaining({
             title: '<mark>Champions</mark> League Final',
             description: 'Predict the <mark>Champions</mark> League winner',
+            category: 'football',
           }),
         }),
       ],
@@ -167,7 +127,7 @@ describe('CreatorEventsService searchEvents', () => {
     });
   });
 
-  it('applies status and creator filters', async () => {
+  it('passes status and creator filters to the search service', async () => {
     await service.searchEvents({
       q: 'league',
       page: 2,
@@ -176,40 +136,13 @@ describe('CreatorEventsService searchEvents', () => {
       creator: '0xCreatorAddress',
     });
 
-    expect(queryBuilder.andWhere).toHaveBeenCalledWith(
-      'creatorEvent.is_active = :isActive',
-      { isActive: true },
-    );
-    expect(queryBuilder.andWhere).toHaveBeenCalledWith(
-      'creatorEvent.is_cancelled = :isCancelled',
-      { isCancelled: false },
-    );
-    expect(queryBuilder.andWhere).toHaveBeenCalledWith(
-      'LOWER(creatorEvent.creator_address) = LOWER(:creator)',
-      { creator: '0xCreatorAddress' },
-    );
-    expect(queryBuilder.skip).toHaveBeenCalledWith(10);
-  });
-
-  it('supports finished and upcoming status filters', async () => {
-    // We need to spy on Brackets instantiation or just check andWhere
-    // For simplicity, we just verify andWhere was called
-    await service.searchEvents({
-      q: 'league',
-      status: CreatorEventSearchStatus.Finished,
+    expect(searchService.searchCreatorEvents).toHaveBeenCalledWith({
+      query: 'league',
+      skip: 10,
+      limit: 10,
+      status: CreatorEventSearchStatus.Active,
+      creator: '0xCreatorAddress',
     });
-    expect(queryBuilder.andWhere).toHaveBeenCalledWith(expect.any(Object)); // Brackets
-
-    jest.clearAllMocks();
-
-    await service.searchEvents({
-      q: 'league',
-      status: CreatorEventSearchStatus.Upcoming,
-    });
-    expect(queryBuilder.andWhere).toHaveBeenCalledWith(
-      'creatorEvent.start_time > :now',
-      { now: expect.any(Date) },
-    );
   });
 
   it('returns an empty page for blank queries without touching the database', async () => {
@@ -228,7 +161,7 @@ describe('CreatorEventsService searchEvents', () => {
       totalPages: 0,
       query: '',
     });
-    expect(creatorEventRepository.createQueryBuilder).not.toHaveBeenCalled();
+    expect(searchService.searchCreatorEvents).not.toHaveBeenCalled();
   });
 });
 
@@ -262,6 +195,10 @@ describe('CreatorEventsService getUpcomingMatches', () => {
         CreatorEventsService,
         { provide: ContractService, useValue: {} },
         {
+          provide: SearchService,
+          useValue: { searchCreatorEvents: jest.fn() },
+        },
+        {
           provide: getRepositoryToken(CreatorEvent),
           useValue: creatorEventRepository,
         },
@@ -273,6 +210,10 @@ describe('CreatorEventsService getUpcomingMatches', () => {
           useValue: {},
         },
         { provide: getRepositoryToken(CreatorEventPayout), useValue: {} },
+        {
+          provide: CACHE_MANAGER,
+          useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
+        },
       ],
     }).compile();
 

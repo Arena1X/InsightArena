@@ -57,6 +57,14 @@ export class UserPreferences {
   @Column({ type: 'varchar', default: 'off' })
   digest_frequency: 'daily' | 'weekly' | 'off';
 
+  /** Delivery hour (0-23) in the user's local time, per `digest_timezone`. */
+  @Column({ type: 'int', default: 8 })
+  digest_hour: number;
+
+  /** IANA timezone name (e.g. "America/Chicago", "Europe/Lagos"). */
+  @Column({ type: 'varchar', default: 'UTC' })
+  digest_timezone: string;
+
   @CreateDateColumn()
   created_at: Date;
 

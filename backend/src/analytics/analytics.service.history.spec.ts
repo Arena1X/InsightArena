@@ -8,6 +8,7 @@ import { User } from '../users/entities/user.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.entity';
 import { ActivityLog } from './entities/activity-log.entity';
+import { CacheService } from '../cache/cache.service';
 
 describe('AnalyticsService - Market History', () => {
   let service: AnalyticsService;
@@ -72,6 +73,13 @@ describe('AnalyticsService - Market History', () => {
         {
           provide: getRepositoryToken(MarketHistory),
           useValue: marketHistoryRepository,
+        },
+        {
+          provide: CacheService,
+          useValue: {
+            getOrSet: (_ns: string, _key: string, loader: () => unknown) =>
+              loader(),
+          },
         },
       ],
     }).compile();

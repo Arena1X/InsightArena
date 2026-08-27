@@ -51,6 +51,15 @@ export class OracleSubmissionFlag {
   @ApiProperty()
   baseline_mean: number;
 
+  /**
+   * Median confidence score of the rolling baseline window — the consensus
+   * reference point for the median-deviation rule (#1611). `null` on flags
+   * written before this column existed.
+   */
+  @Column({ type: 'double precision', nullable: true })
+  @ApiPropertyOptional()
+  baseline_median?: number;
+
   /** Population standard deviation of the rolling baseline window. */
   @Column({ type: 'double precision' })
   @ApiProperty()

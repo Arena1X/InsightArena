@@ -20,6 +20,8 @@ import {
 import { OracleService } from './oracle.service';
 import { OracleAuthGuard } from './guards/oracle-auth.guard';
 import { WebhookAuthGuard } from './guards/webhook-auth.guard';
+import { OracleAssignmentGuard } from './guards/oracle-assignment.guard';
+import { OracleReliabilityService } from './oracle-reliability.service';
 import {
   ListPendingMatchesQueryDto,
   PaginatedPendingMatchesResponse,
@@ -41,6 +43,11 @@ import {
   ReviewSubmissionDto,
   ReviewResultResponse,
 } from './dto/anomaly-detection.dto';
+import {
+  ListDivergencesQueryDto,
+  PaginatedDivergencesResponse,
+} from './dto/list-divergences.dto';
+import { MatchConsensusResponse } from './dto/match-consensus.dto';
 
 @ApiTags('Oracle')
 @Controller('oracle')
@@ -49,6 +56,7 @@ export class OracleController {
     private readonly oracleService: OracleService,
     private readonly webhookService: WebhookService,
     private readonly submissionHistoryService: SubmissionHistoryService,
+    private readonly reliabilityService: OracleReliabilityService,
   ) {}
 
   @Get('pending-matches')
@@ -67,7 +75,7 @@ export class OracleController {
   }
 
   @Post('webhooks/match-result')
-  @UseGuards(WebhookAuthGuard)
+  @UseGuards(WebhookAuthGuard, OracleAssignmentGuard)
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiSecurity('webhook-signature')
   @ApiOperation({ summary: 'Submit match result via webhook' })
@@ -78,6 +86,11 @@ export class OracleController {
     type: WebhookResponseDto,
   })
   @ApiResponse({ status: 401, description: 'Unauthorized - invalid signature' })
+  @ApiResponse({
+    status: 403,
+    description:
+      "Data source is not a registered oracle, or is not assigned to this match's event",
+  })
   @ApiResponse({ status: 404, description: 'Match not found' })
   @ApiResponse({
     status: 409,
@@ -132,6 +145,56 @@ export class OracleController {
     @Query() query: GetFlagsQueryDto,
   ): Promise<PaginatedFlagsResponse> {
     return this.submissionHistoryService.getFlags(query);
+  }
+
+  @Get('sources/reliability')
+  @UseGuards(OracleAuthGuard)
+  @ApiSecurity('api-key')
+  @ApiOperation({ summary: 'Get reliability scores for all oracle sources' })
+  @ApiResponse({
+    status: 200,
+    description: 'List of source reliability scores',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - invalid API key' })
+  async getSourceReliability() {
+    return this.reliabilityService.getScores();
+  }
+
+  @Get('matches/:matchId/consensus')
+  @UseGuards(OracleAuthGuard)
+  @ApiSecurity('api-key')
+  @ApiOperation({
+    summary:
+      'Evaluate whether a match can be auto-finalized by oracle consensus',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Consensus state; quarantined anomaly submissions are excluded from the result',
+    type: MatchConsensusResponse,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - invalid API key' })
+  async getMatchConsensus(
+    @Param('matchId') matchId: string,
+  ): Promise<MatchConsensusResponse> {
+    return this.oracleService.getMatchConsensus(matchId);
+  }
+
+  @Get('divergences')
+  @UseGuards(OracleAuthGuard)
+  @ApiSecurity('api-key')
+  @ApiOperation({
+    summary: 'List unresolved two-source result divergences for admin review',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Paginated list of unresolved divergences',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - invalid API key' })
+  async getDivergences(
+    @Query() query: ListDivergencesQueryDto,
+  ): Promise<PaginatedDivergencesResponse> {
+    return this.oracleService.getDivergences(query);
   }
 
   @Post('submissions/:id/review')

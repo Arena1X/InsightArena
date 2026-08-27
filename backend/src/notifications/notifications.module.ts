@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Notification } from './entities/notification.entity';
 import { NotificationDigestState } from './entities/notification-digest-state.entity';
 import { NotificationPreference } from './entities/notification-preference.entity';
+import { NotificationCategoryPreference } from './entities/notification-category-preference.entity';
 import { NotificationsService } from './notifications.service';
 import { NotificationsController } from './notifications.controller';
 import { EmailService } from './email.service';
@@ -22,6 +23,7 @@ import { WebsocketModule } from '../websocket/websocket.module';
       Notification,
       NotificationDigestState,
       NotificationPreference,
+      NotificationCategoryPreference,
       User,
       UserPreferences,
       CreatorEvent,

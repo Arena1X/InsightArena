@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env, Map, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Env, Map, String, Symbol, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -123,6 +123,12 @@ pub enum DataKey {
 /// the current ledger time rather than persisted directly.
 ///
 /// `Voting -> Queued -> Executable -> (Executed | Vetoed | Cancelled)`
+///
+/// Note: there is no terminal state for "voting closed without passing" —
+/// a Soroban contract call that returns `Err` reverts every write it made
+/// (see `governance::execute_proposal`), so a failed quorum/majority check
+/// can never persist a state transition. That distinction is instead made
+/// via the returned error: see `governance::execute_proposal`'s doc comment.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProposalState {
@@ -149,10 +155,28 @@ pub struct Dispute {
     pub appeal_tier: u32,
     pub appealer: Option<Address>,
     pub appeal_bond: i128,
+    /// Arbiters assigned to weigh in on this dispute via
+    /// `dispute::assign_arbiters`, with per-arbiter weight snapshotted at
+    /// assignment time. Empty until a panel is assigned; the dispute can
+    /// still be settled directly by admin via `resolve_dispute` if no panel
+    /// is ever assigned.
+    pub arbiters: Vec<ArbiterAssignment>,
+    /// Fraction (bps, of total assigned weight) of weight that must have
+    /// voted before `dispute::finalize_arbiter_vote` will settle the panel.
+    /// Snapshotted from `Config::arbiter_quorum_bps` when the panel is
+    /// assigned, so a later config change never retroactively affects an
+    /// in-flight vote.
+    pub quorum_bps: u32,
+    /// Ledger timestamp after which `dispute::finalize_arbiter_vote`
+    /// becomes callable. Set when the panel is assigned.
+    pub voting_deadline: u64,
+    /// True once `dispute::finalize_arbiter_vote` has settled this
+    /// dispute's arbiter panel.
+    pub arbiters_finalized: bool,
 }
 
 impl Dispute {
-    pub fn new(disputer: Address, bond: i128, filed_at: u64) -> Self {
+    pub fn new(env: &Env, disputer: Address, bond: i128, filed_at: u64) -> Self {
         Self {
             disputer,
             bond,
@@ -160,8 +184,47 @@ impl Dispute {
             appeal_tier: 0,
             appealer: None,
             appeal_bond: 0,
+            arbiters: Vec::new(env),
+            quorum_bps: 0,
+            voting_deadline: 0,
+            arbiters_finalized: false,
         }
     }
+}
+
+/// A single arbiter's assignment to a dispute's panel. `weight` is a
+/// snapshot (stake at assignment time scaled by a reputation multiplier)
+/// and never changes afterward, even if the arbiter's live stake or
+/// reputation later changes. See `dispute::assign_arbiters`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArbiterAssignment {
+    pub arbiter: Address,
+    pub weight: i128,
+    pub voted: bool,
+    /// Meaningful only when `voted` is true. `true` = uphold the dispute
+    /// (the disputer was right, market gets reopened); `false` = reject it
+    /// (the original resolution stands).
+    pub vote_uphold: bool,
+}
+
+/// Read-only tally for a dispute's arbiter panel, returned by
+/// `dispute::get_arbiter_tally`. Recomputed on every call from the stored
+/// `Dispute.arbiters` list rather than cached, so it always reflects the
+/// latest votes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArbiterTally {
+    pub market_id: u64,
+    pub total_weight: i128,
+    pub voted_weight: i128,
+    pub uphold_weight: i128,
+    pub reject_weight: i128,
+    pub quorum_bps: u32,
+    pub quorum_met: bool,
+    pub voting_deadline: u64,
+    pub finalized: bool,
+    pub arbiters: Vec<ArbiterAssignment>,
 }
 
 #[contracttype]
@@ -190,6 +253,7 @@ pub struct CreatorStats {
     pub average_participant_count: u32,
     pub dispute_count: u32,
     pub reputation_score: u32,
+    pub last_updated: u64, // ledger timestamp (unix seconds) at last mutating call
 }
 
 #[contracttype]
@@ -301,8 +365,15 @@ pub struct Market {
     /// The fee fraction assigned to the creator, measured in basis points (bps). Max 500 (5%).
     pub creator_fee_bps: u32,
     /// The predefined minimum stake permissible for a single prediction.
+    /// `0` means "inherit the global `Config::min_stake_xlm` floor"; a
+    /// non-zero value overrides the global bound. Every prediction entry
+    /// point (single, batch, allowance, commit-reveal) resolves the
+    /// effective window via `config::resolve_stake_bounds` and rejects
+    /// out-of-window stakes with `StakeTooLow` / `StakeTooHigh`.
     pub min_stake: i128,
     /// The predefined maximum stake permissible for a single prediction.
+    /// `0` means "inherit the global `Config::max_stake_xlm` ceiling"; a
+    /// non-zero value overrides the global bound.
     pub max_stake: i128,
     /// The current number of unique participants holding a stake. Defaults to 0.
     pub participant_count: u32,
@@ -314,6 +385,13 @@ pub struct Market {
     /// `market::set_market_liquidity_cap`; takes precedence over the global
     /// cap whenever non-zero. See `liquidity::add_liquidity`.
     pub outcome_liquidity_cap: i128,
+    /// SHA-256 content hash of off-chain market metadata. Set once at creation
+    /// and never mutated by any subsequent market operation.
+    pub metadata_hash: BytesN<32>,
+    /// Cumulative trading volume (stroops) processed by this market's AMM pool.
+    /// Updated on every swap; used to select the volume-based fee tier at
+    /// fee-charge time. Monotonic; never decreases.
+    pub cumulative_volume: i128,
 }
 
 impl Market {
@@ -334,6 +412,7 @@ impl Market {
         min_stake: i128,
         max_stake: i128,
         dispute_window: u64,
+        metadata_hash: BytesN<32>,
     ) -> Self {
         Self {
             market_id,
@@ -358,6 +437,8 @@ impl Market {
             participant_count: 0,
             dispute_window,
             outcome_liquidity_cap: 0,
+            metadata_hash,
+            cumulative_volume: 0,
         }
     }
 }
@@ -408,15 +489,37 @@ pub struct LPPosition {
     pub initial_deposit: i128,
     pub fees_earned: i128,
     pub created_at: u64,
+    /// Reserve of the pool's first IL-tracked outcome (`Market::outcome_options[0]`)
+    /// at the moment this position was opened. An immutable entry-price snapshot:
+    /// set once in `LPPosition::new` / `liquidity::add_liquidity` and never
+    /// mutated afterward, even when the same provider tops up their position with
+    /// additional deposits. Used as the impermanent-loss baseline — see
+    /// `liquidity::calculate_impermanent_loss_bps`.
+    pub entry_reserve_a: i128,
+    /// Reserve of the pool's second IL-tracked outcome (`Market::outcome_options[1]`)
+    /// at the moment this position was opened. Immutable; see `entry_reserve_a`.
+    /// For single-outcome markets this mirrors `entry_reserve_a`, which yields a
+    /// price ratio of 1 (i.e. impermanent loss is always zero in that case).
+    pub entry_reserve_b: i128,
+    /// Impermanent loss, in basis points (always `<= 0`), computed relative to
+    /// `entry_reserve_a` / `entry_reserve_b` the last time this position was
+    /// withdrawn from via `liquidity::remove_liquidity`. Zero until the first
+    /// withdrawal. For the always-current figure, use `liquidity::get_position_il`,
+    /// which recomputes live against the pool's current reserves instead of
+    /// relying on this cached, withdrawal-time value.
+    pub cumulative_il_bps: i128,
 }
 
 impl LPPosition {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: Address,
         market_id: u64,
         lp_tokens: i128,
         initial_deposit: i128,
         created_at: u64,
+        entry_reserve_a: i128,
+        entry_reserve_b: i128,
     ) -> Self {
         Self {
             provider,
@@ -425,6 +528,9 @@ impl LPPosition {
             initial_deposit,
             fees_earned: 0,
             created_at,
+            entry_reserve_a,
+            entry_reserve_b,
+            cumulative_il_bps: 0,
         }
     }
 }
@@ -440,6 +546,11 @@ pub struct SwapRecord {
     pub amount_out: i128,
     pub fee_paid: i128,
     pub timestamp: u64,
+    /// Index of the volume-based fee tier active when this swap was executed.
+    /// `0` corresponds to the first entry in `VolumeFeeConfig::tiers` (lowest
+    /// volume tier). Snapshotted at fee-charge time so historical fees remain
+    /// auditable even if the tier schedule is later reconfigured.
+    pub volume_tier_index: u32,
 }
 
 impl SwapRecord {
@@ -453,6 +564,7 @@ impl SwapRecord {
         amount_out: i128,
         fee_paid: i128,
         timestamp: u64,
+        volume_tier_index: u32,
     ) -> Self {
         Self {
             trader,
@@ -463,6 +575,7 @@ impl SwapRecord {
             amount_out,
             fee_paid,
             timestamp,
+            volume_tier_index,
         }
     }
 }
@@ -545,6 +658,65 @@ impl FeeTierConfig {
     }
 }
 
+/// A single volume-fee tier: markets whose cumulative volume reaches
+/// `volume_threshold` are charged `fee_bps` rather than the next-lower tier's
+/// rate. Thresholds are monotonically increasing: tier *N*'s threshold must be
+/// strictly greater than tier *N-1*'s threshold.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VolumeFeeEntry {
+    /// Minimum cumulative volume (stroops) required to activate this tier —
+    /// an **inclusive lower bound**: a market whose `cumulative_volume`
+    /// exactly equals this value is already in this tier, not the previous
+    /// one (see `liquidity::select_volume_fee_tier`).
+    pub volume_threshold: i128,
+    /// Swap fee (bps) applied once this tier is active.
+    pub fee_bps: u32,
+}
+
+/// Admin-configurable volume-based fee schedule used by
+/// `liquidity::select_volume_fee_tier` to pick the swap fee for a market
+/// based on its `Market::cumulative_volume`.
+///
+/// The schedule is a list of [`VolumeFeeEntry`] sorted by ascending
+/// `volume_threshold`. Every market starts at tier 0 regardless of its
+/// volume; tier 0's `volume_threshold` is always `0`. The last entry is
+/// the ceiling — once a market exceeds its threshold, no higher tier applies.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VolumeFeeConfig {
+    pub tiers: Vec<VolumeFeeEntry>,
+}
+
+impl VolumeFeeConfig {
+    /// Returns a sensible default volume-fee schedule.
+    ///
+    /// - Tier 0 (volume < 10_000 XLM):  30 bps (0.3%)
+    /// - Tier 1 (volume ≥ 10_000 XLM):  25 bps (0.25%)
+    /// - Tier 2 (volume ≥ 100_000 XLM): 20 bps (0.20%)
+    /// - Tier 3 (volume ≥ 1_000_000 XLM): 15 bps (0.15%)
+    pub fn default_config(env: &Env) -> Self {
+        let mut tiers = Vec::new(env);
+        tiers.push_back(VolumeFeeEntry {
+            volume_threshold: 0,
+            fee_bps: 30,
+        });
+        tiers.push_back(VolumeFeeEntry {
+            volume_threshold: 100_000_000_000, // 10_000 XLM in stroops
+            fee_bps: 25,
+        });
+        tiers.push_back(VolumeFeeEntry {
+            volume_threshold: 1_000_000_000_000, // 100_000 XLM in stroops
+            fee_bps: 20,
+        });
+        tiers.push_back(VolumeFeeEntry {
+            volume_threshold: 10_000_000_000_000, // 1_000_000 XLM in stroops
+            fee_bps: 15,
+        });
+        Self { tiers }
+    }
+}
+
 /// Read-only view of a market's current dynamic fee state, returned by `get_market_fee_info`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -553,6 +725,10 @@ pub struct MarketFeeInfo {
     pub tier: FeeTier,
     pub effective_fee_bps: u32,
     pub volatility_ema_bps: u32,
+    /// Index of the volume-based fee tier currently active for this market.
+    pub volume_tier_index: u32,
+    /// Fee (bps) charged by the currently active volume-based tier.
+    pub volume_tier_fee_bps: u32,
 }
 
 // ── TWAP Price Oracle Types ───────────────────────────────────────────────────
@@ -764,6 +940,20 @@ pub struct InviteCode {
     /// Allows the creator to manually revoke the code before it expires
     /// or reaches `max_uses`. When false, redemption must be rejected
     /// immediately without checking other fields.
+    pub is_active: bool,
+}
+
+/// Read-only view of an invite code's remaining redemption budget, returned
+/// by `invite::get_invite_code_info`. Recomputed from the stored `InviteCode`
+/// rather than cached.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InviteCodeInfo {
+    pub code: Symbol,
+    pub market_id: u64,
+    /// `max_uses - current_uses`, floored at 0.
+    pub remaining_uses: u32,
+    pub expires_at: u64,
     pub is_active: bool,
 }
 
@@ -1038,6 +1228,53 @@ impl CommitmentPrediction {
             revealed: false,
         }
     }
+}
+
+// ── Oracle Submission Staking ─────────────────────────────────────────────────
+//
+// Keyed by a raw `(Symbol, u64)` tuple rather than a `DataKey` variant, since
+// `DataKey` is already at its 50-variant XDR cap (see
+// `reputation::trusted_creator_key` for the established precedent).
+
+/// Records the stake an oracle locked when submitting a market resolution via
+/// `dispute::submit_resolution_with_stake`. Held through the market's dispute
+/// window; settled (slashed or refunded-plus-reward) exactly once by
+/// `dispute::settle_oracle_submission`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleSubmission {
+    pub market_id: u64,
+    pub oracle: Address,
+    pub stake_amount: i128,
+    pub submitted_at: u64,
+    /// True once the stake has been either slashed or refunded (plus reward).
+    pub settled: bool,
+}
+
+// ── Season Reward Vesting ─────────────────────────────────────────────────────
+//
+// Keyed by a raw `(Symbol, u32, Address)` tuple rather than a `DataKey`
+// variant, for the same reason as `OracleSubmission` above.
+
+/// A single recipient's vesting schedule for their `season::finalize_season`
+/// reward, split into equally-spaced tranches instead of one lump payout.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VestingSchedule {
+    pub season_id: u32,
+    pub user: Address,
+    /// Total reward amount (stroops) awarded to this recipient, across all tranches.
+    pub total_amount: i128,
+    /// Number of tranches the total is split into.
+    pub tranche_count: u32,
+    /// Seconds between successive tranche unlocks.
+    pub interval_seconds: u64,
+    /// Ledger timestamp the schedule begins counting from (season finalization time).
+    pub start_time: u64,
+    /// Number of tranches claimed so far.
+    pub claimed_tranches: u32,
+    /// Cumulative amount (stroops) claimed so far.
+    pub claimed_amount: i128,
 }
 
 /// Represents a verified winner of a creator event.

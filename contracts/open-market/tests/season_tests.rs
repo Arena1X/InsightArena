@@ -11,7 +11,7 @@ use insightarena_contract::{
 };
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol, Vec, BytesN};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -185,6 +185,7 @@ fn default_market_params(env: &Env) -> CreateMarketParams {
         min_stake: 10_000_000,
         max_stake: 100_000_000,
         is_public: true,
+        metadata_hash: BytesN::from_array(env, &[0u8; 32]),
     }
 }
 
@@ -310,6 +311,20 @@ fn test_finalize_season_reward_distribution() {
 
     env.ledger().set_timestamp(100);
     client.finalize_season(&admin, &season_id);
+
+    // Rewards are now vested in tranches (#1333) instead of paid out
+    // immediately. Advance past the whole vesting schedule and claim
+    // everything in one call per recipient so the balance assertions below
+    // still reflect the full awarded amount.
+    let cfg = client.get_config();
+    env.ledger().set_timestamp(
+        100 + (cfg.vesting_tranche_count as u64) * cfg.vesting_interval_seconds + 1,
+    );
+    for entry in entries.iter() {
+        if entry.rank <= 10 {
+            client.claim_vested_reward(&entry.user, &season_id);
+        }
+    }
 
     let token_client = TokenClient::new(&env, &xlm_token);
     let top_user = entries.get(0).unwrap().user;
@@ -961,5 +976,73 @@ fn test_finalize_season_non_admin_rejected() {
         Err(Ok(InsightArenaError::Unauthorized)),
         "non-admin must not finalize a season"
     );
+}
+
+// ── Emergency pause coverage ──────────────────────────────────────────────────
+
+#[test]
+fn test_create_season_fails_when_paused() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 100_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 50_000_000);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_create_season(&admin, &100, &200, &50_000_000);
+    assert_eq!(result, Err(Ok(InsightArenaError::Paused)));
+}
+
+#[test]
+fn test_update_leaderboard_fails_when_paused() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 200_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 100_000_000);
+
+    let season_id = client.create_season(&admin, &10, &100, &100_000_000);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_update_leaderboard(&admin, &season_id, &sample_entries(&env));
+    assert_eq!(result, Err(Ok(InsightArenaError::Paused)));
+}
+
+#[test]
+fn test_finalize_season_fails_when_paused() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 200_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 100_000_000);
+
+    let season_id = client.create_season(&admin, &10, &100, &100_000_000);
+    client.update_leaderboard(&admin, &season_id, &sample_entries(&env));
+    env.ledger().set_timestamp(100);
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_finalize_season(&admin, &season_id);
+    assert_eq!(result, Err(Ok(InsightArenaError::Paused)));
+}
+
+#[test]
+fn test_reset_season_points_fails_when_paused() {
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 200_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 100_000_000);
+
+    let season1_id = client.create_season(&admin, &0, &100, &50_000_000);
+    let season2_id = client.create_season(&admin, &200, &300, &50_000_000);
+    let _ = season1_id;
+
+    client.set_paused(&true, &1u32);
+
+    let result = client.try_reset_season_points(&admin, &season2_id);
+    assert_eq!(result, Err(Ok(InsightArenaError::Paused)));
 }
 

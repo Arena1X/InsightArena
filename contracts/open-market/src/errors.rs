@@ -14,7 +14,17 @@ pub enum InsightArenaError {
     // ── Authorization ─────────────────────────────────────────────────────────
     /// The caller does not have the required role for this operation
     /// (e.g. a non-creator attempting to resolve a market, or a non-admin
-    /// calling an admin-only function).
+    /// calling an admin-only function). Also covers the guardian/admin
+    /// separation of duties enforced by `config::set_paused` — pausing
+    /// requires the guardian and unpausing requires the admin, and each
+    /// role attempting the other's half reverts via `require_auth`
+    /// (surfacing as an authorization failure rather than this error code,
+    /// consistent with every other role-gated setter in `config.rs`).
+    ///
+    /// NOTE: `#[contracterror]` enums are hard-capped at 50 XDR cases
+    /// (`ScSpecUdtErrorEnumV0::cases<50>`) and this enum is already at that
+    /// limit (see `ZeroShareTransfer = 112` below) — reuse this variant
+    /// rather than adding a new one for role-check failures.
     Unauthorized = 3,
     /// A cryptographic signature supplied with the call could not be verified
     /// against the expected public key or message payload.
@@ -75,6 +85,9 @@ pub enum InsightArenaError {
     AlreadyPredicted = 21,
     /// The submitted stake is below the market's `min_stake` threshold.
     /// Raised during prediction submission to enforce the minimum entry amount.
+    /// REUSED for AMM swap slippage protection: also raised by
+    /// `liquidity::swap_outcome` when the computed `amount_out` falls below
+    /// the caller-supplied `min_amount_out` guard.
     StakeTooLow = 22,
     /// The submitted stake exceeds the market's `max_stake` ceiling.
     /// Raised during prediction submission to enforce the maximum entry amount.
@@ -90,11 +103,16 @@ pub enum InsightArenaError {
     RefundAlreadyClaimed = 26,
     /// The caller has no stake in this market and is therefore not entitled to a refund.
     /// Raised by `claim_cancel_refund` when the address never submitted a prediction.
+    /// REUSED for anti-spam bond: also raised when `deposit_market_bond` is called
+    /// for a market that already has a bond deposited (prevents double-deposit).
     NotAParticipant = 27,
 
     // ── Escrow ────────────────────────────────────────────────────────────────
     /// The contract's escrow balance is insufficient to complete the transfer.
     /// Raised when a payout or refund exceeds the available on-chain funds.
+    /// REUSED for anti-spam bond: also raised when `create_market` is called
+    /// with `bond_amount > 0` but the creator has not transferred the required
+    /// bond into escrow (i.e. allowance/balance is insufficient).
     InsufficientFunds = 30,
     /// A native XLM token transfer via the Stellar asset contract failed.
     /// Raised when the underlying `transfer` call returns an error.
@@ -143,6 +161,9 @@ pub enum InsightArenaError {
     Paused = 101,
     /// A supplied argument fails basic validation that is not covered by a more
     /// specific error code (e.g. empty strings, zero-length outcome lists).
+    /// REUSED by `governance::execute_proposal`: also raised when a proposal's
+    /// voting window closes with turnout below `Config::governance_quorum_bps`,
+    /// distinguishing a quorum failure from a majority failure (`Unauthorized`).
     InvalidInput = 102,
 
     // ── Conditional Markets ───────────────────────────────────────────────────
@@ -193,5 +214,9 @@ pub enum InsightArenaError {
     SelfTransfer = 111,
     /// `transfer_prediction` was called with `shares <= 0`.
     /// A transfer must move a strictly positive amount.
+    /// REUSED for early position withdrawals:
+    /// - Withdrawal attempted after market lock time (MarketExpired not applicable pre-lock)
+    /// - Withdrawal amount is zero or invalid
+    /// - Withdrawal amount exceeds user's current stake
     ZeroShareTransfer = 112,
 }

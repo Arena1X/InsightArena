@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import {
   BadRequestException,
   ConflictException,
@@ -10,15 +11,29 @@ import {
 import { Repository, ObjectLiteral } from 'typeorm';
 import { PredictionsService } from './predictions.service';
 import { Prediction } from './entities/prediction.entity';
+import {
+  FraudFlagStatus,
+  FraudSignalType,
+  PredictionFraudFlag,
+} from './entities/prediction-fraud-flag.entity';
 import { Market } from '../markets/entities/market.entity';
 import { PredictionStatus } from './dto/list-my-predictions.dto';
 import { User } from '../users/entities/user.entity';
+import { UsersService } from '../users/users.service';
 import { SorobanService } from '../soroban/soroban.service';
 import { SlippageCheckerService } from './services/slippage-checker.service';
 import { SlippageExceededException } from './exceptions/slippage-exceeded.exception';
 
 type MockRepo<T extends ObjectLiteral> = jest.Mocked<
-  Pick<Repository<T>, 'findOne' | 'create' | 'save' | 'findAndCount' | 'find'>
+  Pick<
+    Repository<T>,
+    | 'findOne'
+    | 'create'
+    | 'save'
+    | 'findAndCount'
+    | 'find'
+    | 'createQueryBuilder'
+  >
 >;
 
 const makeUser = (overrides: Partial<User> = {}): User =>
@@ -64,6 +79,8 @@ describe('PredictionsService', () => {
   let service: PredictionsService;
   let mockPredictionsRepo: MockRepo<Prediction>;
   let mockMarketsRepo: MockRepo<Market>;
+  let mockFraudFlagsRepo: MockRepo<PredictionFraudFlag>;
+  let mockConfigService: jest.Mocked<ConfigService>;
   let mockSoroban: jest.Mocked<SorobanService>;
   let mockSlippageChecker: jest.Mocked<SlippageCheckerService>;
   let submitPrediction: jest.SpyInstance;
@@ -86,13 +103,22 @@ describe('PredictionsService', () => {
       execute: jest.fn().mockResolvedValue(undefined),
     };
 
+    const fraudQbMock = {
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([]),
+    };
+
     mockPredictionsRepo = {
       findOne: jest.fn(),
       create: jest.fn(),
       save: jest.fn(),
       findAndCount: jest.fn(),
-      find: jest.fn(),
-    };
+      find: jest.fn().mockResolvedValue([]),
+      createQueryBuilder: jest.fn().mockReturnValue(fraudQbMock),
+    } as unknown as MockRepo<Prediction>;
 
     mockMarketsRepo = {
       findOne: jest.fn(),
@@ -131,6 +157,26 @@ describe('PredictionsService', () => {
       }),
     };
 
+    mockFraudFlagsRepo = {
+      findOne: jest.fn(),
+      create: jest.fn((data: Partial<PredictionFraudFlag>) => data),
+      save: jest.fn((entity: Partial<PredictionFraudFlag>) =>
+        Promise.resolve({ id: 'flag-uuid-1', ...entity }),
+      ),
+      createQueryBuilder: jest.fn().mockReturnValue({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      }),
+    } as unknown as MockRepo<PredictionFraudFlag>;
+
+    mockConfigService = {
+      get: jest.fn().mockReturnValue(undefined),
+    } as unknown as jest.Mocked<ConfigService>;
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PredictionsService,
@@ -140,9 +186,20 @@ describe('PredictionsService', () => {
         },
         { provide: getRepositoryToken(Market), useValue: mockMarketsRepo },
         { provide: getRepositoryToken(User), useValue: {} },
+        {
+          provide: getRepositoryToken(PredictionFraudFlag),
+          useValue: mockFraudFlagsRepo,
+        },
         { provide: SorobanService, useValue: mockSoroban },
         { provide: SlippageCheckerService, useValue: mockSlippageChecker },
+        {
+          provide: UsersService,
+          useValue: {
+            recordQualifyingAction: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         { provide: getDataSourceToken(), useValue: mockDataSource },
+        { provide: ConfigService, useValue: mockConfigService },
       ],
     }).compile();
 
@@ -346,7 +403,12 @@ describe('PredictionsService', () => {
       mockMarketsRepo.findOne.mockResolvedValue(market);
       mockPredictionsRepo.findOne.mockResolvedValue(null);
       mockSlippageChecker.checkSlippage.mockImplementation(() => {
-        throw new SlippageExceededException('4000000', '5000000', '0', '2000000');
+        throw new SlippageExceededException(
+          '4000000',
+          '5000000',
+          '0',
+          '2000000',
+        );
       });
 
       await expect(
@@ -369,7 +431,12 @@ describe('PredictionsService', () => {
       mockMarketsRepo.findOne.mockResolvedValue(market);
       mockPredictionsRepo.findOne.mockResolvedValue(null);
       mockSlippageChecker.checkSlippage.mockImplementation(() => {
-        throw new SlippageExceededException('0', '5000000', '3000000', '2000000');
+        throw new SlippageExceededException(
+          '0',
+          '5000000',
+          '3000000',
+          '2000000',
+        );
       });
 
       await expect(
@@ -1140,6 +1207,283 @@ describe('PredictionsService', () => {
 
       expect(result.total).toBe(25);
       expect(result.data).toHaveLength(5);
+    });
+  });
+
+  describe('exportCsv', () => {
+    let csvQbMock: any;
+
+    beforeEach(() => {
+      csvQbMock = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        stream: jest.fn().mockResolvedValue({
+          [Symbol.asyncIterator]: function* () {},
+          on: jest.fn(),
+        }),
+      };
+      (mockPredictionsRepo as any).createQueryBuilder = jest
+        .fn()
+        .mockReturnValue(csvQbMock);
+    });
+
+    it('returns a readable stream', () => {
+      const user = makeUser();
+      const stream = service.exportCsv(user, {});
+      expect(stream).toBeDefined();
+      expect(typeof stream.pipe).toBe('function');
+    });
+
+    it('builds query with date filters when provided', () => {
+      const user = makeUser();
+      const stream = service.exportCsv(user, {
+        start_date: '2026-01-01',
+        end_date: '2026-06-30',
+      });
+      expect(stream).toBeDefined();
+      expect(csvQbMock.andWhere).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('evaluateFraudSignalsForUser', () => {
+    const makePrediction = (submittedAt: Date) =>
+      ({ submitted_at: submittedAt }) as Prediction;
+
+    beforeEach(() => {
+      mockConfigService.get.mockImplementation((key: string) => {
+        const values: Record<string, string> = {
+          FRAUD_TIMING_MIN_SAMPLE: '3',
+          FRAUD_TIMING_CLUSTER_WINDOW_SECONDS: '30',
+          FRAUD_TIMING_CLUSTER_MIN_RATIO: '0.6',
+          FRAUD_COUNTERPARTY_MIN_MARKETS: '3',
+          FRAUD_COUNTERPARTY_HHI_THRESHOLD: '0.5',
+        };
+        return values[key];
+      });
+    });
+
+    describe('timing clustering signal', () => {
+      it('flags a user whose predictions cluster tightly in time', async () => {
+        const base = Date.now();
+        mockPredictionsRepo.find.mockResolvedValue([
+          makePrediction(new Date(base)),
+          makePrediction(new Date(base + 5_000)),
+          makePrediction(new Date(base + 10_000)),
+          makePrediction(new Date(base + 15_000)),
+        ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            user_id: 'user-1',
+            signal_type: FraudSignalType.TIMING_CLUSTERING,
+            status: FraudFlagStatus.OPEN,
+          }),
+        );
+      });
+
+      it('does not flag a user with widely-spaced predictions', async () => {
+        const base = Date.now();
+        mockPredictionsRepo.find.mockResolvedValue([
+          makePrediction(new Date(base)),
+          makePrediction(new Date(base + 6 * 60 * 60 * 1000)),
+          makePrediction(new Date(base + 12 * 60 * 60 * 1000)),
+          makePrediction(new Date(base + 18 * 60 * 60 * 1000)),
+        ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.TIMING_CLUSTERING,
+          }),
+        );
+      });
+
+      it('does not evaluate below the minimum sample size', async () => {
+        const base = Date.now();
+        mockPredictionsRepo.find.mockResolvedValue([
+          makePrediction(new Date(base)),
+          makePrediction(new Date(base + 1_000)),
+        ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.TIMING_CLUSTERING,
+          }),
+        );
+      });
+
+      it('refreshes an existing open flag instead of duplicating it', async () => {
+        const base = Date.now();
+        mockPredictionsRepo.find.mockResolvedValue([
+          makePrediction(new Date(base)),
+          makePrediction(new Date(base + 5_000)),
+          makePrediction(new Date(base + 10_000)),
+        ]);
+        const existingFlag = {
+          id: 'existing-flag',
+          user_id: 'user-1',
+          signal_type: FraudSignalType.TIMING_CLUSTERING,
+          status: FraudFlagStatus.OPEN,
+          score: 0,
+          threshold: 0.6,
+          details: {},
+        } as PredictionFraudFlag;
+        mockFraudFlagsRepo.findOne.mockResolvedValue(existingFlag);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.create).not.toHaveBeenCalled();
+        expect(mockFraudFlagsRepo.save).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'existing-flag' }),
+        );
+      });
+    });
+
+    describe('counterparty concentration signal', () => {
+      it('flags a user concentrated on a small clique of counterparties', async () => {
+        mockPredictionsRepo.find.mockResolvedValue([]); // no timing signal
+
+        const qb = mockPredictionsRepo.createQueryBuilder(
+          'prediction',
+        ) as unknown as {
+          getRawMany: jest.Mock;
+        };
+
+        // First call: distinct markets the user participated in.
+        // Second call: co-participants across those markets.
+        qb.getRawMany
+          .mockResolvedValueOnce([
+            { marketId: 'm1' },
+            { marketId: 'm2' },
+            { marketId: 'm3' },
+          ])
+          .mockResolvedValueOnce([
+            { counterpartyId: 'clique-user', marketId: 'm1' },
+            { counterpartyId: 'clique-user', marketId: 'm2' },
+            { counterpartyId: 'clique-user', marketId: 'm3' },
+          ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            user_id: 'user-1',
+            signal_type: FraudSignalType.COUNTERPARTY_CONCENTRATION,
+            status: FraudFlagStatus.OPEN,
+          }),
+        );
+      });
+
+      it('does not flag a user with diverse counterparties', async () => {
+        mockPredictionsRepo.find.mockResolvedValue([]);
+
+        const qb = mockPredictionsRepo.createQueryBuilder(
+          'prediction',
+        ) as unknown as {
+          getRawMany: jest.Mock;
+        };
+
+        qb.getRawMany
+          .mockResolvedValueOnce([
+            { marketId: 'm1' },
+            { marketId: 'm2' },
+            { marketId: 'm3' },
+          ])
+          .mockResolvedValueOnce([
+            { counterpartyId: 'a', marketId: 'm1' },
+            { counterpartyId: 'b', marketId: 'm2' },
+            { counterpartyId: 'c', marketId: 'm3' },
+          ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.COUNTERPARTY_CONCENTRATION,
+          }),
+        );
+      });
+
+      it('does not evaluate below the minimum market sample size', async () => {
+        mockPredictionsRepo.find.mockResolvedValue([]);
+
+        const qb = mockPredictionsRepo.createQueryBuilder(
+          'prediction',
+        ) as unknown as {
+          getRawMany: jest.Mock;
+        };
+
+        qb.getRawMany.mockResolvedValueOnce([{ marketId: 'm1' }]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.COUNTERPARTY_CONCENTRATION,
+          }),
+        );
+      });
+    });
+
+    it('returns the created flags without throwing or banning the user', async () => {
+      const base = Date.now();
+      mockPredictionsRepo.find.mockResolvedValue([
+        makePrediction(new Date(base)),
+        makePrediction(new Date(base + 1_000)),
+        makePrediction(new Date(base + 2_000)),
+      ]);
+
+      const result = await service.evaluateFraudSignalsForUser('user-1');
+
+      expect(Array.isArray(result)).toBe(true);
+      expect(result.every((flag) => flag.status === FraudFlagStatus.OPEN)).toBe(
+        true,
+      );
+    });
+  });
+
+  describe('listFraudFlags', () => {
+    it('returns a paginated list scoped by status, signal type, and user', async () => {
+      const flags = [{ id: 'flag-1' } as PredictionFraudFlag];
+      const qb = mockFraudFlagsRepo.createQueryBuilder('flag') as unknown as {
+        andWhere: jest.Mock;
+        getManyAndCount: jest.Mock;
+      };
+      qb.getManyAndCount.mockResolvedValue([flags, 1]);
+
+      const result = await service.listFraudFlags({
+        status: FraudFlagStatus.OPEN,
+        signal_type: FraudSignalType.TIMING_CLUSTERING,
+        user_id: 'user-1',
+        page: 1,
+        limit: 20,
+      });
+
+      expect(qb.andWhere).toHaveBeenCalledWith('flag.status = :status', {
+        status: FraudFlagStatus.OPEN,
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'flag.signal_type = :signalType',
+        { signalType: FraudSignalType.TIMING_CLUSTERING },
+      );
+      expect(qb.andWhere).toHaveBeenCalledWith('flag.user_id = :userId', {
+        userId: 'user-1',
+      });
+      expect(result).toEqual({
+        data: flags,
+        total: 1,
+        page: 1,
+        limit: 20,
+        totalPages: 1,
+      });
     });
   });
 });

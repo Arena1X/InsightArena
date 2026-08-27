@@ -39,7 +39,8 @@ export class WebhookSignatureGuard implements CanActivate {
     }
 
     const signatureHeader = request.headers['x-webhook-signature'] as
-      string | undefined;
+      | string
+      | undefined;
 
     const rawBody = request.rawBody
       ? request.rawBody.toString('utf8')

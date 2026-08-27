@@ -1,0 +1,42 @@
+# Rust/Cargo
+/target/
+# Cargo.lock is committed to pin reproducible dependency versions for CI
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Soroban
+.soroban/
+
+# Test snapshots (generated, can be heavy)
+test_snapshots/
+
+# Build artifacts
+*.wasm
+*.wasm.gz
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# Coverage reports
+tarpaulin-report.html
+lcov.info
+
+# Backup files
+*.bak
+*.backup

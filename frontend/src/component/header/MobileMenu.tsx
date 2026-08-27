@@ -86,7 +86,7 @@ export function MobileMenu({
             {isRestoring && !isAuthenticated ? (
               <div className="flex w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#111726] px-4 py-3 text-sm font-semibold text-gray-400">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-gray-500" />
-                Loading...
+                Connecting...
               </div>
             ) : !isAuthenticated ? (
               <button

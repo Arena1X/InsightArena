@@ -1,8 +1,13 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
+import { Check, Copy, ExternalLink } from "lucide-react";
 
 import Footer from "@/component/Footer";
 import Header from "@/component/Header";
 import PageBackground from "@/component/PageBackground";
+import { env, getStellarExplorerUrl } from "@/lib/env";
 
 function getContractId(value: string | undefined) {
   const trimmed = value?.trim();
@@ -62,17 +67,32 @@ const CONTRACT_MODULES = [
 const DEPLOYED_ADDRESSES = [
   {
     network: "Testnet",
+    networkKey: "testnet",
     contractId: PREDICTION_CONTRACT_ID,
     status: PREDICTION_CONTRACT_ID === "Not configured" ? "Pending" : "Active",
   },
   {
     network: "Mainnet",
+    networkKey: "mainnet",
     contractId: REWARD_CONTRACT_ID,
     status: REWARD_CONTRACT_ID === "Not configured" ? "Pending" : "Active",
   },
 ];
 
 export default function ContractsPage() {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopy = async (contractId: string) => {
+    if (contractId === "Not configured") return;
+    try {
+      await navigator.clipboard.writeText(contractId);
+      setCopiedId(contractId);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {
+      // ignore clipboard write errors
+    }
+  };
+
   return (
     <PageBackground>
       <Header />
@@ -119,31 +139,73 @@ export default function ContractsPage() {
                 <tr>
                   <th className="px-4 py-3">Network</th>
                   <th className="px-4 py-3">Contract ID</th>
+                  <th className="px-4 py-3">Explorer</th>
                   <th className="px-4 py-3">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {DEPLOYED_ADDRESSES.map((row) => (
-                  <tr key={row.network} className="bg-black/20 hover:bg-white/5">
-                    <td className="px-4 py-3 text-white font-medium">
-                      {row.network}
-                    </td>
-                    <td className="px-4 py-3 text-gray-300 font-mono text-xs">
-                      {row.contractId}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
-                          row.status === "Active"
-                            ? "bg-emerald-500/20 text-emerald-400"
-                            : "bg-yellow-500/20 text-yellow-400"
-                        }`}
-                      >
-                        {row.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {DEPLOYED_ADDRESSES.map((row) => {
+                  const explorerUrl =
+                    row.contractId !== "Not configured"
+                      ? getStellarExplorerUrl(row.contractId, row.networkKey)
+                      : null;
+                  const isCopied = copiedId === row.contractId;
+
+                  return (
+                    <tr key={row.network} className="bg-black/20 hover:bg-white/5">
+                      <td className="px-4 py-3 text-white font-medium">
+                        {row.network}
+                      </td>
+                      <td className="px-4 py-3 text-gray-300 font-mono text-xs">
+                        <div className="flex items-center gap-2">
+                          <span>{row.contractId}</span>
+                          {row.contractId !== "Not configured" && (
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(row.contractId)}
+                              className="p-1 text-gray-400 hover:text-white rounded transition"
+                              aria-label={`Copy ${row.network} contract address`}
+                              title={isCopied ? "Copied!" : "Copy address"}
+                            >
+                              {isCopied ? (
+                                <Check className="h-3.5 w-3.5 text-emerald-400" />
+                              ) : (
+                                <Copy className="h-3.5 w-3.5" />
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-xs">
+                        {explorerUrl ? (
+                          <a
+                            href={explorerUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-blue-400 hover:underline"
+                            aria-label={`View ${row.network} contract on Stellar Explorer`}
+                          >
+                            <span>Explorer</span>
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        ) : (
+                          <span className="text-gray-500">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
+                            row.status === "Active"
+                              ? "bg-emerald-500/20 text-emerald-400"
+                              : "bg-yellow-500/20 text-yellow-400"
+                          }`}
+                        >
+                          {row.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

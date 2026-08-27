@@ -1,9 +1,10 @@
 import React from "react";
-// These icons are common in React projects.
-// If they aren't installed, we can switch to simple emojis for now!
-import { Zap, UserPlus, Gift, Trophy } from "lucide-react";
+import { Zap, UserPlus, Gift, Trophy, ShoppingCart } from "lucide-react";
+import { usePredictionSlip } from "@/context/PredictionSlipContext";
 
 const QuickActions = () => {
+  const { itemCount, toggleSlip } = usePredictionSlip();
+
   const actions = [
     {
       label: "Make Prediction",
@@ -41,7 +42,7 @@ const QuickActions = () => {
         {actions.map((item, index) => (
           <button
             key={index}
-            className={`${item.bg} aspect-square rounded-2xl border flex flex-col items-center justify-center p-4 transition-colors`}
+            className={`${item.bg} aspect-square rounded-2xl border flex flex-col items-center justify-center p-4 transition-colors relative`}
           >
             <div className={`${item.text} mb-2`}>{item.icon}</div>
             <span
@@ -51,6 +52,19 @@ const QuickActions = () => {
             </span>
           </button>
         ))}
+        {itemCount > 0 && (
+          <button
+            onClick={toggleSlip}
+            className="bg-teal-500/10 border-teal-500/20 hover:bg-teal-500/15 aspect-square rounded-2xl border flex flex-col items-center justify-center p-4 transition-colors"
+          >
+            <div className="text-teal-400 mb-2">
+              <ShoppingCart size={28} />
+            </div>
+            <span className="text-teal-400 text-sm font-medium text-center leading-tight">
+              View Slip ({itemCount})
+            </span>
+          </button>
+        )}
       </div>
     </section>
   );

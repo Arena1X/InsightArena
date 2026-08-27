@@ -24,6 +24,16 @@ export interface AnomalyEvaluation {
   mean: number;
   /** Population standard deviation of the baseline window. */
   stddev: number;
+  /**
+   * Median of the baseline window — the consensus reference point used by
+   * the median-deviation rule (#1611). Always computed when samples exist.
+   */
+  baselineMedian: number | null;
+  /**
+   * Absolute deviation of the observed value from {@link AnomalyEvaluation.baselineMedian}.
+   * `null` when there were too few samples to evaluate.
+   */
+  medianDeviation: number | null;
   /** Number of prior submissions that formed the baseline. */
   sampleSize: number;
   /** The z-score threshold used for the decision. */
@@ -120,6 +130,12 @@ export class FlagResponse {
 
   @ApiProperty()
   baseline_mean: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Median confidence score of the rolling baseline window (#1611)',
+  })
+  baseline_median?: number;
 
   @ApiProperty()
   baseline_stddev: number;

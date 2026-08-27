@@ -119,6 +119,11 @@ export default function CreateEventForm() {
     if (saved) setDraft(saved);
   }, []);
 
+  // Auto-save draft on every change
+  useEffect(() => {
+    saveDraft(draft);
+  }, [draft]);
+
   useEffect(() => {
     if (step === 2 && !creationFee) {
       setCreationFee("10.0000000");

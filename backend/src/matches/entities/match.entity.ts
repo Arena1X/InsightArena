@@ -17,6 +17,10 @@ export enum WinningTeam {
   DRAW = 'DRAW',
 }
 
+export enum MatchDisputeStatus {
+  DISPUTED_SOURCE = 'DISPUTED_SOURCE',
+}
+
 @Entity('event_matches')
 @Index(['on_chain_match_id'], { unique: true })
 @Index(['event'])
@@ -74,6 +78,13 @@ export class Match {
 
   @Column({ type: 'timestamptz', nullable: true })
   submitted_at: Date | null;
+
+  @Column({
+    type: 'enum',
+    enum: MatchDisputeStatus,
+    nullable: true,
+  })
+  dispute_status: MatchDisputeStatus | null;
 
   @OneToMany(() => MatchPrediction, (prediction) => prediction.match)
   predictions: MatchPrediction[];

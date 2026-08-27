@@ -12,7 +12,9 @@ import { Comment } from '../markets/entities/comment.entity';
 import { Market } from '../markets/entities/market.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { MarketsModule } from '../markets/markets.module';
 import { Prediction } from '../predictions/entities/prediction.entity';
+import { PredictionsModule } from '../predictions/predictions.module';
 import { User } from '../users/entities/user.entity';
 import { UserFlag } from './entities/user-flag.entity';
 import { VerifiedAddress } from './entities/verified-address.entity';
@@ -38,6 +40,8 @@ import { AdminService } from './admin.service';
     AnalyticsModule,
     FlagsModule,
     NotificationsModule,
+    MarketsModule,
+    PredictionsModule,
     CacheModule.register(),
   ],
   controllers: [AdminController],

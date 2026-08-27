@@ -24,6 +24,7 @@ const makeSocket = (overrides: Record<string, unknown> = {}) => {
     emit: jest.fn(),
     on: jest.fn(),
     disconnect: jest.fn(),
+    rooms,
     _rooms: rooms,
     ...overrides,
   };
@@ -96,9 +97,13 @@ describe('EventsGateway', () => {
   // handleConnection
   // -------------------------------------------------------------------------
   describe('handleConnection', () => {
-    it('does not join any user:* room when token is missing', async () => {
+    it('rejects the handshake and disconnects when token is missing', async () => {
       const client = makeSocket({ handshake: { auth: {}, headers: {} } });
       await gateway.handleConnection(client);
+      expect(client.emit).toHaveBeenCalledWith('error', {
+        message: 'Unauthorized',
+      });
+      expect(client.disconnect).toHaveBeenCalledWith(true);
       const joinedRooms = (client.join as jest.Mock).mock.calls.map(
         (c: string[]) => c[0],
       );
@@ -107,7 +112,7 @@ describe('EventsGateway', () => {
       );
     });
 
-    it('does not join any user:* room when token is invalid (verify throws)', async () => {
+    it('rejects the handshake and disconnects when token is invalid (verify throws)', async () => {
       jwtService.verify.mockImplementation(() => {
         throw new Error('invalid');
       });
@@ -115,6 +120,10 @@ describe('EventsGateway', () => {
         handshake: { auth: { token: 'invalid.jwt.token' }, headers: {} },
       });
       await gateway.handleConnection(client);
+      expect(client.emit).toHaveBeenCalledWith('error', {
+        message: 'Unauthorized',
+      });
+      expect(client.disconnect).toHaveBeenCalledWith(true);
       const joinedRooms = (client.join as jest.Mock).mock.calls.map(
         (c: string[]) => c[0],
       );
@@ -123,14 +132,127 @@ describe('EventsGateway', () => {
       );
     });
 
-    it('joins user:* room when token is valid', async () => {
-      jwtService.verify.mockReturnValue({ sub: 'GABC123' });
+    it('joins user:* room (keyed by stellar_address) when token is valid', async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 'user-uuid-1',
+        stellar_address: 'GABC123',
+      });
       const client = makeSocket({
         handshake: { auth: { token: 'valid' }, headers: {} },
       });
       await gateway.handleConnection(client);
       expect(client.join).toHaveBeenCalledWith('user:GABC123');
       expect(client.userAddress).toBe('GABC123');
+      expect(client.disconnect).not.toHaveBeenCalled();
+    });
+
+    it('emits a session id on successful connection', async () => {
+      jwtService.verify.mockReturnValue({
+        sub: 'user-uuid-1',
+        stellar_address: 'GABC123',
+      });
+      const client = makeSocket({
+        handshake: { auth: { token: 'valid' }, headers: {} },
+      });
+      await gateway.handleConnection(client);
+      expect(client.emit).toHaveBeenCalledWith(
+        'session',
+        expect.objectContaining({ sessionId: expect.any(String) }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // reconnect: resume subscriptions via session id
+  // -------------------------------------------------------------------------
+  describe('reconnect subscription resume', () => {
+    const authPayload = { sub: 'user-uuid-1', stellar_address: 'GABC123' };
+
+    it('resumes previously joined rooms and market subscriptions after reconnect', async () => {
+      jwtService.verify.mockReturnValue(authPayload);
+
+      // First connection: join a room and subscribe to a market.
+      const client1 = makeSocket({
+        id: 'socket-1',
+        handshake: { auth: { token: 'valid' }, headers: {} },
+      });
+      await gateway.handleConnection(client1);
+      const sessionId = (client1.emit as jest.Mock).mock.calls.find(
+        (c: unknown[]) => c[0] === 'session',
+      )?.[1]?.sessionId;
+      expect(sessionId).toBeDefined();
+
+      await gateway.handleJoin(client1, 'event:42');
+      await gateway.handleSubscribeMarket(
+        client1,
+        '11111111-1111-4111-8111-111111111111',
+      );
+
+      // Disconnect: subscriptions are snapshotted under the session id.
+      gateway.handleDisconnect(client1);
+
+      // Reconnect with the same session id on a new socket.
+      const client2 = makeSocket({
+        id: 'socket-2',
+        handshake: {
+          auth: { token: 'valid', sessionId },
+          headers: {},
+        },
+      });
+      await gateway.handleConnection(client2);
+
+      const joinedRooms = (client2.join as jest.Mock).mock.calls.map(
+        (c: string[]) => c[0],
+      );
+      expect(joinedRooms).toEqual(
+        expect.arrayContaining([
+          'event:42',
+          'market:11111111-1111-4111-8111-111111111111',
+        ]),
+      );
+    });
+
+    it('does not resume a session belonging to a different user', async () => {
+      jwtService.verify.mockReturnValue(authPayload);
+      const client1 = makeSocket({
+        id: 'socket-1',
+        handshake: { auth: { token: 'valid' }, headers: {} },
+      });
+      await gateway.handleConnection(client1);
+      const sessionId = (client1.emit as jest.Mock).mock.calls.find(
+        (c: unknown[]) => c[0] === 'session',
+      )?.[1]?.sessionId;
+      await gateway.handleJoin(client1, 'event:42');
+      gateway.handleDisconnect(client1);
+
+      // Different user attempts to reuse the session id.
+      jwtService.verify.mockReturnValue({
+        sub: 'user-uuid-2',
+        stellar_address: 'GXYZ999',
+      });
+      const client2 = makeSocket({
+        id: 'socket-2',
+        handshake: { auth: { token: 'valid', sessionId }, headers: {} },
+      });
+      await gateway.handleConnection(client2);
+
+      const joinedRooms = (client2.join as jest.Mock).mock.calls.map(
+        (c: string[]) => c[0],
+      );
+      expect(joinedRooms).not.toContain('event:42');
+    });
+
+    it('mints a fresh session id when no sessionId is presented', async () => {
+      jwtService.verify.mockReturnValue(authPayload);
+      const client = makeSocket({
+        handshake: { auth: { token: 'valid' }, headers: {} },
+      });
+      await gateway.handleConnection(client);
+      const sessionId = (client.emit as jest.Mock).mock.calls.find(
+        (c: unknown[]) => c[0] === 'session',
+      )?.[1]?.sessionId;
+      expect(typeof sessionId).toBe('string');
+      expect(sessionId.length).toBeGreaterThan(0);
     });
   });
 
@@ -139,7 +261,10 @@ describe('EventsGateway', () => {
   // -------------------------------------------------------------------------
   describe('handleDisconnect', () => {
     it('removes connection tracking on disconnect', async () => {
-      jwtService.verify.mockReturnValue({ sub: 'GABC123' });
+      jwtService.verify.mockReturnValue({
+        sub: 'user-uuid-1',
+        stellar_address: 'GABC123',
+      });
       const client = makeSocket({
         handshake: { auth: { token: 'valid' }, headers: {} },
       });

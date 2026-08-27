@@ -36,6 +36,38 @@ export class HealthController {
     return this.healthService.checkPing();
   }
 
+  @Get('live')
+  @Public()
+  @ApiOperation({
+    summary: 'Liveness probe — is the process itself responsive?',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Process is alive. Does not check dependencies.',
+  })
+  checkLive() {
+    return this.healthService.checkLiveness();
+  }
+
+  @Get('ready')
+  @Public()
+  @ApiOperation({
+    summary: 'Readiness probe — can this instance serve traffic?',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Database, Soroban RPC, and cache are all reachable',
+    type: DetailedHealthDto,
+  })
+  @ApiResponse({
+    status: 503,
+    description: 'At least one critical dependency is unreachable',
+    type: DetailedHealthDto,
+  })
+  checkReady(): Promise<DetailedHealthDto> {
+    return this.healthService.checkReadiness();
+  }
+
   @Get('detailed')
   @Public()
   @ApiOperation({ summary: 'Detailed health status for monitoring' })

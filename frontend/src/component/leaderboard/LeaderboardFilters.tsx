@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import type { SeasonListItem } from "@/lib/api";
 
 export type TimeRange = "daily" | "weekly" | "monthly" | "all-time";
 export type Category = "all" | "crypto" | "sports" | "politics" | "custom";
@@ -10,9 +11,12 @@ export interface LeaderboardFiltersState {
   timeRange: TimeRange;
   category: Category;
   sortBy: SortBy;
+  /** undefined = all-time / no season filter */
+  seasonId?: string | undefined;
 }
 
 interface LeaderboardFiltersProps {
+  seasons?: SeasonListItem[];
   onChange?: (filters: LeaderboardFiltersState) => void;
 }
 
@@ -37,13 +41,32 @@ const SORT_OPTIONS: { label: string; value: SortBy }[] = [
   { label: "Predictions", value: "predictions" },
 ];
 
+const SELECT_CLASS =
+  "appearance-none rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 pr-8 text-xs font-medium text-gray-300 transition hover:border-white/20 focus:outline-none focus:ring-1 focus:ring-orange-500/50 cursor-pointer";
+
+function ChevronIcon() {
+  return (
+    <svg
+      className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-500"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+    </svg>
+  );
+}
+
 export default function LeaderboardFilters({
+  seasons = [],
   onChange,
 }: LeaderboardFiltersProps) {
   const [filters, setFilters] = useState<LeaderboardFiltersState>({
     timeRange: "weekly",
     category: "all",
     sortBy: "points",
+    seasonId: undefined,
   });
 
   function update<K extends keyof LeaderboardFiltersState>(
@@ -57,6 +80,33 @@ export default function LeaderboardFilters({
 
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:flex-wrap">
+      {/* Season selector — only rendered when seasons are available */}
+      {seasons.length > 0 && (
+        <div className="relative" data-testid="season-selector">
+          <label htmlFor="leaderboard-season" className="sr-only">
+            Select season
+          </label>
+          <select
+            id="leaderboard-season"
+            aria-label="Select season"
+            value={filters.seasonId ?? ""}
+            onChange={(e) =>
+              update("seasonId", e.target.value || undefined)
+            }
+            className={SELECT_CLASS}
+          >
+            <option value="">All Seasons</option>
+            {seasons.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {s.is_active ? " (Active)" : ""}
+              </option>
+            ))}
+          </select>
+          <ChevronIcon />
+        </div>
+      )}
+
       {/* Time range pill group */}
       <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
         {TIME_RANGES.map(({ label, value }) => (
@@ -86,7 +136,7 @@ export default function LeaderboardFilters({
           aria-label="Filter leaderboard by category"
           value={filters.category}
           onChange={(e) => update("category", e.target.value as Category)}
-          className="appearance-none rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 pr-8 text-xs font-medium text-gray-300 transition hover:border-white/20 focus:outline-none focus:ring-1 focus:ring-orange-500/50 cursor-pointer"
+          className={SELECT_CLASS}
         >
           {CATEGORIES.map(({ label, value }) => (
             <option key={value} value={value}>
@@ -94,19 +144,7 @@ export default function LeaderboardFilters({
             </option>
           ))}
         </select>
-        <svg
-          className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-500"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M19 9l-7 7-7-7"
-          />
-        </svg>
+        <ChevronIcon />
       </div>
 
       {/* Sort by select */}
@@ -119,7 +157,7 @@ export default function LeaderboardFilters({
           aria-label="Sort leaderboard results"
           value={filters.sortBy}
           onChange={(e) => update("sortBy", e.target.value as SortBy)}
-          className="appearance-none rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 pr-8 text-xs font-medium text-gray-300 transition hover:border-white/20 focus:outline-none focus:ring-1 focus:ring-orange-500/50 cursor-pointer"
+          className={SELECT_CLASS}
         >
           {SORT_OPTIONS.map(({ label, value }) => (
             <option key={value} value={value}>
@@ -127,19 +165,7 @@ export default function LeaderboardFilters({
             </option>
           ))}
         </select>
-        <svg
-          className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-500"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M19 9l-7 7-7-7"
-          />
-        </svg>
+        <ChevronIcon />
       </div>
     </div>
   );

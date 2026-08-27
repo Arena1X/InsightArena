@@ -10,6 +10,11 @@ export interface DigestItem {
   message: string;
 }
 
+export interface DigestGroup {
+  category: string;
+  items: DigestItem[];
+}
+
 export interface EmailTemplateContext {
   eventTitle?: string;
   eventId?: string;
@@ -20,7 +25,100 @@ export interface EmailTemplateContext {
   inviteCode?: string;
   digestFrequency?: 'daily' | 'weekly';
   digestItems?: DigestItem[];
+  digestGroups?: DigestGroup[];
   digestPeriod?: string;
+  digestOverflowCount?: number;
+}
+
+export interface RenderEmailTemplateOptions {
+  /** When true, missing required variables throw instead of using fallbacks. */
+  strict?: boolean;
+}
+
+export class EmailTemplateValidationError extends Error {
+  constructor(public readonly missingFields: string[]) {
+    super(
+      `Missing required email template variables: ${missingFields.join(', ')}`,
+    );
+    this.name = 'EmailTemplateValidationError';
+  }
+}
+
+const TEMPLATE_REQUIRED_FIELDS: Record<
+  EmailTemplateType,
+  Array<keyof EmailTemplateContext>
+> = {
+  event_created: ['eventTitle', 'inviteCode'],
+  match_result_available: [
+    'matchHomeTeam',
+    'matchAwayTeam',
+    'eventTitle',
+    'matchResult',
+  ],
+  event_won: ['eventTitle'],
+  event_cancelled: ['eventTitle'],
+  digest: ['digestFrequency', 'digestPeriod'],
+};
+
+const TEMPLATE_FALLBACKS: Partial<Record<keyof EmailTemplateContext, string>> =
+  {
+    eventTitle: 'Event',
+    eventId: '',
+    matchHomeTeam: 'Team A',
+    matchAwayTeam: 'Team B',
+    matchResult: 'Pending',
+    userAddress: '',
+    inviteCode: '',
+    digestPeriod: '',
+  };
+
+export function validateEmailTemplateContext(
+  type: EmailTemplateType,
+  context: EmailTemplateContext,
+  options: RenderEmailTemplateOptions = {},
+): void {
+  const missing: string[] = [];
+
+  for (const field of TEMPLATE_REQUIRED_FIELDS[type] ?? []) {
+    const value = context[field];
+    if (typeof value !== 'string' || value.trim() === '') {
+      missing.push(String(field));
+    }
+  }
+
+  if (type === 'digest') {
+    const itemCount =
+      context.digestGroups?.reduce(
+        (sum, group) => sum + group.items.length,
+        0,
+      ) ??
+      context.digestItems?.length ??
+      0;
+    if (itemCount === 0) {
+      missing.push('digestItems');
+    }
+  }
+
+  if (missing.length > 0 && options.strict) {
+    throw new EmailTemplateValidationError(missing);
+  }
+}
+
+function resolveField(
+  context: EmailTemplateContext,
+  field: keyof EmailTemplateContext,
+  strict: boolean,
+): string {
+  const raw = context[field];
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    return raw;
+  }
+
+  if (strict) {
+    throw new EmailTemplateValidationError([String(field)]);
+  }
+
+  return TEMPLATE_FALLBACKS[field] ?? '';
 }
 
 const baseStyles = `
@@ -35,77 +133,125 @@ const baseStyles = `
 export function renderEmailTemplate(
   type: EmailTemplateType,
   context: EmailTemplateContext,
+  options: RenderEmailTemplateOptions = {},
 ): { subject: string; html: string; text: string } {
+  const strict = options.strict ?? false;
+  validateEmailTemplateContext(type, context, { strict });
+
   switch (type) {
-    case 'event_created':
+    case 'event_created': {
+      const eventTitle = resolveField(context, 'eventTitle', strict);
+      const inviteCode = resolveField(context, 'inviteCode', strict);
       return {
-        subject: `Your event "${context.eventTitle ?? 'New Event'}" is live on InsightArena`,
+        subject: `Your event "${eventTitle}" is live on InsightArena`,
         html: wrapHtml(
           'Event Created',
-          `<p>Your creator event <strong>${escapeHtml(context.eventTitle ?? 'New Event')}</strong> has been created successfully.</p>
-           <p>Share your invite code <strong>${escapeHtml(context.inviteCode ?? '')}</strong> with participants to get started.</p>`,
+          `<p>Your creator event <strong>${escapeHtml(eventTitle)}</strong> has been created successfully.</p>
+           <p>Share your invite code <strong>${escapeHtml(inviteCode)}</strong> with participants to get started.</p>`,
         ),
-        text: `Your event "${context.eventTitle ?? 'New Event'}" is live on InsightArena. Invite code: ${context.inviteCode ?? ''}`,
+        text: `Your event "${eventTitle}" is live on InsightArena. Invite code: ${inviteCode}`,
       };
+    }
 
-    case 'match_result_available':
+    case 'match_result_available': {
+      const matchHomeTeam = resolveField(context, 'matchHomeTeam', strict);
+      const matchAwayTeam = resolveField(context, 'matchAwayTeam', strict);
+      const eventTitle = resolveField(context, 'eventTitle', strict);
+      const matchResult = resolveField(context, 'matchResult', strict);
       return {
-        subject: `Match result: ${context.matchHomeTeam ?? 'Team A'} vs ${context.matchAwayTeam ?? 'Team B'}`,
+        subject: `Match result: ${matchHomeTeam} vs ${matchAwayTeam}`,
         html: wrapHtml(
           'Match Result Available',
-          `<p>The match <strong>${escapeHtml(context.matchHomeTeam ?? 'Team A')}</strong> vs <strong>${escapeHtml(context.matchAwayTeam ?? 'Team B')}</strong> in event <strong>${escapeHtml(context.eventTitle ?? '')}</strong> has been resolved.</p>
-           <p>Result: <strong>${escapeHtml(context.matchResult ?? 'Pending')}</strong></p>`,
+          `<p>The match <strong>${escapeHtml(matchHomeTeam)}</strong> vs <strong>${escapeHtml(matchAwayTeam)}</strong> in event <strong>${escapeHtml(eventTitle)}</strong> has been resolved.</p>
+           <p>Result: <strong>${escapeHtml(matchResult)}</strong></p>`,
         ),
-        text: `Match result available for ${context.matchHomeTeam} vs ${context.matchAwayTeam}. Result: ${context.matchResult}`,
+        text: `Match result available for ${matchHomeTeam} vs ${matchAwayTeam}. Result: ${matchResult}`,
       };
+    }
 
-    case 'event_won':
+    case 'event_won': {
+      const eventTitle = resolveField(context, 'eventTitle', strict);
       return {
-        subject: `Congratulations! You won "${context.eventTitle ?? 'the event'}"`,
+        subject: `Congratulations! You won "${eventTitle}"`,
         html: wrapHtml(
           'You Won!',
-          `<p>Congratulations! You are a verified winner of <strong>${escapeHtml(context.eventTitle ?? 'the event')}</strong>.</p>
+          `<p>Congratulations! You are a verified winner of <strong>${escapeHtml(eventTitle)}</strong>.</p>
            <p>Log in to InsightArena to claim your payout.</p>`,
         ),
-        text: `Congratulations! You won the event "${context.eventTitle ?? 'the event'}".`,
+        text: `Congratulations! You won the event "${eventTitle}".`,
       };
+    }
 
-    case 'event_cancelled':
+    case 'event_cancelled': {
+      const eventTitle = resolveField(context, 'eventTitle', strict);
       return {
-        subject: `Event cancelled: ${context.eventTitle ?? 'Event'}`,
+        subject: `Event cancelled: ${eventTitle}`,
         html: wrapHtml(
           'Event Cancelled',
-          `<p>The event <strong>${escapeHtml(context.eventTitle ?? 'Event')}</strong> has been cancelled by the creator.</p>
+          `<p>The event <strong>${escapeHtml(eventTitle)}</strong> has been cancelled by the creator.</p>
            <p>Any stakes will be refunded according to the event rules.</p>`,
         ),
-        text: `The event "${context.eventTitle ?? 'Event'}" has been cancelled.`,
+        text: `The event "${eventTitle}" has been cancelled.`,
       };
+    }
 
     case 'digest': {
       const freq = context.digestFrequency === 'weekly' ? 'Weekly' : 'Daily';
-      const items = context.digestItems ?? [];
-      const itemsHtml = items
+      const digestPeriod = resolveField(context, 'digestPeriod', strict);
+      const groups =
+        context.digestGroups ??
+        (context.digestItems?.length
+          ? [{ category: 'Notifications', items: context.digestItems }]
+          : []);
+      const displayedCount = groups.reduce(
+        (sum, group) => sum + group.items.length,
+        0,
+      );
+      const overflowCount = context.digestOverflowCount ?? 0;
+
+      const itemsHtml = groups
         .map(
-          (item) =>
-            `<div style="border-left:3px solid #6366f1;padding:8px 12px;margin:8px 0;">
-               <strong>${escapeHtml(item.title)}</strong>
-               <p style="margin:4px 0 0;color:#475569;">${escapeHtml(item.message)}</p>
-             </div>`,
+          (group) => `
+          <div style="margin:16px 0 8px;">
+            <h3 style="margin:0 0 8px;font-size:14px;color:#334155;text-transform:uppercase;letter-spacing:0.04em;">${escapeHtml(group.category)}</h3>
+            ${group.items
+              .map(
+                (item) =>
+                  `<div style="border-left:3px solid #6366f1;padding:8px 12px;margin:8px 0;">
+                     <strong>${escapeHtml(item.title)}</strong>
+                     <p style="margin:4px 0 0;color:#475569;">${escapeHtml(item.message)}</p>
+                   </div>`,
+              )
+              .join('')}
+          </div>`,
         )
         .join('');
-      const itemsText = items
-        .map((item) => `• ${item.title}: ${item.message}`)
+
+      const itemsText = groups
+        .flatMap((group) =>
+          group.items.map(
+            (item) => `[${group.category}] ${item.title}: ${item.message}`,
+          ),
+        )
         .join('\n');
+
+      const overflowHtml =
+        overflowCount > 0
+          ? `<p style="margin-top:12px;color:#475569;font-size:13px;">…and ${overflowCount} more</p>`
+          : '';
+      const overflowText =
+        overflowCount > 0 ? `\n\n…and ${overflowCount} more` : '';
+
       return {
-        subject:
-          `Your ${freq} InsightArena digest — ${context.digestPeriod ?? ''}`.trimEnd(),
+        subject: `Your ${freq} InsightArena digest — ${digestPeriod}`.trimEnd(),
         html: wrapHtml(
           `${freq} Activity Digest`,
           `<p>Here's a summary of your recent activity on InsightArena:</p>
            ${itemsHtml}
-           <p style="margin-top:16px;color:#475569;font-size:13px;">You have ${items.length} unread notification${items.length === 1 ? '' : 's'}.</p>`,
+           ${overflowHtml}
+           <p style="margin-top:16px;color:#475569;font-size:13px;">You have ${displayedCount + overflowCount} unread notification${displayedCount + overflowCount === 1 ? '' : 's'}.</p>`,
         ),
-        text: `Your ${freq.toLowerCase()} InsightArena digest:\n\n${itemsText}`,
+        text: `Your ${freq.toLowerCase()} InsightArena digest:\n\n${itemsText}${overflowText}`,
       };
     }
 

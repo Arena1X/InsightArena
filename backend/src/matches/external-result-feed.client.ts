@@ -27,9 +27,7 @@ export class HttpExternalResultFeedClient implements ExternalResultFeedClient {
   ) {}
 
   async fetchResults(): Promise<ExternalMatchResultPayload[]> {
-    const url = this.configService.getOrThrow<string>(
-      'MATCH_RESULTS_FEED_URL',
-    );
+    const url = this.configService.getOrThrow<string>('MATCH_RESULTS_FEED_URL');
     const credential = this.configService.get<string>(
       'MATCH_RESULTS_FEED_CREDENTIAL',
     );

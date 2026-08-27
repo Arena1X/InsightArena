@@ -10,6 +10,7 @@ import {
 } from './email.service';
 import { User } from '../users/entities/user.entity';
 import { UserPreferences } from '../users/entities/user-preferences.entity';
+import { NotificationCategoryPreference } from './entities/notification-category-preference.entity';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -71,31 +72,47 @@ describe('isTransientError', () => {
   });
 
   it('returns true for HTTP 500', () => {
-    expect(isTransientError(new Error('SendGrid error (500): Internal Server Error'))).toBe(true);
+    expect(
+      isTransientError(
+        new Error('SendGrid error (500): Internal Server Error'),
+      ),
+    ).toBe(true);
   });
 
   it('returns true for HTTP 503', () => {
-    expect(isTransientError(new Error('SendGrid error (503): Service Unavailable'))).toBe(true);
+    expect(
+      isTransientError(new Error('SendGrid error (503): Service Unavailable')),
+    ).toBe(true);
   });
 
   it('returns true for HTTP 429 (rate limit)', () => {
-    expect(isTransientError(new Error('SendGrid error (429): Too Many Requests'))).toBe(true);
+    expect(
+      isTransientError(new Error('SendGrid error (429): Too Many Requests')),
+    ).toBe(true);
   });
 
   it('returns false for HTTP 400 (bad request — permanent)', () => {
-    expect(isTransientError(new Error('SendGrid error (400): Bad Request'))).toBe(false);
+    expect(
+      isTransientError(new Error('SendGrid error (400): Bad Request')),
+    ).toBe(false);
   });
 
   it('returns false for HTTP 401 (unauthorised — permanent)', () => {
-    expect(isTransientError(new Error('SendGrid error (401): Unauthorized'))).toBe(false);
+    expect(
+      isTransientError(new Error('SendGrid error (401): Unauthorized')),
+    ).toBe(false);
   });
 
   it('returns false for HTTP 422 (invalid recipient — permanent)', () => {
-    expect(isTransientError(new Error('SendGrid error (422): Unprocessable Entity'))).toBe(false);
+    expect(
+      isTransientError(new Error('SendGrid error (422): Unprocessable Entity')),
+    ).toBe(false);
   });
 
   it('returns false for unrecognised error message shapes', () => {
-    expect(isTransientError(new Error('Something unexpected happened'))).toBe(false);
+    expect(isTransientError(new Error('Something unexpected happened'))).toBe(
+      false,
+    );
   });
 });
 
@@ -133,7 +150,9 @@ describe('computeBackoffDelay', () => {
 
 describe('EmailService — deliverEmailWithRetry', () => {
   let service: EmailService;
-  let userRepository: jest.Mocked<Pick<import('typeorm').Repository<User>, 'findOne'>>;
+  let userRepository: jest.Mocked<
+    Pick<import('typeorm').Repository<User>, 'findOne'>
+  >;
   let preferencesRepository: jest.Mocked<
     Pick<import('typeorm').Repository<UserPreferences>, 'findOne'>
   >;
@@ -166,6 +185,10 @@ describe('EmailService — deliverEmailWithRetry', () => {
           provide: getRepositoryToken(UserPreferences),
           useValue: preferencesRepository,
         },
+        {
+          provide: getRepositoryToken(NotificationCategoryPreference),
+          useValue: { findOne: jest.fn() },
+        },
       ],
     }).compile();
 
@@ -184,12 +207,19 @@ describe('EmailService — deliverEmailWithRetry', () => {
   // -------------------------------------------------------------------------
 
   it('succeeds on attempt 2 after one transient failure, calling deliverEmail exactly once for the success', async () => {
-    const transientError = new Error('SendGrid error (503): Service Unavailable');
+    const transientError = new Error(
+      'SendGrid error (503): Service Unavailable',
+    );
     let callCount = 0;
 
     // Spy on the private deliverEmail method
     const deliverSpy = jest
-      .spyOn(service as unknown as { deliverEmail: (e: QueuedEmail) => Promise<void> }, 'deliverEmail')
+      .spyOn(
+        service as unknown as {
+          deliverEmail: (e: QueuedEmail) => Promise<void>;
+        },
+        'deliverEmail',
+      )
       .mockImplementation(async () => {
         callCount++;
         if (callCount === 1) throw transientError;
@@ -218,15 +248,24 @@ describe('EmailService — deliverEmailWithRetry', () => {
   // -------------------------------------------------------------------------
 
   it('throws immediately on permanent failure without any retry', async () => {
-    const permanentError = new Error('SendGrid error (422): invalid recipient address');
+    const permanentError = new Error(
+      'SendGrid error (422): invalid recipient address',
+    );
 
     const deliverSpy = jest
-      .spyOn(service as unknown as { deliverEmail: (e: QueuedEmail) => Promise<void> }, 'deliverEmail')
+      .spyOn(
+        service as unknown as {
+          deliverEmail: (e: QueuedEmail) => Promise<void>;
+        },
+        'deliverEmail',
+      )
       .mockRejectedValue(permanentError);
 
     const email = makeEmail();
 
-    await expect(service.deliverEmailWithRetry(email)).rejects.toThrow(permanentError);
+    await expect(service.deliverEmailWithRetry(email)).rejects.toThrow(
+      permanentError,
+    );
 
     // Provider was called exactly once — no retries
     expect(deliverSpy).toHaveBeenCalledTimes(1);
@@ -240,7 +279,12 @@ describe('EmailService — deliverEmailWithRetry', () => {
     const transientError = new Error('SendGrid error (503): upstream timeout');
 
     const deliverSpy = jest
-      .spyOn(service as unknown as { deliverEmail: (e: QueuedEmail) => Promise<void> }, 'deliverEmail')
+      .spyOn(
+        service as unknown as {
+          deliverEmail: (e: QueuedEmail) => Promise<void>;
+        },
+        'deliverEmail',
+      )
       .mockRejectedValue(transientError);
 
     const email = makeEmail({ id: 'exhaust-test' });
@@ -274,7 +318,12 @@ describe('EmailService — deliverEmailWithRetry', () => {
     let callCount = 0;
 
     const deliverSpy = jest
-      .spyOn(service as unknown as { deliverEmail: (e: QueuedEmail) => Promise<void> }, 'deliverEmail')
+      .spyOn(
+        service as unknown as {
+          deliverEmail: (e: QueuedEmail) => Promise<void>;
+        },
+        'deliverEmail',
+      )
       .mockImplementation(async () => {
         callCount++;
         if (callCount === 1) throw networkError;
@@ -320,6 +369,10 @@ describe('EmailService — queueing and preferences', () => {
         {
           provide: getRepositoryToken(UserPreferences),
           useValue: preferencesRepository,
+        },
+        {
+          provide: getRepositoryToken(NotificationCategoryPreference),
+          useValue: { findOne: jest.fn() },
         },
       ],
     }).compile();
@@ -376,11 +429,25 @@ describe('EmailService — queueing and preferences', () => {
       const result = await service.sendTemplatedEmail(
         'user@example.com',
         template,
-        { eventTitle: 'Test Event' },
+        {
+          eventTitle: 'Test Event',
+          inviteCode: 'ABC123',
+          matchHomeTeam: 'Home',
+          matchAwayTeam: 'Away',
+          matchResult: '2-1',
+        },
       );
       expect(result.queued).toBe(true);
     }
 
     expect(service.getQueueLength()).toBe(4);
+  });
+
+  it('rejects incomplete templates in non-production environments', async () => {
+    userRepository.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.sendTemplatedEmail('user@example.com', 'event_created', {}),
+    ).rejects.toThrow(/Missing required email template variables/);
   });
 });

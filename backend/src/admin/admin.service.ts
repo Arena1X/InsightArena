@@ -21,6 +21,8 @@ import { Market } from '../markets/entities/market.entity';
 import { NotificationType } from '../notifications/entities/notification.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Prediction } from '../predictions/entities/prediction.entity';
+import { ListFraudFlagsQueryDto } from '../predictions/dto/list-fraud-flags-query.dto';
+import { PredictionsService } from '../predictions/predictions.service';
 import { SorobanService } from '../soroban/soroban.service';
 import { User } from '../users/entities/user.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
@@ -28,6 +30,14 @@ import { UserFlag } from './entities/user-flag.entity';
 import { VerifiedAddress } from './entities/verified-address.entity';
 import { FeeHistory } from '../indexer/entities/fee-history.entity';
 import { ActivityLogQueryDto } from './dto/activity-log-query.dto';
+import {
+  BulkImportMarketsResponseDto,
+  BulkImportRowResult,
+} from './dto/bulk-import-markets.dto';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { CreateMarketDto } from '../markets/dto/create-market.dto';
+import { MarketsService } from '../markets/markets.service';
 import {
   BulkUserAction,
   BulkUserActionDto,
@@ -74,11 +84,13 @@ export class AdminService {
     private readonly verifiedAddressesRepository: Repository<VerifiedAddress>,
     @InjectRepository(FeeHistory)
     private readonly feeHistoryRepository: Repository<FeeHistory>,
+    private readonly marketsService: MarketsService,
 
     private readonly analyticsService: AnalyticsService,
     private readonly notificationsService: NotificationsService,
     private readonly sorobanService: SorobanService,
     private readonly flagsService: FlagsService,
+    private readonly predictionsService: PredictionsService,
   ) {}
 
   async getStats(): Promise<StatsResponseDto> {
@@ -483,6 +495,15 @@ export class AdminService {
 
   async listFlags(query: ListFlagsQueryDto) {
     return this.flagsService.listFlags(query);
+  }
+
+  /**
+   * Advisory prediction-fraud signal flags (timing clustering, counterparty
+   * concentration). Informational only - resolving/dismissing a flag here
+   * does not itself ban or restrict the flagged user.
+   */
+  async listFraudFlags(query: ListFraudFlagsQueryDto) {
+    return this.predictionsService.listFraudFlags(query);
   }
 
   async resolveFlag(
@@ -945,6 +966,114 @@ export class AdminService {
       total,
       page: page,
       limit: take,
+    };
+  }
+  /**
+   * Bulk-imports markets from a CSV string. Validates each row independently
+   * via CreateMarketDto/class-validator; invalid rows are reported with
+   * reasons and do not abort the rest of the import. Each valid row is
+   * created in its own transaction via createMarketRowTransactional, so a
+   * failure on one row (validation or Soroban) never rolls back another
+   * row's already-committed market.
+   */
+  async importMarketsFromCsv(
+    csv: string,
+    userId: string,
+  ): Promise<BulkImportMarketsResponseDto> {
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const lines = csv
+      .trim()
+      .split(/\r?\n/)
+      .filter((l) => l.trim().length > 0);
+    if (lines.length < 2) {
+      throw new BadRequestException(
+        'CSV must contain a header row and at least one data row',
+      );
+    }
+
+    const header = lines[0].split(',').map((h) => h.trim());
+    const dataRows = lines.slice(1);
+    const results: BulkImportRowResult[] = [];
+    let createdCount = 0;
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const rowNumber = i + 2; // +1 for header, +1 for 1-indexing
+      const cells = dataRows[i].split(',').map((c) => c.trim());
+
+      if (cells.length !== header.length) {
+        results.push({
+          row: rowNumber,
+          status: 'failed',
+          errors: [
+            'Expected ' + header.length + ' columns, got ' + cells.length,
+          ],
+        });
+        continue;
+      }
+
+      const raw: Record<string, string> = {};
+      header.forEach((col, idx) => {
+        raw[col] = cells[idx];
+      });
+
+      const plain: Record<string, unknown> = {
+        title: raw.title,
+        description: raw.description,
+        category: raw.category,
+        outcome_options: raw.outcome_options
+          ? raw.outcome_options.split(';').map((s) => s.trim())
+          : [],
+        end_time: raw.end_time,
+        resolution_time: raw.resolution_time,
+        creator_fee_bps:
+          raw.creator_fee_bps !== undefined
+            ? Number(raw.creator_fee_bps)
+            : undefined,
+        min_stake_stroops: raw.min_stake_stroops,
+        max_stake_stroops: raw.max_stake_stroops,
+        is_public:
+          raw.is_public !== undefined
+            ? raw.is_public.toLowerCase() === 'true'
+            : undefined,
+      };
+
+      const dto = plainToInstance(CreateMarketDto, plain);
+      const errors = await validate(dto as object);
+      if (errors.length > 0) {
+        const messages = errors.flatMap((e) =>
+          Object.values(e.constraints ?? {}),
+        );
+        results.push({ row: rowNumber, status: 'failed', errors: messages });
+        continue;
+      }
+
+      try {
+        const market = await this.marketsService.createMarketRowTransactional(
+          dto,
+          user,
+        );
+        results.push({
+          row: rowNumber,
+          status: 'created',
+          market_id: market.id,
+        });
+        createdCount++;
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Unknown error creating market';
+        results.push({ row: rowNumber, status: 'failed', errors: [message] });
+      }
+    }
+
+    return {
+      total: dataRows.length,
+      created_count: createdCount,
+      failed_count: dataRows.length - createdCount,
+      results,
     };
   }
 }

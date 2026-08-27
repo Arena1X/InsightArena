@@ -65,7 +65,7 @@ export function UserWalletControls({
       {isRestoring && !isAuthenticated ? (
         <div className="hidden md:inline-flex items-center gap-2 rounded-lg border border-white/10 bg-[#111726] px-6 py-2 text-sm font-semibold text-gray-400">
           <span className="h-2 w-2 animate-pulse rounded-full bg-gray-500" />
-          Loading...
+          Connecting...
         </div>
       ) : !isAuthenticated ? (
         <button

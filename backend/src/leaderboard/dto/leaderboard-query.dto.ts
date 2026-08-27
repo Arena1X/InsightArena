@@ -3,7 +3,12 @@ import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class LeaderboardQueryDto {
-  @ApiPropertyOptional({ description: 'Page number', default: 1, minimum: 1 })
+  @ApiPropertyOptional({
+    description:
+      'Deprecated: prefer `cursor` for deep pagination — offset pagination is O(offset) and can skip or duplicate rows as ranks shift on large seasons.',
+    default: 1,
+    minimum: 1,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -28,6 +33,14 @@ export class LeaderboardQueryDto {
   @IsOptional()
   @IsString()
   season_id?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "Opaque pagination cursor from a previous response's nextCursor. When present, `page` is ignored and the response uses the cursor shape (nextCursor/hasMore). Recommended over page/limit for deep pagination.",
+  })
+  @IsOptional()
+  @IsString()
+  cursor?: string;
 }
 
 export interface LeaderboardEntryResponse {

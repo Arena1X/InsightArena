@@ -11,7 +11,10 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { ApiKeyGuard } from '../common/guards/api-key.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
 import { Scopes } from '../common/decorators/scopes.decorator';
+import { Roles } from '../common/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
 
 import { WebhooksService } from './services/webhooks.service';
 
@@ -86,5 +89,29 @@ export class WebhooksController {
       parsedLimit,
       parsedOffset,
     );
+  }
+
+  @Get('deliveries/dead-letter')
+  @UseGuards(RolesGuard)
+  @Roles(Role.Admin)
+  @Scopes('webhooks:admin')
+  async listDeadLetterDeliveries(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ): Promise<{ logs: WebhookDeliveryLog[]; total: number }> {
+    const parsedLimit = limit ? Math.min(parseInt(limit, 10), 100) : 50;
+    const parsedOffset = offset ? parseInt(offset, 10) : 0;
+    return this.webhooksService.listDeadLetterDeliveries(
+      parsedLimit,
+      parsedOffset,
+    );
+  }
+
+  @Post('deliveries/:id/redrive')
+  @UseGuards(RolesGuard)
+  @Roles(Role.Admin)
+  @Scopes('webhooks:admin')
+  async redriveDelivery(@Param('id') id: string): Promise<WebhookDeliveryLog> {
+    return this.webhooksService.redriveDelivery(id);
   }
 }

@@ -3,7 +3,7 @@
 /// The `initialize` function is the single entry point that must be called
 /// exactly once after deployment.  It stores every piece of global config in
 /// persistent storage and sets the counters to zero.
-use soroban_sdk::{Address, Env, Symbol, Vec};
+use soroban_sdk::{Address, BytesN, Env, Symbol, Vec};
 
 use crate::storage::TTL_LEDGERS;
 use crate::storage_types::DataKey;
@@ -42,6 +42,9 @@ pub enum AdminError {
     NotNominee = 10,
     /// A nomination already exists; cancel it before nominating another (#1356).
     NominationPending = 11,
+    /// `set_verifier_public_key` was called for an address that is not in
+    /// the configured verifier signer set (#1705).
+    NotAVerifierSigner = 12,
 }
 
 // ---------------------------------------------------------------------------
@@ -533,6 +536,63 @@ pub fn get_verifier_threshold(env: &Env) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// Verifier signature keys (#1705)
+// ---------------------------------------------------------------------------
+
+/// Bind a raw ed25519 public key to a configured verifier signer.
+///
+/// `verification::submit_verification` uses this key to check a detached
+/// signature over the submitted payload, rather than trusting
+/// `Address::require_auth` alone (which proves the caller controls the
+/// signer's account, not that a specific piece of off-chain data — e.g. an
+/// oracle attestation — was actually produced by that signer's key).
+///
+/// # Errors
+/// * [`AdminError::Unauthorized`] — caller is not the admin.
+/// * [`AdminError::NotAVerifierSigner`] — `signer` is not in the currently
+///   configured verifier signer set (see `set_verifier_config`).
+///
+/// # Events
+/// Emits `(Symbol("admin"), Symbol("verifier_key_set"))` with data `signer`.
+pub fn set_verifier_public_key(
+    env: &Env,
+    caller: Address,
+    signer: Address,
+    public_key: BytesN<32>,
+) -> Result<(), AdminError> {
+    require_is_admin(env, &caller)?;
+
+    if !get_verifier_signers(env).iter().any(|addr| addr == signer) {
+        return Err(AdminError::NotAVerifierSigner);
+    }
+
+    let key = DataKey::VerifierPublicKey(signer.clone());
+    env.storage().persistent().set(&key, &public_key);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+
+    env.events().publish(
+        (Symbol::new(env, "admin"), Symbol::new(env, "verifier_key_set")),
+        signer,
+    );
+
+    Ok(())
+}
+
+/// Return the ed25519 public key bound to a verifier signer, if any.
+pub fn get_verifier_public_key(env: &Env, signer: &Address) -> Option<BytesN<32>> {
+    let key = DataKey::VerifierPublicKey(signer.clone());
+    let public_key = env.storage().persistent().get::<DataKey, BytesN<32>>(&key);
+    if public_key.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+    }
+    public_key
+}
+
+// ---------------------------------------------------------------------------
 // Two-step admin handover (#1356)
 // ---------------------------------------------------------------------------
 
@@ -715,7 +775,12 @@ pub fn get_xlm_token(env: &Env) -> Option<Address> {
 /// Calls `caller.require_auth()` (Soroban signature check) then looks up
 /// `DataKey::Admin(caller)` in persistent storage. Returns
 /// [`AdminError::Unauthorized`] if the address is not found.
-fn require_is_admin(env: &Env, caller: &Address) -> Result<(), AdminError> {
+///
+/// This is the single centralized admin-role check (#1704) — other modules
+/// that gate a privileged action on the admin role (e.g.
+/// `oracle::configure_oracle_sources`) should call this rather than
+/// re-implementing the same storage lookup inline.
+pub(crate) fn require_is_admin(env: &Env, caller: &Address) -> Result<(), AdminError> {
     caller.require_auth();
     let is_admin = env
         .storage()

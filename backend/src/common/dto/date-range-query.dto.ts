@@ -12,8 +12,6 @@ import {
 export const DEFAULT_DATE_RANGE_DAYS = 30;
 export const MAX_DATE_RANGE_DAYS = 365;
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
 function subtractDays(date: Date, days: number): Date {
   const result = new Date(date);
   result.setDate(result.getDate() - days);
@@ -68,19 +66,24 @@ export class ValidAnalyticsDateRangeConstraint implements ValidatorConstraintInt
       return false;
     }
 
-    const windowDays =
-      (resolvedTo.getTime() - resolvedFrom.getTime()) / MS_PER_DAY;
-    if (windowDays > MAX_DATE_RANGE_DAYS) {
-      this.message = `Date range must not exceed ${MAX_DATE_RANGE_DAYS} days`;
-      return false;
-    }
-
     return true;
   }
 
   defaultMessage(): string {
     return this.message;
   }
+}
+
+export function clampAnalyticsDateRange(
+  from: Date,
+  to: Date,
+): { from: Date; to: Date } {
+  const maxFrom = subtractDays(to, MAX_DATE_RANGE_DAYS);
+  if (from < maxFrom) {
+    return { from: maxFrom, to };
+  }
+
+  return { from, to };
 }
 
 export class DateRangeQueryDto {
@@ -114,6 +117,6 @@ export class DateRangeQueryDto {
       ? new Date(this.from)
       : subtractDays(this.to ? to : reference, DEFAULT_DATE_RANGE_DAYS);
 
-    return { from, to };
+    return clampAnalyticsDateRange(from, to);
   }
 }
