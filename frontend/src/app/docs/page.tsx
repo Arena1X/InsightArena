@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Header from "@/component/Header";
 import Footer from "@/component/Footer";
 import PageBackground from "@/component/PageBackground";
+import { cn, buildTableOfContents, filterDocSections } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Search, 
@@ -97,11 +98,79 @@ const docSections = [
 export default function DocsPage() {
   const [activeFaq, setActiveFaq] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
 
-  const filteredSections = docSections.filter(section => 
-    section.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    section.description.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredSections = useMemo(
+    () => filterDocSections(docSections, searchQuery),
+    [searchQuery]
   );
+
+  const tocEntries = useMemo(
+    () => buildTableOfContents(filteredSections),
+    [filteredSections]
+  );
+
+  // Keep the highlighted TOC entry valid whenever the visible sections
+  // change (e.g. a search narrows the list), defaulting to the first entry.
+  useEffect(() => {
+    setActiveSectionId((current) => {
+      if (tocEntries.length === 0) return null;
+      if (current && tocEntries.some((entry) => entry.id === current)) {
+        return current;
+      }
+      return tocEntries[0].id;
+    });
+  }, [tocEntries]);
+
+  // Track which section is currently in view and highlight it in the TOC.
+  useEffect(() => {
+    if (typeof window === "undefined" || tocEntries.length === 0) return;
+
+    const elements = tocEntries
+      .map((entry) => document.getElementById(entry.id))
+      .filter((el): el is HTMLElement => el !== null);
+
+    if (elements.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+
+        if (visible[0]) {
+          setActiveSectionId(visible[0].target.id);
+        }
+      },
+      { root: null, rootMargin: "-45% 0px -45% 0px", threshold: 0 }
+    );
+
+    elements.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [tocEntries]);
+
+  const scrollToSection = (id: string) => {
+    const el = document.getElementById(id);
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setActiveSectionId(id);
+    window.history.replaceState(null, "", `#${id}`);
+  };
+
+  const handleTocClick = (
+    e: React.MouseEvent<HTMLAnchorElement>,
+    id: string
+  ) => {
+    e.preventDefault();
+    scrollToSection(id);
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    const firstMatch = filteredSections[0];
+    if (!firstMatch) return;
+    e.preventDefault();
+    scrollToSection(firstMatch.id);
+  };
 
   return (
     <PageBackground>
@@ -132,150 +201,219 @@ export default function DocsPage() {
                 placeholder="Search documentation..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={handleSearchKeyDown}
+                aria-label="Search documentation"
                 className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pl-12 pr-6 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#4FD1C5]/50 focus:border-[#4FD1C5]/50 transition-all backdrop-blur-sm"
               />
             </div>
           </motion.div>
         </section>
 
-        {/* Categories Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-24">
-          <AnimatePresence mode="popLayout">
-            {filteredSections.map((section, idx) => (
-              <motion.div
-                key={section.id}
-                id={section.id}
-                layout
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                transition={{ duration: 0.3, delay: idx * 0.05 }}
-                className="group relative p-[1px] rounded-2xl bg-white/5 border border-white/10 hover:border-white/20 transition-all overflow-hidden"
-              >
-                {/* Hover Glow Effect */}
-                <div className="absolute inset-0 bg-gradient-to-br from-[#4FD1C5]/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-                
-                <div className="relative bg-[#1a1f2e] p-8 rounded-[15px] h-full flex flex-col">
-                  <div className="mb-6 p-3 bg-white/5 rounded-xl w-fit group-hover:scale-110 transition-transform duration-300">
-                    {section.icon}
-                  </div>
-                  <h3 className="text-xl font-bold mb-3 group-hover:text-[#4FD1C5] transition-colors">{section.title}</h3>
-                  <p className="text-gray-400 mb-6 flex-grow">{section.description}</p>
-                  
-                  {section.link ? (
-                    <Link 
-                      href={section.link}
-                      className="flex items-center text-sm font-semibold text-[#4FD1C5] hover:underline"
-                      target={section.external ? "_blank" : undefined}
-                    >
-                      {section.external ? "View Externally" : "Read More"}
-                      {section.external ? <ExternalLink className="ml-2 w-4 h-4" /> : <ChevronRight className="ml-1 w-4 h-4" />}
-                    </Link>
-                  ) : (
-                    <button className="flex items-center text-sm font-semibold text-[#4FD1C5] hover:underline cursor-default">
-                      Coming Soon <ChevronRight className="ml-1 w-4 h-4 opacity-50" />
-                    </button>
-                  )}
-                </div>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </div>
-
-        {/* Featured Documentation Section */}
-        <section className="bg-white/5 border border-white/10 rounded-3xl p-8 md:p-12 mb-24 relative overflow-hidden">
-          <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
-            <BookOpen className="w-64 h-64 text-white" />
-          </div>
-          
-          <div className="relative z-10 max-w-3xl">
-            <span className="inline-block px-3 py-1 bg-[#4FD1C5]/20 text-[#4FD1C5] text-xs font-bold rounded-full mb-6 uppercase tracking-wider">
-              Featured Guide
-            </span>
-            <h2 className="text-3xl md:text-4xl font-bold mb-6">Prediction Market Fundamentals</h2>
-            <p className="text-gray-400 text-lg mb-8 leading-relaxed">
-              New to prediction markets? Understand how prices reflect probability, how liquidity works, and why decentralized markets offer superior insight compared to traditional polling.
+        <div className="lg:flex lg:items-start lg:gap-10">
+          {/* Table of Contents - desktop sidebar */}
+          <nav
+            aria-label="Table of contents"
+            className="hidden lg:block w-56 flex-shrink-0 sticky top-28 self-start"
+          >
+            <p className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-4">
+              On this page
             </p>
-            <div className="flex flex-wrap gap-4">
-              <button className="bg-[#4FD1C5] hover:bg-[#3dbbb0] text-[#141824] font-bold px-8 py-3 rounded-xl transition-all shadow-lg shadow-[#4FD1C5]/20 transform active:scale-95">
-                Start Learning
-              </button>
-              <button className="bg-white/10 hover:bg-white/20 border border-white/10 px-8 py-3 rounded-xl transition-all font-semibold backdrop-blur-sm">
-                View All Guides
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* FAQ Section */}
-        <section className="max-w-4xl mx-auto mb-24">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl font-bold mb-4 flex items-center justify-center gap-3">
-              <HelpCircle className="text-[#4FD1C5] w-8 h-8" />
-              General Questions
-            </h2>
-            <p className="text-gray-400">Can't find what you're looking for? Reach out on Discord.</p>
-          </div>
-
-          <div className="space-y-4">
-            {faqs.map((faq, idx) => (
-              <div 
-                key={idx}
-                className="border border-white/10 rounded-2xl bg-white/5 overflow-hidden transition-colors hover:border-white/20"
-              >
-                <button
-                  onClick={() => setActiveFaq(activeFaq === idx ? null : idx)}
-                  className="w-full flex items-center justify-between p-6 text-left"
-                >
-                  <span className="font-semibold text-lg">{faq.question}</span>
-                  <ChevronDown className={`w-5 h-5 text-gray-500 transition-transform ${activeFaq === idx ? 'rotate-180 text-[#4FD1C5]' : ''}`} />
-                </button>
-                <AnimatePresence>
-                  {activeFaq === idx && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: "auto", opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.3 }}
+            {tocEntries.length > 0 ? (
+              <ul className="space-y-1 border-l border-white/10">
+                {tocEntries.map((entry) => (
+                  <li key={entry.id}>
+                    <a
+                      href={`#${entry.id}`}
+                      onClick={(e) => handleTocClick(e, entry.id)}
+                      aria-current={activeSectionId === entry.id ? "true" : undefined}
+                      className={cn(
+                        "block pl-4 -ml-px border-l-2 py-1.5 text-sm transition-colors",
+                        activeSectionId === entry.id
+                          ? "border-[#4FD1C5] text-[#4FD1C5] font-semibold"
+                          : "border-transparent text-gray-400 hover:text-white hover:border-white/30"
+                      )}
                     >
-                      <div className="px-6 pb-6 pt-0 text-gray-400 leading-relaxed border-t border-white/5">
-                        {faq.answer}
+                      {entry.title}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-gray-500 pl-4">No matching sections.</p>
+            )}
+          </nav>
+
+          <div className="flex-1 min-w-0">
+            {/* Table of Contents - mobile horizontal scroller */}
+            {tocEntries.length > 0 && (
+              <div className="lg:hidden mb-8 -mx-6 px-6 overflow-x-auto">
+                <div className="flex gap-2 min-w-max">
+                  {tocEntries.map((entry) => (
+                    <a
+                      key={entry.id}
+                      href={`#${entry.id}`}
+                      onClick={(e) => handleTocClick(e, entry.id)}
+                      aria-current={activeSectionId === entry.id ? "true" : undefined}
+                      className={cn(
+                        "px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition-colors border",
+                        activeSectionId === entry.id
+                          ? "bg-[#4FD1C5]/20 border-[#4FD1C5]/40 text-[#4FD1C5]"
+                          : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
+                      )}
+                    >
+                      {entry.title}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Categories Grid */}
+            {filteredSections.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-6 mb-24">
+                <AnimatePresence mode="popLayout">
+                  {filteredSections.map((section, idx) => (
+                    <motion.div
+                      key={section.id}
+                      id={section.id}
+                      layout
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.9 }}
+                      transition={{ duration: 0.3, delay: idx * 0.05 }}
+                      className="group relative p-[1px] rounded-2xl bg-white/5 border border-white/10 hover:border-white/20 transition-all overflow-hidden"
+                    >
+                      {/* Hover Glow Effect */}
+                      <div className="absolute inset-0 bg-gradient-to-br from-[#4FD1C5]/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+
+                      <div className="relative bg-[#1a1f2e] p-8 rounded-[15px] h-full flex flex-col">
+                        <div className="mb-6 p-3 bg-white/5 rounded-xl w-fit group-hover:scale-110 transition-transform duration-300">
+                          {section.icon}
+                        </div>
+                        <h3 className="text-xl font-bold mb-3 group-hover:text-[#4FD1C5] transition-colors">{section.title}</h3>
+                        <p className="text-gray-400 mb-6 flex-grow">{section.description}</p>
+
+                        {section.link ? (
+                          <Link
+                            href={section.link}
+                            className="flex items-center text-sm font-semibold text-[#4FD1C5] hover:underline"
+                            target={section.external ? "_blank" : undefined}
+                          >
+                            {section.external ? "View Externally" : "Read More"}
+                            {section.external ? <ExternalLink className="ml-2 w-4 h-4" /> : <ChevronRight className="ml-1 w-4 h-4" />}
+                          </Link>
+                        ) : (
+                          <button className="flex items-center text-sm font-semibold text-[#4FD1C5] hover:underline cursor-default">
+                            Coming Soon <ChevronRight className="ml-1 w-4 h-4 opacity-50" />
+                          </button>
+                        )}
                       </div>
                     </motion.div>
-                  )}
+                  ))}
                 </AnimatePresence>
               </div>
-            ))}
-          </div>
-        </section>
+            ) : (
+              <div className="text-center text-gray-400 mb-24 py-12 border border-dashed border-white/10 rounded-2xl">
+                No documentation sections match &ldquo;{searchQuery}&rdquo;.
+              </div>
+            )}
 
-        {/* Community & External Links */}
-        <section className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          <div className="p-8 border border-white/10 rounded-3xl bg-gradient-to-br from-indigo-500/10 to-transparent">
-            <Github className="w-10 h-10 mb-6 text-white" />
-            <h3 className="text-2xl font-bold mb-4">Open Source Code</h3>
-            <p className="text-gray-400 mb-6">Our entire stack is public. Verify our security or contribute to the ecosystem.</p>
-            <Link 
-              href="https://github.com/Arena1X/InsightArena" 
-              target="_blank"
-              className="inline-flex items-center text-[#4FD1C5] font-semibold hover:gap-2 transition-all"
-            >
-              Github Repository <ChevronRight className="ml-1 w-4 h-4" />
-            </Link>
+            {/* Featured Documentation Section */}
+            <section className="bg-white/5 border border-white/10 rounded-3xl p-8 md:p-12 mb-24 relative overflow-hidden">
+              <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
+                <BookOpen className="w-64 h-64 text-white" />
+              </div>
+
+              <div className="relative z-10 max-w-3xl">
+                <span className="inline-block px-3 py-1 bg-[#4FD1C5]/20 text-[#4FD1C5] text-xs font-bold rounded-full mb-6 uppercase tracking-wider">
+                  Featured Guide
+                </span>
+                <h2 className="text-3xl md:text-4xl font-bold mb-6">Prediction Market Fundamentals</h2>
+                <p className="text-gray-400 text-lg mb-8 leading-relaxed">
+                  New to prediction markets? Understand how prices reflect probability, how liquidity works, and why decentralized markets offer superior insight compared to traditional polling.
+                </p>
+                <div className="flex flex-wrap gap-4">
+                  <button className="bg-[#4FD1C5] hover:bg-[#3dbbb0] text-[#141824] font-bold px-8 py-3 rounded-xl transition-all shadow-lg shadow-[#4FD1C5]/20 transform active:scale-95">
+                    Start Learning
+                  </button>
+                  <button className="bg-white/10 hover:bg-white/20 border border-white/10 px-8 py-3 rounded-xl transition-all font-semibold backdrop-blur-sm">
+                    View All Guides
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            {/* FAQ Section */}
+            <section className="max-w-4xl mx-auto mb-24">
+              <div className="text-center mb-12">
+                <h2 className="text-3xl font-bold mb-4 flex items-center justify-center gap-3">
+                  <HelpCircle className="text-[#4FD1C5] w-8 h-8" />
+                  General Questions
+                </h2>
+                <p className="text-gray-400">Can't find what you're looking for? Reach out on Discord.</p>
+              </div>
+
+              <div className="space-y-4">
+                {faqs.map((faq, idx) => (
+                  <div
+                    key={idx}
+                    className="border border-white/10 rounded-2xl bg-white/5 overflow-hidden transition-colors hover:border-white/20"
+                  >
+                    <button
+                      onClick={() => setActiveFaq(activeFaq === idx ? null : idx)}
+                      className="w-full flex items-center justify-between p-6 text-left"
+                    >
+                      <span className="font-semibold text-lg">{faq.question}</span>
+                      <ChevronDown className={`w-5 h-5 text-gray-500 transition-transform ${activeFaq === idx ? 'rotate-180 text-[#4FD1C5]' : ''}`} />
+                    </button>
+                    <AnimatePresence>
+                      {activeFaq === idx && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.3 }}
+                        >
+                          <div className="px-6 pb-6 pt-0 text-gray-400 leading-relaxed border-t border-white/5">
+                            {faq.answer}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            {/* Community & External Links */}
+            <section className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="p-8 border border-white/10 rounded-3xl bg-gradient-to-br from-indigo-500/10 to-transparent">
+                <Github className="w-10 h-10 mb-6 text-white" />
+                <h3 className="text-2xl font-bold mb-4">Open Source Code</h3>
+                <p className="text-gray-400 mb-6">Our entire stack is public. Verify our security or contribute to the ecosystem.</p>
+                <Link
+                  href="https://github.com/Arena1X/InsightArena"
+                  target="_blank"
+                  className="inline-flex items-center text-[#4FD1C5] font-semibold hover:gap-2 transition-all"
+                >
+                  Github Repository <ChevronRight className="ml-1 w-4 h-4" />
+                </Link>
+              </div>
+              <div className="p-8 border border-white/10 rounded-3xl bg-gradient-to-br from-red-500/10 to-transparent">
+                <Youtube className="w-10 h-10 mb-6 text-white" />
+                <h3 className="text-2xl font-bold mb-4">Video Masterclass</h3>
+                <p className="text-gray-400 mb-6">Watch our developers guide you through the protocol's advanced features.</p>
+                <Link
+                  href="https://youtube.com/InsightArena"
+                  target="_blank"
+                  className="inline-flex items-center text-[#4FD1C5] font-semibold hover:gap-2 transition-all"
+                >
+                  Watch Tutorials <ChevronRight className="ml-1 w-4 h-4" />
+                </Link>
+              </div>
+            </section>
           </div>
-          <div className="p-8 border border-white/10 rounded-3xl bg-gradient-to-br from-red-500/10 to-transparent">
-            <Youtube className="w-10 h-10 mb-6 text-white" />
-            <h3 className="text-2xl font-bold mb-4">Video Masterclass</h3>
-            <p className="text-gray-400 mb-6">Watch our developers guide you through the protocol's advanced features.</p>
-            <Link 
-              href="https://youtube.com/InsightArena" 
-              target="_blank"
-              className="inline-flex items-center text-[#4FD1C5] font-semibold hover:gap-2 transition-all"
-            >
-              Watch Tutorials <ChevronRight className="ml-1 w-4 h-4" />
-            </Link>
-          </div>
-        </section>
+        </div>
       </main>
 
       <Footer />
