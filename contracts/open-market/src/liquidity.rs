@@ -389,21 +389,60 @@ fn record_price_observation(
 /// its price for the remainder, then compared against the integral extrapolated
 /// to now. See `TWAP_RING_BUFFER_CAPACITY` for the max window the ring buffer
 /// can currently honor.
+///
+/// # Safety Validations
+///
+/// This function implements comprehensive safety checks to prevent numerical
+/// instability and ensure accurate TWAP calculations:
+///
+/// 1. **Zero-window rejection** (`TwapEmptyWindow`): A zero-second window cannot
+///    produce a meaningful time-weighted average — the integral would be empty.
+///
+/// 2. **History coverage validation** (`TwapInsufficientHistory`): Rejects requests
+///    when the ring buffer doesn't retain observations covering the requested window.
+///    This occurs when:
+///    - No price observations have been recorded yet (`total_count == 0`)
+///    - The window reaches back before the oldest retained observation
+///      (observations were evicted due to ring buffer wraparound)
+///
+/// 3. **Divide-by-zero protection** (`TwapDivideByZero`): Prevents division by zero
+///    when the elapsed time collapses to zero seconds, which can happen at ledger
+///    timestamp 0 when `now - window_start` saturates to zero.
+///
+/// These validations ensure TWAP reads fail safely on invalid inputs rather than
+/// returning misleading averages or causing arithmetic traps.
+///
+/// # Errors
+///
+/// - [`InsightArenaError::TwapEmptyWindow`] — `window` is zero.
+/// - [`InsightArenaError::InvalidOutcome`] — `outcome` is not in the pool's reserves.
+/// - [`InsightArenaError::TwapInsufficientHistory`] — No observations recorded yet,
+///   or the requested window predates the oldest retained observation.
+/// - [`InsightArenaError::TwapDivideByZero`] — Elapsed time collapsed to zero seconds.
+/// - [`InsightArenaError::Overflow`] — Arithmetic overflow in cumulative calculation.
 pub fn get_twap(
     env: &Env,
     market_id: u64,
     outcome: Symbol,
     window: u64,
 ) -> Result<i128, InsightArenaError> {
+    // ── Validation 1: Reject zero-second windows ─────────────────────────────
+    // A zero-second window is logically empty and cannot produce a meaningful
+    // time-weighted average. Reject this immediately before any storage access.
     if window == 0 {
         return Err(InsightArenaError::TwapEmptyWindow);
     }
 
+    // ── Load pool and validate outcome exists ─────────────────────────────────
     let pool = get_pool(env, market_id)?;
     if pool.outcome_reserves.get(outcome.clone()).is_none() {
         return Err(InsightArenaError::InvalidOutcome);
     }
 
+    // ── Validation 2: Check price accumulator exists and has history ─────────
+    // The price accumulator must exist and contain at least one observation.
+    // If `total_count == 0`, no price-changing operations have occurred yet,
+    // so there is no history to average over.
     let acc = pool
         .price_accumulators
         .get(outcome)
@@ -415,7 +454,13 @@ pub fn get_twap(
     let now = env.ledger().timestamp();
     let window_start = now.saturating_sub(window);
 
-    // Latest retained observation at or before `window_start`.
+    // ── Validation 3: Ensure ring buffer covers the requested window ─────────
+    // Find the latest retained observation at or before `window_start`. If no
+    // such observation exists, the ring buffer has wrapped and evicted older
+    // observations — the window reaches back beyond our retained history.
+    // Rather than silently truncating the window (which would produce a
+    // misleading average over a shorter interval than requested), we reject
+    // the query with `TwapInsufficientHistory`.
     let mut before: Option<PriceObservation> = None;
     for obs in acc.observations.iter() {
         if obs.timestamp <= window_start {
@@ -430,6 +475,9 @@ pub fn get_twap(
     }
     let before = before.ok_or(InsightArenaError::TwapInsufficientHistory)?;
 
+    // ── Compute cumulative price integral at window start ────────────────────
+    // Extrapolate from the observation at or before `window_start` using its
+    // price for the elapsed time since that observation.
     let cumulative_start = before
         .price
         .checked_mul((window_start - before.timestamp) as i128)
@@ -437,6 +485,8 @@ pub fn get_twap(
         .checked_add(before.price_cumulative)
         .ok_or(InsightArenaError::Overflow)?;
 
+    // ── Compute cumulative price integral at now ─────────────────────────────
+    // Extrapolate from the last recorded timestamp using the current price.
     let cumulative_now = acc
         .last_price
         .checked_mul((now - acc.last_timestamp) as i128)
@@ -444,11 +494,18 @@ pub fn get_twap(
         .checked_add(acc.cumulative)
         .ok_or(InsightArenaError::Overflow)?;
 
+    // ── Validation 4: Prevent division by zero ───────────────────────────────
+    // Compute the actual elapsed time over the window. If this collapses to
+    // zero (e.g., at ledger timestamp 0 when `saturating_sub` clamps both
+    // `now` and `window_start` to 0), dividing the price delta by elapsed
+    // would trap. Reject this case explicitly.
     let elapsed = now.saturating_sub(window_start);
     if elapsed == 0 {
         return Err(InsightArenaError::TwapDivideByZero);
     }
 
+    // ── Compute time-weighted average price ──────────────────────────────────
+    // TWAP = (cumulative_now - cumulative_start) / elapsed
     let twap = cumulative_now
         .checked_sub(cumulative_start)
         .ok_or(InsightArenaError::Overflow)?
