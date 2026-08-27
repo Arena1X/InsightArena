@@ -102,6 +102,12 @@ class EnvironmentVariables {
   @Min(1)
   RECONCILE_WINDOW?: number;
 
+  /** Default: 10 — ledgers to rewind the checkpoint on a detected chain reorg */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  INDEXER_REORG_ROLLBACK_DEPTH?: number;
+
   /** Default: ./exports */
   @IsOptional()
   @IsString()
