@@ -13,6 +13,7 @@ import { User } from '../users/entities/user.entity';
 import { CreateMarketDto } from './dto/create-market.dto';
 import { UserBookmark } from './entities/user-bookmark.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
+import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 
@@ -99,6 +100,14 @@ describe('MarketsService - Bulk Creation', () => {
           provide: getRepositoryToken(Prediction),
           useValue: {
             find: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(MarketPriceSnapshot),
+          useValue: {
+            create: jest.fn(),
+            save: jest.fn(),
+            createQueryBuilder: jest.fn(),
           },
         },
         {

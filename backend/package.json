@@ -22,6 +22,7 @@
     "migration:generate": "typeorm-ts-node-commonjs migration:generate -d data-source.ts",
     "migration:run": "typeorm-ts-node-commonjs migration:run -d data-source.ts",
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d data-source.ts",
+    "migration:check-timestamps": "node -r ts-node/register -r tsconfig-paths/register src/database/check-migration-timestamps.ts",
     "seed": "ts-node -r tsconfig-paths/register src/database/seeds/seed.ts",
     "db:reset": "ts-node -r tsconfig-paths/register src/database/seeds/reset.ts",
     "perf:api": "k6 run performance/api-load-test.js",
@@ -34,6 +35,7 @@
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.1",
+    "axios": "^1.13.6",
     "@nestjs/cache-manager": "^3.1.2",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.3",

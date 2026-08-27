@@ -1,8 +1,12 @@
-import { NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Match } from './entities/match.entity';
+import { Match, WinningTeam } from './entities/match.entity';
 import { MatchPrediction } from './entities/match-prediction.entity';
 import { CreatorEvent } from './entities/creator-event.entity';
 import { MatchesService } from './matches.service';
@@ -212,6 +216,103 @@ describe('MatchesService', () => {
       await expect(service.getMatchPredictions('non-existent')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('submitResult', () => {
+    const validDto = {
+      home_score: 2,
+      away_score: 1,
+      winning_team: WinningTeam.TEAM_A,
+    };
+
+    beforeEach(() => {
+      (matchRepository as Record<string, unknown>).save = jest.fn(
+        async (m: Match) => m,
+      );
+    });
+
+    it('persists the result with submitted_by/submitted_at on happy path', async () => {
+      const unscored = { ...mockMatch, result_submitted: false } as Match;
+      matchRepository.findOne.mockResolvedValue(unscored);
+
+      const result = await service.submitResult('match-1', validDto, 'admin-1');
+
+      expect(result.home_score).toBe(2);
+      expect(result.away_score).toBe(1);
+      expect(result.winning_team).toBe(WinningTeam.TEAM_A);
+      expect(result.result_submitted).toBe(true);
+      expect(result.submitted_by).toBe('admin-1');
+      expect(result.submitted_at).toBeInstanceOf(Date);
+      expect(matchRepository.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves matches by on-chain id too', async () => {
+      const unscored = { ...mockMatch, result_submitted: false } as Match;
+      matchRepository.findOne.mockResolvedValue(unscored);
+
+      const result = await service.submitResult(
+        String(mockMatch.on_chain_match_id),
+        validDto,
+        'admin-1',
+      );
+
+      expect(result.id).toBe('match-1');
+    });
+
+    it('throws NotFoundException for unknown match and saves nothing', async () => {
+      matchRepository.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.submitResult('missing', validDto, 'admin-1'),
+      ).rejects.toThrow(NotFoundException);
+      expect(matchRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('throws ConflictException when result was already submitted', async () => {
+      matchRepository.findOne.mockResolvedValue(mockMatch); // result_submitted: true
+
+      await expect(
+        service.submitResult('match-1', validDto, 'admin-1'),
+      ).rejects.toThrow(ConflictException);
+      expect(matchRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects results before match time', async () => {
+      const future = {
+        ...mockMatch,
+        result_submitted: false,
+        match_time: new Date(Date.now() + 86400000),
+      } as Match;
+      matchRepository.findOne.mockResolvedValue(future);
+
+      await expect(
+        service.submitResult('match-1', validDto, 'admin-1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(matchRepository.save).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'DRAW requires equal scores',
+        { home_score: 2, away_score: 1, winning_team: WinningTeam.DRAW },
+      ],
+      [
+        'TEAM_A requires home > away',
+        { home_score: 1, away_score: 1, winning_team: WinningTeam.TEAM_A },
+      ],
+      [
+        'TEAM_B requires away > home',
+        { home_score: 3, away_score: 2, winning_team: WinningTeam.TEAM_B },
+      ],
+    ])('rejects inconsistent winner/scores: %s', async (_label, dto) => {
+      const unscored = { ...mockMatch, result_submitted: false } as Match;
+      matchRepository.findOne.mockResolvedValue(unscored);
+
+      await expect(
+        service.submitResult('match-1', dto, 'admin-1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(matchRepository.save).not.toHaveBeenCalled();
     });
   });
 });

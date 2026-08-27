@@ -5,7 +5,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import {
   ListUserPredictionsDto,
@@ -16,6 +16,11 @@ import {
 import { User } from './entities/user.entity';
 import { UserPreferences } from './entities/user-preferences.entity';
 import { UserFollow } from './entities/user-follow.entity';
+import { ReferralStatus, UserReferral } from './entities/user-referral.entity';
+import {
+  ClaimReferralResponseDto,
+  MyReferralsResponseDto,
+} from './dto/referral.dto';
 import { Market } from '../markets/entities/market.entity';
 import { Notification } from '../notifications/entities/notification.entity';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -72,10 +77,12 @@ export class UsersService {
     private readonly participantsRepository: Repository<CompetitionParticipant>,
     @InjectRepository(UserBookmark)
     private readonly userBookmarksRepository: Repository<UserBookmark>,
+    @InjectRepository(UserReferral)
+    private readonly referralsRepository: Repository<UserReferral>,
   ) {}
 
   async findAll(): Promise<User[]> {
-    return this.usersRepository.find();
+    return this.usersRepository.find({ where: { deleted_at: IsNull() } });
   }
 
   async getMyStats(userId: string): Promise<UserStatsResponseDto> {
@@ -95,7 +102,9 @@ export class UsersService {
   }
 
   async findById(id: string): Promise<User> {
-    const user = await this.usersRepository.findOneBy({ id });
+    const user = await this.usersRepository.findOne({
+      where: { id, deleted_at: IsNull() },
+    });
     if (!user) {
       throw new NotFoundException(`User with id ${id} not found`);
     }
@@ -103,7 +112,9 @@ export class UsersService {
   }
 
   async findByAddress(stellar_address: string): Promise<User> {
-    const user = await this.usersRepository.findOneBy({ stellar_address });
+    const user = await this.usersRepository.findOne({
+      where: { stellar_address, deleted_at: IsNull() },
+    });
     if (!user) {
       throw new NotFoundException(
         `User with address ${stellar_address} not found`,
@@ -111,6 +122,7 @@ export class UsersService {
     }
     return user;
   }
+
 
   async findPublicPredictionsByAddress(
     stellar_address: string,
@@ -191,13 +203,16 @@ export class UsersService {
 
   async updateProfile(userId: string, dto: UpdateUserDto): Promise<User> {
     const user = await this.findById(userId);
+    const updates: Partial<Pick<User, 'username' | 'avatar_url'>> = {};
 
     if (dto.username !== undefined) {
-      user.username = dto.username;
+      updates.username = dto.username;
     }
     if (dto.avatar_url !== undefined) {
-      user.avatar_url = dto.avatar_url;
+      updates.avatar_url = dto.avatar_url;
     }
+
+    Object.assign(user, updates);
 
     return this.usersRepository.save(user);
   }
@@ -414,6 +429,15 @@ export class UsersService {
     if (dto.marketing_emails !== undefined) {
       prefs.marketing_emails = dto.marketing_emails;
     }
+    if (dto.digest_frequency !== undefined) {
+      prefs.digest_frequency = dto.digest_frequency;
+    }
+    if (dto.digest_hour !== undefined) {
+      prefs.digest_hour = dto.digest_hour;
+    }
+    if (dto.digest_timezone !== undefined) {
+      prefs.digest_timezone = dto.digest_timezone;
+    }
 
     const updated = await this.preferencesRepository.save(prefs);
 
@@ -424,6 +448,9 @@ export class UsersService {
       competition_notifications: updated.competition_notifications,
       leaderboard_notifications: updated.leaderboard_notifications,
       marketing_emails: updated.marketing_emails,
+      digest_frequency: updated.digest_frequency,
+      digest_hour: updated.digest_hour,
+      digest_timezone: updated.digest_timezone,
       created_at: updated.created_at,
       updated_at: updated.updated_at,
     };
@@ -551,5 +578,110 @@ export class UsersService {
       avatar_url: user.avatar_url,
       reputation_score: user.reputation_score,
     };
+  }
+
+  /**
+   * Record that `userId` was referred by `referrerId`. A user's own ID
+   * doubles as their shareable referral code, so this just links two
+   * existing accounts - no separate code table is needed. Each user can be
+   * the "referred" side of at most one relationship (enforced by the
+   * unique constraint on referred_id as well as this check), and
+   * self-referral is rejected outright.
+   */
+  async claimReferral(
+    userId: string,
+    referrerId: string,
+  ): Promise<ClaimReferralResponseDto> {
+    if (referrerId === userId) {
+      throw new BadRequestException('You cannot refer yourself');
+    }
+
+    const referrer = await this.usersRepository.findOne({
+      where: { id: referrerId, deleted_at: IsNull() },
+    });
+    if (!referrer) {
+      throw new NotFoundException('Referrer not found');
+    }
+
+    const existing = await this.referralsRepository.findOne({
+      where: { referred_id: userId },
+    });
+    if (existing) {
+      throw new ConflictException(
+        'A referral has already been recorded for this account',
+      );
+    }
+
+    await this.referralsRepository.save(
+      this.referralsRepository.create({
+        referrer_id: referrerId,
+        referred_id: userId,
+      }),
+    );
+
+    return {
+      success: true,
+      message: 'Referral recorded successfully',
+    };
+  }
+
+  /**
+   * Referrals made by `userId`, with aggregate counts by status. The
+   * `referral_code` returned is simply the user's own ID - share it as a
+   * link/param for others to submit via claimReferral.
+   */
+  async getMyReferrals(userId: string): Promise<MyReferralsResponseDto> {
+    const referrals = await this.referralsRepository.find({
+      where: { referrer_id: userId },
+      relations: ['referred'],
+      order: { created_at: 'DESC' },
+    });
+
+    let pending = 0;
+    let qualified = 0;
+    for (const referral of referrals) {
+      if (referral.status === ReferralStatus.QUALIFIED) {
+        qualified++;
+      } else {
+        pending++;
+      }
+    }
+
+    return {
+      referral_code: userId,
+      total: referrals.length,
+      pending,
+      qualified,
+      referrals: referrals.map((referral) => ({
+        id: referral.id,
+        referred_id: referral.referred_id,
+        referred_username: referral.referred?.username ?? null,
+        referred_stellar_address: referral.referred?.stellar_address ?? '',
+        status: referral.status,
+        created_at: referral.created_at,
+        qualified_at: referral.qualified_at,
+      })),
+    };
+  }
+
+  /**
+   * Advances a referred user's PENDING referral (if any) to QUALIFIED.
+   * Idempotent: a no-op if the user isn't a pending referral (already
+   * qualified, or was never referred). Intended to be called by other
+   * modules when a referred user completes a meaningful first action
+   * (e.g. their first prediction).
+   */
+  async recordQualifyingAction(userId: string): Promise<void> {
+    const referral = await this.referralsRepository.findOne({
+      where: { referred_id: userId, status: ReferralStatus.PENDING },
+    });
+
+    if (!referral) {
+      return;
+    }
+
+    referral.status = ReferralStatus.QUALIFIED;
+    referral.qualified_at = new Date();
+    await this.referralsRepository.save(referral);
   }
 }

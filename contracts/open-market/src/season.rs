@@ -3,9 +3,10 @@ use crate::errors::InsightArenaError;
 use crate::escrow;
 use crate::storage_types::{
     DataKey, LeaderboardEntry, LeaderboardSnapshot, RewardPayout, Season, UserProfile,
+    VestingSchedule,
 };
 
-use soroban_sdk::{symbol_short, Address, Env, Vec};
+use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 
 // ── Leaderboard helpers (merged from leaderboard.rs) ─────────────────────────
 
@@ -413,6 +414,7 @@ pub fn create_season(
     end_time: u64,
     reward_pool: i128,
 ) -> Result<u32, InsightArenaError> {
+    config::ensure_not_paused(env)?;
     let cfg = config::get_config(env)?;
     cfg.admin.require_auth();
     if admin != cfg.admin {
@@ -504,6 +506,7 @@ pub fn update_leaderboard(
     season_id: u32,
     entries: Vec<LeaderboardEntry>,
 ) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(env)?;
     let cfg = config::get_config(env)?;
     cfg.admin.require_auth();
     if admin != cfg.admin {
@@ -581,6 +584,7 @@ pub fn get_season_participants(
 }
 
 pub fn finalize_season(env: &Env, admin: Address, season_id: u32) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(env)?;
     let cfg = config::get_config(env)?;
     cfg.admin.require_auth();
     if admin != cfg.admin {
@@ -598,10 +602,20 @@ pub fn finalize_season(env: &Env, admin: Address, season_id: u32) -> Result<(), 
     let snapshot = get_leaderboard(env, season_id)?;
     let payouts = compute_reward_payouts(env, &snapshot, season.reward_pool)?;
 
+    let now = env.ledger().timestamp();
+
     let mut total_distributed = 0_i128;
     for payout in payouts.iter() {
         if payout.amount > 0 {
-            escrow::release_payout(env, &payout.user, payout.amount)?;
+            store_vesting_schedule(
+                env,
+                season_id,
+                &payout.user,
+                payout.amount,
+                cfg.vesting_tranche_count,
+                cfg.vesting_interval_seconds,
+                now,
+            );
         }
         total_distributed = total_distributed
             .checked_add(payout.amount)
@@ -632,6 +646,7 @@ pub fn reset_season_points(
     admin: Address,
     new_season_id: u32,
 ) -> Result<u32, InsightArenaError> {
+    config::ensure_not_paused(env)?;
     let cfg = config::get_config(env)?;
     cfg.admin.require_auth();
     if admin != cfg.admin {
@@ -688,4 +703,147 @@ pub fn reset_season_points(
     }
 
     Ok(reset_count)
+}
+
+// ── Season Reward Vesting ─────────────────────────────────────────────────────
+//
+// `finalize_season` no longer pays winners in one lump sum; instead each
+// winner's reward is split into equally-spaced tranches (see
+// `Config::vesting_tranche_count` / `vesting_interval_seconds`), claimable
+// one-by-one as they unlock via `claim_vested_reward`. The awarded funds
+// were already locked into escrow at `create_season` time, so vesting only
+// gates *when* they can be pulled back out — it does not move any funds
+// itself.
+//
+// Keyed by a raw `(Symbol, u32, Address)` tuple rather than a `DataKey`
+// variant, since `DataKey` is already at its 50-variant XDR cap (see
+// `reputation::trusted_creator_key` for the established precedent).
+
+fn vesting_key(season_id: u32, user: &Address) -> (Symbol, u32, Address) {
+    (symbol_short!("vest"), season_id, user.clone())
+}
+
+fn get_vesting_schedule_raw(env: &Env, season_id: u32, user: &Address) -> Option<VestingSchedule> {
+    env.storage().persistent().get(&vesting_key(season_id, user))
+}
+
+fn store_vesting_schedule_raw(env: &Env, schedule: &VestingSchedule) {
+    let key = vesting_key(schedule.season_id, &schedule.user);
+    env.storage().persistent().set(&key, schedule);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn store_vesting_schedule(
+    env: &Env,
+    season_id: u32,
+    user: &Address,
+    total_amount: i128,
+    tranche_count: u32,
+    interval_seconds: u64,
+    start_time: u64,
+) {
+    let schedule = VestingSchedule {
+        season_id,
+        user: user.clone(),
+        total_amount,
+        tranche_count,
+        interval_seconds,
+        start_time,
+        claimed_tranches: 0,
+        claimed_amount: 0,
+    };
+    store_vesting_schedule_raw(env, &schedule);
+}
+
+fn emit_vesting_claimed(env: &Env, season_id: u32, user: &Address, amount: i128, claimed_tranches: u32) {
+    env.events().publish(
+        (symbol_short!("vest"), symbol_short!("claimed")),
+        (season_id, user.clone(), amount, claimed_tranches),
+    );
+}
+
+/// Number of tranches currently unlocked for a schedule, capped at
+/// `tranche_count`. Tranche `i` (0-indexed) unlocks at
+/// `start_time + (i + 1) * interval_seconds`.
+fn unlocked_tranche_count(schedule: &VestingSchedule, now: u64) -> u32 {
+    if now < schedule.start_time || schedule.interval_seconds == 0 {
+        return 0;
+    }
+    let elapsed = now - schedule.start_time;
+    let unlocked = elapsed / schedule.interval_seconds;
+    if unlocked > schedule.tranche_count as u64 {
+        schedule.tranche_count
+    } else {
+        unlocked as u32
+    }
+}
+
+/// Return the vesting schedule for `user` in `season_id`, tracking claimed
+/// vs. unclaimed tranches. Read-only; does not mutate storage.
+pub fn get_vesting_schedule(
+    env: &Env,
+    season_id: u32,
+    user: Address,
+) -> Result<VestingSchedule, InsightArenaError> {
+    get_vesting_schedule_raw(env, season_id, &user).ok_or(InsightArenaError::NotAParticipant)
+}
+
+/// Claim every currently-unlocked, not-yet-claimed tranche of `user`'s
+/// season reward. Returns the amount transferred (`0` if nothing new has
+/// unlocked since the last claim — this is not an error, since polling is
+/// expected).
+///
+/// # Errors
+/// - `NotAParticipant` — reused to mean no vesting schedule exists for this
+///   `(season_id, user)` pair (error enum is at its 50-case cap).
+/// - `TimelockNotElapsed` if no new tranche has unlocked since the last claim.
+pub fn claim_vested_reward(
+    env: &Env,
+    user: Address,
+    season_id: u32,
+) -> Result<i128, InsightArenaError> {
+    config::ensure_not_paused(env)?;
+    user.require_auth();
+
+    let mut schedule =
+        get_vesting_schedule_raw(env, season_id, &user).ok_or(InsightArenaError::NotAParticipant)?;
+
+    let now = env.ledger().timestamp();
+    let unlocked = unlocked_tranche_count(&schedule, now);
+    let claimable_tranches = unlocked.saturating_sub(schedule.claimed_tranches);
+    if claimable_tranches == 0 {
+        return Err(InsightArenaError::TimelockNotElapsed);
+    }
+
+    // The last tranche absorbs the remainder of integer-division so the sum
+    // of every claim across the schedule always equals `total_amount` exactly.
+    let amount = if unlocked >= schedule.tranche_count {
+        schedule
+            .total_amount
+            .checked_sub(schedule.claimed_amount)
+            .ok_or(InsightArenaError::Overflow)?
+    } else {
+        let per_tranche = schedule.total_amount / (schedule.tranche_count as i128);
+        per_tranche
+            .checked_mul(claimable_tranches as i128)
+            .ok_or(InsightArenaError::Overflow)?
+    };
+
+    if amount > 0 {
+        escrow::release_payout(env, &user, amount)?;
+    }
+
+    schedule.claimed_tranches = unlocked;
+    schedule.claimed_amount = schedule
+        .claimed_amount
+        .checked_add(amount)
+        .ok_or(InsightArenaError::Overflow)?;
+    store_vesting_schedule_raw(env, &schedule);
+
+    emit_vesting_claimed(env, season_id, &user, amount, schedule.claimed_tranches);
+
+    Ok(amount)
 }

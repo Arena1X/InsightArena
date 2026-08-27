@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export type TxStatus = "pending" | "confirmed" | "failed" | "timeout";
 
@@ -64,6 +64,11 @@ export function useTransactionTracker(): UseTransactionTrackerResult {
   const clearTimer = useCallback((id: string) => {
     const t = timers.current.get(id);
     if (t) { clearTimeout(t); timers.current.delete(id); }
+  }, []);
+
+  useEffect(() => () => {
+    timers.current.forEach((timer) => clearTimeout(timer));
+    timers.current.clear();
   }, []);
 
   const dismiss = useCallback((id: string) => {

@@ -293,6 +293,62 @@ fn test_event_statistics_completion_status() {
     assert!(completed_statistics.all_matches_resolved);
 }
 
+/// #1706 — `get_event_statistics` must read `EventParticipants` /
+/// `EventMatches` directly rather than trusting the cached
+/// `Event.participant_count` / `Event.match_count` counters, so a view stays
+/// correct even if those cached counters were ever to desync from the
+/// source lists (e.g. a future code path that mutates one without the
+/// other). This test forces exactly that desync directly in storage and
+/// asserts the view still reports the true, source-derived counts.
+#[test]
+fn test_event_statistics_match_source_records_after_counter_drift() {
+    let (env, client, contract_id, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let user_one = Address::generate(&env);
+    let user_two = Address::generate(&env);
+    let user_three = Address::generate(&env);
+    fund(&env, &xlm_token, &creator, FEE);
+
+    let start_time = get_future_time(&env, 3600);
+    let end_time = get_future_time(&env, 7200);
+    let (event_id, invite_code) = client.create_event(
+        &creator,
+        &title(&env),
+        &desc(&env),
+        &5u32,
+        &start_time,
+        &end_time,
+        &0i128,
+        &Vec::new(&env),
+        &0i128,
+    );
+
+    client.join_event(&user_one, &invite_code);
+    client.join_event(&user_two, &invite_code);
+    client.join_event(&user_three, &invite_code);
+
+    env.as_contract(&contract_id, || {
+        add_match(&env, event_id, false);
+        add_match(&env, event_id, false);
+        add_match(&env, event_id, false);
+
+        // Simulate the cached counters falling out of sync with the source
+        // lists (the drift scenario #1706 guards against) by rewriting them
+        // directly, without touching EventParticipants / EventMatches.
+        let mut event = storage::get_event(&env, event_id).expect("event exists");
+        event.participant_count = 1;
+        event.match_count = 1;
+        storage::set_event(&env, event_id, &event);
+    });
+
+    let statistics = client.get_event_statistics(&event_id);
+
+    // The view must reflect the real source records (3 participants, 3
+    // matches), not the desynced cached counters (1, 1).
+    assert_eq!(statistics.participant_count, 3);
+    assert_eq!(statistics.match_count, 3);
+}
+
 #[test]
 #[should_panic(expected = "event_not_found")]
 fn test_event_statistics_missing_event_panics() {

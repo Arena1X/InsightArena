@@ -7,7 +7,13 @@ import {
   NotificationChannel,
   NotificationFrequency,
 } from './entities/notification-preference.entity';
+import {
+  NotificationCategoryPreference,
+  NotificationCategory,
+} from './entities/notification-category-preference.entity';
 import { NotificationBroadcasterService } from '../websocket/notification-broadcaster.service';
+import { UpdateCategoryPreferenceDto } from './dto/update-category-preference.dto';
+import { CategoryPreferenceResponseDto } from './dto/category-preference-response.dto';
 
 // ---------------------------------------------------------------------------
 // Pending-bucket type (in-memory, per HOURLY/DAILY users)
@@ -65,6 +71,8 @@ export class NotificationsService {
     private readonly notificationsRepository: Repository<Notification>,
     @InjectRepository(NotificationPreference)
     private readonly preferencesRepository: Repository<NotificationPreference>,
+    @InjectRepository(NotificationCategoryPreference)
+    private readonly categoryPreferencesRepository: Repository<NotificationCategoryPreference>,
     private readonly notificationBroadcaster: NotificationBroadcasterService,
   ) {}
 
@@ -258,25 +266,54 @@ export class NotificationsService {
     this.notificationBroadcaster.broadcastNotificationRead(userAddress, id);
   }
 
-  async markAllAsRead(userAddress: string): Promise<{ updated: number }> {
-    const result = await this.notificationsRepository.update(
+  async markAllAsRead(userAddress: string): Promise<{ unreadCount: number }> {
+    await this.notificationsRepository.update(
       { user_address: userAddress, read: false },
       { read: true },
     );
 
-    return { updated: result.affected ?? 0 };
+    const unreadCount = await this.getUnreadCount(userAddress);
+    return { unreadCount };
   }
 
   async markMultipleAsRead(
     userAddress: string,
     notificationIds: number[],
-  ): Promise<{ updated: number }> {
-    const result = await this.notificationsRepository.update(
-      { user_address: userAddress, id: In(notificationIds) },
-      { read: true },
+  ): Promise<{ unreadCount: number }> {
+    if (notificationIds.length > 0) {
+      await this.notificationsRepository.update(
+        { user_address: userAddress, id: In(notificationIds) },
+        { read: true },
+      );
+    }
+
+    const unreadCount = await this.getUnreadCount(userAddress);
+    return { unreadCount };
+  }
+
+  async markAllAsUnread(userAddress: string): Promise<{ unreadCount: number }> {
+    await this.notificationsRepository.update(
+      { user_address: userAddress, read: true },
+      { read: false },
     );
 
-    return { updated: result.affected ?? 0 };
+    const unreadCount = await this.getUnreadCount(userAddress);
+    return { unreadCount };
+  }
+
+  async markMultipleAsUnread(
+    userAddress: string,
+    notificationIds: number[],
+  ): Promise<{ unreadCount: number }> {
+    if (notificationIds.length > 0) {
+      await this.notificationsRepository.update(
+        { user_address: userAddress, id: In(notificationIds) },
+        { read: false },
+      );
+    }
+
+    const unreadCount = await this.getUnreadCount(userAddress);
+    return { unreadCount };
   }
 
   async remove(id: number, userAddress: string): Promise<void> {
@@ -323,5 +360,97 @@ export class NotificationsService {
     pref.quietHours = quietHours !== undefined ? quietHours : pref.quietHours;
 
     return this.preferencesRepository.save(pref);
+  }
+
+  // -------------------------------------------------------------------------
+  // Category preference helpers
+  // -------------------------------------------------------------------------
+
+  async getCategoryPreferences(
+    userId: string,
+  ): Promise<CategoryPreferenceResponseDto[]> {
+    let prefs = await this.categoryPreferencesRepository.find({
+      where: { userId },
+    });
+
+    // Auto-create defaults for any missing categories
+    const existingCategories = new Set(prefs.map((p) => p.category));
+    const missingCategories = Object.values(NotificationCategory).filter(
+      (cat) => !existingCategories.has(cat),
+    );
+
+    if (missingCategories.length > 0) {
+      const newPrefs = missingCategories.map((category) =>
+        this.categoryPreferencesRepository.create({
+          userId,
+          category,
+          in_app: true,
+          email: true,
+          push: false,
+        }),
+      );
+      const saved = await this.categoryPreferencesRepository.save(newPrefs);
+      prefs = [...prefs, ...saved];
+    }
+
+    return prefs.map((p) => ({
+      id: p.id,
+      userId: p.userId,
+      category: p.category,
+      in_app: p.in_app,
+      email: p.email,
+      push: p.push,
+    }));
+  }
+
+  async upsertCategoryPreference(
+    userId: string,
+    dto: UpdateCategoryPreferenceDto,
+  ): Promise<CategoryPreferenceResponseDto> {
+    let pref = await this.categoryPreferencesRepository.findOne({
+      where: { userId, category: dto.category },
+    });
+
+    if (!pref) {
+      pref = this.categoryPreferencesRepository.create({
+        userId,
+        category: dto.category,
+        in_app: true,
+        email: true,
+        push: false,
+      });
+    }
+
+    if (dto.in_app !== undefined) pref.in_app = dto.in_app;
+    if (dto.email !== undefined) pref.email = dto.email;
+    if (dto.push !== undefined) pref.push = dto.push;
+
+    const saved = await this.categoryPreferencesRepository.save(pref);
+
+    return {
+      id: saved.id,
+      userId: saved.userId,
+      category: saved.category,
+      in_app: saved.in_app,
+      email: saved.email,
+      push: saved.push,
+    };
+  }
+
+  /**
+   * Check whether a specific category+channel combination is enabled for a user.
+   * Returns true (enabled) by default if no preference record exists.
+   */
+  async isCategoryEnabled(
+    userId: string,
+    category: NotificationCategory,
+    channel: 'in_app' | 'email' | 'push' = 'in_app',
+  ): Promise<boolean> {
+    const pref = await this.categoryPreferencesRepository.findOne({
+      where: { userId, category },
+    });
+
+    if (!pref) return true;
+    return pref[channel];
   }
 }

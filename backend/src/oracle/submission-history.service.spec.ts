@@ -377,6 +377,63 @@ describe('SubmissionHistoryService', () => {
       expect(equal.reason).toBe('within_threshold');
     });
 
+    it('flags a value deviating beyond the median-deviation threshold (#1611)', async () => {
+      await buildService({ ORACLE_ANOMALY_THRESHOLD: 3 });
+      // Baseline of three 95s and two 55s → mean 79, stddev ≈ 19.6, median 95.
+      jest
+        .spyOn(submissionRepository, 'find')
+        .mockResolvedValue([...historyRows(95, 3), ...historyRows(55, 2)]);
+
+      // Value 70 → z ≈ 0.46 (passes the z-score rule) but the absolute
+      // deviation from consensus median 95 is 25 > default threshold 15.
+      const result = await service.evaluateAnomaly(
+        'https://api.example.com',
+        70,
+      );
+
+      expect(result.zScore).toBeCloseTo(0.4593, 3);
+      expect(result.baselineMedian).toBe(95);
+      expect(result.medianDeviation).toBe(25);
+      expect(result.isAnomaly).toBe(true);
+      expect(result.reason).toBe('median_deviation_exceeds_threshold');
+    });
+
+    it('does not flag when the median deviation is within the configured threshold', async () => {
+      await buildService({
+        ORACLE_ANOMALY_THRESHOLD: 3,
+        ORACLE_MEDIAN_DEVIATION_THRESHOLD: 26,
+      });
+      jest
+        .spyOn(submissionRepository, 'find')
+        .mockResolvedValue([...historyRows(95, 3), ...historyRows(55, 2)]);
+
+      // |70 − 95| = 25 ≤ threshold 26 → within the accepted band.
+      const result = await service.evaluateAnomaly(
+        'https://api.example.com',
+        70,
+      );
+
+      expect(result.isAnomaly).toBe(false);
+      expect(result.medianDeviation).toBe(25);
+      expect(result.reason).toBe('within_threshold');
+    });
+
+    it('reports null median deviation without enough baseline samples', async () => {
+      await buildService({ ORACLE_ANOMALY_THRESHOLD: 3 });
+      jest
+        .spyOn(submissionRepository, 'find')
+        .mockResolvedValue(historyRows(90, 4));
+
+      const result = await service.evaluateAnomaly(
+        'https://api.example.com',
+        50,
+      );
+
+      expect(result.isAnomaly).toBe(false);
+      expect(result.medianDeviation).toBeNull();
+      expect(result.reason).toBe('insufficient_samples');
+    });
+
     it('excludes the submission under evaluation from its own baseline', async () => {
       await buildService({ ORACLE_ANOMALY_THRESHOLD: 3 });
       const findSpy = jest
@@ -503,6 +560,44 @@ describe('SubmissionHistoryService', () => {
       expect(result.held).toBe(false);
       expect(submission.is_anomaly).toBe(false);
       expect(saveFlag).not.toHaveBeenCalled();
+    });
+
+    it('records baseline_median evidence on the flag row (#1611)', async () => {
+      await buildService({
+        ORACLE_ANOMALY_THRESHOLD: 3,
+        ORACLE_ANOMALY_HOLD: 'false',
+      });
+      jest
+        .spyOn(submissionRepository, 'find')
+        .mockResolvedValue(spreadBaseline());
+      jest
+        .spyOn(submissionRepository, 'save')
+        .mockImplementation((s) => Promise.resolve(s as OracleSubmission));
+      const createFlag = jest
+        .spyOn(flagRepository, 'create')
+        .mockImplementation((f) => f as OracleSubmissionFlag);
+      jest
+        .spyOn(flagRepository, 'save')
+        .mockImplementation((f) => Promise.resolve(f as OracleSubmissionFlag));
+
+      const submission = {
+        ...mockSubmission,
+        id: 'sub-outlier',
+        confidence_score: 20,
+        review_status: SubmissionReviewStatus.NOT_REQUIRED,
+      } as OracleSubmission;
+
+      await service.screenSubmission(submission);
+
+      // Baseline [88×5, 92×5] → median 90; the deviation of 70 also exceeds
+      // the median threshold and is recorded alongside the z-score evidence.
+      expect(createFlag).toHaveBeenCalledWith(
+        expect.objectContaining({
+          observed_value: 20,
+          baseline_median: 90,
+          held: false,
+        }),
+      );
     });
   });
 

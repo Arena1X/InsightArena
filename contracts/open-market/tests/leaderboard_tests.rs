@@ -409,6 +409,16 @@ fn test_leaderboard_rewards_distribution() {
 
     client.finalize_season(&admin, &season_id);
 
+    // finalize_season now schedules rewards as vesting tranches instead of
+    // paying out immediately (#1333), so nothing moves until the first
+    // tranche unlocks and is claimed.
+    let vesting_1 = client.get_vesting_schedule(&season_id, &u1);
+    env.ledger()
+        .with_mut(|li| li.timestamp = end + 1 + vesting_1.interval_seconds);
+
+    client.claim_vested_reward(&u1, &season_id);
+    client.claim_vested_reward(&u2, &season_id);
+
     let b1_after = token.balance(&u1);
     let b2_after = token.balance(&u2);
 

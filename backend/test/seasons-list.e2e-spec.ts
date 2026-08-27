@@ -9,6 +9,7 @@ import { SeasonsService } from '../src/seasons/seasons.service';
 import { Season } from '../src/seasons/entities/season.entity';
 import { User } from '../src/users/entities/user.entity';
 import { SorobanService } from '../src/soroban/soroban.service';
+import { WebhookDispatcherService } from '../src/webhooks/services/webhook-dispatcher.service';
 import { JwtAuthGuard } from '../src/common/guards/jwt-auth.guard';
 import { ResponseInterceptor } from '../src/common/interceptors/response.interceptor';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
@@ -16,11 +17,12 @@ import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter
 describe('GET /seasons (paginated list)', () => {
   let app: INestApplication;
   let getManyAndCount: jest.Mock;
+  let andWhere: jest.Mock;
 
   const winner = {
     id: 'winner-user-id',
     username: 'champ',
-    stellar_address: 'GCHAMPCHAMPCHAMPCHAMPCHAMPCHAMPCHAMPCHAMP',
+    stellar_address: 'GCHAMPCHAMPCHAMPCHAMPCHAMPCHAMPCHAMPCHAMPCHAMP',
   } as User;
 
   const finalizedSeason: Season = {
@@ -41,6 +43,7 @@ describe('GET /seasons (paginated list)', () => {
 
   beforeEach(async () => {
     getManyAndCount = jest.fn().mockResolvedValue([[finalizedSeason], 1]);
+    andWhere = jest.fn().mockReturnThis();
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       controllers: [SeasonsController],
@@ -56,7 +59,7 @@ describe('GET /seasons (paginated list)', () => {
             remove: jest.fn(),
             createQueryBuilder: jest.fn().mockReturnValue({
               where: jest.fn().mockReturnThis(),
-              andWhere: jest.fn().mockReturnThis(),
+              andWhere,
               orderBy: jest.fn().mockReturnThis(),
               getOne: jest.fn(),
               getCount: jest.fn(),
@@ -88,6 +91,10 @@ describe('GET /seasons (paginated list)', () => {
               release: jest.fn().mockResolvedValue(undefined),
             }),
           },
+        },
+        {
+          provide: WebhookDispatcherService,
+          useValue: { emit: jest.fn().mockResolvedValue(undefined) },
         },
       ],
     })
@@ -136,9 +143,29 @@ describe('GET /seasons (paginated list)', () => {
       top_winner: {
         user_id: 'winner-user-id',
         username: 'champ',
-        stellar_address: 'GCHAMPCHAMPCHAMPCHAMPCHAMPCHAMPCHAMPCHAMP',
+        stellar_address: 'GCHAMPCHAMPCHAMPCHAMPCHAMPCHAMPCHAMPCHAMPCHAMP',
       },
     });
     expect(getManyAndCount).toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: 'active', clause: 'season.is_active = :isActive' },
+    { status: 'upcoming', clause: 'season.starts_at > :now' },
+    { status: 'finalized', clause: 'season.is_finalized = :isFinalized' },
+  ])('applies the $status status filter', async ({ status, clause }) => {
+    await request(app.getHttpServer())
+      .get('/seasons')
+      .query({ status })
+      .expect(200);
+
+    expect(andWhere).toHaveBeenCalledWith(clause, expect.any(Object));
+  });
+
+  it('rejects invalid status values with 400', async () => {
+    await request(app.getHttpServer())
+      .get('/seasons')
+      .query({ status: 'archived' })
+      .expect(400);
   });
 });

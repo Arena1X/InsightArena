@@ -142,6 +142,36 @@ fn test_submit_match_result_ai_agent_can_submit() {
 }
 
 #[test]
+#[should_panic(expected = "unauthorized")]
+fn test_submit_match_result_wrong_role_rejected() {
+    // Neither the admin nor an arbitrary address is the configured AI agent
+    // (#1704) — only the address bound via `initialize`/`set_ai_agent` may
+    // submit match results.
+    let (env, client, contract_id, admin, _ai_agent, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let (_event_id, _invite_code, match_id) =
+        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1000);
+
+    env.ledger().with_mut(|l| l.timestamp += 2000);
+
+    client.submit_match_result(&admin, &match_id, &2u32, &1u32);
+}
+
+#[test]
+#[should_panic(expected = "unauthorized")]
+fn test_submit_match_result_random_address_rejected() {
+    let (env, client, contract_id, _admin, _ai_agent, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let (_event_id, _invite_code, match_id) =
+        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1000);
+
+    env.ledger().with_mut(|l| l.timestamp += 2000);
+
+    let random = Address::generate(&env);
+    client.submit_match_result(&random, &match_id, &2u32, &1u32);
+}
+
+#[test]
 #[should_panic(expected = "result_already_submitted")]
 fn test_submit_match_result_duplicate_submission_rejected() {
     let (env, client, contract_id, _admin, ai_agent, xlm_token) = setup();

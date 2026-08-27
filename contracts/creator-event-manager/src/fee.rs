@@ -2,7 +2,7 @@ use soroban_sdk::{Address, Env, Symbol};
 
 use crate::admin;
 use crate::storage::{self, TTL_LEDGERS};
-use crate::storage_types::{CreatorVestingSchedule, DataKey};
+use crate::storage_types::{CreatorVestingSchedule, DataKey, MAX_FEE_BPS};
 use crate::token::TokenHelper;
 
 /// Errors for fee module operations.
@@ -25,6 +25,33 @@ pub enum FeeError {
     /// `claim_vested_revenue` called before any additional amount has
     /// unlocked since the last claim.
     NothingToClaim = 10,
+    /// A fee/share computation overflowed `i128` — guards against corrupt or
+    /// adversarial inputs on very large pools rather than panicking.
+    Overflow = 11,
+}
+
+/// Compute `amount * share_bps / MAX_FEE_BPS` using checked arithmetic.
+///
+/// This is the single bounded, overflow-safe fee/share calculation used
+/// throughout the contract (e.g. splitting a creator's leftover prize-pool
+/// revenue into an immediate payout and a vested portion). `share_bps` must
+/// already have been validated to be `<= MAX_FEE_BPS` by the caller (see
+/// [`set_creator_vesting_config`]) — this function additionally re-checks the
+/// bound defensively and rejects it with [`FeeError::InvalidConfig`].
+///
+/// # Errors
+/// * [`FeeError::InvalidConfig`] — `share_bps > MAX_FEE_BPS`.
+/// * [`FeeError::Overflow`] — the multiplication overflowed `i128` (only
+///   possible for pathologically large `amount` values).
+pub fn calculate_bounded_fee(amount: i128, share_bps: u32) -> Result<i128, FeeError> {
+    if share_bps > MAX_FEE_BPS {
+        return Err(FeeError::InvalidConfig);
+    }
+
+    amount
+        .checked_mul(share_bps as i128)
+        .and_then(|scaled| scaled.checked_div(MAX_FEE_BPS as i128))
+        .ok_or(FeeError::Overflow)
 }
 
 /// Return the XLM balance of the configured treasury address.
@@ -137,7 +164,7 @@ pub fn set_creator_vesting_config(
 ) -> Result<(), FeeError> {
     require_is_admin(env, &caller)?;
 
-    if vest_share_bps > 10_000 {
+    if vest_share_bps > MAX_FEE_BPS {
         return Err(FeeError::InvalidConfig);
     }
 
@@ -288,4 +315,58 @@ pub fn forfeit_creator_vesting(
     );
 
     Ok(remaining)
+}
+
+// ---------------------------------------------------------------------------
+// Tests: calculate_bounded_fee (#1703)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod bounded_fee_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_share_above_max_fee_bps() {
+        let result = calculate_bounded_fee(1_000_000, MAX_FEE_BPS + 1);
+        assert_eq!(result, Err(FeeError::InvalidConfig));
+    }
+
+    #[test]
+    fn accepts_share_at_max_fee_bps() {
+        // 100% share returns the full amount.
+        let result = calculate_bounded_fee(1_000_000, MAX_FEE_BPS);
+        assert_eq!(result, Ok(1_000_000));
+    }
+
+    #[test]
+    fn computes_partial_share_correctly() {
+        // 25% of 1,000,000 = 250,000.
+        let result = calculate_bounded_fee(1_000_000, 2_500);
+        assert_eq!(result, Ok(250_000));
+    }
+
+    #[test]
+    fn zero_share_yields_zero_fee() {
+        let result = calculate_bounded_fee(1_000_000, 0);
+        assert_eq!(result, Ok(0));
+    }
+
+    #[test]
+    fn large_pool_computes_without_overflow() {
+        // Near the top of i128's range — a naive `amount * bps` would
+        // overflow long before this, but the checked multiply catches it
+        // and only succeeds because share_bps is small enough that the
+        // scaled intermediate still fits.
+        let large_pool = i128::MAX / 20_000; // headroom for MAX_FEE_BPS multiply
+        let result = calculate_bounded_fee(large_pool, MAX_FEE_BPS);
+        assert_eq!(result, Ok(large_pool));
+    }
+
+    #[test]
+    fn overflow_is_rejected_not_panicking() {
+        // amount so large that amount * share_bps overflows i128 even
+        // though share_bps itself is within bounds.
+        let result = calculate_bounded_fee(i128::MAX, 2);
+        assert_eq!(result, Err(FeeError::Overflow));
+    }
 }

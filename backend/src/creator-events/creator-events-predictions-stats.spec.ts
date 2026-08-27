@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import {
   ContractPrediction,
   ContractService,
@@ -12,6 +13,7 @@ import { Match } from '../matches/entities/match.entity';
 import { MatchPrediction } from '../matches/entities/match-prediction.entity';
 import { User } from '../users/entities/user.entity';
 import { CreatorEventsService } from './creator-events.service';
+import { SearchService } from '../search/search.service';
 
 describe('CreatorEventsService predictions and stats', () => {
   let service: CreatorEventsService;
@@ -30,6 +32,7 @@ describe('CreatorEventsService predictions and stats', () => {
     createQueryBuilder: jest.Mock;
     findOne: jest.Mock;
   };
+  let cacheManager: { get: jest.Mock; set: jest.Mock; del: jest.Mock };
 
   const mockEvent = {
     eventId: '1',
@@ -85,6 +88,10 @@ describe('CreatorEventsService predictions and stats', () => {
         CreatorEventsService,
         { provide: ContractService, useValue: contractService },
         {
+          provide: SearchService,
+          useValue: { searchCreatorEvents: jest.fn() },
+        },
+        {
           provide: getRepositoryToken(CreatorEvent),
           useValue: creatorEventRepository,
         },
@@ -102,11 +109,19 @@ describe('CreatorEventsService predictions and stats', () => {
         },
         {
           provide: getRepositoryToken(User),
-          useValue: {},
+          useValue: { findOne: jest.fn().mockResolvedValue(null) },
         },
         {
           provide: getRepositoryToken(CreatorEventPayout),
           useValue: {},
+        },
+        {
+          provide: CACHE_MANAGER,
+          useValue: (cacheManager = {
+            get: jest.fn(),
+            set: jest.fn(),
+            del: jest.fn(),
+          }),
         },
       ],
     }).compile();
@@ -160,6 +175,89 @@ describe('CreatorEventsService predictions and stats', () => {
       await expect(
         service.getUserPredictionsForEvent('999', 'GUSER'),
       ).rejects.toThrow(NotFoundException);
+    });
+
+    it('excludes withdrawn predictions from the response and score (#1650)', async () => {
+      contractService.getUserPredictions.mockResolvedValue([
+        {
+          prediction_id: 1,
+          match_id: 10,
+          predicted_outcome: 'TEAM_A',
+          predicted_at: 1_040_000,
+          is_correct: true,
+        },
+        {
+          prediction_id: 2,
+          match_id: 11,
+          predicted_outcome: 'DRAW',
+          predicted_at: 1_050_000,
+          is_withdrawn: true,
+        },
+      ] as ContractPrediction[]);
+
+      const result = await service.getUserPredictionsForEvent('1', 'GUSER');
+
+      expect(result.predictions).toHaveLength(1);
+      expect(result.predictions[0].matchId).toBe('10');
+      expect(result.score).toEqual({
+        totalPredictions: 1,
+        correctPredictions: 1,
+        accuracyPercentage: 100,
+        // The withdrawn prediction's match is no longer counted as predicted.
+        matchesRemaining: 1,
+      });
+    });
+  });
+
+  describe('getUserScore', () => {
+    beforeEach(() => {
+      contractService.getEvent.mockResolvedValue(mockEvent);
+      contractService.getEventMatches.mockResolvedValue(mockMatches);
+      contractService.getEventParticipants.mockResolvedValue([]);
+    });
+
+    it('excludes withdrawn predictions from every count (#1650)', async () => {
+      contractService.getUserPredictions.mockResolvedValue([
+        {
+          prediction_id: 1,
+          match_id: 10,
+          predicted_outcome: 'TEAM_A',
+          is_correct: true,
+        },
+        {
+          prediction_id: 2,
+          match_id: 11,
+          predicted_outcome: 'DRAW',
+          is_withdrawn: true,
+        },
+      ] as ContractPrediction[]);
+
+      const result = await service.getUserScore('1', 'GUSER');
+
+      expect(result.totalPredictions).toBe(1);
+      expect(result.correctPredictions).toBe(1);
+      expect(result.incorrectPredictions).toBe(0);
+      expect(result.pendingPredictions).toBe(0);
+      // Counts must stay internally consistent once withdrawals exist.
+      expect(result.correctPredictions + result.incorrectPredictions).toBe(
+        result.totalPredictions - result.pendingPredictions,
+      );
+    });
+  });
+
+  describe('invalidatePredictionStatsCache', () => {
+    it('deletes the event stats cache key, and the user score key when an address is given', async () => {
+      await service.invalidatePredictionStatsCache('1');
+      expect(cacheManager.del).toHaveBeenCalledWith('/creator-events/1/stats');
+      expect(cacheManager.del).toHaveBeenCalledTimes(1);
+
+      cacheManager.del.mockClear();
+
+      await service.invalidatePredictionStatsCache('1', 'GUSER');
+      expect(cacheManager.del).toHaveBeenCalledWith('/creator-events/1/stats');
+      expect(cacheManager.del).toHaveBeenCalledWith(
+        '/creator-events/1/score/GUSER',
+      );
     });
   });
 

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Prediction } from './entities/prediction.entity';
+import { PredictionFraudFlag } from './entities/prediction-fraud-flag.entity';
 import { PredictionsService } from './predictions.service';
 import { PredictionsController } from './predictions.controller';
 import { SlippageCheckerService } from './services/slippage-checker.service';
@@ -13,7 +14,7 @@ import { Market } from '../markets/entities/market.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Prediction, User, Market]),
+    TypeOrmModule.forFeature([Prediction, User, Market, PredictionFraudFlag]),
     UsersModule,
     MarketsModule,
     SorobanModule,
@@ -23,4 +24,4 @@ import { Market } from '../markets/entities/market.entity';
   providers: [PredictionsService, SlippageCheckerService],
   exports: [PredictionsService],
 })
-export class PredictionsModule { }
+export class PredictionsModule {}

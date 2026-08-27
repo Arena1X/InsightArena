@@ -19,12 +19,18 @@ import { User } from '../../users/entities/user.entity';
 /**
  * Grace-period settlement state machine, independent of the legacy
  * `is_resolved` flag used by the immediate admin-override resolution path.
- * PENDING -> PROPOSED -> SETTLED, with PROPOSED -> CHALLENGED -> SETTLED
- * when a challenge is raised during the grace window.
+ * PENDING -> PROPOSED -> SETTLING -> SETTLED, with PROPOSED -> CHALLENGED ->
+ * SETTLED when a challenge is raised during the grace window. SETTLING is a
+ * short-lived, crash-visible marker: MarketSettlementScheduler moves a
+ * market here once it has claimed it (advisory lock + settlement-attempt
+ * row) and before the on-chain call resolves, so a crash between those two
+ * steps leaves a durable trace instead of silently losing the market
+ * between PROPOSED and SETTLED.
  */
 export enum MarketSettlementState {
   PENDING = 'pending',
   PROPOSED = 'proposed',
+  SETTLING = 'settling',
   CHALLENGED = 'challenged',
   SETTLED = 'settled',
 }
@@ -36,6 +42,21 @@ export enum MarketSettlementState {
 @Index(['is_resolved'])
 @Index(['is_featured'])
 @Index(['settlement_state'])
+@Index('IDX_markets_status_sort', [
+  'is_resolved',
+  'is_cancelled',
+  'is_featured',
+  'featured_at',
+  'created_at',
+])
+@Index('IDX_markets_category_status_sort', [
+  'category',
+  'is_resolved',
+  'is_cancelled',
+  'is_featured',
+  'created_at',
+])
+@Index('IDX_markets_public_sort', ['is_public', 'is_featured', 'created_at'])
 export class Market {
   @PrimaryGeneratedColumn('uuid')
   id: string;

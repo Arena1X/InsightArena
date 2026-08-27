@@ -6,6 +6,7 @@ export interface OptimisticPredictionIndicatorProps {
   amount: number;
   direction: "yes" | "no";
   error?: string;
+  onRetry?: () => void;
   onDismiss?: () => void;
   onCheckAgain?: () => void;
 }
@@ -15,6 +16,7 @@ export function OptimisticPredictionIndicator({
   amount,
   direction,
   error,
+  onRetry,
   onDismiss,
   onCheckAgain,
 }: OptimisticPredictionIndicatorProps) {
@@ -48,6 +50,9 @@ export function OptimisticPredictionIndicator({
   return (
     <div
       className={`flex items-center gap-2 rounded-lg border ${bgColor} px-3 py-2 text-sm ${textColor}`}
+      role={isFailed ? "alert" : "status"}
+      aria-live={isFailed ? "assertive" : "polite"}
+      aria-atomic="true"
     >
       {icon}
       <div className="flex-1">
@@ -61,12 +66,13 @@ export function OptimisticPredictionIndicator({
           <p>{error}</p>
         </div>
       )}
-      {isTimeout && onCheckAgain && (
+      {isFailed && onRetry && (
         <button
-          onClick={onCheckAgain}
-          className="ml-2 shrink-0 rounded border border-amber-500/50 px-2 py-1 text-xs text-amber-200 hover:bg-amber-500/10"
+          type="button"
+          onClick={onRetry}
+          className="ml-2 rounded border border-current px-2 py-1 text-xs font-semibold hover:bg-red-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
         >
-          Check again
+          Retry
         </button>
       )}
       {onDismiss && (

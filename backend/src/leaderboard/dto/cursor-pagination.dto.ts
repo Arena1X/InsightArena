@@ -4,7 +4,8 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CursorPaginationDto {
   @ApiPropertyOptional({
-    description: 'Cursor for pagination (rank:user_id)',
+    description:
+      'Opaque pagination cursor from a previous response\'s nextCursor. Omit for the first page.',
   })
   @IsOptional()
   @IsString()
@@ -44,7 +45,7 @@ export interface CursorPaginationEntry {
 
 export interface PaginatedCursorResponse {
   data: CursorPaginationEntry[];
-  next_cursor: string | null;
-  has_more: boolean;
+  nextCursor: string | null;
+  hasMore: boolean;
   limit: number;
 }

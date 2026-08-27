@@ -7,9 +7,7 @@ import {
   TableIndex,
 } from 'typeorm';
 
-export class AddExternalMatchResultIngestion1777300000000
-  implements MigrationInterface
-{
+export class AddExternalMatchResultIngestion1777300000000 implements MigrationInterface {
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.addColumn(
       'event_matches',
@@ -25,13 +23,28 @@ export class AddExternalMatchResultIngestion1777300000000
       new Table({
         name: 'external_match_results',
         columns: [
-          { name: 'id', type: 'uuid', isPrimary: true, generationStrategy: 'uuid', isGenerated: true },
+          {
+            name: 'id',
+            type: 'uuid',
+            isPrimary: true,
+            generationStrategy: 'uuid',
+            isGenerated: true,
+          },
           { name: 'match_id', type: 'uuid' },
           { name: 'external_id', type: 'varchar', length: '255' },
           { name: 'home_score', type: 'int' },
           { name: 'away_score', type: 'int' },
-          { name: 'winning_team', type: 'enum', enum: ['TEAM_A', 'TEAM_B', 'DRAW'] },
-          { name: 'status', type: 'enum', enum: ['PENDING_CONFIRMATION'], default: "'PENDING_CONFIRMATION'" },
+          {
+            name: 'winning_team',
+            type: 'enum',
+            enum: ['TEAM_A', 'TEAM_B', 'DRAW'],
+          },
+          {
+            name: 'status',
+            type: 'enum',
+            enum: ['PENDING_CONFIRMATION'],
+            default: "'PENDING_CONFIRMATION'",
+          },
           { name: 'created_at', type: 'timestamptz', default: 'now()' },
         ],
       }),

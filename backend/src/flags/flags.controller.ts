@@ -2,6 +2,8 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
+  Param,
   Body,
   Query,
   UseGuards,
@@ -17,16 +19,20 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { Role } from '../common/enums/role.enum';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { User } from '../users/entities/user.entity';
 import { FlagsService } from './flags.service';
 import { CreateFlagDto } from './dto/create-flag.dto';
 import { ListFlagsQueryDto } from './dto/list-flags-query.dto';
+import { ResolveFlagDto } from './dto/resolve-flag.dto';
 import { Flag } from './entities/flag.entity';
 
 @ApiTags('Flags')
 @Controller('flags')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 @ApiBearerAuth()
 export class FlagsController {
   constructor(private readonly flagsService: FlagsService) {}
@@ -86,4 +92,36 @@ export class FlagsController {
       user_id: user.id,
     });
   }
+
+  @Get()
+  @Roles(Role.Admin)
+  @ApiOperation({ summary: 'List all open/submitted flags (Admin only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Flags list retrieved successfully',
+  })
+  @ApiResponse({ status: 403, description: 'Forbidden resource' })
+  async listFlags(@Query() query: ListFlagsQueryDto) {
+    return this.flagsService.listFlags(query);
+  }
+
+  @Patch(':id/resolve')
+  @Roles(Role.Admin)
+  @ApiOperation({ summary: 'Resolve a flag with an action and reason (Admin only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Flag resolved successfully',
+    type: Flag,
+  })
+  @ApiResponse({ status: 404, description: 'Flag not found' })
+  @ApiResponse({ status: 409, description: 'Flag has already been resolved' })
+  @ApiResponse({ status: 403, description: 'Forbidden resource' })
+  async resolveFlag(
+    @Param('id') id: string,
+    @Body() resolveFlagDto: ResolveFlagDto,
+    @CurrentUser() user: User,
+  ): Promise<Flag> {
+    return this.flagsService.resolveFlag(id, resolveFlagDto, user.id);
+  }
 }
+

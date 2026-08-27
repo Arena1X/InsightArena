@@ -46,6 +46,11 @@ import {
   PaginatedUserMarketsResponse,
 } from './dto/list-user-markets.dto';
 import { UserStatsResponseDto } from './dto/user-stats.dto';
+import {
+  ClaimReferralDto,
+  ClaimReferralResponseDto,
+  MyReferralsResponseDto,
+} from './dto/referral.dto';
 
 @Controller('users')
 export class UsersController {
@@ -93,9 +98,60 @@ export class UsersController {
     return this.usersService.findUserBookmarks(user.id, query);
   }
 
-  @Patch('me')
+  @Get('me/referrals')
+  @ApiOperation({
+    summary: "Get the current user's referral code, counts, and statuses",
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Referral counts and statuses retrieved successfully',
+    type: MyReferralsResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getMyReferrals(
+    @CurrentUser() user: User,
+  ): Promise<MyReferralsResponseDto> {
+    return this.usersService.getMyReferrals(user.id);
+  }
+
+  @Post('me/referrals/claim')
   @UsePipes(
     new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }),
+  )
+  @ApiOperation({
+    summary: 'Record that the current user was referred by another user',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Referral recorded successfully',
+    type: ClaimReferralResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Self-referral is not allowed',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Referrer not found',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'A referral has already been recorded for this account',
+  })
+  async claimReferral(
+    @CurrentUser() user: User,
+    @Body() dto: ClaimReferralDto,
+  ): Promise<ClaimReferralResponseDto> {
+    return this.usersService.claimReferral(user.id, dto.referrer_id);
+  }
+
+  @Patch('me')
+  @UsePipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
   )
   @ApiOperation({ summary: 'Update own profile (username, avatar_url)' })
   @ApiResponse({

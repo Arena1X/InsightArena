@@ -6,7 +6,6 @@ import {
   HttpStatus,
   Post,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { RateLimitService } from './rate-limit.service';
 import { GenerateChallengeDto } from './dto/generate-challenge.dto';
@@ -27,9 +26,10 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
 import { User } from '../users/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
+import { ThrottleTier } from '../common/decorators/throttle-tier.decorator';
 
 @ApiTags('Auth')
-@Throttle({ default: { limit: 10, ttl: 60000 } })
+@ThrottleTier('auth')
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -48,7 +48,6 @@ export class AuthController {
   }
 
   @Post('verify')
-  @Throttle({ auth: {} })
   @HttpCode(HttpStatus.OK)
   async verifyChallenge(@Body() verifyChallengeDto: VerifyChallengeDto) {
     return this.authService.verifyChallenge(
@@ -77,13 +76,12 @@ export class AuthController {
   })
   @ApiResponse({
     status: 200,
-    description: 'Current rate limit status',
-    type: RateLimitStatusDto,
+    description: 'Current rate limit status per tier',
   })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async getRateLimitStatus(
     @CurrentUser() user: User,
-  ): Promise<RateLimitStatusDto> {
+  ): Promise<Record<string, RateLimitStatusDto>> {
     return this.rateLimitService.getStatus(user.id);
   }
 

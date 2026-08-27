@@ -14,6 +14,10 @@ export enum NotificationType {
   MatchResolved = 'match_resolved',
   WinnerVerified = 'winner_verified',
   EventCancelled = 'event_cancelled',
+  DisputeSlaApproaching = 'dispute_sla_approaching',
+  DisputeSlaBreached = 'dispute_sla_breached',
+  AchievementUnlocked = 'achievement_unlocked',
+  OracleResultDivergence = 'oracle_result_divergence',
 }
 
 @Entity('notifications')

@@ -1,5 +1,6 @@
 import React from "react";
 import { Heart } from "lucide-react";
+import Link from "next/link";
 
 type Market = {
   id: string;
@@ -43,7 +44,7 @@ export default function MarketCard({
   }
 
   return (
-    <div className="min-h-[220px] rounded-xl border border-white/6 bg-white/3 p-4">
+    <Link href={`/markets/${market.id}`} className="block min-h-[220px] rounded-xl border border-white/6 bg-white/3 p-4 hover:border-white/20 transition-colors">
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -106,12 +107,12 @@ export default function MarketCard({
 
       <div className="mt-4 flex items-center gap-2">
         <button
-          onClick={onPredict}
+          onClick={(e) => { e.preventDefault(); onPredict(); }}
           className="ml-auto rounded-md bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600"
         >
           Predict
         </button>
       </div>
-    </div>
+    </Link>
   );
 }

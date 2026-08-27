@@ -10,11 +10,13 @@ import { CreatorEvent } from './entities/creator-event.entity';
 import { SorobanModule } from '../soroban/soroban.module';
 import { HttpModule } from '@nestjs/axios';
 import { ExternalMatchResult } from './entities/external-match-result.entity';
+import { MatchResultDivergence } from './entities/match-result-divergence.entity';
 import { ExternalResultIngestionService } from './external-result-ingestion.service';
 import {
   EXTERNAL_RESULT_FEED_CLIENT,
   HttpExternalResultFeedClient,
 } from './external-result-feed.client';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -23,10 +25,12 @@ import {
       MatchPrediction,
       CreatorEvent,
       ExternalMatchResult,
+      MatchResultDivergence,
     ]),
     HttpModule,
     ScheduleModule.forRoot(),
     SorobanModule,
+    NotificationsModule,
   ],
   controllers: [MatchesController],
   providers: [
