@@ -712,6 +712,161 @@ fn test_reraise_dispute_after_rejection_within_window() {
     assert_eq!(client.get_open_dispute_count(), 1);
 }
 
+/// A dispute already settled by `resolve_dispute` cannot be settled again:
+/// the second call must fail cleanly with `DisputeNotFound` and must not
+/// move any additional funds.
+#[test]
+fn test_resolve_dispute_cannot_be_called_twice() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    let id = client.create_market(&creator, &market_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    let bond = 10_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+    client.raise_dispute(&disputer, &id, &bond);
+
+    let token = TokenClient::new(&env, &xlm_token);
+    client.resolve_dispute(&admin, &id, &true);
+    let disputer_balance_after_first = token.balance(&disputer);
+
+    let result = client.try_resolve_dispute(&admin, &id, &true);
+    assert!(matches!(result, Err(Ok(InsightArenaError::DisputeNotFound))));
+    assert_eq!(token.balance(&disputer), disputer_balance_after_first);
+}
+
+// ── Appeal bond escrow (#1677) ────────────────────────────────────────────────
+//
+// `appeal_dispute` escalates an active dispute with a larger bond
+// (`calculate_appeal_bond`: base bond × (tier + 1)); `resolve_appeal` settles
+// it the same way `resolve_dispute` settles the original bond — refund on
+// uphold, slash (insurance pool / treasury split) on reject — while leaving
+// the underlying `Dispute` record in place (only `appealer`/`appeal_bond` are
+// cleared), guarding against a second settlement of the same appeal.
+
+fn setup_appealed_dispute(
+    env: &Env,
+    client: &InsightArenaContractClient<'_>,
+    oracle: &Address,
+    xlm_token: &Address,
+) -> (u64, Address, i128) {
+    let creator = Address::generate(env);
+    let disputer = Address::generate(env);
+    let appealer = Address::generate(env);
+
+    let id = client.create_market(&creator, &market_params(env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(oracle, &id, &symbol_short!("yes"));
+
+    let bond = 10_000_000_i128;
+    StellarAssetClient::new(env, xlm_token).mint(&disputer, &bond);
+    TokenClient::new(env, xlm_token).approve(&disputer, &client.address, &bond, &9999);
+    client.raise_dispute(&disputer, &id, &bond);
+
+    // Tier 1 requires 2× the original bond.
+    let appeal_bond = bond * 2;
+    StellarAssetClient::new(env, xlm_token).mint(&appealer, &appeal_bond);
+    TokenClient::new(env, xlm_token).approve(&appealer, &client.address, &appeal_bond, &9999);
+    client.appeal_dispute(&appealer, &id, &appeal_bond);
+
+    (id, appealer, appeal_bond)
+}
+
+#[test]
+fn test_appeal_dispute_locks_escalated_bond_in_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+    let appealer = Address::generate(&env);
+
+    let id = client.create_market(&creator, &market_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    let bond = 10_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+    client.raise_dispute(&disputer, &id, &bond);
+
+    let appeal_bond = bond * 2;
+    StellarAssetClient::new(&env, &xlm_token).mint(&appealer, &appeal_bond);
+    TokenClient::new(&env, &xlm_token).approve(&appealer, &client.address, &appeal_bond, &9999);
+
+    let token = TokenClient::new(&env, &xlm_token);
+    let contract_before = token.balance(&client.address);
+    let appealer_before = token.balance(&appealer);
+
+    client.appeal_dispute(&appealer, &id, &appeal_bond);
+
+    assert_eq!(token.balance(&appealer), appealer_before - appeal_bond);
+    assert_eq!(token.balance(&client.address), contract_before + appeal_bond);
+}
+
+#[test]
+fn test_resolve_appeal_uphold_refunds_appeal_bond() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (id, appealer, appeal_bond) = setup_appealed_dispute(&env, &client, &oracle, &xlm_token);
+
+    let token = TokenClient::new(&env, &xlm_token);
+    let appealer_before = token.balance(&appealer);
+
+    client.resolve_appeal(&admin, &id, &true);
+
+    assert_eq!(token.balance(&appealer), appealer_before + appeal_bond);
+    let market = client.get_market(&id);
+    assert!(!market.is_resolved);
+}
+
+#[test]
+fn test_resolve_appeal_reject_forfeits_appeal_bond() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (id, _appealer, appeal_bond) = setup_appealed_dispute(&env, &client, &oracle, &xlm_token);
+
+    let treasury_before = client.get_treasury_balance();
+    let insurance_before = client.get_insurance_pool_balance();
+
+    client.resolve_appeal(&admin, &id, &false);
+
+    let treasury_after = client.get_treasury_balance();
+    let insurance_after = client.get_insurance_pool_balance();
+    let insurance_share = appeal_bond * 1000 / 10_000;
+    let treasury_share = appeal_bond - insurance_share;
+    assert_eq!(treasury_after, treasury_before + treasury_share);
+    assert_eq!(insurance_after, insurance_before + insurance_share);
+
+    let market = client.get_market(&id);
+    assert!(market.is_resolved);
+}
+
+#[test]
+fn test_resolve_appeal_cannot_be_called_twice() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (id, appealer, _appeal_bond) = setup_appealed_dispute(&env, &client, &oracle, &xlm_token);
+
+    client.resolve_appeal(&admin, &id, &false);
+
+    let token = TokenClient::new(&env, &xlm_token);
+    let appealer_balance_after_first = token.balance(&appealer);
+
+    let result = client.try_resolve_appeal(&admin, &id, &false);
+    assert!(matches!(result, Err(Ok(InsightArenaError::DisputeNotFound))));
+    assert_eq!(token.balance(&appealer), appealer_balance_after_first);
+}
+
 /// `list_active_disputes` and `get_open_dispute_count` must agree after every
 /// raise and resolve step, across multiple markets.
 #[test]

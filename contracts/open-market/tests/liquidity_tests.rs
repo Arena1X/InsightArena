@@ -1900,6 +1900,37 @@ fn test_determine_fee_tier_boundaries_are_exact() {
     assert_eq!(determine_fee_tier(10_000, &cfg), FeeTier::Volatile);
 }
 
+/// Boundary-exactness for the volume-based fee tier selector, mirroring
+/// `test_determine_fee_tier_boundaries_are_exact` for the other (volatility)
+/// tier system (#1694). At each tier's exact threshold volume, the new tier
+/// must already be active — not the previous one.
+#[test]
+fn test_select_volume_fee_tier_boundaries_are_exact() {
+    let env = Env::default();
+    let cfg = insightarena_contract::storage_types::VolumeFeeConfig::default_config(&env);
+
+    // Tier 0 baseline: below any threshold.
+    assert_eq!(select_volume_fee_tier(0, &cfg), (0, 30));
+
+    // Tier 1 boundary: 10_000 XLM.
+    let t1 = 100_000_000_000_i128;
+    assert_eq!(select_volume_fee_tier(t1 - 1, &cfg), (0, 30));
+    assert_eq!(select_volume_fee_tier(t1, &cfg), (1, 25));
+    assert_eq!(select_volume_fee_tier(t1 + 1, &cfg), (1, 25));
+
+    // Tier 2 boundary: 100_000 XLM.
+    let t2 = 1_000_000_000_000_i128;
+    assert_eq!(select_volume_fee_tier(t2 - 1, &cfg), (1, 25));
+    assert_eq!(select_volume_fee_tier(t2, &cfg), (2, 20));
+    assert_eq!(select_volume_fee_tier(t2 + 1, &cfg), (2, 20));
+
+    // Tier 3 boundary: 1_000_000 XLM.
+    let t3 = 10_000_000_000_000_i128;
+    assert_eq!(select_volume_fee_tier(t3 - 1, &cfg), (2, 20));
+    assert_eq!(select_volume_fee_tier(t3, &cfg), (3, 15));
+    assert_eq!(select_volume_fee_tier(t3 + 1, &cfg), (3, 15));
+}
+
 #[test]
 fn test_fee_bps_for_tier_matches_config() {
     let cfg = FeeTierConfig::default_config();

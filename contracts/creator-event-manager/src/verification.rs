@@ -45,6 +45,23 @@ pub enum VerificationError {
     /// The supplied signature does not verify against the signer's bound
     /// public key and the event-bound payload (#1705).
     InvalidSignature = 10,
+    /// No match exists for the given match_id (#1515).
+    MatchNotFound = 11,
+    /// No result is currently staged for this match — either
+    /// `oracle::submit_match_result` has not been called yet, or no verifier
+    /// threshold is configured (in which case results finalize immediately
+    /// and are never staged) (#1515).
+    NoPendingResult = 12,
+}
+
+impl From<crate::oracle::OracleError> for VerificationError {
+    fn from(_: crate::oracle::OracleError) -> Self {
+        // Only reachable via `finalize_match_result`, which cannot fail once
+        // a `PendingMatchResult` has already been validated and staged (the
+        // scoreline and match existence were already checked at submission
+        // time); kept as a safety net rather than panicking.
+        VerificationError::MatchNotFound
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +266,20 @@ fn verification_payload(env: &Env, event_id: u64, data: &Bytes) -> Bytes {
     payload
 }
 
+/// Build the payload a verifier signs for [`submit_match_verification`]: a
+/// domain-separator byte (`0x01`) followed by the `match_id` as 8
+/// big-endian bytes and the caller-supplied `data`. The leading byte
+/// distinguishes match-result attestations from event attestations built by
+/// [`verification_payload`], so a signature produced for `submit_verification`
+/// cannot be replayed as a match verification even when an `event_id` and a
+/// `match_id` happen to share the same numeric value.
+fn match_verification_payload(env: &Env, match_id: u64, data: &Bytes) -> Bytes {
+    let mut payload = Bytes::from_array(env, &[0x01u8]);
+    payload.append(&Bytes::from_array(env, &match_id.to_be_bytes()));
+    payload.append(data);
+    payload
+}
+
 /// Submit a signed verifier attestation for an event.
 ///
 /// `signer` must be one of the addresses configured via
@@ -347,6 +378,135 @@ pub fn is_event_verified(env: &Env, event_id: u64) -> bool {
 /// verification for an event so far.
 pub fn get_event_verification_count(env: &Env, event_id: u64) -> u32 {
     crate::storage::get_event_verification_signers(env, event_id).len()
+}
+
+// ---------------------------------------------------------------------------
+// Per-match M-of-N result verification (#1515)
+// ---------------------------------------------------------------------------
+
+/// Submit a signed verifier attestation for a match's staged pending result.
+///
+/// `signer` must be one of the addresses configured via
+/// `admin::set_verifier_config`, with an ed25519 public key bound via
+/// `admin::set_verifier_public_key`. `signature` must be a valid ed25519
+/// signature, by that bound key, over the payload
+/// `match_id (8 bytes, big-endian) || data` (see [`verification_payload`]) —
+/// binding `match_id` into the signed payload means a signature cannot be
+/// replayed against a different match even if `data` happens to match.
+///
+/// Each signer may submit at most once per match's pending result — a second
+/// submission from the same signer is rejected. Once `M` (the configured
+/// `admin::get_verifier_threshold`) distinct signers have submitted, the
+/// staged result is finalized exactly as [`crate::oracle::submit_match_result`]
+/// would finalize it directly when no threshold is configured: the winning
+/// outcome is recorded, every prediction for the match is graded, and the
+/// event's weighted standings are recomputed.
+///
+/// # Errors
+/// * [`VerificationError::MatchNotFound`] — no match exists for `match_id`.
+/// * [`VerificationError::NoPendingResult`] — no result is currently staged
+///   for this match (either it was never submitted, or no verifier threshold
+///   is configured so results finalize immediately without staging).
+/// * [`VerificationError::NotAVerifierSigner`] — `signer` is not in the
+///   configured verifier signer set.
+/// * [`VerificationError::NoPublicKeyConfigured`] — `signer` has no ed25519
+///   public key bound via `admin::set_verifier_public_key`.
+/// * [`VerificationError::DuplicateSigner`] — `signer` already submitted
+///   verification for this match's pending result.
+/// * Panics if `signature` does not verify against the signer's bound public
+///   key and the match-bound payload.
+///
+/// # Returns
+/// The number of distinct signers who have now submitted for this match's
+/// pending result.
+///
+/// # Events
+/// Emits `(Symbol("verification"), Symbol("match_signed"))` with data
+/// `(match_id, signer, distinct_signer_count)`. If this submission reaches
+/// the threshold, also emits `(Symbol("match"), Symbol("result_submitted"))`
+/// via the shared finalization path.
+pub fn submit_match_verification(
+    env: &Env,
+    match_id: u64,
+    signer: Address,
+    data: Bytes,
+    signature: BytesN<64>,
+) -> Result<u32, VerificationError> {
+    signer.require_auth();
+
+    crate::storage::get_match(env, match_id).map_err(|_| VerificationError::MatchNotFound)?;
+
+    let pending = crate::storage::get_pending_match_result(env, match_id)
+        .ok_or(VerificationError::NoPendingResult)?;
+
+    let configured_signers = crate::admin::get_verifier_signers(env);
+    if !configured_signers.iter().any(|addr| addr == signer) {
+        return Err(VerificationError::NotAVerifierSigner);
+    }
+
+    let public_key = crate::admin::get_verifier_public_key(env, &signer)
+        .ok_or(VerificationError::NoPublicKeyConfigured)?;
+
+    let mut submitted = crate::storage::get_match_verification_signers(env, match_id);
+    if submitted.iter().any(|addr| addr == signer) {
+        return Err(VerificationError::DuplicateSigner);
+    }
+
+    // Reverts (panics) the whole call if the signature does not verify
+    // against `signer`'s bound key and the match-bound payload.
+    let payload = match_verification_payload(env, match_id, &data);
+    env.crypto().ed25519_verify(&public_key, &payload, &signature);
+
+    crate::storage::add_match_verification_signer(env, match_id, &signer);
+    submitted.push_back(signer.clone());
+    let distinct_count = submitted.len();
+
+    env.events().publish(
+        (
+            Symbol::new(env, "verification"),
+            Symbol::new(env, "match_signed"),
+        ),
+        (match_id, signer.clone(), distinct_count),
+    );
+
+    let threshold = crate::admin::get_verifier_threshold(env);
+    if distinct_count >= threshold {
+        let match_record = crate::storage::get_match(env, match_id)
+            .map_err(|_| VerificationError::MatchNotFound)?;
+
+        crate::oracle::finalize_match_result(
+            env,
+            match_record,
+            match_id,
+            pending.submitted_by,
+            pending.home_score,
+            pending.away_score,
+            env.ledger().timestamp(),
+        )?;
+
+        crate::storage::remove_pending_match_result(env, match_id);
+    }
+
+    Ok(distinct_count)
+}
+
+/// Return `true` once at least `M` (the configured threshold) distinct
+/// verifier signers have submitted verification for a match's pending
+/// result. Returns `false` if no result is currently staged for this match
+/// (including once it has already finalized — the pending record is removed
+/// at that point).
+pub fn is_match_verified(env: &Env, match_id: u64) -> bool {
+    let threshold = crate::admin::get_verifier_threshold(env);
+    if threshold == 0 || crate::storage::get_pending_match_result(env, match_id).is_none() {
+        return false;
+    }
+    crate::storage::get_match_verification_signers(env, match_id).len() >= threshold
+}
+
+/// Return the number of distinct verifier signers who have submitted
+/// verification for a match's pending result so far.
+pub fn get_match_verification_count(env: &Env, match_id: u64) -> u32 {
+    crate::storage::get_match_verification_signers(env, match_id).len()
 }
 
 // ---------------------------------------------------------------------------

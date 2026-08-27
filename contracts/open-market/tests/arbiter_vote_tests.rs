@@ -463,6 +463,37 @@ fn non_voter_slashed_amount_exactly_equals_amount_redistributed_to_voters() {
     assert!(client.get_arbiter_stake(&arbiter_b) > stake_amount);
 }
 
+// ── Double-settle guard (#1677) ───────────────────────────────────────────────
+
+#[test]
+fn finalize_arbiter_vote_cannot_be_called_twice() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (market_id, disputer, _bond) = setup_disputed_market(&env, &client, &oracle, &xlm_token);
+
+    let arbiter_a = fund_and_stake_arbiter(&env, &client, &xlm_token, 10_000_000);
+    let arbiter_b = fund_and_stake_arbiter(&env, &client, &xlm_token, 10_000_000);
+    client.assign_arbiters(&admin, &market_id, &vec![&env, arbiter_a.clone(), arbiter_b.clone()]);
+    client.cast_arbiter_vote(&arbiter_a, &market_id, &true);
+    client.cast_arbiter_vote(&arbiter_b, &market_id, &true);
+
+    let tally = client.get_arbiter_tally(&market_id);
+    env.ledger().set_timestamp(tally.voting_deadline + 1);
+
+    client.finalize_arbiter_vote(&admin, &market_id);
+
+    let token = TokenClient::new(&env, &xlm_token);
+    let disputer_balance_after_first = token.balance(&disputer);
+
+    let result = client.try_finalize_arbiter_vote(&admin, &market_id);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::DisputeNotFound))
+    ));
+    assert_eq!(token.balance(&disputer), disputer_balance_after_first);
+}
+
 // ── Admin gating ────────────────────────────────────────────────────────────────
 
 #[test]

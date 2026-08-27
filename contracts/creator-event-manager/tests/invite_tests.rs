@@ -207,3 +207,88 @@ fn test_set_invite_limits_unknown_event_panics() {
 
     client.set_invite_limits(&creator, &999u64, &0u64, &1u32);
 }
+
+// ---------------------------------------------------------------------------
+// get_invite_code_info view (#1514)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_get_invite_code_info_legacy_code_is_unlimited_and_valid() {
+    let (env, client, _contract_id, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    fund(&env, &xlm_token, &creator, FEE);
+    let (event_id, invite_code) = create_event_default(&client, &env, &creator, 10);
+
+    let info = client.get_invite_code_info(&invite_code);
+    assert_eq!(info.event_id, event_id);
+    assert_eq!(info.expires_at, 0);
+    assert_eq!(info.max_uses, 0);
+    assert_eq!(info.use_count, 0);
+    assert_eq!(info.remaining_uses, u32::MAX);
+    assert!(info.is_valid);
+}
+
+#[test]
+fn test_get_invite_code_info_reflects_remaining_uses() {
+    let (env, client, _contract_id, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    fund(&env, &xlm_token, &creator, FEE);
+    let (event_id, invite_code) = create_event_default(&client, &env, &creator, 10);
+
+    client.set_invite_limits(&creator, &event_id, &0u64, &3u32);
+
+    let user = Address::generate(&env);
+    client.join_event(&user, &invite_code);
+
+    let info = client.get_invite_code_info(&invite_code);
+    assert_eq!(info.max_uses, 3);
+    assert_eq!(info.use_count, 1);
+    assert_eq!(info.remaining_uses, 2);
+    assert!(info.is_valid);
+}
+
+#[test]
+fn test_get_invite_code_info_reports_invalid_once_exhausted() {
+    let (env, client, _contract_id, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    fund(&env, &xlm_token, &creator, FEE);
+    let (event_id, invite_code) = create_event_default(&client, &env, &creator, 10);
+
+    client.set_invite_limits(&creator, &event_id, &0u64, &1u32);
+
+    let user = Address::generate(&env);
+    client.join_event(&user, &invite_code);
+
+    let info = client.get_invite_code_info(&invite_code);
+    assert_eq!(info.use_count, 1);
+    assert_eq!(info.remaining_uses, 0);
+    assert!(!info.is_valid);
+}
+
+#[test]
+fn test_get_invite_code_info_reports_invalid_once_expired() {
+    let (env, client, _contract_id, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    fund(&env, &xlm_token, &creator, FEE);
+    let (event_id, invite_code) = create_event_default(&client, &env, &creator, 10);
+
+    let expires_at = env.ledger().timestamp() + 100;
+    client.set_invite_limits(&creator, &event_id, &expires_at, &0u32);
+
+    let info_before = client.get_invite_code_info(&invite_code);
+    assert!(info_before.is_valid);
+
+    env.ledger().with_mut(|l| l.timestamp = expires_at);
+
+    let info_after = client.get_invite_code_info(&invite_code);
+    assert!(!info_after.is_valid);
+    // Expiry does not affect the recorded use count/remaining budget.
+    assert_eq!(info_after.remaining_uses, u32::MAX);
+}
+
+#[test]
+#[should_panic(expected = "invalid_invite_code")]
+fn test_get_invite_code_info_unknown_code_panics() {
+    let (env, client, _contract_id, _xlm_token) = setup();
+    client.get_invite_code_info(&soroban_sdk::Symbol::new(&env, "NOPE0000"));
+}

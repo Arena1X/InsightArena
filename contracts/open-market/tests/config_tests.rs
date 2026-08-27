@@ -1,7 +1,8 @@
 use insightarena_contract::config;
+use insightarena_contract::storage_types::{VolumeFeeConfig, VolumeFeeEntry};
 use insightarena_contract::{InsightArenaContract, InsightArenaContractClient, InsightArenaError};
 use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
-use soroban_sdk::{Address, Env, IntoVal};
+use soroban_sdk::{Address, Env, IntoVal, Vec};
 
 fn deploy(env: &Env) -> InsightArenaContractClient<'_> {
     let id = env.register(InsightArenaContract, ());
@@ -545,6 +546,96 @@ fn set_early_exit_fee_bps_fails_when_paused() {
     client.set_paused(&true, &1u32);
     let result = client.try_set_early_exit_fee_bps(&admin, &1_000_u32);
     assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+}
+
+// ── Volume fee tier config validation (#1694) ─────────────────────────────────
+
+fn tiers(env: &Env, entries: &[(i128, u32)]) -> VolumeFeeConfig {
+    let mut tiers: Vec<VolumeFeeEntry> = Vec::new(env);
+    for &(volume_threshold, fee_bps) in entries {
+        tiers.push_back(VolumeFeeEntry {
+            volume_threshold,
+            fee_bps,
+        });
+    }
+    VolumeFeeConfig { tiers }
+}
+
+#[test]
+fn set_volume_fee_config_accepts_valid_schedule() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+
+    let new_config = tiers(&env, &[(0, 30), (1_000, 20), (10_000, 10)]);
+    client.update_volume_fee_config(&admin, &new_config);
+
+    let stored = client.get_volume_fee_config();
+    assert_eq!(stored.tiers.len(), 3);
+    assert_eq!(stored.tiers.get(1).unwrap().fee_bps, 20);
+}
+
+#[test]
+fn set_volume_fee_config_rejects_nonzero_tier_zero_threshold() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+
+    let bad_config = tiers(&env, &[(1, 30)]);
+    let result = client.try_update_volume_fee_config(&admin, &bad_config);
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+}
+
+#[test]
+fn set_volume_fee_config_rejects_non_monotonic_thresholds() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+
+    // Tier 2's threshold (50) is not strictly greater than tier 1's (100) —
+    // overlapping/out-of-order tiers must be rejected.
+    let bad_config = tiers(&env, &[(0, 30), (100, 20), (50, 10)]);
+    let result = client.try_update_volume_fee_config(&admin, &bad_config);
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+}
+
+#[test]
+fn set_volume_fee_config_rejects_duplicate_threshold() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+
+    // Equal (non-strictly-increasing) thresholds are also rejected.
+    let bad_config = tiers(&env, &[(0, 30), (100, 20), (100, 10)]);
+    let result = client.try_update_volume_fee_config(&admin, &bad_config);
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+}
+
+#[test]
+fn set_volume_fee_config_rejects_fee_bps_over_10000() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+
+    let bad_config = tiers(&env, &[(0, 10_001)]);
+    let result = client.try_update_volume_fee_config(&admin, &bad_config);
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidFee))));
+}
+
+#[test]
+fn set_volume_fee_config_rejects_empty_tiers() {
+    let env = Env::default();
+    let (client, admin, _oracle) = deploy_initialized(&env);
+
+    let bad_config = tiers(&env, &[]);
+    let result = client.try_update_volume_fee_config(&admin, &bad_config);
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+}
+
+#[test]
+fn set_volume_fee_config_rejects_unauthorized_caller() {
+    let env = Env::default();
+    let (client, _admin, _oracle) = deploy_initialized(&env);
+    let not_admin = Address::generate(&env);
+
+    let new_config = tiers(&env, &[(0, 30)]);
+    let result = client.try_update_volume_fee_config(&not_admin, &new_config);
+    assert!(matches!(result, Err(Ok(InsightArenaError::Unauthorized))));
 }
 
 #[test]

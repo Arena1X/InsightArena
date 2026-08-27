@@ -1,7 +1,7 @@
 use soroban_sdk::{Env, Symbol};
 
 use crate::storage::TTL_LEDGERS;
-use crate::storage_types::{DataKey, InviteCodeData};
+use crate::storage_types::{DataKey, InviteCodeData, InviteCodeInfo};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -133,4 +133,36 @@ pub fn redeem(env: &Env, code: &Symbol, current_time: u64) -> Result<u64, Invite
     set_invite_data(env, code, &data);
 
     Ok(data.event_id)
+}
+
+// ---------------------------------------------------------------------------
+// get_invite_code_info (#1514)
+// ---------------------------------------------------------------------------
+
+/// Read-only view of an invite code's remaining uses and validity.
+///
+/// Computed from the stored [`InviteCodeData`] as of the current ledger
+/// time — does not redeem the code. `remaining_uses` is `u32::MAX` for an
+/// unlimited code (`max_uses == 0`).
+///
+/// # Errors
+/// * [`InviteError::InvalidCode`] — no invite code data exists for `code`.
+pub fn get_invite_code_info(env: &Env, code: &Symbol) -> Result<InviteCodeInfo, InviteError> {
+    let data = get_invite_data(env, code)?;
+    let now = env.ledger().timestamp();
+
+    let remaining_uses = if data.max_uses == 0 {
+        u32::MAX
+    } else {
+        data.max_uses.saturating_sub(data.use_count)
+    };
+
+    Ok(InviteCodeInfo {
+        event_id: data.event_id,
+        expires_at: data.expires_at,
+        max_uses: data.max_uses,
+        use_count: data.use_count,
+        remaining_uses,
+        is_valid: !data.is_expired(now) && !data.is_at_cap(),
+    })
 }
