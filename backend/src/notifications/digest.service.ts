@@ -7,6 +7,7 @@ import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { User } from '../users/entities/user.entity';
 import { Notification } from './entities/notification.entity';
 import { NotificationDigestState } from './entities/notification-digest-state.entity';
+import { NotificationCategoryPreference } from './entities/notification-category-preference.entity';
 import { EmailService } from './email.service';
 import {
   renderEmailTemplate,
@@ -101,6 +102,8 @@ export class DigestService {
     private readonly notificationRepo: Repository<Notification>,
     @InjectRepository(NotificationDigestState)
     private readonly digestStateRepo: Repository<NotificationDigestState>,
+    @InjectRepository(NotificationCategoryPreference)
+    private readonly categoryPreferencesRepo: Repository<NotificationCategoryPreference>,
     private readonly emailService: EmailService,
     private readonly config: ConfigService,
   ) {}
@@ -224,7 +227,7 @@ export class DigestService {
     if (lastPeriod === periodKey) return;
 
     // fetch unread notifications created in the window (cap at 20 items)
-    const notifications = await this.notificationRepo.find({
+    const allNotifications = await this.notificationRepo.find({
       where: {
         user_address: user.stellar_address,
         read: false,
@@ -233,6 +236,11 @@ export class DigestService {
       order: { created_at: 'DESC' },
       take: 20,
     });
+
+    const notifications = await this.filterByCategoryEmailPreference(
+      pref.userId,
+      allNotifications,
+    );
 
     // skip users with nothing to report — no email queued, no state written
     if (notifications.length === 0) return;
@@ -266,6 +274,29 @@ export class DigestService {
 
     this.logger.log(
       `Digest sent to ${user.email} (${frequency}, ${periodKey}, ${aggregated.totalUnique} items, ${aggregated.overflowCount} overflow)`,
+    );
+  }
+
+  /**
+   * Drops notifications whose category has email delivery turned off via
+   * per-category preferences. Categories with no stored preference default
+   * to enabled (matches NotificationsService.isCategoryEnabled).
+   */
+  private async filterByCategoryEmailPreference(
+    userId: string,
+    notifications: Notification[],
+  ): Promise<Notification[]> {
+    const categoryPrefs = await this.categoryPreferencesRepo.find({
+      where: { userId },
+    });
+    const emailDisabledCategories = new Set(
+      categoryPrefs.filter((p) => !p.email).map((p) => p.category as string),
+    );
+
+    if (emailDisabledCategories.size === 0) return notifications;
+
+    return notifications.filter(
+      (notification) => !emailDisabledCategories.has(notification.type),
     );
   }
 

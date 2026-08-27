@@ -152,8 +152,11 @@ export class WebhookDispatcherService {
 
   private scheduleRetry(log: WebhookDeliveryLog, attempt: number): void {
     if (attempt >= this.maxAttempts) {
-      log.status = DeliveryStatus.FAILED;
+      log.status = DeliveryStatus.DEAD_LETTER;
       log.next_retry_at = null;
+      this.logger.warn(
+        `Webhook delivery ${log.id} moved to dead-letter after ${attempt} attempts`,
+      );
     } else {
       const backoffMs = Math.min(Math.pow(2, attempt - 1) * 1000, 3600000); // cap at 1 hour
       log.next_retry_at = new Date(Date.now() + backoffMs);

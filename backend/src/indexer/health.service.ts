@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IndexerService } from './indexer.service';
+import { ReconciliationService } from './reconciliation.service';
 import {
   IndexerAlertDto,
   IndexerAlertSeverity,
@@ -20,6 +21,7 @@ export class IndexerHealthService {
   constructor(
     private readonly indexerService: IndexerService,
     private readonly configService: ConfigService,
+    private readonly reconciliationService: ReconciliationService,
   ) {}
 
   async getHealth(): Promise<IndexerHealthResponseDto> {
@@ -84,6 +86,12 @@ export class IndexerHealthService {
       '# HELP indexer_dlq_events Events in the dead-letter queue',
       '# TYPE indexer_dlq_events gauge',
       `indexer_dlq_events ${metrics.dlq_events}`,
+      '# HELP indexer_last_reorg_depth Ledgers rewound by the most recently detected chain reorg',
+      '# TYPE indexer_last_reorg_depth gauge',
+      `indexer_last_reorg_depth ${metrics.last_reorg_depth}`,
+      '# HELP indexer_last_reorg_rescanned_ledger_count Ledgers re-scanned recovering from the most recently detected chain reorg',
+      '# TYPE indexer_last_reorg_rescanned_ledger_count gauge',
+      `indexer_last_reorg_rescanned_ledger_count ${metrics.last_reorg_rescanned_ledger_count}`,
     ];
 
     return `${lines.join('\n')}\n`;
@@ -127,6 +135,10 @@ export class IndexerHealthService {
       total_events_processed: baseMetrics.total_events_processed,
       pending_events: baseMetrics.pending_events,
       dlq_events: baseMetrics.dlq_events,
+      last_reorg_depth: this.reconciliationService.getStatus().last_reorg_depth,
+      last_reorg_rescanned_ledger_count:
+        this.reconciliationService.getStatus()
+          .last_reorg_rescanned_ledger_count,
     };
   }
 
