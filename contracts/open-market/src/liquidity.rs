@@ -565,6 +565,24 @@ fn isqrt_u128(n: u128) -> u128 {
     x
 }
 
+/// Integer square root (floor) of a non-negative `i128`, via Babylonian
+/// (Newton's) method. Used in the bootstrap branch of `add_liquidity` to
+/// compute `initial_liquidity = floor(sqrt(amount_a * amount_b))`, matching
+/// Uniswap v2's share-inflation defence. Callers must guarantee `n >= 0`;
+/// passing a negative value returns `0` defensively.
+fn isqrt_i128(n: i128) -> i128 {
+    if n <= 0 {
+        return 0;
+    }
+    let mut x = n;
+    let mut y = (x / 2) + 1;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
+
 /// Resolve the reserve pair this pool tracks for impermanent-loss purposes:
 /// the reserves of `mkt.outcome_options[0]` and `mkt.outcome_options[1]`. If
 /// the market has fewer than 2 outcomes, both entries mirror
@@ -907,6 +925,42 @@ pub fn add_liquidity(
         }
         (lp_tokens, pool)
     } else {
+        // ── Bootstrap: first-depositor share-inflation defence ─────────────
+        //
+        // Minting 1:1 on the very first deposit lets an attacker deposit a
+        // tiny amount, directly donate tokens to inflate the share price, then
+        // siphon subsequent depositors' funds.  We follow Uniswap v2's fix:
+        //
+        //   initial_liquidity = floor(sqrt(amount_a * amount_b))
+        //   lp_tokens_to_mint = initial_liquidity - MIN_LIQUIDITY
+        //
+        // MIN_LIQUIDITY is permanently counted in total_supply but never
+        // credited to any account, making the cost of a donation attack
+        // proportional to MIN_LIQUIDITY rather than 1 stroop.
+        //
+        // For this N-outcome AMM each outcome receives `per_outcome_amount`
+        // (= amount / outcome_count), so amount_a == amount_b ==
+        // per_outcome_amount, and sqrt(a*b) == per_outcome_amount exactly
+        // (perfect square).  We use the general formula so the logic is
+        // correct even if future callers supply unequal amounts.
+        let product = per_outcome_amount
+            .checked_mul(per_outcome_amount)
+            .ok_or(InsightArenaError::Overflow)?;
+        let initial_liquidity = isqrt_i128(product);
+
+        // Reject dust deposits whose geometric mean does not exceed the
+        // minimum lock.  This check MUST precede the subtraction to prevent
+        // an underflow on `initial_liquidity - MIN_LIQUIDITY`.
+        // Reuses `StakeTooLow` — the error enum is at its 50-case XDR cap
+        // and cannot accommodate a new variant.
+        if initial_liquidity <= MIN_LIQUIDITY {
+            return Err(InsightArenaError::StakeTooLow);
+        }
+
+        let lp_tokens_to_mint = initial_liquidity
+            .checked_sub(MIN_LIQUIDITY)
+            .ok_or(InsightArenaError::Overflow)?;
+
         let mut reserves = Map::new(env);
         for outcome in mkt.outcome_options.iter() {
             reserves.set(outcome, per_outcome_amount);
@@ -919,9 +973,12 @@ pub fn add_liquidity(
             env.ledger().timestamp(),
         );
         let mut pool = pool;
-        pool.lp_token_supply = amount;
+        // total_supply = initial_liquidity (includes the permanently-locked
+        // MIN_LIQUIDITY); the depositor's tracked balance is only
+        // lp_tokens_to_mint.
+        pool.lp_token_supply = initial_liquidity;
         pool.total_liquidity = amount;
-        (amount, pool)
+        (lp_tokens_to_mint, pool)
     };
 
     if is_new_pool {
