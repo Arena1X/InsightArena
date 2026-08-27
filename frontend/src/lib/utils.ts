@@ -48,6 +48,18 @@ export function filterDocSections<T extends DocSearchable>(
   );
 }
 
+/**
+ * Converts arbitrary text into a URL/hash-safe slug, e.g. for deep-linking
+ * to a specific accordion section (`#what-is-cryptocurrency`).
+ */
+export function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+}
+
 // ── Route content pending signal ────────────────────────────────────────────
 //
 // Next.js updates the URL (usePathname/useSearchParams) as soon as a client
