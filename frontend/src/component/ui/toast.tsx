@@ -93,6 +93,18 @@ function ToastCard({
       <div className="min-w-0 flex-1">
         {toast.title && <p className="text-sm font-semibold">{toast.title}</p>}
         <p className="text-sm leading-snug break-words opacity-90">{toast.description}</p>
+        {toast.action && (
+          <button
+            type="button"
+            onClick={() => {
+              toast.action?.onClick();
+              onDismiss();
+            }}
+            className="mt-2 rounded-md border border-current px-2.5 py-1 text-xs font-semibold transition hover:bg-current/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
+          >
+            {toast.action.label}
+          </button>
+        )}
       </div>
       <button
         type="button"

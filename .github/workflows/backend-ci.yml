@@ -52,6 +52,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check migration timestamp uniqueness
+        run: pnpm run migration:check-timestamps
+
       - name: Run linter
         run: pnpm run lint
 

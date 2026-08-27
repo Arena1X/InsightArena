@@ -4,11 +4,13 @@ import { useEffect, useState, useMemo, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { apiClient, ApiError } from "@/lib/api";
 import { useFavorites } from "@/context/FavoritesContext";
+import { usePredictionSlip } from "@/context/PredictionSlipContext";
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
+import { useDebounce } from "@/hooks/useDebounce";
 import MarketCard from "@/component/MarketCard";
 import { MarketsPageLoadingSkeleton } from "@/component/loading-route-skeletons";
 import { EmptyState } from "@/component/ui/empty-state";
-import { Heart, AlertCircle, Inbox, Loader2 } from "lucide-react";
+import { Heart, AlertCircle, Inbox, Loader2, Search, X } from "lucide-react";
 
 interface Market {
   id: string;
@@ -32,6 +34,7 @@ export default function MarketsPage() {
     toggleFavorite,
     isLoading: favoritesLoading,
   } = useFavorites();
+  const { addItem, openSlip } = usePredictionSlip();
 
   const [markets, setMarkets] = useState<Market[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,6 +44,10 @@ export default function MarketsPage() {
   const [selectedCategory, setSelectedCategory] = useState<string>(
     searchParams.get("category") || "All",
   );
+  const [searchQuery, setSearchQuery] = useState<string>(
+    searchParams.get("q") || "",
+  );
+  const debouncedSearch = useDebounce(searchQuery, 300);
   const [viewMode, setViewMode] = useState<"all" | "favorites">(
     searchParams.get("view") === "favorites" ? "favorites" : "all",
   );
@@ -123,7 +130,7 @@ export default function MarketsPage() {
     enabled: viewMode === "all" && hasMore && !loading,
   });
 
-  // Update URL when category changes
+  // Update URL when category, search, or view changes
   useEffect(() => {
     const params = new URLSearchParams(searchParams);
     if (selectedCategory === "All") {
@@ -131,15 +138,20 @@ export default function MarketsPage() {
     } else {
       params.set("category", selectedCategory);
     }
+    if (debouncedSearch) {
+      params.set("q", debouncedSearch);
+    } else {
+      params.delete("q");
+    }
     if (viewMode === "favorites") {
       params.set("view", "favorites");
     } else {
       params.delete("view");
     }
     router.push(`?${params.toString()}`);
-  }, [selectedCategory, viewMode, router, searchParams]);
+  }, [selectedCategory, debouncedSearch, viewMode, router, searchParams]);
 
-  // Filter markets by category and favorites
+  // Filter markets by category, search, and favorites
   const filteredMarkets = useMemo(() => {
     let filtered = markets;
 
@@ -149,12 +161,21 @@ export default function MarketsPage() {
       );
     }
 
+    if (debouncedSearch) {
+      const q = debouncedSearch.toLowerCase();
+      filtered = filtered.filter(
+        (m) =>
+          m.title.toLowerCase().includes(q) ||
+          m.category.toLowerCase().includes(q),
+      );
+    }
+
     if (viewMode === "favorites") {
       filtered = filtered.filter((m) => favoriteIds.has(m.id));
     }
 
     return filtered;
-  }, [markets, selectedCategory, viewMode, favoriteIds]);
+  }, [markets, selectedCategory, debouncedSearch, viewMode, favoriteIds]);
 
   const handleCategoryChange = useCallback((category: string) => {
     setSelectedCategory(category);
@@ -172,9 +193,18 @@ export default function MarketsPage() {
   );
 
   const handlePredict = useCallback((marketId: string) => {
-    // TODO: Navigate to prediction modal/page
-    console.log(`Predict clicked for market ${marketId}`);
-  }, []);
+    const market = markets.find((m) => m.id === marketId);
+    if (market) {
+      addItem({
+        marketId: market.id,
+        marketTitle: market.title,
+        category: market.category,
+        outcome: "Yes",
+        odds: market.probability > 0 ? 1 / market.probability : 2,
+      });
+      openSlip();
+    }
+  }, [markets, addItem, openSlip]);
 
   // Category counts
   const categoryCounts = useMemo(() => {
@@ -202,6 +232,28 @@ export default function MarketsPage() {
           <p className="mt-2 text-gray-400">
             Browse and predict on various markets
           </p>
+        </div>
+
+        {/* Search Bar */}
+        <div className="relative mb-6">
+          <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search markets by title or category…"
+            className="w-full rounded-xl border border-white/10 bg-white/5 py-3 pl-11 pr-10 text-sm text-white outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-400/20 placeholder:text-slate-500"
+            aria-label="Search markets"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition"
+              aria-label="Clear search"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         {/* View Mode Tabs */}
@@ -315,16 +367,20 @@ export default function MarketsPage() {
               )
             }
             title={
-              viewMode === "favorites"
-                ? "No Favorite Markets Yet"
-                : selectedCategory === "All"
-                  ? "No Markets Available"
-                  : `No ${selectedCategory} Markets`
+              debouncedSearch
+                ? "No Results Found"
+                : viewMode === "favorites"
+                  ? "No Favorite Markets Yet"
+                  : selectedCategory === "All"
+                    ? "No Markets Available"
+                    : `No ${selectedCategory} Markets`
             }
             description={
-              viewMode === "favorites"
-                ? "Start adding markets to your watchlist to see them here. Click the heart icon on any market to favorite it."
-                : `No markets found in this category. Try selecting a different category or check back soon.`
+              debouncedSearch
+                ? `No markets match "${debouncedSearch}". Try a different search term.`
+                : viewMode === "favorites"
+                  ? "Start adding markets to your watchlist to see them here. Click the heart icon on any market to favorite it."
+                  : `No markets found in this category. Try selecting a different category or check back soon.`
             }
             action={
               viewMode === "favorites"

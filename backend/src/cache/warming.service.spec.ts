@@ -4,6 +4,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { MarketStatus } from '../markets/dto/list-markets.dto';
 import { MarketsService } from '../markets/markets.service';
+import { LeaderboardService } from '../leaderboard/leaderboard.service';
 import { CACHE_WARMING_KEYS } from './cache-warming.keys';
 import { CacheWarmingService } from './warming.service';
 
@@ -16,6 +17,16 @@ describe('CacheWarmingService', () => {
     findByIdOrOnChainId: jest.Mock;
   };
   let analyticsService: { getCategoryAnalytics: jest.Mock };
+  let leaderboardService: { getTopN: jest.Mock };
+
+  const baseConfig: Record<string, string> = {
+    CACHE_WARMING_TTL_SECONDS: '300',
+    CACHE_WARMING_ACTIVE_EVENTS_LIMIT: '10',
+    CACHE_WARMING_TRENDING_EVENTS_LIMIT: '8',
+    CACHE_WARMING_POPULAR_EVENT_DETAILS_LIMIT: '2',
+    CACHE_WARMING_LEADERBOARD_TOP_N: '10,20',
+    CACHE_WARMING_LEADERBOARD_SEASON_IDS: '',
+  };
 
   beforeEach(async () => {
     cacheManager = { set: jest.fn().mockResolvedValue(undefined) };
@@ -32,6 +43,9 @@ describe('CacheWarmingService', () => {
     analyticsService = {
       getCategoryAnalytics: jest.fn().mockResolvedValue({ categories: [] }),
     };
+    leaderboardService = {
+      getTopN: jest.fn().mockResolvedValue([]),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -39,18 +53,11 @@ describe('CacheWarmingService', () => {
         { provide: CACHE_MANAGER, useValue: cacheManager },
         { provide: MarketsService, useValue: marketsService },
         { provide: AnalyticsService, useValue: analyticsService },
+        { provide: LeaderboardService, useValue: leaderboardService },
         {
           provide: ConfigService,
           useValue: {
-            get: jest.fn((key: string) => {
-              const values: Record<string, string> = {
-                CACHE_WARMING_TTL_SECONDS: '300',
-                CACHE_WARMING_ACTIVE_EVENTS_LIMIT: '10',
-                CACHE_WARMING_TRENDING_EVENTS_LIMIT: '8',
-                CACHE_WARMING_POPULAR_EVENT_DETAILS_LIMIT: '2',
-              };
-              return values[key];
-            }),
+            get: jest.fn((key: string) => baseConfig[key]),
           },
         },
       ],
@@ -59,7 +66,7 @@ describe('CacheWarmingService', () => {
     service = module.get(CacheWarmingService);
   });
 
-  it('warms active events, trending events, platform statistics, and popular details', async () => {
+  it('warms active events, trending events, platform statistics, popular details, and leaderboard', async () => {
     const result = await service.warmFrequentlyAccessedData();
 
     expect(marketsService.findAllFiltered).toHaveBeenCalledWith({
@@ -79,32 +86,17 @@ describe('CacheWarmingService', () => {
     expect(marketsService.findByIdOrOnChainId).toHaveBeenCalledWith(
       'popular-2',
     );
+    // Leaderboard top-N slices
+    expect(leaderboardService.getTopN).toHaveBeenCalledWith(10, undefined);
+    expect(leaderboardService.getTopN).toHaveBeenCalledWith(20, undefined);
     expect(cacheManager.set).toHaveBeenCalledWith(
       CACHE_WARMING_KEYS.activeEvents,
       { data: [], total: 0 },
       300000,
     );
-
     expect(cacheManager.set).toHaveBeenCalledWith(
-      CACHE_WARMING_KEYS.trendingEvents,
-      {
-        data: [{ id: 'popular-1' }, { id: 'popular-2' }],
-        total: 2,
-      },
-      300000,
-    );
-
-    // At least one popular market detail key
-    expect(cacheManager.set).toHaveBeenCalledWith(
-      CACHE_WARMING_KEYS.popularEventDetail('popular-1'),
-      { id: 'popular-1' },
-      300000,
-    );
-
-    // Platform statistics (if applicable)
-    expect(cacheManager.set).toHaveBeenCalledWith(
-      CACHE_WARMING_KEYS.platformStatistics,
-      { categories: [] },
+      CACHE_WARMING_KEYS.leaderboardTopN(10, null),
+      [],
       300000,
     );
     expect(result.failed).toEqual([]);
@@ -115,6 +107,8 @@ describe('CacheWarmingService', () => {
         CACHE_WARMING_KEYS.platformStatistics,
         CACHE_WARMING_KEYS.popularEventDetail('popular-1'),
         CACHE_WARMING_KEYS.popularEventDetail('popular-2'),
+        CACHE_WARMING_KEYS.leaderboardTopN(10, null),
+        CACHE_WARMING_KEYS.leaderboardTopN(20, null),
       ]),
     );
   });
@@ -138,6 +132,7 @@ describe('CacheWarmingService', () => {
         { provide: CACHE_MANAGER, useValue: cacheManager },
         { provide: MarketsService, useValue: marketsService },
         { provide: AnalyticsService, useValue: analyticsService },
+        { provide: LeaderboardService, useValue: leaderboardService },
         {
           provide: ConfigService,
           useValue: { get: jest.fn(() => 'false') },

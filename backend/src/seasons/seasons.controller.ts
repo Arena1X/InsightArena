@@ -21,6 +21,7 @@ import { Public } from '../common/decorators/public.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { Season } from './entities/season.entity';
+import { SeasonDistributionLedgerEntry } from './entities/season-distribution-ledger.entity';
 import { SeasonsService } from './seasons.service';
 import { CreateSeasonDto } from './dto/create-season.dto';
 import {
@@ -90,7 +91,7 @@ export class SeasonsController {
   @ApiOperation({
     summary: 'List all seasons (paginated, public)',
     description:
-      'Ordered by season_number descending. When a season is finalized and a top winner is stored, `top_winner` includes public profile fields.',
+      'Ordered by start date descending. Optional `status` filter supports active, upcoming, and finalized seasons. When a season is finalized and a top winner is stored, `top_winner` includes public profile fields.',
   })
   @ApiResponse({ status: 200, type: PaginatedSeasonsResponseDto })
   async list(
@@ -123,6 +124,20 @@ export class SeasonsController {
     return this.seasonsService.create(dto);
   }
 
+  @Post('rollover')
+  @HttpCode(HttpStatus.OK)
+  @Roles(Role.Admin)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Run automated season rollover (Admin only)',
+    description:
+      'Closes an ending season, finalizes standings, computes rewards, and opens the next season. Safe to re-run (idempotent).',
+  })
+  @ApiResponse({ status: 200, description: 'Rollover result' })
+  async rollover() {
+    return this.seasonsService.processSeasonRollover();
+  }
+
   @Post(':id/finalize')
   @HttpCode(HttpStatus.OK)
   @Roles(Role.Admin)
@@ -140,5 +155,24 @@ export class SeasonsController {
   })
   async finalizeSeason(@Param('id') id: string): Promise<Season> {
     return this.seasonsService.finalizeSeason(id);
+  }
+
+  @Get(':id/distribution-ledger')
+  @Roles(Role.Admin)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: "Get a season's prize distribution ledger (Admin only)",
+    description:
+      'Immutable per-recipient audit trail of prize payouts for the season, with status PENDING/SUCCEEDED/FAILED.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Ledger entries for the season, oldest first',
+    type: [SeasonDistributionLedgerEntry],
+  })
+  async getDistributionLedger(
+    @Param('id') id: string,
+  ): Promise<SeasonDistributionLedgerEntry[]> {
+    return this.seasonsService.getDistributionLedger(id);
   }
 }

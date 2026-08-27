@@ -1,4 +1,10 @@
-import { IsString, IsUUID, IsNumberString, MinLength, IsOptional } from 'class-validator';
+import {
+  IsString,
+  IsUUID,
+  IsNumberString,
+  MinLength,
+  IsOptional,
+} from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class SubmitPredictionDto {

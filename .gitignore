@@ -23,3 +23,8 @@ CLAUDE.md
 
 # project uses pnpm — don't commit npm lockfiles
 package-lock.json
+
+# mimo
+.mimocode/
+mimocode.json
+mimocode.jsonc

@@ -59,15 +59,19 @@ describe('DateRangeQueryDto', () => {
     await expectInvalid(dto, 'from must be before to');
   });
 
-  it('rejects oversized ranges beyond 365 days', async () => {
+  it('clamps oversized ranges to the max lookback window', async () => {
     const dto = new DateRangeQueryDto();
-    dto.from = '2024-01-01T00:00:00.000Z';
+    dto.from = '2020-01-01T00:00:00.000Z';
     dto.to = '2026-01-02T00:00:00.000Z';
 
-    await expectInvalid(
-      dto,
-      `Date range must not exceed ${MAX_DATE_RANGE_DAYS} days`,
-    );
+    await expectValid(dto);
+
+    const { from, to } = dto.resolveRange(new Date('2026-01-02T00:00:00.000Z'));
+    const windowDays =
+      (to.getTime() - from.getTime()) / (24 * 60 * 60 * 1000);
+
+    expect(windowDays).toBeLessThanOrEqual(MAX_DATE_RANGE_DAYS);
+    expect(windowDays).toBeCloseTo(MAX_DATE_RANGE_DAYS, 5);
   });
 
   it('rejects future from dates', async () => {

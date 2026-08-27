@@ -1,3 +1,4 @@
+import { ServiceUnavailableException } from '@nestjs/common';
 import { HealthService } from './health.service';
 
 describe('HealthService - checkDetailed', () => {
@@ -111,5 +112,106 @@ describe('HealthService - checkDetailed', () => {
       status: 'up',
       latency_ms: expect.any(Number),
     });
+  });
+});
+
+describe('HealthService - checkLiveness', () => {
+  let service: HealthService;
+
+  beforeEach(() => {
+    service = new HealthService(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+  });
+
+  it('reports ok without checking any dependency', () => {
+    const result = service.checkLiveness();
+
+    expect(result.status).toBe('ok');
+    expect(result.uptime_seconds).toEqual(expect.any(Number));
+  });
+});
+
+describe('HealthService - checkReadiness', () => {
+  let dataSource: { query: jest.Mock };
+  let cacheManager: { set: jest.Mock; get: jest.Mock };
+  let service: HealthService;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    dataSource = { query: jest.fn().mockResolvedValue([{ '?column?': 1 }]) };
+    cacheManager = {
+      set: jest.fn().mockResolvedValue(undefined),
+      get: jest.fn().mockResolvedValue('ok'),
+    };
+    fetchMock = jest.fn().mockResolvedValue({ ok: true });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    service = new HealthService(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      dataSource as never,
+      cacheManager as never,
+    );
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('resolves with ready status when all dependencies are up', async () => {
+    const result = await service.checkReadiness();
+
+    expect(result.status).toBe('healthy');
+    expect(result.database.status).toBe('up');
+    expect(result.soroban.status).toBe('up');
+    expect(result.cache.status).toBe('up');
+  });
+
+  it('throws ServiceUnavailableException (not-ready) when the database is down', async () => {
+    dataSource.query.mockRejectedValue(new Error('connection refused'));
+
+    await expect(service.checkReadiness()).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+  });
+
+  it('throws ServiceUnavailableException (not-ready) when Soroban RPC is down', async () => {
+    fetchMock.mockRejectedValue(new Error('timeout'));
+
+    await expect(service.checkReadiness()).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+  });
+
+  it('throws ServiceUnavailableException (not-ready) when the cache is unreachable', async () => {
+    cacheManager.get.mockResolvedValue(undefined);
+
+    await expect(service.checkReadiness()).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+  });
+
+  it('includes per-dependency detail in the not-ready exception response', async () => {
+    dataSource.query.mockRejectedValue(new Error('connection refused'));
+
+    try {
+      await service.checkReadiness();
+      fail('expected checkReadiness to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ServiceUnavailableException);
+      const response = (error as ServiceUnavailableException).getResponse();
+      expect(response).toMatchObject({
+        status: 'down',
+        database: { status: 'down' },
+      });
+    }
   });
 });

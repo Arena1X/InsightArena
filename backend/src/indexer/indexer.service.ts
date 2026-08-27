@@ -28,6 +28,15 @@ const CHECKPOINT_LEDGER_KEY_LATEST = 'indexer:latest_contract_ledger';
 const MAX_RETRIES = 5;
 const DLQ_THRESHOLD = 5;
 const BATCH_SIZE = 100;
+/**
+ * Version of the event decoder's output shape. Bumped when a field is
+ * renamed or removed (never for a purely additive change - new fields are
+ * forward-compatible by construction since {@link extractEventData}'s
+ * default case passes unrecognized fields through as-is). Stamped onto
+ * every decoded event's `data` so downstream consumers can tell which
+ * decoding rules produced a given row.
+ */
+export const EVENT_DECODER_VERSION = 1;
 const BACKFILL_BATCH_SIZE = 50;
 const DEFAULT_CREATOR_EVENT_CATEGORY = 'general';
 // Matches MAX_EVENT_DURATION_SECONDS in contracts/creator-event-manager.
@@ -251,7 +260,16 @@ export class IndexerService implements OnModuleInit {
           : fromLedger;
 
       const parsed = rawEvents
-        .map((raw: unknown, index: number) => this.parseRawEvent(raw, index))
+        .map((raw: unknown, index: number) => {
+          try {
+            return this.parseRawEvent(raw, index);
+          } catch (err) {
+            this.logger.warn(
+              `Skipping unparseable event at index ${index}: ${err instanceof Error ? err.message : 'Unknown error'}`,
+            );
+            return null;
+          }
+        })
         .filter((e) => e !== null);
 
       return { events: parsed, latestLedger };
@@ -299,7 +317,10 @@ export class IndexerService implements OnModuleInit {
           ? record.id
           : null;
 
-    const data = this.extractEventData(eventType, value);
+    const data = {
+      ...this.extractEventData(eventType, value),
+      _decoder_version: EVENT_DECODER_VERSION,
+    };
 
     return {
       id,
@@ -627,9 +648,22 @@ export class IndexerService implements OnModuleInit {
         ? parsedEndTime
         : new Date(startTime.getTime() + DEFAULT_EVENT_DURATION_SECONDS * 1000);
 
+    const creatorAddress = this.readStr(data, 'creator');
+    const hasOverlap = await this.hasOverlappingCampaign(
+      creatorAddress,
+      startTime,
+      endTime,
+    );
+    if (hasOverlap) {
+      this.logger.warn(
+        `EventCreated rejected: event ${onChainEventId} overlaps an existing active campaign for creator ${creatorAddress}`,
+      );
+      return;
+    }
+
     const creatorEvent = this.creatorEventRepository.create({
       on_chain_event_id: onChainEventId,
-      creator_address: this.readStr(data, 'creator'),
+      creator_address: creatorAddress,
       title: this.readStr(data, 'title') || `Event ${onChainEventId}`,
       description: this.readStr(data, 'description'),
       creation_fee_paid: this.readUnsignedBigInt(data, 'creation_fee_paid'),
@@ -659,6 +693,28 @@ export class IndexerService implements OnModuleInit {
     // Trigger notification
     await this.notificationGeneratorService.handleEventCreated(data);
     this.broadcasterService.broadcastEventCreated(data);
+  }
+
+  /**
+   * Two campaigns overlap for the same creator when their [start, end)
+   * windows intersect and the existing one is still active (not cancelled).
+   */
+  private async hasOverlappingCampaign(
+    creatorAddress: string,
+    startTime: Date,
+    endTime: Date,
+  ): Promise<boolean> {
+    if (!creatorAddress) return false;
+
+    const count = await this.creatorEventRepository
+      .createQueryBuilder('event')
+      .where('event.creator_address = :creatorAddress', { creatorAddress })
+      .andWhere('event.is_cancelled = false')
+      .andWhere('event.start_time < :endTime', { endTime })
+      .andWhere('event.end_time > :startTime', { startTime })
+      .getCount();
+
+    return count > 0;
   }
 
   private async handleMatchAdded(data: Record<string, unknown>): Promise<void> {
@@ -732,33 +788,70 @@ export class IndexerService implements OnModuleInit {
       return;
     }
 
-    const event = await this.creatorEventRepository.findOne({
+    const exists = await this.creatorEventRepository.count({
       where: { on_chain_event_id: onChainEventId },
     });
-    if (!event) {
+    if (!exists) {
       this.logger.warn(
         `UserJoinedEvent skipped: event ${onChainEventId} not found`,
       );
       return;
     }
 
-    event.participant_count += 1;
-
     const entryFeePaid = this.readUnsignedBigInt(data, 'entry_fee_paid');
-    if (BigInt(entryFeePaid) > 0n) {
-      event.prize_pool = (
-        BigInt(event.prize_pool ?? '0') + BigInt(entryFeePaid)
-      ).toString();
-      event.total_entry_fees_collected = (
-        BigInt(event.total_entry_fees_collected ?? '0') + BigInt(entryFeePaid)
-      ).toString();
-    }
 
-    await this.creatorEventRepository.save(event);
+    // Atomic SQL update: avoids the lost-update race that a read-modify-write
+    // (findOne -> mutate in JS -> save) would hit under concurrent joins.
+    await this.creatorEventRepository
+      .createQueryBuilder()
+      .update()
+      .set({
+        participant_count: () => '"participant_count" + 1',
+        prize_pool: () => `"prize_pool" + :entryFeePaid`,
+        total_entry_fees_collected: () =>
+          `"total_entry_fees_collected" + :entryFeePaid`,
+      })
+      .where('on_chain_event_id = :onChainEventId', { onChainEventId })
+      .setParameter('entryFeePaid', entryFeePaid)
+      .execute();
 
     // Trigger notification
     await this.notificationGeneratorService.handleUserJoinedEvent(data);
     this.broadcasterService.broadcastUserJoined(data);
+  }
+
+  /**
+   * Recomputes total_entry_fees_collected for a creator event from its
+   * current participant_count and flat entry_fee (the contract charges a
+   * single flat entry_fee per event, not a per-participant amount), so this
+   * is the correct reconciliation source rather than re-deriving from
+   * on-chain participant records.
+   */
+  async recomputeEntryFeeTotals(onChainEventId: number): Promise<void> {
+    const event = await this.creatorEventRepository.findOne({
+      where: { on_chain_event_id: onChainEventId },
+    });
+    if (!event) {
+      this.logger.warn(
+        `recomputeEntryFeeTotals skipped: event ${onChainEventId} not found`,
+      );
+      return;
+    }
+
+    const recomputedTotal = (
+      BigInt(event.entry_fee ?? '0') * BigInt(event.participant_count ?? 0)
+    ).toString();
+
+    await this.creatorEventRepository
+      .createQueryBuilder()
+      .update()
+      .set({ total_entry_fees_collected: recomputedTotal })
+      .where('on_chain_event_id = :onChainEventId', { onChainEventId })
+      .execute();
+
+    this.logger.log(
+      `Recomputed total_entry_fees_collected for event_id=${onChainEventId}: ${recomputedTotal}`,
+    );
   }
 
   private async handlePredictionSubmitted(
@@ -1027,6 +1120,11 @@ export class IndexerService implements OnModuleInit {
       event.is_finalized = true;
       await this.creatorEventRepository.save(event);
     }
+
+    // Reconcile total_entry_fees_collected against participant_count so any
+    // drift from missed/duplicated UserJoinedEvent processing is corrected
+    // before payouts are computed.
+    await this.recomputeEntryFeeTotals(onChainEventId);
 
     const leaderboard: unknown[] = Array.isArray(data.leaderboard)
       ? data.leaderboard
@@ -1683,13 +1781,26 @@ export class IndexerService implements OnModuleInit {
     return null;
   }
 
-  private unwrapIndexerValue(value: unknown): unknown {
+  /**
+   * Unwraps a Soroban XDR-JSON value (e.g. `{ symbol: "..." }`,
+   * `{ value: { u64: "..." } }`) down to its plain JS value. Depth is capped
+   * so a forward-incompatible or malformed nesting shape degrades to
+   * returning the wrapper as-is rather than blowing the call stack and
+   * aborting the whole event batch.
+   */
+  private unwrapIndexerValue(value: unknown, depth = 0): unknown {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return value;
+    }
+    if (depth >= 20) {
+      this.logger.warn('unwrapIndexerValue: max unwrap depth exceeded');
       return value;
     }
 
     const record = value as Record<string, unknown>;
-    if ('value' in record) return this.unwrapIndexerValue(record.value);
+    if ('value' in record) {
+      return this.unwrapIndexerValue(record.value, depth + 1);
+    }
 
     for (const key of [
       'symbol',
@@ -1706,7 +1817,9 @@ export class IndexerService implements OnModuleInit {
       'bool',
       'boolean',
     ]) {
-      if (key in record) return this.unwrapIndexerValue(record[key]);
+      if (key in record) {
+        return this.unwrapIndexerValue(record[key], depth + 1);
+      }
     }
 
     return value;

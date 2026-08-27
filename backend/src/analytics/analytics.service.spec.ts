@@ -12,6 +12,8 @@ import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.enti
 import { Market } from '../markets/entities/market.entity';
 import { ActivityLog } from './entities/activity-log.entity';
 import { MarketHistory } from './entities/market-history.entity';
+import { CacheService } from '../cache/cache.service';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 
 describe('predictorTierFromReputation', () => {
   it('maps 0 to Bronze Predictor', () => {
@@ -71,6 +73,13 @@ describe('AnalyticsService', () => {
   let marketHistoryRepository: jest.Mocked<
     Pick<Repository<MarketHistory>, 'createQueryBuilder'>
   >;
+  let marketsRepository: {
+    find: jest.Mock;
+    findOne: jest.Mock;
+    count: jest.Mock;
+    createQueryBuilder: jest.Mock;
+  };
+  let cacheService: CacheService;
 
   const baseUser: User = {
     id: 'user-id-1',
@@ -97,10 +106,33 @@ describe('AnalyticsService', () => {
     leaderboardRepository = { createQueryBuilder: jest.fn() };
     predictionsRepository = { createQueryBuilder: jest.fn() };
     marketHistoryRepository = { createQueryBuilder: jest.fn() };
+    marketsRepository = {
+      find: jest.fn().mockResolvedValue([]),
+      findOne: jest.fn(),
+      count: jest.fn().mockResolvedValue(0),
+      createQueryBuilder: jest.fn(),
+    };
+
+    // Minimal in-memory cache-manager fake so CacheService's TTL/single-flight
+    // logic runs for real against these tests, rather than being stubbed out.
+    const store = new Map<string, unknown>();
+    const fakeCacheManager = {
+      get: jest.fn((key: string) => Promise.resolve(store.get(key))),
+      set: jest.fn((key: string, value: unknown) => {
+        store.set(key, value);
+        return Promise.resolve();
+      }),
+      del: jest.fn((key: string) => {
+        store.delete(key);
+        return Promise.resolve();
+      }),
+    };
 
     module = await Test.createTestingModule({
       providers: [
         AnalyticsService,
+        CacheService,
+        { provide: CACHE_MANAGER, useValue: fakeCacheManager },
         { provide: getRepositoryToken(User), useValue: usersRepository },
         {
           provide: getRepositoryToken(Prediction),
@@ -112,7 +144,7 @@ describe('AnalyticsService', () => {
         },
         {
           provide: getRepositoryToken(Market),
-          useValue: { findOne: jest.fn(), find: jest.fn() },
+          useValue: marketsRepository,
         },
         {
           provide: getRepositoryToken(ActivityLog),
@@ -130,6 +162,7 @@ describe('AnalyticsService', () => {
     }).compile();
 
     service = module.get(AnalyticsService);
+    cacheService = module.get(CacheService);
   });
 
   function mockQb(terminal: { getCount?: number; getMany?: Prediction[] }) {
@@ -384,6 +417,39 @@ describe('AnalyticsService', () => {
 
       service.removeActiveSession('user2');
       expect(service.getActiveUsersCount()).toBe(0);
+    });
+  });
+
+  describe('getCategoryAnalytics caching (stampede protection)', () => {
+    it('recomputes once for concurrent calls on a cold cache', async () => {
+      marketsRepository.find.mockResolvedValue([]);
+
+      await Promise.all([
+        service.getCategoryAnalytics(),
+        service.getCategoryAnalytics(),
+        service.getCategoryAnalytics(),
+      ]);
+
+      expect(marketsRepository.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('serves from cache without recomputing on a subsequent call', async () => {
+      marketsRepository.find.mockResolvedValue([]);
+
+      await service.getCategoryAnalytics();
+      await service.getCategoryAnalytics();
+
+      expect(marketsRepository.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('recomputes again once the cached entry is invalidated', async () => {
+      marketsRepository.find.mockResolvedValue([]);
+
+      await service.getCategoryAnalytics();
+      await cacheService.invalidate('analytics:category', 'all');
+      await service.getCategoryAnalytics();
+
+      expect(marketsRepository.find).toHaveBeenCalledTimes(2);
     });
   });
 });

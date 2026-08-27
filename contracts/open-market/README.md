@@ -163,7 +163,98 @@ make clean       # Clean build artifacts
 make help        # Show available targets
 ```
 
-## 10) Links to Related Docs
+## 10) TWAP Price Oracle
+
+Each AMM liquidity pool (`src/liquidity.rs`) maintains a manipulation-resistant
+time-weighted average price (TWAP) per outcome, computed from a cumulative
+price accumulator — the same technique used by Uniswap V2-style oracles.
+
+### Accumulator math
+
+For each `(market_id, outcome)` pair, `PriceAccumulator` (`src/storage_types.rs`)
+tracks a running integral of `price * elapsed_seconds` over the pool's history,
+plus a fixed-capacity ring buffer (`TWAP_RING_BUFFER_CAPACITY = 64`) of recent
+`PriceObservation` snapshots (`timestamp`, `price`, `price_cumulative`).
+
+On every reserve-changing operation (pool creation, `swap_outcome`),
+`record_price_observation` extends the integral forward using the *previous*
+price for however long it was active, then records a new observation:
+
+```
+cumulative_new = cumulative_old + last_price * (now - last_timestamp)
+```
+
+`get_twap(market_id, outcome, window)` reconstructs the integral at two
+points — `now` and `now - window` — by locating the latest retained
+observation at or before each timestamp and extrapolating with its price for
+the remaining gap, then divides the difference by the elapsed time:
+
+```
+twap = (cumulative(now) - cumulative(now - window)) / window
+```
+
+Because the average is derived from a time integral rather than any single
+spot price, a single large trade can only move the TWAP by roughly
+`(trade_duration / window)` of its instantaneous price impact — this is what
+makes the oracle manipulation-resistant to flash-loan-style single-block
+price spikes.
+
+### Guards
+
+- `window == 0` → `TwapEmptyWindow`.
+- No accumulator, or the window reaches further back than the oldest
+  retained observation (either because the pool is younger than the window,
+  or more than `TWAP_RING_BUFFER_CAPACITY` price-changing swaps have occurred
+  and older samples were overwritten) → `TwapInsufficientHistory`.
+- Degenerate zero-length elapsed time between the window boundaries →
+  `TwapDivideByZero`.
+- Unknown outcome for the market → `InvalidOutcome`.
+
+### Entry points
+
+- `get_twap(market_id, outcome, window)` — TWAP for a specific outcome.
+- `get_market_twap(market_id, window_seconds)` — convenience view returning
+  the TWAP of the market's primary outcome (`outcome_options[0]`), for
+  consumers (indexer, UI) that track a single headline price per market.
+
+## 11) Reputation Decay Over Inactive Seasons
+
+A creator's reputation score (`reputation::calculate_creator_reputation`) is
+decayed lazily, at read time, in two layers — neither ever mutates stored
+counters, so there is no unbounded loop over elapsed time or seasons:
+
+1. **Time-based decay** (`reputation::apply_reputation_decay`) — decays
+   toward zero as seconds elapse since `CreatorStats::last_updated`, per the
+   governance-configured `reputation_half_life_seconds` /
+   `reputation_decay_mode` (Linear or Exponential).
+2. **Season-inactivity decay** (`reputation::apply_season_inactivity_decay`)
+   — for each season that has become the active season since the creator was
+   last active, beyond a configurable grace period, the score is multiplied
+   by `(10_000 - reputation_season_decay_bps) / 10_000`, compounding:
+
+   ```
+   decaying_seasons = inactive_seasons - grace_seasons   (0 if inactive_seasons <= grace_seasons)
+   score' = score * ((10_000 - decay_bps) / 10_000) ^ decaying_seasons
+   ```
+
+   `inactive_seasons` is `current_active_season_id - last_active_season_id`.
+   A creator's `last_active_season_id` is recorded (via a compact storage
+   key, not a new field) whenever they create, resolve, or have a dispute
+   raised against a market — the same hooks that already reset
+   `last_updated` for time-based decay. Both decay layers apply in sequence
+   (time-based first, then season-based) and neither can push the score
+   below `0` (`u32` floor) or above its pre-decay value.
+
+Governance parameters (`config.rs`, admin-settable via
+`set_season_decay_config`):
+
+- `reputation_season_decay_grace` — inactive seasons tolerated before decay
+  starts. Defaults to `1`.
+- `reputation_season_decay_bps` — decay rate per inactive season beyond the
+  grace period, in bps (0-10000). `0` disables season decay. Defaults to
+  `1000` (10%).
+
+## 12) Links to Related Docs
 - [Repository contribution guide](../backend/.github/CONTRIBUTING.md)
 - [Contract security audit notes](./SECURITY_AUDIT.md)
 - [Contract storage schema notes](./STORAGE_SCHEMA.md)

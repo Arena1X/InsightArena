@@ -8,7 +8,102 @@ import {
   Contract,
   nativeToScVal,
   Networks,
+  Transaction,
 } from '@stellar/stellar-sdk';
+import {
+  computeBackoffDelay,
+  withRetry,
+  withTimeout,
+} from '../common/retry.util';
+
+/**
+ * Errors we classify as "definitive rejections" — the network/contract has
+ * conclusively refused the transaction, so resubmitting would just fail
+ * again (or, worse, double-submit). Everything else (network blips, RPC
+ * timeouts, 5xx/429 responses) is treated as transient and retried.
+ */
+const PERMANENT_ERROR_PATTERNS = [
+  /EscrowEmpty/,
+  /InsufficientFunds/,
+  /Simulation failed/,
+  /txMalformed/,
+  /txBadAuth/,
+  /txInsufficientBalance/,
+  /txBadSeq/,
+];
+
+export function isTransientSorobanError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+
+  if (PERMANENT_ERROR_PATTERNS.some((pattern) => pattern.test(error.message))) {
+    return false;
+  }
+
+  // Network-layer failures (fetch/TypeError, abort/timeout, errno codes).
+  if (error instanceof TypeError) return true;
+  if (error.name === 'AbortError') return true;
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause && typeof cause === 'object') {
+    const code = (cause as { code?: unknown }).code;
+    if (
+      typeof code === 'string' &&
+      [
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'ENOTFOUND',
+        'EPIPE',
+        'EHOSTUNREACH',
+        'EAI_AGAIN',
+      ].includes(code)
+    ) {
+      return true;
+    }
+  }
+
+  const httpMatch = /HTTP (\d{3})/.exec(error.message);
+  if (httpMatch) {
+    const status = parseInt(httpMatch[1], 10);
+    return status === 429 || (status >= 500 && status <= 599);
+  }
+
+  // "Transaction submission failed: ..." from a non-definitive RPC error
+  // result (e.g. txTooLate, txInternalError) is treated as transient.
+  return /Transaction submission failed/.test(error.message);
+}
+
+export class SorobanTransientError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SorobanTransientError';
+  }
+}
+
+export class SorobanPermanentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SorobanPermanentError';
+  }
+}
+
+/**
+ * Thrown when the Soroban RPC node itself is unreachable/unresponsive —
+ * every retry attempt timed out or failed at the network layer. Distinct
+ * from {@link SorobanPermanentError}, which means the RPC node responded
+ * but definitively rejected the request (a contract-level failure).
+ * Callers (e.g. cron jobs) can catch this specifically to distinguish an
+ * RPC outage from an application-level error.
+ */
+export class SorobanUnavailableError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'SorobanUnavailableError';
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 export interface SorobanPredictionResult {
   tx_hash: string;
@@ -52,6 +147,24 @@ export interface SorobanFinalizeEventResult {
   tx_hash: string;
 }
 
+const DEFAULT_RPC_TIMEOUT_MS = 10_000;
+const DEFAULT_RPC_MAX_RETRIES = 2;
+/** Base delay for read-retry and post-ambiguity resend backoff — short by design (see #1). */
+const RPC_RETRY_BASE_DELAY_MS = 250;
+
+function readNonNegativeIntConfig(
+  configService: ConfigService,
+  key: string,
+  defaultValue: number,
+): number {
+  const raw = configService.get<string | number>(key);
+  if (raw === undefined || raw === null || raw === '') {
+    return defaultValue;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : defaultValue;
+}
+
 @Injectable()
 export class SorobanService {
   private readonly logger = new Logger(SorobanService.name);
@@ -60,6 +173,8 @@ export class SorobanService {
   private readonly serverSecretKey: string;
   private readonly rpcUrl: string;
   private readonly rpcServer: SorobanRpc.Server;
+  private readonly rpcTimeoutMs: number;
+  private readonly rpcMaxRetries: number;
 
   constructor(private readonly configService: ConfigService) {
     this.contractId =
@@ -70,6 +185,16 @@ export class SorobanService {
     this.rpcUrl =
       this.configService.get<string>('SOROBAN_RPC_URL') ??
       'https://soroban-testnet.stellar.org';
+    this.rpcTimeoutMs = readNonNegativeIntConfig(
+      this.configService,
+      'SOROBAN_RPC_TIMEOUT_MS',
+      DEFAULT_RPC_TIMEOUT_MS,
+    );
+    this.rpcMaxRetries = readNonNegativeIntConfig(
+      this.configService,
+      'SOROBAN_RPC_MAX_RETRIES',
+      DEFAULT_RPC_MAX_RETRIES,
+    );
 
     this.rpcServer = new SorobanRpc.Server(this.rpcUrl, {
       allowHttp: this.rpcUrl.startsWith('http://'),
@@ -94,7 +219,7 @@ export class SorobanService {
 
   async testConnection(): Promise<boolean> {
     return this.withSorobanErrorHandling('testConnection', async () => {
-      await this.rpcServer.getHealth();
+      await this.callRpc('testConnection', () => this.rpcServer.getHealth());
       return true;
     });
   }
@@ -216,8 +341,9 @@ export class SorobanService {
         );
 
         const serverKeypair = Keypair.fromSecret(this.serverSecretKey);
-        const serverAccount = await this.rpcServer.getAccount(
-          serverKeypair.publicKey(),
+        const serverAccount = await this.callRpc(
+          `refundCompetitionParticipant[${cid}]:getAccount`,
+          () => this.rpcServer.getAccount(serverKeypair.publicKey()),
         );
 
         const contract = new Contract(this.contractId);
@@ -239,7 +365,10 @@ export class SorobanService {
           .build();
 
         // Simulate
-        const simulation = await this.rpcServer.simulateTransaction(tx);
+        const simulation = await this.callRpc(
+          `refundCompetitionParticipant[${cid}]:simulateTransaction`,
+          () => this.rpcServer.simulateTransaction(tx),
+        );
         if (SorobanRpc.Api.isSimulationError(simulation)) {
           if (simulation.error.includes('EscrowEmpty')) {
             throw new Error('EscrowEmpty');
@@ -257,26 +386,30 @@ export class SorobanService {
         ).build();
         assembledTx.sign(serverKeypair);
 
-        // Submit
-        const response = await this.rpcServer.sendTransaction(assembledTx);
-        if (response.status === 'ERROR') {
-          throw new Error(
-            `Transaction submission failed: ${JSON.stringify(response.errorResult)}`,
-          );
-        }
+        // Submit (retries transient RPC errors with backoff; definitive
+        // rejections surface immediately)
+        const response = await this.sendTransactionWithRetry(
+          assembledTx,
+          `refundCompetitionParticipant[${cid}]`,
+        );
 
         this.logger.log(`[${cid}] Refund submitted. tx_hash=${response.hash}`);
 
         // Wait for completion
-        let statusResponse = await this.rpcServer.getTransaction(response.hash);
+        const getTxStatus = () =>
+          this.callRpc(
+            `refundCompetitionParticipant[${cid}]:getTransaction`,
+            () => this.rpcServer.getTransaction(response.hash),
+          );
+        let statusResponse = await getTxStatus();
         let attempts = 0;
         while (
           statusResponse.status ===
-          SorobanRpc.Api.GetTransactionStatus.NOT_FOUND &&
+            SorobanRpc.Api.GetTransactionStatus.NOT_FOUND &&
           attempts < 10
         ) {
           await new Promise((resolve) => setTimeout(resolve, 2000));
-          statusResponse = await this.rpcServer.getTransaction(response.hash);
+          statusResponse = await getTxStatus();
           attempts++;
         }
 
@@ -492,8 +625,8 @@ export class SorobanService {
       );
 
       // Get server account for transaction
-      const serverAccount = await this.rpcServer.getAccount(
-        serverKeypair.publicKey(),
+      const serverAccount = await this.callRpc('finalizeEvent:getAccount', () =>
+        this.rpcServer.getAccount(serverKeypair.publicKey()),
       );
 
       const contract = new Contract(this.contractId);
@@ -514,7 +647,10 @@ export class SorobanService {
         .build();
 
       // Simulate
-      const simulation = await this.rpcServer.simulateTransaction(tx);
+      const simulation = await this.callRpc(
+        'finalizeEvent:simulateTransaction',
+        () => this.rpcServer.simulateTransaction(tx),
+      );
       if (SorobanRpc.Api.isSimulationError(simulation)) {
         throw new Error(`Simulation failed: ${simulation.error}`);
       }
@@ -526,26 +662,29 @@ export class SorobanService {
       ).build();
       assembledTx.sign(serverKeypair);
 
-      // Submit
-      const response = await this.rpcServer.sendTransaction(assembledTx);
-      if (response.status === 'ERROR') {
-        throw new Error(
-          `Transaction submission failed: ${JSON.stringify(response.errorResult)}`,
-        );
-      }
+      // Submit (retries transient RPC errors with backoff; definitive
+      // rejections surface immediately)
+      const response = await this.sendTransactionWithRetry(
+        assembledTx,
+        'finalizeEvent',
+      );
 
       this.logger.log(`finalizeEvent submitted: tx_hash=${response.hash}`);
 
       // Wait for completion
-      let statusResponse = await this.rpcServer.getTransaction(response.hash);
+      const getTxStatus = () =>
+        this.callRpc('finalizeEvent:getTransaction', () =>
+          this.rpcServer.getTransaction(response.hash),
+        );
+      let statusResponse = await getTxStatus();
       let attempts = 0;
       while (
         statusResponse.status ===
-        SorobanRpc.Api.GetTransactionStatus.NOT_FOUND &&
+          SorobanRpc.Api.GetTransactionStatus.NOT_FOUND &&
         attempts < 10
       ) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        statusResponse = await this.rpcServer.getTransaction(response.hash);
+        statusResponse = await getTxStatus();
         attempts++;
       }
 
@@ -611,6 +750,36 @@ export class SorobanService {
         return { events: [], latestLedger: fromLedger };
       }
 
+      const body = await this.withReadRetry('getEvents', () =>
+        this.fetchEventsOnce(fromLedger),
+      );
+
+      const rawEvents = body.result?.events ?? [];
+      const latestLedger =
+        typeof body.result?.latestLedger === 'number'
+          ? body.result.latestLedger
+          : fromLedger;
+
+      const events: SorobanRpcEvent[] = rawEvents
+        .map((event) => this.normalizeEvent(event))
+        .filter((event): event is SorobanRpcEvent => event !== null);
+
+      return { events, latestLedger };
+    });
+  }
+
+  /**
+   * Single attempt at the raw `getEvents` JSON-RPC call, bounded by
+   * `rpcTimeoutMs` via a real `AbortController` (unlike the stellar-sdk
+   * client calls, `fetch` lets us actually cancel the in-flight request).
+   */
+  private async fetchEventsOnce(fromLedger: number): Promise<{
+    error?: { message?: string };
+    result?: { events?: unknown[]; latestLedger?: number };
+  }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.rpcTimeoutMs);
+    try {
       const response = await fetch(this.rpcUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -624,6 +793,7 @@ export class SorobanService {
             limit: 200,
           },
         }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -639,18 +809,175 @@ export class SorobanService {
         throw new Error(body.error.message ?? 'Unknown Soroban RPC error');
       }
 
-      const rawEvents = body.result?.events ?? [];
-      const latestLedger =
-        typeof body.result?.latestLedger === 'number'
-          ? body.result.latestLedger
-          : fromLedger;
+      return body;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
-      const events: SorobanRpcEvent[] = rawEvents
-        .map((event) => this.normalizeEvent(event))
-        .filter((event): event is SorobanRpcEvent => event !== null);
+  /**
+   * Submits an already-assembled and signed transaction. Never blind-retries:
+   * a definitive rejection (bad auth, malformed tx, insufficient balance,
+   * simulation failure) surfaces immediately. An *ambiguous* failure — the
+   * `sendTransaction` call itself timed out or hit a network error, so we
+   * don't know whether the RPC node actually received it — is resolved by
+   * looking up the transaction's own hash before ever considering a resend,
+   * so we never fire the same submission twice into an unknown state.
+   * Exhausting all attempts without a definitive outcome surfaces a typed
+   * {@link SorobanUnavailableError}.
+   */
+  private async sendTransactionWithRetry(
+    tx: Transaction,
+    operation: string,
+  ): Promise<SorobanRpc.Api.SendTransactionResponse> {
+    const txHash = tx.hash().toString('hex');
+    const maxAttempts = this.rpcMaxRetries + 1;
+    let lastError: unknown;
 
-      return { events, latestLedger };
-    });
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const response = await this.withTimeoutRpc(
+          `${operation}:sendTransaction`,
+          () => this.rpcServer.sendTransaction(tx),
+        );
+        if (response.status === 'ERROR') {
+          const message = `Transaction submission failed: ${JSON.stringify(response.errorResult)}`;
+          throw isTransientSorobanError(new Error(message))
+            ? new SorobanTransientError(message)
+            : new SorobanPermanentError(message);
+        }
+        return response;
+      } catch (error) {
+        lastError = error;
+
+        // Definitive rejection: the RPC node conclusively refused the tx.
+        // Resending would just fail again — surface immediately.
+        if (error instanceof SorobanPermanentError) {
+          throw error;
+        }
+
+        // Anything else that isn't transient is unexpected — don't retry
+        // or resend on a failure mode we can't classify as ambiguous.
+        const ambiguous =
+          error instanceof SorobanTransientError ||
+          isTransientSorobanError(error);
+        if (!ambiguous) {
+          throw error;
+        }
+
+        this.logger.warn(
+          `${operation}: sendTransaction attempt ${attempt + 1} ambiguous (${errorMessage(error)}); checking tx_hash=${txHash} before considering a resend`,
+        );
+
+        const existing = await this.findSubmittedTransaction(txHash, operation);
+        if (existing) {
+          this.logger.log(
+            `${operation}: found existing submission for tx_hash=${txHash}; skipping resend`,
+          );
+          return existing;
+        }
+
+        if (attempt === maxAttempts - 1) {
+          break;
+        }
+
+        const delayMs = computeBackoffDelay(RPC_RETRY_BASE_DELAY_MS, attempt);
+        this.logger.warn(
+          `${operation}: no existing submission found for tx_hash=${txHash}; resending in ${delayMs}ms (attempt ${attempt + 2}/${maxAttempts})`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    throw new SorobanUnavailableError(
+      `${operation}: sendTransaction unavailable after ${maxAttempts} attempt(s): ${errorMessage(lastError)}`,
+      { cause: lastError },
+    );
+  }
+
+  /**
+   * Looks up a submitted transaction by hash to resolve an ambiguous
+   * `sendTransaction` outcome. Returns a synthetic "found" response if the
+   * RPC node already knows about it (any status other than NOT_FOUND);
+   * returns `null` — meaning "safe to resend" — both when it's genuinely
+   * not found and when the status check itself fails, since we can't
+   * confirm either way and withholding a resend indefinitely isn't better.
+   */
+  private async findSubmittedTransaction(
+    txHash: string,
+    operation: string,
+  ): Promise<SorobanRpc.Api.SendTransactionResponse | null> {
+    try {
+      const status = await this.callRpc(
+        `${operation}:getTransaction(${txHash})`,
+        () => this.rpcServer.getTransaction(txHash),
+      );
+      if (status.status === SorobanRpc.Api.GetTransactionStatus.NOT_FOUND) {
+        return null;
+      }
+      return {
+        status: 'PENDING',
+        hash: txHash,
+      } as SorobanRpc.Api.SendTransactionResponse;
+    } catch (error) {
+      this.logger.warn(
+        `${operation}: status check for tx_hash=${txHash} failed (${errorMessage(error)}); treating as not found`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Runs a single RPC call under the configured per-call timeout, without
+   * retrying. Used for transaction submission, where retries must go
+   * through the ambiguous-failure/status-check path above rather than being
+   * blindly repeated.
+   */
+  private withTimeoutRpc<T>(
+    operation: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    return withTimeout(fn, this.rpcTimeoutMs, operation);
+  }
+
+  /**
+   * Runs an idempotent read RPC call under the configured per-call timeout,
+   * retrying on timeout/connection errors up to `rpcMaxRetries` additional
+   * times with short backoff. Wraps an exhausted transient failure in a
+   * typed {@link SorobanUnavailableError} so callers can distinguish an RPC
+   * outage from an application-level error (e.g. "account not found").
+   */
+  private async withReadRetry<T>(
+    operation: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await withRetry(fn, {
+        maxAttempts: this.rpcMaxRetries + 1,
+        baseDelayMs: RPC_RETRY_BASE_DELAY_MS,
+        isTransient: isTransientSorobanError,
+        onRetry: (error, attempt, delayMs) => {
+          this.logger.warn(
+            `${operation}: read attempt ${attempt + 1} failed transiently (${errorMessage(error)}), retrying in ${delayMs}ms`,
+          );
+        },
+      });
+    } catch (error) {
+      if (isTransientSorobanError(error)) {
+        throw new SorobanUnavailableError(
+          `${operation} unavailable after retrying: ${errorMessage(error)}`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** Combines {@link withReadRetry} and {@link withTimeoutRpc} for a single RPC call. */
+  private callRpc<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+    return this.withReadRetry(operation, () =>
+      this.withTimeoutRpc(operation, fn),
+    );
   }
 
   private async withSorobanErrorHandling<T>(

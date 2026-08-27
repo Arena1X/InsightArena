@@ -1,11 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { SearchService } from './search.service';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
 import { Competition } from '../competitions/entities/competition.entity';
+import { CreatorEvent } from '../matches/entities/creator-event.entity';
 
 /**
  * Integration tests for wildcard escaping in suggestions endpoint.
@@ -41,8 +42,18 @@ describe('SearchService - Wildcard Escaping Integration', () => {
           },
         },
         {
+          provide: getRepositoryToken(CreatorEvent),
+          useValue: {
+            createQueryBuilder: jest.fn(),
+          },
+        },
+        {
           provide: CACHE_MANAGER,
           useValue: { get: jest.fn(), set: jest.fn() },
+        },
+        {
+          provide: DataSource,
+          useValue: { query: jest.fn().mockResolvedValue([undefined, 0]) },
         },
       ],
     }).compile();

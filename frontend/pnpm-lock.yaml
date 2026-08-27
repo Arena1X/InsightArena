@@ -69,6 +69,9 @@ importers:
       '@testing-library/react':
         specifier: ^16.1.0
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@testing-library/user-event':
+        specifier: ^14.6.6
+        version: 14.6.6(@testing-library/dom@10.4.1)
       '@types/node':
         specifier: ^20
         version: 20.19.37
@@ -2172,6 +2175,12 @@ packages:
       '@types/react-dom':
         optional: true
 
+  '@testing-library/user-event@14.6.6':
+    resolution: {integrity: sha512-Jbs9FpkkIDw8FgSc6kOVsOv8JuuqGAL7J4X1oot77JxAoDlkNn2GRkd0aYRVuQ+pVQAiHWVkE4rX/dkF5fBiCw==}
+    engines: {node: '>=12', npm: '>=6'}
+    peerDependencies:
+      '@testing-library/dom': '>=7.21.4'
+
   '@trezor/analytics@1.5.0':
     resolution: {integrity: sha512-evILW5XJEmfPlf0TY1duOLtGJ47pdGeSKVE3P75ODEUsRNxtPVqlkOUBPmYpCxPnzS8XDmkatT8lf9/DF0G6nA==}
     peerDependencies:
@@ -3471,6 +3480,7 @@ packages:
   eslint@9.39.4:
     resolution: {integrity: sha512-XoMjdBOwe/esVgEvLmNsD3IRHkm7fbKIUGvrleloJXUZgDHig2IPWNniv+GwjyJXzuNqVjlr5+4yVUZjycJwfQ==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     peerDependencies:
       jiti: '*'
@@ -8082,6 +8092,10 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.14
       '@types/react-dom': 19.2.3(@types/react@19.2.14)
+
+  '@testing-library/user-event@14.6.6(@testing-library/dom@10.4.1)':
+    dependencies:
+      '@testing-library/dom': 10.4.1
 
   '@trezor/analytics@1.5.0(tslib@2.8.1)':
     dependencies:

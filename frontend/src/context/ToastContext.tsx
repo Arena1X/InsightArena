@@ -12,11 +12,16 @@ export interface ToastOptions {
   variant?: ToastVariant;
   /** Milliseconds before auto-dismiss. Pass 0 to disable auto-dismiss. */
   duration?: number;
+  action?: {
+    label: string;
+    onClick: () => void;
+  };
 }
 
 export interface ToastItem extends Required<Pick<ToastOptions, "description" | "variant" | "duration">> {
   id: string;
   title?: string;
+  action?: ToastOptions["action"];
 }
 
 export interface ToastContextValue {
@@ -31,6 +36,14 @@ export interface ToastContextValue {
 export const ToastContext = createContext<ToastContextValue | null>(null);
 
 const DEFAULT_DURATION = 5000;
+const MAX_TOASTS = 5;
+const DEDUP_WINDOW_MS = 3000;
+
+const VARIANT_PRIORITY: Record<ToastVariant, number> = {
+  error: 0,
+  success: 1,
+  info: 2,
+};
 
 let idCounter = 0;
 function generateId() {
@@ -44,6 +57,7 @@ function generateId() {
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const recentMessages = useRef<Map<string, number>>(new Map());
 
   const clearTimer = useCallback((id: string) => {
     const timer = timers.current.get(id);
@@ -73,16 +87,48 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const show = useCallback(
     (options: ToastOptions) => {
+      const variant = options.variant ?? "info";
+      const description = options.description;
+
+      // Dedup: skip identical messages within the window
+      const now = Date.now();
+      const lastSeen = recentMessages.current.get(description);
+      if (lastSeen && now - lastSeen < DEDUP_WINDOW_MS) {
+        return "";
+      }
+      recentMessages.current.set(description, now);
+
+      // Clean old dedup entries
+      if (recentMessages.current.size > 50) {
+        for (const [msg, ts] of recentMessages.current) {
+          if (now - ts > DEDUP_WINDOW_MS) recentMessages.current.delete(msg);
+        }
+      }
+
       const id = generateId();
       const duration = options.duration ?? DEFAULT_DURATION;
       const toast: ToastItem = {
         id,
         title: options.title,
-        description: options.description,
-        variant: options.variant ?? "info",
+        description,
+        variant,
         duration,
+        action: options.action,
       };
-      setToasts((prev) => [...prev, toast]);
+
+      setToasts((prev) => {
+        // Cap: keep at most MAX_TOASTS, evict lowest-priority
+        let next = [...prev, toast];
+        if (next.length > MAX_TOASTS) {
+          next.sort(
+            (a, b) =>
+              VARIANT_PRIORITY[a.variant] - VARIANT_PRIORITY[b.variant],
+          );
+          next = next.slice(0, MAX_TOASTS);
+        }
+        return next;
+      });
+
       scheduleDismiss(id, duration);
       return id;
     },

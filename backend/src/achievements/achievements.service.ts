@@ -5,6 +5,9 @@ import { Achievement, AchievementType } from './entities/achievement.entity';
 import { UserAchievement } from './entities/user-achievement.entity';
 import { User } from '../users/entities/user.entity';
 import { AchievementResponseDto } from './dto/achievement-response.dto';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/entities/notification.entity';
+import { NotificationBroadcasterService } from '../websocket/notification-broadcaster.service';
 
 @Injectable()
 export class AchievementsService {
@@ -17,6 +20,8 @@ export class AchievementsService {
     private readonly userAchievementsRepository: Repository<UserAchievement>,
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
+    private readonly notificationsService: NotificationsService,
+    private readonly notificationBroadcaster: NotificationBroadcasterService,
   ) {}
 
   async initializeAchievements(): Promise<void> {
@@ -181,24 +186,70 @@ export class AchievementsService {
 
       if (!achievement) continue;
 
-      const existing = await this.userAchievementsRepository.findOne({
-        where: { user: { id: user.id }, achievement: { id: achievement.id } },
-      });
-
-      if (!existing) {
-        await this.userAchievementsRepository.save({
-          user,
-          achievement,
-          is_unlocked: true,
-          current_value: value,
-          unlocked_at: new Date(),
-        });
-
+      const awarded = await this.awardAchievementOnce(user, achievement, value);
+      if (awarded) {
         this.logger.log(
           `Unlocked achievement "${achievement.title}" for user ${user.id}`,
         );
+        await this.notifyAchievementUnlocked(user, achievement);
       }
     }
+  }
+
+  /**
+   * Atomically inserts the (user, achievement) unlock row, relying on the
+   * UQ_user_achievement DB constraint to guard against concurrent triggers.
+   * Returns true only for the call that actually performed the insert, so
+   * callers can notify exactly once per new award.
+   */
+  private async awardAchievementOnce(
+    user: User,
+    achievement: Achievement,
+    currentValue: number,
+  ): Promise<boolean> {
+    const result = await this.userAchievementsRepository
+      .createQueryBuilder()
+      .insert()
+      .into(UserAchievement)
+      .values({
+        user: { id: user.id },
+        achievement: { id: achievement.id },
+        is_unlocked: true,
+        current_value: currentValue,
+        unlocked_at: new Date(),
+      })
+      .orIgnore()
+      .execute();
+
+    return result.identifiers.length > 0;
+  }
+
+  private async notifyAchievementUnlocked(
+    user: User,
+    achievement: Achievement,
+  ): Promise<void> {
+    const unlockedAt = new Date();
+    await this.notificationsService.create(
+      user.stellar_address,
+      NotificationType.AchievementUnlocked,
+      'Achievement unlocked',
+      `You unlocked "${achievement.title}"`,
+      { achievementId: achievement.id, achievementType: achievement.type },
+      user.id,
+    );
+
+    this.notificationBroadcaster.broadcastAchievementUnlocked(
+      user.stellar_address,
+      {
+        achievement_id: achievement.id,
+        type: achievement.type,
+        title: achievement.title,
+        description: achievement.description,
+        icon_url: achievement.icon_url,
+        reward_points: achievement.reward_points,
+        unlocked_at: unlockedAt,
+      },
+    );
   }
 
   private getAchievementMetric(
@@ -312,37 +363,73 @@ export class AchievementsService {
     for (const achievement of achievements) {
       const currentProgress = this.getAchievementMetric(achievement.type, user);
       const threshold = this.getThreshold(achievement.type);
+      const meetsThreshold = currentProgress >= threshold;
 
-      let userAchievement = await this.userAchievementsRepository.findOne({
+      if (meetsThreshold) {
+        // Delegate to the atomic insert-or-ignore guard so concurrent
+        // callers can't double-unlock; only the winner notifies.
+        const awarded = await this.awardAchievementOnce(
+          user,
+          achievement,
+          currentProgress,
+        );
+        if (awarded) {
+          this.logger.log(
+            `Progress unlocked achievement "${achievement.title}" for user ${user.id}`,
+          );
+          await this.notifyAchievementUnlocked(user, achievement);
+        } else {
+          await this.userAchievementsRepository.update(
+            { user: { id: user.id }, achievement: { id: achievement.id } },
+            { current_value: currentProgress },
+          );
+        }
+        continue;
+      }
+
+      const existing = await this.userAchievementsRepository.findOne({
         where: { user: { id: user.id }, achievement: { id: achievement.id } },
       });
 
-      if (!userAchievement) {
-        userAchievement = this.userAchievementsRepository.create({
-          user,
-          achievement,
-          is_unlocked: false,
-          current_value: 0,
-        });
+      const previousProgress = existing?.current_value ?? 0;
+
+      if (existing) {
+        existing.current_value = currentProgress;
+        await this.userAchievementsRepository.save(existing);
+      } else {
+        await this.userAchievementsRepository
+          .createQueryBuilder()
+          .insert()
+          .into(UserAchievement)
+          .values({
+            user: { id: user.id },
+            achievement: { id: achievement.id },
+            is_unlocked: false,
+            current_value: currentProgress,
+          })
+          .orIgnore()
+          .execute();
       }
 
-      userAchievement.current_value = currentProgress;
-
-      if (currentProgress >= threshold && !userAchievement.is_unlocked) {
-        userAchievement.is_unlocked = true;
-        userAchievement.unlocked_at = new Date();
-        this.logger.log(
-          `Progress unlocked achievement "${achievement.title}" for user ${user.id}`,
+      // Only push a live update when progress actually moved — avoids
+      // spamming unchanged progress on every profile view/poll.
+      if (currentProgress !== previousProgress) {
+        const percentage =
+          threshold > 0
+            ? Math.min(100, Math.round((currentProgress / threshold) * 100))
+            : 0;
+        this.notificationBroadcaster.broadcastAchievementProgress(
+          user.stellar_address,
+          {
+            achievement_id: achievement.id,
+            type: achievement.type,
+            current_progress: currentProgress,
+            threshold,
+            progress_percentage: percentage,
+          },
         );
-      } else if (!userAchievement.is_unlocked) {
-        userAchievement.is_unlocked = false;
-        userAchievement.unlocked_at = null;
       }
-
-      await this.userAchievementsRepository.save(userAchievement);
     }
-
-    await this.checkAndUnlockAchievements(user);
   }
 
   async getAchievementProgress(

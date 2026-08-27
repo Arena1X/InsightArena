@@ -10,7 +10,9 @@ import {
   HttpStatus,
   UseGuards,
   ParseUUIDPipe,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { BanGuard } from '../common/guards/ban.guard';
 import {
   ApiTags,
@@ -18,9 +20,12 @@ import {
   ApiResponse,
   ApiBearerAuth,
 } from '@nestjs/swagger';
+import { ThrottleTier } from '../common/decorators/throttle-tier.decorator';
 import { PredictionsService } from './predictions.service';
 import { SubmitPredictionDto } from './dto/submit-prediction.dto';
 import { SubmitPredictionResponseDto } from './dto/submit-prediction-response.dto';
+import { SubmitBatchPredictionsDto } from './dto/submit-batch-prediction.dto';
+import { BatchSubmitResponseDto } from './dto/batch-submit-response.dto';
 import { UpdatePredictionNoteDto } from './dto/update-prediction-note.dto';
 import {
   ListMyPredictionsDto,
@@ -32,6 +37,7 @@ import {
   PaginatedMarketPredictionsResponse,
   PaginatedMarketPredictionsResponseDto,
 } from './dto/list-market-predictions.dto';
+import { ExportPredictionsDto } from './dto/export-predictions.dto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
@@ -41,18 +47,23 @@ import {
   ClaimAllRewardsResponseDto,
   RewardsSummaryDto,
 } from './dto/rewards-summary.dto';
+import { PnlQueryDto, PnlResponseDto } from './dto/pnl-query.dto';
 
 @ApiTags('Predictions')
 @ApiBearerAuth()
 @Controller('predictions')
 export class PredictionsController {
-  constructor(private readonly predictionsService: PredictionsService) { }
+  constructor(private readonly predictionsService: PredictionsService) {}
 
   @Post()
   @UseGuards(BanGuard)
   @Idempotent()
+  @ThrottleTier('write')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Submit a prediction on a market with optional slippage protection' })
+  @ApiOperation({
+    summary:
+      'Submit a prediction on a market with optional slippage protection',
+  })
   @ApiResponse({
     status: 201,
     description: 'Prediction submitted with realized price and shares',
@@ -66,11 +77,7 @@ export class PredictionsController {
   @ApiResponse({
     status: 409,
     description:
-      'Duplicate prediction on this market, slippage exceeded, or request with the same Idempotency-Key is already in progress',
-  })
-  @ApiResponse({
-    status: 422,
-    description: 'Idempotency-Key reused with a different request body',
+      'Duplicate prediction on this market, slippage exceeded, a request with the same Idempotency-Key already in progress, or the same Idempotency-Key reused with a different request body',
   })
   async submit(
     @Body() dto: SubmitPredictionDto,
@@ -79,7 +86,40 @@ export class PredictionsController {
     return this.predictionsService.submit(dto, user);
   }
 
+  @Post('batch')
+  @UseGuards(BanGuard)
+  @Idempotent()
+  @ThrottleTier('write')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Submit a batch (slip) of predictions in one validated call. Atomic by default - the whole slip is rejected if any item fails.',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Per-item results. In non-atomic mode valid items are submitted and failures are reported per item; in atomic mode a failure yields HTTP 400 with per-item errors and nothing is persisted.',
+    type: BatchSubmitResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Validation failed (atomic mode), invalid payload, or missing Idempotency-Key',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'A request with the same Idempotency-Key is already in progress, or it was reused with a different request body',
+  })
+  async submitBatch(
+    @Body() dto: SubmitBatchPredictionsDto,
+    @CurrentUser() user: User,
+  ): Promise<BatchSubmitResponseDto> {
+    return this.predictionsService.submitBatch(dto, user);
+  }
+
   @Get('me')
+  @ThrottleTier('read')
   @ApiOperation({ summary: "Get the authenticated user's predictions" })
   @ApiResponse({
     status: 200,
@@ -93,6 +133,7 @@ export class PredictionsController {
   }
 
   @Get('rewards/summary')
+  @ThrottleTier('read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: "Get the authenticated user's claimable and vesting rewards",
@@ -124,6 +165,54 @@ export class PredictionsController {
     @CurrentUser() user: User,
   ): Promise<ClaimAllRewardsResponseDto> {
     return this.predictionsService.claimAllRewards(user);
+  }
+
+  @Get('pnl')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Get the authenticated user's realized and unrealized P&L",
+    description:
+      'Returns realized P&L (from settled predictions) and unrealized P&L ' +
+      '(from open positions at current implied odds). Supports time filtering ' +
+      'via `from`/`to` and an optional per-market breakdown via `breakdown=true`.',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Aggregate realized/unrealized P&L, with an optional per-market breakdown',
+  })
+  async getPnl(
+    @Query() query: PnlQueryDto,
+    @CurrentUser() user: User,
+  ): Promise<PnlResponseDto> {
+    return this.predictionsService.getPnl(user, query);
+  }
+
+  @Get('export')
+  @ThrottleTier('read')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Export the authenticated user's prediction history as CSV",
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'CSV file stream',
+    content: { 'text/csv': {} },
+  })
+  async exportPredictions(
+    @Query() query: ExportPredictionsDto,
+    @CurrentUser() user: User,
+    @Res() res: Response,
+  ): Promise<void> {
+    const dateStr = new Date().toISOString().split('T')[0];
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="predictions-${dateStr}.csv"`,
+    );
+
+    const stream = this.predictionsService.exportCsv(user, query);
+    stream.pipe(res);
   }
 
   @Get(':id')

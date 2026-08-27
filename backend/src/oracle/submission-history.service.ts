@@ -34,6 +34,11 @@ import {
  */
 const ZERO_VARIANCE_DEVIATION = Number.MAX_SAFE_INTEGER;
 
+/** Reason recorded when only the z-score threshold trips. */
+const REASON_ZSCORE_EXCEEDED = 'deviation_exceeds_threshold';
+/** Reason recorded when only the median-deviation threshold trips (#1611). */
+const REASON_MEDIAN_EXCEEDED = 'median_deviation_exceeds_threshold';
+
 @Injectable()
 export class SubmissionHistoryService {
   private readonly logger = new Logger(SubmissionHistoryService.name);
@@ -46,6 +51,11 @@ export class SubmissionHistoryService {
   private readonly anomalyWindow: number;
   /** When true, flagged submissions are held for manual review before use. */
   private readonly anomalyHoldEnabled: boolean;
+  /**
+   * Absolute deviation from the baseline **median** beyond which a submission
+   * is flagged as an outlier versus the consensus (#1611).
+   */
+  private readonly medianDeviationThreshold: number;
 
   constructor(
     @InjectRepository(OracleSubmission)
@@ -63,6 +73,10 @@ export class SubmissionHistoryService {
       5,
     );
     this.anomalyWindow = this.readNumberConfig('ORACLE_ANOMALY_WINDOW', 50);
+    this.medianDeviationThreshold = this.readNumberConfig(
+      'ORACLE_MEDIAN_DEVIATION_THRESHOLD',
+      15,
+    );
     this.anomalyHoldEnabled =
       this.configService.get<string>('ORACLE_ANOMALY_HOLD') === 'true';
   }
@@ -239,15 +253,20 @@ export class SubmissionHistoryService {
   // ── Anomaly detection (#1364) ─────────────────────────────────────────────
 
   /**
-   * Evaluate a confidence score against the rolling baseline (mean/stddev) of
-   * its data source's most recent prior submissions.
+   * Evaluate a confidence score against the rolling baseline of its data
+   * source's most recent prior submissions.
    *
-   * The baseline is the population mean and standard deviation over up to
-   * `ORACLE_ANOMALY_WINDOW` prior submissions for `dataSource`, optionally
-   * excluding one submission id (so a just-persisted row does not bias its own
-   * baseline). A value is an anomaly when its absolute z-score is strictly
-   * greater than `ORACLE_ANOMALY_THRESHOLD`; a value exactly at the threshold
-   * is not flagged (the threshold is the boundary of the accepted band).
+   * The baseline is computed over up to `ORACLE_ANOMALY_WINDOW` prior
+   * submissions for `dataSource`, optionally excluding one submission id (so a
+   * just-persisted row does not bias its own baseline). Two thresholds are
+   * enforced:
+   *
+   * 1. A z-score strictly greater than `ORACLE_ANOMALY_THRESHOLD` against the
+   *    baseline mean/stddev.
+   * 2. An absolute deviation from the baseline **median** strictly greater than
+   *    `ORACLE_MEDIAN_DEVIATION_THRESHOLD` (#1611) — submissions that deviate
+   *    sharply from consensus are outliers even when the z-score alone would
+   *    pass because the source's history is naturally wide or skewed.
    *
    * With fewer than `ORACLE_ANOMALY_MIN_SAMPLES` prior submissions the baseline
    * is not yet trustworthy, so the value is never flagged. When the baseline has
@@ -281,6 +300,8 @@ export class SubmissionHistoryService {
         zScore: null,
         mean: sampleSize > 0 ? this.mean(values) : 0,
         stddev: 0,
+        baselineMedian: sampleSize > 0 ? this.median(values) : 0,
+        medianDeviation: null,
         sampleSize,
         threshold: this.anomalyThreshold,
         reason: 'insufficient_samples',
@@ -289,6 +310,8 @@ export class SubmissionHistoryService {
 
     const mean = this.mean(values);
     const stddev = this.stddev(values, mean);
+    const median = this.median(values);
+    const medianDeviation = Math.abs(value - median);
 
     if (stddev === 0) {
       const isAnomaly = value !== mean;
@@ -297,6 +320,8 @@ export class SubmissionHistoryService {
         zScore: isAnomaly ? ZERO_VARIANCE_DEVIATION : 0,
         mean,
         stddev,
+        baselineMedian: median,
+        medianDeviation,
         sampleSize,
         threshold: this.anomalyThreshold,
         reason: isAnomaly ? 'zero_variance_outlier' : 'within_threshold',
@@ -304,16 +329,28 @@ export class SubmissionHistoryService {
     }
 
     const zScore = Math.abs(value - mean) / stddev;
-    const isAnomaly = zScore > this.anomalyThreshold;
+    const zExceeded = zScore > this.anomalyThreshold;
+    const medianExceeded = medianDeviation > this.medianDeviationThreshold;
+    const isAnomaly = zExceeded || medianExceeded;
+
+    // Prefer reporting the original z-score rule; the median rule gets its own
+    // reason when it is the one that tripped.
+    const reason = zExceeded
+      ? REASON_ZSCORE_EXCEEDED
+      : medianExceeded
+        ? REASON_MEDIAN_EXCEEDED
+        : 'within_threshold';
 
     return {
       isAnomaly,
       zScore,
       mean,
       stddev,
+      baselineMedian: median,
+      medianDeviation,
       sampleSize,
       threshold: this.anomalyThreshold,
-      reason: isAnomaly ? 'deviation_exceeds_threshold' : 'within_threshold',
+      reason,
     };
   }
 
@@ -348,13 +385,18 @@ export class SubmissionHistoryService {
     await this.submissionRepository.save(submission);
 
     if (evaluation.isAnomaly) {
+      const medianBasis =
+        evaluation.medianDeviation !== null &&
+        evaluation.medianDeviation !== undefined
+          ? `, ${evaluation.medianDeviation.toFixed(2)} from baseline median ${(evaluation.baselineMedian ?? 0).toFixed(2)} (threshold ${this.medianDeviationThreshold})`
+          : '';
       const reason = `confidence ${submission.confidence_score} deviates ${
         evaluation.zScore === ZERO_VARIANCE_DEVIATION
           ? '∞'
           : evaluation.zScore?.toFixed(2)
       }σ from baseline mean ${evaluation.mean.toFixed(2)} (threshold ${
         evaluation.threshold
-      })`;
+      })${medianBasis}`;
 
       const flag = this.flagRepository.create({
         submission_id: submission.id,
@@ -362,6 +404,7 @@ export class SubmissionHistoryService {
         data_source: submission.data_source,
         observed_value: Number(submission.confidence_score),
         baseline_mean: evaluation.mean,
+        baseline_median: evaluation.baselineMedian ?? undefined,
         baseline_stddev: evaluation.stddev,
         deviation: evaluation.zScore ?? 0,
         threshold: evaluation.threshold,
@@ -422,6 +465,10 @@ export class SubmissionHistoryService {
       data_source: flag.data_source,
       observed_value: Number(flag.observed_value),
       baseline_mean: Number(flag.baseline_mean),
+      baseline_median:
+        flag.baseline_median !== null && flag.baseline_median !== undefined
+          ? Number(flag.baseline_median)
+          : undefined,
       baseline_stddev: Number(flag.baseline_stddev),
       deviation: Number(flag.deviation),
       threshold: Number(flag.threshold),
@@ -434,6 +481,15 @@ export class SubmissionHistoryService {
 
   private mean(values: number[]): number {
     return values.reduce((sum, v) => sum + v, 0) / values.length;
+  }
+
+  /** Median of an already-collected numeric window. */
+  private median(values: number[]): number {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0
+      ? (sorted[mid - 1] + sorted[mid]) / 2
+      : sorted[mid];
   }
 
   private stddev(values: number[], mean: number): number {

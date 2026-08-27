@@ -12,8 +12,15 @@ import { UsersModule } from '../users/users.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
 import { DisputesModule } from '../disputes/disputes.module';
 import { WebhooksModule } from '../webhooks/webhooks.module';
+import { SearchModule } from '../search/search.module';
 import { CommonModule } from '../common/common.module';
 import { OptionalIdempotencyInterceptor } from '../common/idempotency/optional-idempotency.interceptor';
+import { AuthModule } from '../auth/auth.module';
+import { ApiKeyGuard } from '../common/guards/api-key.guard';
+import { PublicMarketsController } from './public-markets.controller';
+
+import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
+import { SettlementAttempt } from './entities/settlement-attempt.entity';
 
 @Module({
   imports: [
@@ -23,18 +30,23 @@ import { OptionalIdempotencyInterceptor } from '../common/idempotency/optional-i
       MarketTemplate,
       UserBookmark,
       Prediction,
+      MarketPriceSnapshot,
+      SettlementAttempt,
     ]),
     UsersModule,
     AnalyticsModule,
     DisputesModule,
     WebhooksModule,
+    SearchModule,
     CommonModule,
+    AuthModule,
   ],
-  controllers: [MarketsController],
+  controllers: [MarketsController, PublicMarketsController],
   providers: [
     MarketsService,
     MarketSettlementScheduler,
     OptionalIdempotencyInterceptor,
+    ApiKeyGuard,
   ],
   exports: [MarketsService, TypeOrmModule],
 })

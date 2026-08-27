@@ -11,6 +11,19 @@ interface AuthGuardProps {
 // Routes that render their own unauthenticated gate instead of redirecting
 const SELF_GATED_ROUTES = ["/profile"];
 
+export interface ProfileGateConfig {
+  /** Critical gates block the page until the profile is complete; others can be dismissed for now. */
+  critical: boolean;
+}
+
+// Authenticated routes that additionally require a complete profile before
+// their content is useful. Routes not listed here are never profile-gated.
+export const PROFILE_GATED_ROUTES: Record<string, ProfileGateConfig> = {
+  "/my-markets": { critical: true },
+  "/creator-events": { critical: true },
+  "/competitions": { critical: false },
+};
+
 export function AuthGuard({ children }: AuthGuardProps) {
   const router = useRouter();
   const pathname = usePathname();

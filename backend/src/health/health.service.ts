@@ -1,5 +1,9 @@
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import { Inject, Injectable } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import {
   DiskHealthIndicator,
   HealthCheck,
@@ -111,6 +115,51 @@ export class HealthService {
       cache: cacheResult,
       uptime_seconds,
     };
+  }
+
+  /**
+   * Liveness: is the process itself up and able to respond? No dependency
+   * checks — a dependency outage must not cause an orchestrator to restart
+   * an otherwise-healthy process.
+   */
+  checkLiveness(): { status: 'ok'; uptime_seconds: number } {
+    return {
+      status: 'ok',
+      uptime_seconds: Math.floor((Date.now() - START_TIME) / 1000),
+    };
+  }
+
+  /**
+   * Readiness: can this instance actually serve traffic right now? Probes
+   * DB, Soroban RPC, and cache; any dependency being down flips readiness
+   * to not-ready (503), signalling the orchestrator to stop routing traffic
+   * here until dependencies recover.
+   */
+  async checkReadiness(): Promise<DetailedHealthDto> {
+    const [dbResult, sorobanResult, cacheResult] = await Promise.all([
+      this.checkDatabase(),
+      this.checkSoroban(),
+      this.checkCache(),
+    ]);
+
+    const ready =
+      dbResult.status === 'up' &&
+      sorobanResult.status === 'up' &&
+      cacheResult.status === 'up';
+
+    const body: DetailedHealthDto = {
+      status: ready ? 'healthy' : 'down',
+      database: dbResult,
+      soroban: sorobanResult,
+      cache: cacheResult,
+      uptime_seconds: Math.floor((Date.now() - START_TIME) / 1000),
+    };
+
+    if (!ready) {
+      throw new ServiceUnavailableException(body);
+    }
+
+    return body;
   }
 
   private computeOverallStatus(

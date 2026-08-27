@@ -111,10 +111,7 @@ export default function WatchlistPage() {
           icon={<Heart size={32} />}
           title="Your Watchlist is Empty"
           description="Add markets to your watchlist to keep track of them. Click the heart icon on any market to save it here."
-          action={{
-            label: "Browse Markets",
-            onClick: () => (window.location.href = "/markets"),
-          }}
+          action={{ label: "Browse Markets", href: "/markets" }}
           variant="empty"
         />
       )}

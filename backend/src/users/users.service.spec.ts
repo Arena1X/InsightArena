@@ -23,6 +23,7 @@ import {
   UserMarketsSortOrder,
 } from './dto/list-user-markets.dto';
 import { UserBookmark } from '../markets/entities/user-bookmark.entity';
+import { ReferralStatus, UserReferral } from './entities/user-referral.entity';
 
 describe('UsersService', () => {
   let service: UsersService;
@@ -31,6 +32,8 @@ describe('UsersService', () => {
   let predictionsRepository: Repository<Prediction>;
   let participantsRepository: Repository<CompetitionParticipant>;
   let marketsRepository: Repository<Market>;
+  let referralsRepository: Repository<UserReferral>;
+  let bookmarksRepository: Repository<UserBookmark>;
 
   const mockUser: User = {
     id: '123e4567-e89b-12d3-a456-426614174000',
@@ -60,6 +63,7 @@ describe('UsersService', () => {
           provide: getRepositoryToken(User),
           useValue: {
             findOneBy: jest.fn(),
+            findOne: jest.fn(),
             save: jest.fn(),
             find: jest.fn(),
           },
@@ -92,6 +96,7 @@ describe('UsersService', () => {
           provide: getRepositoryToken(Market),
           useValue: {
             find: jest.fn(),
+            findOneBy: jest.fn(),
             createQueryBuilder: jest.fn(),
           },
         },
@@ -118,6 +123,17 @@ describe('UsersService', () => {
             delete: jest.fn(),
           },
         },
+        {
+          provide: getRepositoryToken(UserReferral),
+          useValue: {
+            findOne: jest.fn(),
+            find: jest.fn(),
+            create: jest.fn((data: Partial<UserReferral>) => data),
+            save: jest.fn((entity: Partial<UserReferral>) =>
+              Promise.resolve({ id: 'referral-uuid-1', ...entity }),
+            ),
+          },
+        },
       ],
     }).compile();
 
@@ -132,6 +148,12 @@ describe('UsersService', () => {
     marketsRepository = module.get<Repository<Market>>(
       getRepositoryToken(Market),
     );
+    referralsRepository = module.get<Repository<UserReferral>>(
+      getRepositoryToken(UserReferral),
+    );
+    bookmarksRepository = module.get<Repository<UserBookmark>>(
+      getRepositoryToken(UserBookmark),
+    );
   });
 
   it('should be defined', () => {
@@ -140,20 +162,20 @@ describe('UsersService', () => {
 
   describe('findByAddress', () => {
     it('should return a user when found', async () => {
-      const findOneByMock = jest
-        .spyOn(repository, 'findOneBy')
+      const findOneMock = jest
+        .spyOn(repository, 'findOne')
         .mockResolvedValue(mockUser);
 
       const result = await service.findByAddress(mockUser.stellar_address);
 
       expect(result).toEqual(mockUser);
-      expect(findOneByMock).toHaveBeenCalledWith({
-        stellar_address: mockUser.stellar_address,
+      expect(findOneMock).toHaveBeenCalledWith({
+        where: { stellar_address: mockUser.stellar_address, deleted_at: expect.anything() },
       });
     });
 
-    it('should throw NotFoundException when user not found', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(null);
+    it('should throw NotFoundException when user not found or soft-deleted', async () => {
+      jest.spyOn(repository, 'findOne').mockResolvedValue(null);
 
       await expect(
         service.findByAddress('NONEXISTENT_ADDRESS'),
@@ -161,9 +183,21 @@ describe('UsersService', () => {
     });
   });
 
+  describe('findAll', () => {
+    it('should exclude soft-deleted users', async () => {
+      const findMock = jest.spyOn(repository, 'find').mockResolvedValue([mockUser]);
+      const result = await service.findAll();
+      expect(result).toEqual([mockUser]);
+      expect(findMock).toHaveBeenCalledWith({
+        where: { deleted_at: expect.anything() },
+      });
+    });
+  });
+
+
   describe('findUserCompetitions', () => {
     it('should return paginated user competitions', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const queryBuilder = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -217,7 +251,7 @@ describe('UsersService', () => {
 
   describe('findPublicPredictionsByAddress', () => {
     it('should push outcome filter to SQL when outcome is set', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const queryBuilder = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -249,7 +283,7 @@ describe('UsersService', () => {
     });
 
     it('should reject self-follow with BadRequestException', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const queryBuilder = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -278,7 +312,7 @@ describe('UsersService', () => {
     });
 
     it('should reject duplicate follow with ConflictException', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const queryBuilder = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -315,7 +349,7 @@ describe('UsersService', () => {
     });
 
     it('should return only resolved-market predictions with outcome mapping', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const now = new Date('2025-02-01T00:00:00.000Z');
       const queryBuilder = {
@@ -406,7 +440,7 @@ describe('UsersService', () => {
     });
 
     it('should scope markets to creator and return pagination', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
       queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
       jest
         .spyOn(marketsRepository, 'createQueryBuilder')
@@ -433,7 +467,7 @@ describe('UsersService', () => {
     });
 
     it('should filter active markets', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
       queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
       jest
         .spyOn(marketsRepository, 'createQueryBuilder')
@@ -453,7 +487,7 @@ describe('UsersService', () => {
     });
 
     it('should filter resolved markets', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
       queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
       jest
         .spyOn(marketsRepository, 'createQueryBuilder')
@@ -473,7 +507,7 @@ describe('UsersService', () => {
     });
 
     it('should filter cancelled markets', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
       queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
       jest
         .spyOn(marketsRepository, 'createQueryBuilder')
@@ -493,7 +527,7 @@ describe('UsersService', () => {
     });
 
     it('should sort by participant_count and order asc', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
       queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
       jest
         .spyOn(marketsRepository, 'createQueryBuilder')
@@ -517,7 +551,7 @@ describe('UsersService', () => {
 
   describe('getMyStats', () => {
     it('should return lightweight stats with computed accuracy and tier', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(mockUser);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(mockUser);
 
       const result = await service.getMyStats(mockUser.id);
 
@@ -541,7 +575,7 @@ describe('UsersService', () => {
         correct_predictions: 0,
       };
       jest
-        .spyOn(repository, 'findOneBy')
+        .spyOn(repository, 'findOne')
         .mockResolvedValue(userWithNoPredictions);
 
       const result = await service.getMyStats(mockUser.id);
@@ -551,7 +585,7 @@ describe('UsersService', () => {
     });
 
     it('should throw NotFoundException when user not found', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(null);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(null);
 
       await expect(service.getMyStats('missing-id')).rejects.toThrow(
         NotFoundException,
@@ -562,10 +596,10 @@ describe('UsersService', () => {
   describe('followUser', () => {
     it('should throw BadRequestException if user tries to follow themselves', async () => {
       jest
-        .spyOn(repository, 'findOneBy')
+        .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria.id === mockUser.id) return mockUser;
-          if (criteria.stellar_address === mockUser.stellar_address)
+          if (criteria?.where?.id === mockUser.id || criteria?.id === mockUser.id) return mockUser;
+          if (criteria?.where?.stellar_address === mockUser.stellar_address || criteria?.stellar_address === mockUser.stellar_address)
             return mockUser;
           return null;
         });
@@ -582,10 +616,10 @@ describe('UsersService', () => {
         stellar_address: 'G_ANOTHER',
       } as User;
       jest
-        .spyOn(repository, 'findOneBy')
+        .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria.id === mockUser.id) return mockUser;
-          if (criteria.stellar_address === mockUserB.stellar_address)
+          if (criteria?.where?.id === mockUser.id || criteria?.id === mockUser.id) return mockUser;
+          if (criteria?.where?.stellar_address === mockUserB.stellar_address || criteria?.stellar_address === mockUserB.stellar_address)
             return mockUserB;
           return null;
         });
@@ -614,9 +648,9 @@ describe('UsersService', () => {
         getRepositoryToken(UserFollow),
       );
       jest
-        .spyOn(repository, 'findOneBy')
+        .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria.stellar_address === mockUser.stellar_address)
+          if (criteria?.where?.stellar_address === mockUser.stellar_address || criteria?.stellar_address === mockUser.stellar_address)
             return mockUser;
           return null;
         });
@@ -642,7 +676,7 @@ describe('UsersService', () => {
     });
 
     it('should throw NotFoundException if user does not exist', async () => {
-      jest.spyOn(repository, 'findOneBy').mockResolvedValue(null);
+      jest.spyOn(repository, 'findOne').mockResolvedValue(null);
 
       await expect(
         service.getFollowStats('non-existent-address'),
@@ -654,9 +688,9 @@ describe('UsersService', () => {
         getRepositoryToken(UserFollow),
       );
       jest
-        .spyOn(repository, 'findOneBy')
+        .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria.stellar_address === mockUser.stellar_address)
+          if (criteria?.where?.stellar_address === mockUser.stellar_address || criteria?.stellar_address === mockUser.stellar_address)
             return mockUser;
           return null;
         });
@@ -679,6 +713,257 @@ describe('UsersService', () => {
         followers_count: 0,
         following_count: 0,
       });
+    });
+  });
+
+  describe('claimReferral', () => {
+    it('records a referral relationship', async () => {
+      jest.spyOn(repository, 'findOne').mockResolvedValue({
+        id: 'referrer-1',
+      } as User);
+      jest.spyOn(referralsRepository, 'findOne').mockResolvedValue(null);
+
+      const result = await service.claimReferral('referred-1', 'referrer-1');
+
+      expect(result).toEqual({
+        success: true,
+        message: 'Referral recorded successfully',
+      });
+      expect(referralsRepository.create).toHaveBeenCalledWith({
+        referrer_id: 'referrer-1',
+        referred_id: 'referred-1',
+      });
+      expect(referralsRepository.save).toHaveBeenCalled();
+    });
+
+    it('rejects self-referral', async () => {
+      await expect(service.claimReferral('user-1', 'user-1')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(repository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when the referrer does not exist', async () => {
+      jest.spyOn(repository, 'findOne').mockResolvedValue(null);
+
+      await expect(
+        service.claimReferral('referred-1', 'missing-referrer'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('rejects duplicate attribution when a referral already exists', async () => {
+      jest.spyOn(repository, 'findOne').mockResolvedValue({
+        id: 'referrer-1',
+      } as User);
+      jest.spyOn(referralsRepository, 'findOne').mockResolvedValue({
+        id: 'existing-referral',
+      } as UserReferral);
+
+      await expect(
+        service.claimReferral('referred-1', 'referrer-1'),
+      ).rejects.toThrow(ConflictException);
+      expect(referralsRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getMyReferrals', () => {
+    it('reports total, pending, and qualified counts', async () => {
+      const referrals: UserReferral[] = [
+        {
+          id: 'r1',
+          referrer_id: 'user-1',
+          referred_id: 'friend-1',
+          status: ReferralStatus.PENDING,
+          qualified_at: null,
+          created_at: new Date(),
+          referred: { username: 'friend1', stellar_address: 'GFRIEND1' },
+        } as UserReferral,
+        {
+          id: 'r2',
+          referrer_id: 'user-1',
+          referred_id: 'friend-2',
+          status: ReferralStatus.QUALIFIED,
+          qualified_at: new Date(),
+          created_at: new Date(),
+          referred: { username: 'friend2', stellar_address: 'GFRIEND2' },
+        } as UserReferral,
+      ];
+      jest.spyOn(referralsRepository, 'find').mockResolvedValue(referrals);
+
+      const result = await service.getMyReferrals('user-1');
+
+      expect(result.referral_code).toBe('user-1');
+      expect(result.total).toBe(2);
+      expect(result.pending).toBe(1);
+      expect(result.qualified).toBe(1);
+      expect(result.referrals).toHaveLength(2);
+      expect(result.referrals[0].referred_username).toBe('friend1');
+    });
+
+    it('returns zeroed counts when the user has no referrals', async () => {
+      jest.spyOn(referralsRepository, 'find').mockResolvedValue([]);
+
+      const result = await service.getMyReferrals('user-1');
+
+      expect(result).toEqual({
+        referral_code: 'user-1',
+        total: 0,
+        pending: 0,
+        qualified: 0,
+        referrals: [],
+      });
+    });
+  });
+
+  describe('recordQualifyingAction', () => {
+    it('advances a pending referral to qualified', async () => {
+      const referral = {
+        id: 'r1',
+        referred_id: 'friend-1',
+        status: ReferralStatus.PENDING,
+        qualified_at: null,
+      } as UserReferral;
+      jest.spyOn(referralsRepository, 'findOne').mockResolvedValue(referral);
+
+      await service.recordQualifyingAction('friend-1');
+
+      expect(referralsRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: ReferralStatus.QUALIFIED,
+          qualified_at: expect.any(Date),
+        }),
+      );
+    });
+
+    it('is a no-op when the user has no pending referral', async () => {
+      jest.spyOn(referralsRepository, 'findOne').mockResolvedValue(null);
+
+      await service.recordQualifyingAction('friend-1');
+
+      expect(referralsRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateProfile', () => {
+    it('updates only the fields provided in a partial payload', async () => {
+      const existingUser = {
+        ...mockUser,
+        username: 'keep_me',
+        avatar_url: 'https://example.com/original.png',
+      } as User;
+
+      jest.spyOn(repository, 'findOne').mockResolvedValue(existingUser);
+      jest.spyOn(repository, 'save').mockImplementation(async (user) => user);
+
+      const result = await service.updateProfile(existingUser.id, {
+        username: 'new_name',
+      });
+
+      expect(result.username).toBe('new_name');
+      expect(result.avatar_url).toBe('https://example.com/original.png');
+      expect(repository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          username: 'new_name',
+          avatar_url: 'https://example.com/original.png',
+        }),
+      );
+    });
+
+    it('leaves the profile unchanged when no updatable fields are provided', async () => {
+      const existingUser = {
+        ...mockUser,
+        username: 'keep_me',
+        avatar_url: 'https://example.com/original.png',
+      } as User;
+
+      jest.spyOn(repository, 'findOne').mockResolvedValue(existingUser);
+      jest.spyOn(repository, 'save').mockImplementation(async (user) => user);
+
+      const result = await service.updateProfile(existingUser.id, {});
+
+      expect(result.username).toBe('keep_me');
+      expect(result.avatar_url).toBe('https://example.com/original.png');
+    });
+  });
+
+  describe('addBookmark', () => {
+    const market = { id: 'market-uuid' } as Market;
+
+    it('creates a bookmark scoped to the authenticated user', async () => {
+      jest.spyOn(marketsRepository, 'findOneBy').mockResolvedValue(market);
+      jest.spyOn(bookmarksRepository, 'findOne').mockResolvedValue(null);
+      const created = {
+        id: 'bookmark-uuid',
+        user: { id: mockUser.id },
+        market,
+      };
+      jest
+        .spyOn(bookmarksRepository, 'create')
+        .mockReturnValue(created as UserBookmark);
+      jest
+        .spyOn(bookmarksRepository, 'save')
+        .mockResolvedValue(created as UserBookmark);
+
+      const result = await service.addBookmark(mockUser.id, market.id);
+
+      expect(result).toEqual(created);
+      expect(bookmarksRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user: { id: mockUser.id },
+          market,
+        }),
+      );
+    });
+
+    it('throws NotFoundException when the market does not exist', async () => {
+      jest.spyOn(marketsRepository, 'findOneBy').mockResolvedValue(null);
+
+      await expect(
+        service.addBookmark(mockUser.id, 'missing-market'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('rejects duplicate bookmarks of the same market with ConflictException', async () => {
+      jest.spyOn(marketsRepository, 'findOneBy').mockResolvedValue(market);
+      jest.spyOn(bookmarksRepository, 'findOne').mockResolvedValue({
+        id: 'existing-bookmark',
+        user: { id: mockUser.id },
+        market,
+      } as UserBookmark);
+
+      await expect(service.addBookmark(mockUser.id, market.id)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(bookmarksRepository.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('removeBookmark', () => {
+    it('deletes a bookmark owned by the authenticated user', async () => {
+      jest.spyOn(bookmarksRepository, 'findOne').mockResolvedValue({
+        id: 'bookmark-uuid',
+        user: { id: mockUser.id },
+      } as UserBookmark);
+      const deleteSpy = jest
+        .spyOn(bookmarksRepository, 'delete')
+        .mockResolvedValue({ affected: 1 } as never);
+
+      await service.removeBookmark(mockUser.id, 'bookmark-uuid');
+
+      expect(bookmarksRepository.findOne).toHaveBeenCalledWith({
+        where: { id: 'bookmark-uuid', user: { id: mockUser.id } },
+      });
+      expect(deleteSpy).toHaveBeenCalledWith({ id: 'bookmark-uuid' });
+    });
+
+    it('enforces ownership — a bookmark owned by another user is not found', async () => {
+      jest.spyOn(bookmarksRepository, 'findOne').mockResolvedValue(null);
+      const deleteSpy = jest.spyOn(bookmarksRepository, 'delete');
+
+      await expect(
+        service.removeBookmark(mockUser.id, 'other-users-bookmark'),
+      ).rejects.toThrow(NotFoundException);
+      expect(deleteSpy).not.toHaveBeenCalled();
     });
   });
 });

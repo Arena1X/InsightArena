@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NotificationGeneratorService } from './notification-generator.service';
 import { Notification, NotificationType } from './entities/notification.entity';
+import { NotificationCategoryPreference } from './entities/notification-category-preference.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
 import { Match } from '../matches/entities/match.entity';
 import { MatchPrediction } from '../matches/entities/match-prediction.entity';
@@ -70,6 +71,12 @@ describe('NotificationGeneratorService', () => {
             create: jest.fn().mockReturnValue({}),
             save: jest.fn().mockResolvedValue({}),
             find: jest.fn().mockResolvedValue([]),
+          },
+        },
+        {
+          provide: getRepositoryToken(NotificationCategoryPreference),
+          useValue: {
+            findOne: jest.fn().mockResolvedValue(null),
           },
         },
         {

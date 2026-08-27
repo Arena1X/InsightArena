@@ -1,6 +1,7 @@
 use soroban_sdk::{Env, Symbol};
 
-use crate::storage_types::DataKey;
+use crate::storage::TTL_LEDGERS;
+use crate::storage_types::{DataKey, InviteCodeData, InviteCodeInfo};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -11,6 +12,12 @@ use crate::storage_types::DataKey;
 pub enum InviteError {
     /// Could not generate a unique code within the maximum retry count.
     CodeGenerationFailed = 1,
+    /// No event is associated with this invite code.
+    InvalidCode = 2,
+    /// The code's `expires_at` has passed.
+    CodeExpired = 3,
+    /// The code has already been redeemed `max_uses` times.
+    CodeUsesExceeded = 4,
 }
 
 // ---------------------------------------------------------------------------
@@ -63,4 +70,99 @@ pub fn generate_invite_code(env: &Env) -> Result<Symbol, InviteError> {
     }
 
     Err(InviteError::CodeGenerationFailed)
+}
+
+// ---------------------------------------------------------------------------
+// InviteCodeData storage (#1699)
+// ---------------------------------------------------------------------------
+
+/// Persist a code's [`InviteCodeData`] and set its TTL.
+pub fn set_invite_data(env: &Env, code: &Symbol, data: &InviteCodeData) {
+    let key = DataKey::InviteCode(code.clone());
+    env.storage().persistent().set(&key, data);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+}
+
+/// Read a code's [`InviteCodeData`], extending its TTL on success.
+pub fn get_invite_data(env: &Env, code: &Symbol) -> Result<InviteCodeData, InviteError> {
+    let key = DataKey::InviteCode(code.clone());
+    match env
+        .storage()
+        .persistent()
+        .get::<DataKey, InviteCodeData>(&key)
+    {
+        Some(data) => {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+            Ok(data)
+        }
+        None => Err(InviteError::InvalidCode),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// redeem (#1699)
+// ---------------------------------------------------------------------------
+
+/// Validate and atomically redeem an invite code, returning the event_id it
+/// grants entry to.
+///
+/// Checks (in order):
+/// 1. The code exists ([`InviteError::InvalidCode`]).
+/// 2. The code has not expired ([`InviteError::CodeExpired`]).
+/// 3. The code has not reached its use cap ([`InviteError::CodeUsesExceeded`]).
+///
+/// On success, `use_count` is incremented and persisted before returning, so
+/// the increment and the validity checks happen atomically within a single
+/// redemption — there is no window where two concurrent redemptions could
+/// both read the same `use_count` and each believe they are under the cap.
+pub fn redeem(env: &Env, code: &Symbol, current_time: u64) -> Result<u64, InviteError> {
+    let mut data = get_invite_data(env, code)?;
+
+    if data.is_expired(current_time) {
+        return Err(InviteError::CodeExpired);
+    }
+    if data.is_at_cap() {
+        return Err(InviteError::CodeUsesExceeded);
+    }
+
+    data.use_count += 1;
+    set_invite_data(env, code, &data);
+
+    Ok(data.event_id)
+}
+
+// ---------------------------------------------------------------------------
+// get_invite_code_info (#1514)
+// ---------------------------------------------------------------------------
+
+/// Read-only view of an invite code's remaining uses and validity.
+///
+/// Computed from the stored [`InviteCodeData`] as of the current ledger
+/// time — does not redeem the code. `remaining_uses` is `u32::MAX` for an
+/// unlimited code (`max_uses == 0`).
+///
+/// # Errors
+/// * [`InviteError::InvalidCode`] — no invite code data exists for `code`.
+pub fn get_invite_code_info(env: &Env, code: &Symbol) -> Result<InviteCodeInfo, InviteError> {
+    let data = get_invite_data(env, code)?;
+    let now = env.ledger().timestamp();
+
+    let remaining_uses = if data.max_uses == 0 {
+        u32::MAX
+    } else {
+        data.max_uses.saturating_sub(data.use_count)
+    };
+
+    Ok(InviteCodeInfo {
+        event_id: data.event_id,
+        expires_at: data.expires_at,
+        max_uses: data.max_uses,
+        use_count: data.use_count,
+        remaining_uses,
+        is_valid: !data.is_expired(now) && !data.is_at_cap(),
+    })
 }

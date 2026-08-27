@@ -15,7 +15,9 @@ fn bump_prediction(env: &Env, market_id: u64, predictor: &Address) {
 }
 
 fn bump_market(env: &Env, market_id: u64) {
-    config::extend_market_ttl(env, market_id);
+    // Bump the full hot-key set (market + escrow pool + price accumulator) on
+    // every prediction write so active-market state stays alive together. #1516.
+    config::extend_active_market_ttl(env, market_id);
 }
 
 fn bump_predictor_list(env: &Env, market_id: u64) {
@@ -605,7 +607,11 @@ pub fn reveal_prediction(
 ) -> Result<(), InsightArenaError> {
     config::ensure_not_paused(env)?;
 
-    predictor.require_auth();
+    // NOTE: no explicit `predictor.require_auth()` here — authorization is
+    // enforced by the token transfer inside `escrow::lock_stake` below, the
+    // same pattern as `do_submit_prediction`. An explicit top-level auth
+    // would produce a duplicate authorization frame for the predictor
+    // (one here, one in the token transfer), which the host rejects.
 
     let mut market: Market = env
         .storage()
@@ -627,10 +633,15 @@ pub fn reveal_prediction(
         return Err(InsightArenaError::InvalidOutcome);
     }
 
-    if stake_amount < market.min_stake {
+    // Stake bounds must be resolved the same way as every other submission
+    // path: per-market non-zero bounds override, zero inherits the global
+    // Config window.
+    let (min_stake, max_stake) =
+        config::resolve_stake_bounds(env, market.min_stake, market.max_stake)?;
+    if stake_amount < min_stake {
         return Err(InsightArenaError::StakeTooLow);
     }
-    if stake_amount > market.max_stake {
+    if stake_amount > max_stake {
         return Err(InsightArenaError::StakeTooHigh);
     }
 
@@ -799,10 +810,15 @@ fn do_submit_prediction_via_allowance(
         );
     }
 
-    if stake_amount < market.min_stake {
+    // ── Guard 5 & 6: stake_amount must be within effective [min, max] ─────────
+    // Per-market non-zero bounds override the global Config bounds, matching
+    // do_submit_prediction.
+    let (min_stake, max_stake) =
+        config::resolve_stake_bounds(env, market.min_stake, market.max_stake)?;
+    if stake_amount < min_stake {
         return Err(InsightArenaError::StakeTooLow);
     }
-    if stake_amount > market.max_stake {
+    if stake_amount > max_stake {
         return Err(InsightArenaError::StakeTooHigh);
     }
 
@@ -1229,6 +1245,12 @@ pub fn claim_payout(
         .checked_sub(creator_fee)
         .ok_or(InsightArenaError::Overflow)?;
 
+    prediction.payout_claimed = true;
+    prediction.payout_amount = net_payout;
+    env.storage().persistent().remove(&prediction_key);
+    env.storage().temporary().set(&prediction_key, &prediction);
+    config::shorten_prediction_ttl_after_claim(env, market_id, &predictor);
+
     if net_payout > 0 {
         escrow::release_payout(env, &predictor, net_payout)?;
     }
@@ -1238,12 +1260,6 @@ pub fn claim_payout(
     if creator_fee > 0 {
         escrow::refund(env, &market.creator, creator_fee)?;
     }
-
-    prediction.payout_claimed = true;
-    prediction.payout_amount = net_payout;
-    env.storage().persistent().remove(&prediction_key);
-    env.storage().temporary().set(&prediction_key, &prediction);
-    config::shorten_prediction_ttl_after_claim(env, market_id, &predictor);
 
     let user_key = DataKey::User(predictor.clone());
     let mut profile: UserProfile = env
@@ -1419,6 +1435,14 @@ pub fn batch_distribute_payouts(
             market.creator_fee_bps,
         )?;
 
+        stored_prediction.payout_claimed = true;
+        stored_prediction.payout_amount = net_payout;
+        env.storage().persistent().remove(&prediction_key);
+        env.storage()
+            .temporary()
+            .set(&prediction_key, &stored_prediction);
+        config::shorten_prediction_ttl_after_claim(env, market_id, &stored_prediction.predictor);
+
         if net_payout > 0 {
             escrow::release_payout(env, &stored_prediction.predictor, net_payout)?;
         }
@@ -1428,14 +1452,6 @@ pub fn batch_distribute_payouts(
         if creator_fee > 0 {
             escrow::refund(env, &market.creator, creator_fee)?;
         }
-
-        stored_prediction.payout_claimed = true;
-        stored_prediction.payout_amount = net_payout;
-        env.storage().persistent().remove(&prediction_key);
-        env.storage()
-            .temporary()
-            .set(&prediction_key, &stored_prediction);
-        config::shorten_prediction_ttl_after_claim(env, market_id, &stored_prediction.predictor);
 
         apply_winner_payout(
             env,
@@ -1538,6 +1554,14 @@ pub fn claim_cancel_refund(
         .get(&prediction_key)
         .ok_or(InsightArenaError::NotAParticipant)?;
 
+    if prediction.payout_claimed {
+        return Err(InsightArenaError::RefundAlreadyClaimed);
+    }
+
+    if prediction.stake_amount <= 0 {
+        return Err(InsightArenaError::NotAParticipant);
+    }
+
     let refund_amount = prediction.stake_amount;
 
     // ── Checks-Effects-Interactions: move record to temporary before transfer ─
@@ -1558,4 +1582,283 @@ pub fn claim_cancel_refund(
     emit_refund_claimed(env, market_id, &predictor, refund_amount);
 
     Ok(refund_amount)
+}
+
+/// Withdraw part of an open position before market lock time.
+///
+/// # Validation
+/// - Platform must not be paused
+/// - Market must exist and be open (not resolved/cancelled/expired)
+/// - Current time must be before market.end_time (lock time)
+/// - Predictor must have an active stake in this market
+/// - Withdrawal amount must be strictly positive and not exceed the stake
+///
+/// # Effects
+/// 1. Calculate early-exit fee (bps from Config)
+/// 2. Deduct fee from withdrawal (refunded = withdrawal - fee)
+/// 3. Reduce predictor's stake and market's total_pool by exact withdrawn amount
+/// 4. Distribute fee to remaining participants pro-rata
+/// 5. Release refunded amount to predictor via escrow
+/// 6. Remove predictor from market if stake reaches zero
+/// 7. Update UserProfile stats
+///
+/// # Returns
+/// - `withdrawal_amount`: amount to be released to predictor (fee already deducted)
+/// - `fee_amount`: fee retained and distributed to other participants
+pub fn withdraw_position(
+    env: &Env,
+    predictor: Address,
+    market_id: u64,
+    withdrawal_amount: i128,
+) -> Result<(i128, i128), InsightArenaError> {
+    // ── Guard 1: platform not paused ─────────────────────────────────────────
+    config::ensure_not_paused(env)?;
+
+    // ── Guard 2: predictor authorisation ─────────────────────────────────────
+    predictor.require_auth();
+
+    // ── Guard 3: withdrawal amount must be strictly positive ───────────────────
+    if withdrawal_amount <= 0 {
+        return Err(InsightArenaError::ZeroShareTransfer); // Reused: amount must be positive
+    }
+
+    // ── Guard 4: market must exist ────────────────────────────────────────────
+    let mut market: Market = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Market(market_id))
+        .ok_or(InsightArenaError::MarketNotFound)?;
+
+    // ── Guard 5: market must still be open (not resolved/cancelled/expired) ───
+    if market.is_resolved {
+        return Err(InsightArenaError::MarketAlreadyResolved);
+    }
+    if market.is_cancelled {
+        return Err(InsightArenaError::MarketAlreadyCancelled);
+    }
+    let now = env.ledger().timestamp();
+    if now >= market.end_time {
+        // Market is locked; no more early withdrawals allowed
+        return Err(InsightArenaError::MarketExpired); // Reused: lock time passed
+    }
+
+    // ── Guard 6: predictor must hold a position on this market ────────────────
+    let prediction_key = DataKey::Prediction(market_id, predictor.clone());
+    let mut prediction: Prediction = env
+        .storage()
+        .persistent()
+        .get(&prediction_key)
+        .ok_or(InsightArenaError::PredictionNotFound)?;
+
+    // ── Guard 7: cannot withdraw more than the predictor holds ────────────────
+    if withdrawal_amount > prediction.stake_amount {
+        return Err(InsightArenaError::InvalidInput); // Reused: withdrawal exceeds stake
+    }
+
+    // ── Calculate early-exit fee ──────────────────────────────────────────────
+    let cfg = config::get_config(env)?;
+    let fee_amount = withdrawal_amount
+        .checked_mul(cfg.early_exit_fee_bps as i128)
+        .ok_or(InsightArenaError::Overflow)?
+        .checked_div(10_000)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    let refund_amount = withdrawal_amount
+        .checked_sub(fee_amount)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    // ── Update market state: reduce total_pool by exactly the withdrawn amount –
+    market.total_pool = market
+        .total_pool
+        .checked_sub(withdrawal_amount)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    // ── Reduce the predictor's stake ──────────────────────────────────────────
+    let remaining_stake = prediction
+        .stake_amount
+        .checked_sub(withdrawal_amount)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    let is_full_exit = remaining_stake == 0;
+
+    if is_full_exit {
+        // Predictor is exiting completely; remove from tracking
+        market.participant_count = market
+            .participant_count
+            .checked_sub(1)
+            .ok_or(InsightArenaError::Overflow)?;
+        env.storage().persistent().remove(&prediction_key);
+        remove_predictor_from_list(env, market_id, &predictor);
+        remove_user_market(env, &predictor, market_id);
+    } else {
+        // Partial withdrawal; update and persist
+        prediction.stake_amount = remaining_stake;
+        env.storage().persistent().set(&prediction_key, &prediction);
+        bump_prediction(env, market_id, &predictor);
+    }
+
+    // ── Persist updated market ────────────────────────────────────────────────
+    env.storage()
+        .persistent()
+        .set(&DataKey::Market(market_id), &market);
+    bump_market(env, market_id);
+
+    // ── Distribute fee to remaining participants pro-rata ────────────────────
+    // Fee is conserved: distributed = deducted. The withdrawing predictor's own
+    // (already-reduced) stake must be excluded from both the recipient set and
+    // the pro-rata denominator — otherwise a partial withdrawal would credit
+    // part of the fee straight back to the payer, inflating their tracked
+    // stake_amount above their true remaining balance.
+    let pool_excluding_withdrawer = market
+        .total_pool
+        .checked_sub(if is_full_exit { 0 } else { remaining_stake })
+        .ok_or(InsightArenaError::Overflow)?;
+    if fee_amount > 0 && pool_excluding_withdrawer > 0 {
+        distribute_early_exit_fee_to_participants(
+            env,
+            market_id,
+            &predictor,
+            fee_amount,
+            pool_excluding_withdrawer,
+        )?;
+    }
+
+    // ── Release refund to predictor via escrow ───────────────────────────────
+    if refund_amount > 0 {
+        escrow::release_payout(env, &predictor, refund_amount)?;
+    }
+
+    // ── Update user profile stats ────────────────────────────────────────────
+    decrease_user_stake(env, &predictor, withdrawal_amount)?;
+
+    // ── Emit withdrawal event ────────────────────────────────────────────────
+    emit_partial_withdrawal(env, market_id, &predictor, withdrawal_amount, fee_amount, refund_amount);
+
+    Ok((refund_amount, fee_amount))
+}
+
+/// Distribute early-exit fee to remaining participants pro-rata by stake.
+///
+/// For each remaining predictor in the market *other than the one who just
+/// withdrew*, award fee_share = fee * (their_stake / total_remaining_pool).
+/// This is done by iterating through all predictors and accumulating their
+/// shares. `withdrawing_predictor` is always skipped: they are the one paying
+/// the fee, so `total_remaining_pool` must already exclude their stake (see
+/// caller) or the fee would be partially refunded to the payer.
+fn distribute_early_exit_fee_to_participants(
+    env: &Env,
+    market_id: u64,
+    withdrawing_predictor: &Address,
+    total_fee: i128,
+    total_remaining_pool: i128,
+) -> Result<(), InsightArenaError> {
+    if total_remaining_pool <= 0 {
+        return Ok(()); // No remaining participants or pool is empty
+    }
+
+    let predictors: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PredictorList(market_id))
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut accumulated_fees: i128 = 0;
+    let mut index: u32 = 0;
+
+    while index < predictors.len() {
+        if let Some(addr) = predictors.get(index) {
+            if &addr == withdrawing_predictor {
+                index += 1;
+                continue;
+            }
+            let pred_key = DataKey::Prediction(market_id, addr.clone());
+            if let Some(pred) = env.storage().persistent().get::<DataKey, Prediction>(&pred_key) {
+                // Calculate this participant's share of the fee
+                let fee_share = total_fee
+                    .checked_mul(pred.stake_amount)
+                    .ok_or(InsightArenaError::Overflow)?
+                    .checked_div(total_remaining_pool)
+                    .ok_or(InsightArenaError::Overflow)?;
+
+                if fee_share > 0 {
+                    accumulated_fees = accumulated_fees
+                        .checked_add(fee_share)
+                        .ok_or(InsightArenaError::Overflow)?;
+
+                    // Award the fee as additional stake (credited to their position)
+                    let mut updated_pred = pred.clone();
+                    updated_pred.stake_amount = updated_pred
+                        .stake_amount
+                        .checked_add(fee_share)
+                        .ok_or(InsightArenaError::Overflow)?;
+                    env.storage().persistent().set(&pred_key, &updated_pred);
+                    bump_prediction(env, market_id, &addr);
+                }
+            }
+        }
+        index += 1;
+    }
+
+    // Update market total_pool to reflect the fee redistribution
+    // (fees enter the pool from remaining participants' perspective)
+    let mut market: Market = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Market(market_id))
+        .ok_or(InsightArenaError::MarketNotFound)?;
+
+    market.total_pool = market
+        .total_pool
+        .checked_add(accumulated_fees)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Market(market_id), &market);
+    bump_market(env, market_id);
+
+    Ok(())
+}
+
+fn emit_partial_withdrawal(
+    env: &Env,
+    market_id: u64,
+    predictor: &Address,
+    withdrawal_amount: i128,
+    fee_amount: i128,
+    refund_amount: i128,
+) {
+    env.events().publish(
+        (symbol_short!("pred"), symbol_short!("exit")),
+        (
+            market_id,
+            predictor.clone(),
+            withdrawal_amount,
+            fee_amount,
+            refund_amount,
+        ),
+    );
+}
+
+/// View the early-exit fee that would apply to a given withdrawal amount.
+pub fn get_early_exit_fee_estimate(
+    env: &Env,
+    withdrawal_amount: i128,
+) -> Result<(i128, i128), InsightArenaError> {
+    if withdrawal_amount <= 0 {
+        return Err(InsightArenaError::ZeroShareTransfer); // Reused: amount must be positive
+    }
+
+    let fee_bps = config::get_early_exit_fee_bps(env)?;
+    let fee_amount = withdrawal_amount
+        .checked_mul(fee_bps as i128)
+        .ok_or(InsightArenaError::Overflow)?
+        .checked_div(10_000)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    let refund_amount = withdrawal_amount
+        .checked_sub(fee_amount)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    Ok((refund_amount, fee_amount))
 }

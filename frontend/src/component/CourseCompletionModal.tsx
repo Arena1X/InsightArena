@@ -1,15 +1,39 @@
-import React, { useState } from 'react';
-import { X, Users, Award, Check } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { X, Users, Award, Check, AlertCircle, RotateCcw } from 'lucide-react';
+import { ApiError, generateIdempotencyKey, submitCourseCompletion } from '@/lib/api';
 
 interface CourseCompletionModalProps {
   isOpen: boolean;
   onClose: () => void;
+  courseId?: string;
 }
 
-const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) => {
-  const [isClaimLoading, setIsClaimLoading] = useState(false);
+type ClaimStatus = 'idle' | 'submitting' | 'success' | 'error';
+
+const CourseCompletionModal = ({
+  isOpen,
+  onClose,
+  courseId = 'stark-academy',
+}: CourseCompletionModalProps) => {
   const [isJoinLoading, setIsJoinLoading] = useState(false);
-  const [badgeClaimed, setBadgeClaimed] = useState(false);
+  const [claimStatus, setClaimStatus] = useState<ClaimStatus>('idle');
+  const [claimError, setClaimError] = useState<string | null>(null);
+
+  // A ref (not state) guards the double-submit check: state updates from the
+  // first click aren't guaranteed to have re-rendered the disabled button
+  // before a second click event is dispatched, but a ref read is synchronous.
+  const isSubmittingRef = useRef(false);
+  const idempotencyKeyRef = useRef<string>(generateIdempotencyKey(courseId));
+
+  useEffect(() => {
+    if (!isOpen) return;
+    // A fresh attempt each time the modal opens — a new idempotency key,
+    // and a clean slate for the submit guard and status.
+    idempotencyKeyRef.current = generateIdempotencyKey(courseId);
+    isSubmittingRef.current = false;
+    setClaimStatus('idle');
+    setClaimError(null);
+  }, [isOpen, courseId]);
 
   const handleJoinCommunity = async () => {
     setIsJoinLoading(true);
@@ -22,16 +46,30 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
   };
 
   const handleClaimBadge = async () => {
-    setIsClaimLoading(true);
+    if (isSubmittingRef.current || claimStatus === 'success') return;
+    isSubmittingRef.current = true;
+    setClaimStatus('submitting');
+    setClaimError(null);
+
     try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      setBadgeClaimed(true);
-    } finally {
-      setIsClaimLoading(false);
+      // Retries of the same attempt reuse this key so the backend can
+      // de-duplicate a request that actually landed before a retry fired.
+      await submitCourseCompletion(courseId, idempotencyKeyRef.current);
+      setClaimStatus('success');
+    } catch (error) {
+      isSubmittingRef.current = false;
+      setClaimStatus('error');
+      setClaimError(
+        error instanceof ApiError ? error.message : 'Failed to claim badge. Please try again.',
+      );
     }
   };
 
   if (!isOpen) return null;
+
+  const isClaimLoading = claimStatus === 'submitting';
+  const badgeClaimed = claimStatus === 'success';
+  const claimFailed = claimStatus === 'error';
 
   return (
     <div
@@ -58,7 +96,7 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
                 <X className="w-4 h-4" />
               </button>
             </div>
-        
+
 
         {/* Content */}
         <div className="p-6">
@@ -71,7 +109,17 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
             <p className="mb-4 text-center pt-2">
             CONGRATULATION ON FINISHING YOUR COURSE  TIME TO CLAIM YOUR BADGE.
             </p>
-            
+
+            {claimFailed && claimError && (
+              <div
+                className="flex items-center gap-2 text-red-400 bg-red-500/10 border border-red-500/20 p-3 rounded-lg mb-4"
+                role="alert"
+              >
+                <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                <span>{claimError}</span>
+              </div>
+            )}
+
             {badgeClaimed && (
               <div className="flex items-center gap-2  text-green-700 p-3 rounded-lg mb-4">
                 <Check className="w-5 h-5" />
@@ -87,17 +135,29 @@ const CourseCompletionModal = ({ isOpen, onClose }: CourseCompletionModalProps) 
               onClick={handleClaimBadge}
               disabled={isClaimLoading || badgeClaimed}
               className={`flex-1 py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 ${
-                badgeClaimed 
+                badgeClaimed
                   ? 'bg-gray-100 text-gray-500 cursor-not-allowed'
-                  : 'bg-amber-500 hover:bg-amber-600 text-white'
+                  : claimFailed
+                    ? 'bg-red-600 hover:bg-red-700 text-white'
+                    : 'bg-amber-500 hover:bg-amber-600 text-white'
               }`}
             >
               {isClaimLoading ? (
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+              ) : badgeClaimed ? (
+                <>
+                  <Check className="w-5 h-5" />
+                  Claimed
+                </>
+              ) : claimFailed ? (
+                <>
+                  <RotateCcw className="w-5 h-5" />
+                  Retry
+                </>
               ) : (
                 <>
                   <Award className="w-5 h-5" />
-                  {badgeClaimed ? 'Claimed' : 'Claim Badge'}
+                  Claim Badge
                 </>
               )}
             </button>
