@@ -229,6 +229,42 @@ export class LeaderboardService {
   }
 
   /**
+   * Upsert a leaderboard entry keyed on (user_id, season_id). When two
+   * concurrent inserts race, the unique constraint fires a conflict which
+   * is caught and resolved as an update — callers never see duplicates.
+   */
+  private async upsertEntry(
+    manager: import('typeorm').EntityManager,
+    data: Partial<
+      import('./entities/leaderboard-entry.entity').LeaderboardEntry
+    > & {
+      user_id: string;
+    },
+  ): Promise<void> {
+    try {
+      const entry = manager.create(LeaderboardEntry, data);
+      await manager.save(LeaderboardEntry, entry);
+    } catch (error: unknown) {
+      // Unique-violation postgres error code 23505
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        (error as { code?: string }).code === '23505'
+      ) {
+        const { user_id, season_id, ...fields } = data;
+        await manager.update(
+          LeaderboardEntry,
+          { user_id, season_id: season_id ?? undefined },
+          fields,
+        );
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  /**
    * Encodes (score, rank, user_id) into an opaque cursor token. Score is
    * included (not just rank) because the keyset predicate needs it to seek
    * past ties without a DB round-trip to look the cursor row back up.
@@ -474,38 +510,16 @@ export class LeaderboardService {
         const user = sorted[i];
         const rank = i + 1;
 
-        const existing = await manager
-          .createQueryBuilder(LeaderboardEntry, 'entry')
-          .where('entry.user_id = :userId AND entry.season_id IS NULL', {
-            userId: user.id,
-          })
-          .getOne();
-
-        if (existing) {
-          await manager.update(
-            LeaderboardEntry,
-            { id: existing.id },
-            {
-              rank,
-              reputation_score: user.reputation_score,
-              season_points: user.season_points,
-              total_predictions: user.total_predictions,
-              correct_predictions: user.correct_predictions,
-              total_winnings_stroops: user.total_winnings_stroops,
-            },
-          );
-        } else {
-          const entry = manager.create(LeaderboardEntry, {
-            user_id: user.id,
-            rank,
-            reputation_score: user.reputation_score,
-            season_points: user.season_points,
-            total_predictions: user.total_predictions,
-            correct_predictions: user.correct_predictions,
-            total_winnings_stroops: user.total_winnings_stroops,
-          });
-          await manager.save(LeaderboardEntry, entry);
-        }
+        await this.upsertEntry(manager, {
+          user_id: user.id,
+          season_id: undefined,
+          rank,
+          reputation_score: user.reputation_score,
+          season_points: user.season_points,
+          total_predictions: user.total_predictions,
+          correct_predictions: user.correct_predictions,
+          total_winnings_stroops: user.total_winnings_stroops,
+        });
       }
     });
 
