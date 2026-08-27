@@ -7,10 +7,12 @@ import { OracleService } from './oracle.service';
 import { OracleController } from './oracle.controller';
 import { WebhookService } from './webhook.service';
 import { WebhookAuthGuard } from './guards/webhook-auth.guard';
+import { OracleAssignmentGuard } from './guards/oracle-assignment.guard';
 import { SubmissionHistoryService } from './submission-history.service';
 import { OracleSubmission } from './entities/oracle-submission.entity';
 import { OracleSubmissionFlag } from './entities/oracle-submission-flag.entity';
 import { OracleSourceReliability } from './entities/oracle-source-reliability.entity';
+import { OracleAssignment } from './entities/oracle-assignment.entity';
 import { OracleReliabilityService } from './oracle-reliability.service';
 import { MatchResultDivergence } from '../matches/entities/match-result-divergence.entity';
 
@@ -22,6 +24,7 @@ import { MatchResultDivergence } from '../matches/entities/match-result-divergen
       OracleSubmission,
       OracleSubmissionFlag,
       OracleSourceReliability,
+      OracleAssignment,
       MatchResultDivergence,
     ]),
     ScheduleModule.forRoot(),
@@ -31,6 +34,7 @@ import { MatchResultDivergence } from '../matches/entities/match-result-divergen
     OracleService,
     WebhookService,
     WebhookAuthGuard,
+    OracleAssignmentGuard,
     SubmissionHistoryService,
     OracleReliabilityService,
   ],

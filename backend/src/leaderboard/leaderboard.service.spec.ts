@@ -40,6 +40,22 @@ describe('LeaderboardService', () => {
     total_winnings_stroops: '500000',
   };
 
+  const makeHistoryEntry = (overrides: Partial<LeaderboardHistory>) =>
+    ({
+      id: 'history-id',
+      user_id: 'user-uuid-1',
+      user: mockUser as User,
+      snapshot_date: new Date('2024-01-01'),
+      rank: 1,
+      reputation_score: 100,
+      season_points: 0,
+      total_predictions: 10,
+      correct_predictions: 5,
+      total_winnings_stroops: '0',
+      season_id: null,
+      ...overrides,
+    }) as LeaderboardHistory;
+
   const mockQb = {
     leftJoinAndSelect: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
@@ -63,6 +79,7 @@ describe('LeaderboardService', () => {
     createQueryBuilder: jest.fn(() => mockQb),
     findOne: jest.fn(),
     find: jest.fn(),
+    findAndCount: jest.fn(),
   };
 
   const mockSnapshotQb = {
@@ -449,6 +466,119 @@ describe('LeaderboardService', () => {
       expect(mockQb.where).toHaveBeenCalledWith('entry.season_id = :seasonId', {
         seasonId: 'season-1',
       });
+    });
+  });
+
+  describe('getHistory', () => {
+    it('caps limit at 100 and applies offset pagination', async () => {
+      mockQb.getManyAndCount.mockResolvedValue([[], 250]);
+
+      await service.getHistory({ page: 2, limit: 500 });
+
+      expect(mockQb.skip).toHaveBeenCalledWith(100);
+      expect(mockQb.take).toHaveBeenCalledWith(100);
+    });
+
+    it('returns non-overlapping, ordered pages with total count metadata', async () => {
+      const pageOneEntries = [
+        makeHistoryEntry({ id: 'h1', user_id: 'user-1', rank: 1 }),
+        makeHistoryEntry({ id: 'h2', user_id: 'user-2', rank: 2 }),
+      ];
+      const pageTwoEntries = [
+        makeHistoryEntry({ id: 'h3', user_id: 'user-3', rank: 3 }),
+        makeHistoryEntry({ id: 'h4', user_id: 'user-4', rank: 4 }),
+      ];
+
+      mockQb.getManyAndCount.mockResolvedValueOnce([pageOneEntries, 4]);
+      const page1 = await service.getHistory({ page: 1, limit: 2 });
+
+      mockQb.getManyAndCount.mockResolvedValueOnce([pageTwoEntries, 4]);
+      const page2 = await service.getHistory({ page: 2, limit: 2 });
+
+      expect(mockQb.skip).toHaveBeenNthCalledWith(1, 0);
+      expect(mockQb.skip).toHaveBeenNthCalledWith(2, 2);
+      expect(mockQb.orderBy).toHaveBeenCalledWith(
+        'history.snapshot_date',
+        'DESC',
+      );
+      expect(mockQb.addOrderBy).toHaveBeenCalledWith('history.rank', 'ASC');
+
+      const page1Ids = page1.data.map((e) => e.user_id);
+      const page2Ids = page2.data.map((e) => e.user_id);
+
+      expect(page1Ids).toEqual(['user-1', 'user-2']);
+      expect(page2Ids).toEqual(['user-3', 'user-4']);
+      expect(page1Ids.some((id) => page2Ids.includes(id))).toBe(false);
+      expect(page1.total).toBe(4);
+      expect(page2.total).toBe(4);
+    });
+  });
+
+  describe('getHistoryForAddress', () => {
+    beforeEach(() => {
+      mockUsersService.findByAddress = jest
+        .fn()
+        .mockResolvedValue(mockUser as User);
+    });
+
+    it('caps limit at 100 and applies offset pagination', async () => {
+      mockHistoryRepository.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.getHistoryForAddress(mockUser.stellar_address!, 30, 3, 500);
+
+      expect(mockHistoryRepository.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 200, take: 100 }),
+      );
+    });
+
+    it('returns non-overlapping, ordered pages with total count metadata', async () => {
+      const pageOneEntries = [
+        makeHistoryEntry({ id: 'h1', rank: 1, snapshot_date: new Date('2024-01-03') }),
+        makeHistoryEntry({ id: 'h2', rank: 2, snapshot_date: new Date('2024-01-02') }),
+      ];
+      const pageTwoEntries = [
+        makeHistoryEntry({ id: 'h3', rank: 3, snapshot_date: new Date('2024-01-01') }),
+      ];
+
+      mockHistoryRepository.findAndCount.mockResolvedValueOnce([
+        pageOneEntries,
+        3,
+      ]);
+      const page1 = await service.getHistoryForAddress(
+        mockUser.stellar_address!,
+        30,
+        1,
+        2,
+      );
+
+      mockHistoryRepository.findAndCount.mockResolvedValueOnce([
+        pageTwoEntries,
+        3,
+      ]);
+      const page2 = await service.getHistoryForAddress(
+        mockUser.stellar_address!,
+        30,
+        2,
+        2,
+      );
+
+      expect(mockHistoryRepository.findAndCount).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ skip: 0, take: 2 }),
+      );
+      expect(mockHistoryRepository.findAndCount).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ skip: 2, take: 2 }),
+      );
+
+      const page1Ranks = page1.data.map((e) => e.rank);
+      const page2Ranks = page2.data.map((e) => e.rank);
+
+      expect(page1Ranks).toEqual([1, 2]);
+      expect(page2Ranks).toEqual([3]);
+      expect(page1Ranks.some((r) => page2Ranks.includes(r))).toBe(false);
+      expect(page1.total).toBe(3);
+      expect(page2.total).toBe(3);
     });
   });
 
