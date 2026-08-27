@@ -1,10 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository, SelectQueryBuilder } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
 import { OracleService } from './oracle.service';
 import { CreatorEventMatch } from '../creator-events/entities/creator-event-match.entity';
 import { CreatorEvent } from '../creator-events/entities/creator-event.entity';
 import { MatchResultDivergence } from '../matches/entities/match-result-divergence.entity';
+import {
+  OracleSubmission,
+  SubmissionReviewStatus,
+  SubmissionStatus,
+  WinningTeam,
+} from './entities/oracle-submission.entity';
 import { ListPendingMatchesQueryDto } from './dto/list-pending-matches-query.dto';
 
 type MockRepo = jest.Mocked<
@@ -37,6 +44,8 @@ describe('OracleService', () => {
   let matchRepo: MockRepo;
   let eventRepo: MockRepo;
   let divergenceRepo: MockRepo;
+  let submissionRepo: MockRepo;
+  let configValues: Record<string, string | number | undefined>;
 
   const mockEvent = {
     id: 'event-1',
@@ -92,6 +101,15 @@ describe('OracleService', () => {
       findByIds: jest.fn(),
     };
 
+    submissionRepo = {
+      findOne: jest.fn(),
+      createQueryBuilder: jest.fn(),
+      find: jest.fn(),
+      findByIds: jest.fn(),
+    };
+
+    configValues = {};
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OracleService,
@@ -100,6 +118,16 @@ describe('OracleService', () => {
         {
           provide: getRepositoryToken(MatchResultDivergence),
           useValue: divergenceRepo,
+        },
+        {
+          provide: getRepositoryToken(OracleSubmission),
+          useValue: submissionRepo,
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn((key: string) => configValues[key]),
+          },
         },
       ],
     }).compile();
@@ -469,6 +497,151 @@ describe('OracleService', () => {
 
       expect(result.data).toHaveLength(0);
       expect(result.total).toBe(0);
+    });
+  });
+
+  // ── Consensus auto-finalization gating (#1611) ──────────────────────────────
+
+  describe('getMatchConsensus', () => {
+    let nextId: number;
+
+    const baseSubmission = (): OracleSubmission =>
+      ({
+        id: '',
+        match_id: '123',
+        team_a: 'Team A',
+        team_b: 'Team B',
+        data_source: 'https://api.example.com',
+        winning_team: WinningTeam.TEAM_A,
+        confidence_score: 92,
+        result_timestamp: new Date(),
+        status: SubmissionStatus.SUBMITTED,
+        retry_count: 0,
+        is_anomaly: false,
+        review_status: SubmissionReviewStatus.NOT_REQUIRED,
+        created_at: new Date(),
+      }) as OracleSubmission;
+
+    const makeSubmission = (
+      overrides: Partial<OracleSubmission> = {},
+    ): OracleSubmission => ({
+      ...baseSubmission(),
+      id: `sub-${++nextId}`,
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      nextId = 0;
+    });
+
+    it('excludes quarantined submissions from the auto-finalization consensus', async () => {
+      const normalA = makeSubmission({ confidence_score: 95 });
+      const normalB = makeSubmission({
+        data_source: 'https://alt.example.com',
+        confidence_score: 93,
+      });
+      // An anomaly held for review votes TEAM_B with a deviant score — it must
+      // have zero influence on the finalizable outcome.
+      const heldOutlier = makeSubmission({
+        winning_team: WinningTeam.TEAM_B,
+        confidence_score: 12,
+        is_anomaly: true,
+        review_status: SubmissionReviewStatus.HELD,
+      });
+      submissionRepo.find.mockResolvedValue([normalA, normalB, heldOutlier]);
+
+      const result = await service.getMatchConsensus('123');
+
+      expect(result.quarantined_count).toBe(1);
+      expect(result.quarantined_submissions).toEqual([
+        expect.objectContaining({
+          id: heldOutlier.id,
+          review_status: SubmissionReviewStatus.HELD,
+        }),
+      ]);
+      expect(result.eligible_participants).toBe(2);
+      expect(result.outcome_votes[WinningTeam.TEAM_A]).toBe(2);
+      expect(result.outcome_votes[WinningTeam.TEAM_B]).toBe(0);
+      expect(result.outcome).toBe(WinningTeam.TEAM_A);
+      expect(result.confidence_median).toBeCloseTo(94, 6);
+      expect(result.can_auto_finalize).toBe(true);
+      expect(result.reason).toBe('majority_reached');
+    });
+
+    it('blocks auto-finalization when quarantine leaves too few eligible sources', async () => {
+      submissionRepo.find.mockResolvedValue([
+        makeSubmission({
+          is_anomaly: true,
+          review_status: SubmissionReviewStatus.HELD,
+        }),
+      ]);
+
+      const result = await service.getMatchConsensus('123');
+
+      expect(result.can_auto_finalize).toBe(false);
+      expect(result.eligible_participants).toBe(0);
+      expect(result.minimum_required).toBe(2);
+      expect(result.outcome).toBeNull();
+      expect(result.reason).toBe('insufficient_sources');
+    });
+
+    it('keeps admin-approved anomalies in consensus but excludes rejected ones', async () => {
+      const approved = makeSubmission({
+        id: 'sub-approved',
+        is_anomaly: true,
+        review_status: SubmissionReviewStatus.APPROVED,
+        confidence_score: 91,
+      });
+      const rejected = makeSubmission({
+        id: 'sub-rejected',
+        winning_team: WinningTeam.TEAM_B,
+        confidence_score: 5,
+        status: SubmissionStatus.FAILED,
+        is_anomaly: true,
+        review_status: SubmissionReviewStatus.REJECTED,
+      });
+      const fresh = makeSubmission({ confidence_score: 94 });
+      submissionRepo.find.mockResolvedValue([approved, rejected, fresh]);
+
+      const result = await service.getMatchConsensus('123');
+
+      expect(result.quarantined_count).toBe(1);
+      expect(result.eligible_submissions.map((s) => s.id)).toEqual([
+        approved.id,
+        fresh.id,
+      ]);
+      expect(result.eligible_participants).toBe(2);
+      expect(result.outcome).toBe(WinningTeam.TEAM_A);
+      expect(result.can_auto_finalize).toBe(true);
+    });
+
+    it('reports a tie vote and blocks auto-finalization without a majority', async () => {
+      submissionRepo.find.mockResolvedValue([
+        makeSubmission({ winning_team: WinningTeam.TEAM_A }),
+        makeSubmission({ winning_team: WinningTeam.TEAM_B }),
+      ]);
+
+      const result = await service.getMatchConsensus('123');
+
+      expect(result.outcome).toBeNull();
+      expect(result.can_auto_finalize).toBe(false);
+      expect(result.reason).toBe('vote_tie');
+    });
+
+    it('honors a higher configurable minimum source count', async () => {
+      configValues['ORACLE_CONSENSUS_MIN_SOURCES'] = '3';
+      submissionRepo.find.mockResolvedValue([
+        makeSubmission(),
+        makeSubmission(),
+      ]);
+
+      const result = await service.getMatchConsensus('123');
+
+      // Unanimous majority among two eligible sources, but the configured floor
+      // requires three before auto-finalization may proceed.
+      expect(result.outcome).toBe(WinningTeam.TEAM_A);
+      expect(result.can_auto_finalize).toBe(false);
+      expect(result.reason).toBe('insufficient_sources');
     });
   });
 });

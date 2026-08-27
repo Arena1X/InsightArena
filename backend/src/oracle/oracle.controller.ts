@@ -47,6 +47,7 @@ import {
   ListDivergencesQueryDto,
   PaginatedDivergencesResponse,
 } from './dto/list-divergences.dto';
+import { MatchConsensusResponse } from './dto/match-consensus.dto';
 
 @ApiTags('Oracle')
 @Controller('oracle')
@@ -157,6 +158,26 @@ export class OracleController {
   @ApiResponse({ status: 401, description: 'Unauthorized - invalid API key' })
   async getSourceReliability() {
     return this.reliabilityService.getScores();
+  }
+
+  @Get('matches/:matchId/consensus')
+  @UseGuards(OracleAuthGuard)
+  @ApiSecurity('api-key')
+  @ApiOperation({
+    summary:
+      'Evaluate whether a match can be auto-finalized by oracle consensus',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Consensus state; quarantined anomaly submissions are excluded from the result',
+    type: MatchConsensusResponse,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized - invalid API key' })
+  async getMatchConsensus(
+    @Param('matchId') matchId: string,
+  ): Promise<MatchConsensusResponse> {
+    return this.oracleService.getMatchConsensus(matchId);
   }
 
   @Get('divergences')
