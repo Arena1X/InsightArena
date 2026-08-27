@@ -2,7 +2,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import { SelectQueryBuilder } from 'typeorm';
+import { DataSource, SelectQueryBuilder } from 'typeorm';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
 import {
@@ -121,6 +121,7 @@ describe('SearchService', () => {
     get: jest.Mock;
     set: jest.Mock;
   };
+  let mockDataSource: { query: jest.Mock };
 
   beforeEach(async () => {
     // Return count >= FTS_FALLBACK_THRESHOLD (3) so we get the fast FTS path
@@ -132,6 +133,10 @@ describe('SearchService', () => {
     mockCacheManager = {
       get: jest.fn().mockResolvedValue(undefined),
       set: jest.fn().mockResolvedValue(undefined),
+    };
+
+    mockDataSource = {
+      query: jest.fn().mockResolvedValue([undefined, 0]),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -160,6 +165,10 @@ describe('SearchService', () => {
         {
           provide: CACHE_MANAGER,
           useValue: mockCacheManager,
+        },
+        {
+          provide: DataSource,
+          useValue: mockDataSource,
         },
       ],
     }).compile();
@@ -931,6 +940,55 @@ describe('SearchService', () => {
         'LOWER(creatorEvent.creator_address) = LOWER(:creator)',
         { creator: '0xCreatorAddress' },
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // refreshMarketSearchVector()
+  // -------------------------------------------------------------------------
+
+  describe('refreshMarketSearchVector()', () => {
+    it('runs an UPDATE query setting search_vector from title and description', async () => {
+      await service.refreshMarketSearchVector('market-1');
+
+      expect(mockDataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE markets'),
+        ['market-1'],
+      );
+    });
+
+    it('uses setweight with A for title and B for description', async () => {
+      await service.refreshMarketSearchVector('market-1');
+
+      const sql = mockDataSource.query.mock.calls[0][0] as string;
+      expect(sql).toContain("setweight(to_tsvector('english'");
+      expect(sql).toContain("'A'");
+      expect(sql).toContain("'B'");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // backfillMarketSearchVectors()
+  // -------------------------------------------------------------------------
+
+  describe('backfillMarketSearchVectors()', () => {
+    it('updates rows with NULL or empty search_vector', async () => {
+      mockDataSource.query.mockResolvedValueOnce([undefined, 5]);
+
+      const count = await service.backfillMarketSearchVectors();
+
+      expect(count).toBe(5);
+      expect(mockDataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining('WHERE search_vector IS NULL'),
+      );
+    });
+
+    it('returns 0 when no rows need backfill', async () => {
+      mockDataSource.query.mockResolvedValueOnce([undefined, 0]);
+
+      const count = await service.backfillMarketSearchVectors();
+
+      expect(count).toBe(0);
     });
   });
 });
