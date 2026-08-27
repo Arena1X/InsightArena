@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -236,7 +235,9 @@ export class LeaderboardService {
    */
   private async upsertEntry(
     manager: import('typeorm').EntityManager,
-    data: Partial<import('./entities/leaderboard-entry.entity').LeaderboardEntry> & {
+    data: Partial<
+      import('./entities/leaderboard-entry.entity').LeaderboardEntry
+    > & {
       user_id: string;
     },
   ): Promise<void> {
