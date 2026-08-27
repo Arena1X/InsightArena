@@ -4,6 +4,7 @@ import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 import { User } from './entities/user.entity';
 import { PublicPredictionOutcomeFilter } from './dto/list-user-predictions.dto';
+import { FeedResponseDto } from './dto/feed-response.dto';
 
 describe('UsersController', () => {
   let controller: UsersController;
@@ -35,6 +36,7 @@ describe('UsersController', () => {
             findByAddress: jest.fn(),
             findPublicPredictionsByAddress: jest.fn(),
             getMyStats: jest.fn(),
+            getFeed: jest.fn(),
           },
         },
       ],
@@ -168,6 +170,59 @@ describe('UsersController', () => {
         { page: 1, limit: 20 },
       );
       expect(result).toEqual(mockResult);
+    });
+  });
+
+  describe('getMyFeed', () => {
+    const mockFeedResponse: FeedResponseDto = {
+      data: [
+        {
+          id: 'pred-feed-1',
+          chosen_outcome: 'YES',
+          stake_amount_stroops: '500',
+          payout_claimed: false,
+          payout_amount_stroops: '0',
+          tx_hash: null,
+          note: null,
+          submitted_at: new Date('2025-06-01'),
+          market: {
+            id: 'market-feed-1',
+            title: 'Will ETH flip BTC?',
+            end_time: new Date('2025-12-31'),
+            resolved_outcome: null,
+            is_resolved: false,
+            is_cancelled: false,
+          },
+          author: {
+            stellar_address: 'G_FOLLOWED_USER',
+            username: 'followed_user',
+            avatar_url: null,
+            reputation_score: 42,
+          },
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 20,
+    };
+
+    it('should delegate to usersService.getFeed and return the result', async () => {
+      jest.spyOn(service, 'getFeed').mockResolvedValue(mockFeedResponse);
+
+      const result = await controller.getMyFeed(mockUser, { page: 1, limit: 20 });
+
+      expect(service.getFeed).toHaveBeenCalledWith(mockUser.id, { page: 1, limit: 20 });
+      expect(result).toEqual(mockFeedResponse);
+    });
+
+    it('should return an empty feed when the user follows nobody', async () => {
+      const emptyFeed: FeedResponseDto = { data: [], total: 0, page: 1, limit: 20 };
+      jest.spyOn(service, 'getFeed').mockResolvedValue(emptyFeed);
+
+      const result = await controller.getMyFeed(mockUser, { page: 1, limit: 20 });
+
+      expect(result.data).toHaveLength(0);
+      expect(result.total).toBe(0);
     });
   });
 });

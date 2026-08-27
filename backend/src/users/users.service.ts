@@ -57,6 +57,11 @@ import {
   accuracyRateFromUser,
   predictorTierFromReputation,
 } from '../analytics/analytics.service';
+import { GetFeedQueryDto } from './dto/get-feed-query.dto';
+import {
+  FeedItemDto,
+  FeedResponseDto,
+} from './dto/feed-response.dto';
 
 @Injectable()
 export class UsersService {
@@ -662,6 +667,78 @@ export class UsersService {
         qualified_at: referral.qualified_at,
       })),
     };
+  }
+
+  /**
+   * Returns a paginated feed of predictions made by users that `userId`
+   * follows, ordered by recency (submitted_at DESC).
+   *
+   * Exclusions applied:
+   *  - Predictions whose author has been soft-deleted (deleted_at IS NOT NULL).
+   *  - No block exclusion is applied because this codebase has no
+   *    blocked-users model (no user_blocks table or is_blocked column).
+   *    Add that filter here once the model is introduced.
+   *
+   * "Activity" in this codebase is Prediction rows — there is no separate
+   * activity/event entity. Broader activity types are out of scope for this
+   * iteration.
+   */
+  async getFeed(userId: string, dto: GetFeedQueryDto): Promise<FeedResponseDto> {
+    const page = dto.page ?? 1;
+    const limit = Math.min(dto.limit ?? 20, 50);
+    const skip = (page - 1) * limit;
+
+    // Collect the IDs of everyone this user follows.
+    const follows = await this.followRepository.find({
+      where: { follower_id: userId },
+      select: ['following_id'],
+    });
+
+    if (follows.length === 0) {
+      return { data: [], total: 0, page, limit };
+    }
+
+    const followedIds = follows.map((f) => f.following_id);
+
+    // Query predictions authored by followed users, excluding soft-deleted authors.
+    const [predictions, total] = await this.predictionsRepository
+      .createQueryBuilder('prediction')
+      .leftJoinAndSelect('prediction.user', 'author')
+      .leftJoinAndSelect('prediction.market', 'market')
+      .where('prediction.userId IN (:...followedIds)', { followedIds })
+      // Exclude predictions belonging to soft-deleted user accounts.
+      .andWhere('author.deleted_at IS NULL')
+      .orderBy('prediction.submitted_at', 'DESC')
+      .skip(skip)
+      .take(limit)
+      .getManyAndCount();
+
+    const data: FeedItemDto[] = predictions.map((prediction) => ({
+      id: prediction.id,
+      chosen_outcome: prediction.chosen_outcome,
+      stake_amount_stroops: prediction.stake_amount_stroops,
+      payout_claimed: prediction.payout_claimed,
+      payout_amount_stroops: prediction.payout_amount_stroops,
+      tx_hash: prediction.tx_hash ?? null,
+      note: prediction.note ?? null,
+      submitted_at: prediction.submitted_at,
+      market: {
+        id: prediction.market.id,
+        title: prediction.market.title,
+        end_time: prediction.market.end_time,
+        resolved_outcome: prediction.market.resolved_outcome ?? null,
+        is_resolved: prediction.market.is_resolved,
+        is_cancelled: prediction.market.is_cancelled,
+      },
+      author: {
+        stellar_address: prediction.user.stellar_address,
+        username: prediction.user.username,
+        avatar_url: prediction.user.avatar_url,
+        reputation_score: prediction.user.reputation_score,
+      },
+    }));
+
+    return { data, total, page, limit };
   }
 
   /**
