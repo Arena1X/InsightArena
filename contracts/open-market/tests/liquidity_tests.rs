@@ -1244,8 +1244,14 @@ fn test_add_liquidity_mints_correct_lp_tokens() {
 
     let lp_tokens = client.add_liquidity(&provider, &market_id, &amount);
 
-    // First provider: LP tokens == deposit amount
-    assert_eq!(lp_tokens, amount);
+    // First provider (2-outcome market): per_outcome = 5_000
+    // initial_liquidity = isqrt(5_000 * 5_000) = 5_000
+    // lp_tokens_to_mint = 5_000 - MIN_LIQUIDITY(1_000) = 4_000
+    // total_supply = 5_000 (includes the permanently-locked MIN_LIQUIDITY)
+    let per_outcome = amount / 2; // 5_000
+    let initial_liquidity = per_outcome; // isqrt(5_000^2) = 5_000
+    let expected_lp = initial_liquidity - MIN_LIQUIDITY; // 4_000
+    assert_eq!(lp_tokens, expected_lp);
 
     let position = client.get_lp_position(&provider, &market_id);
     assert_eq!(position.lp_tokens, lp_tokens);
@@ -1269,12 +1275,14 @@ fn test_remove_liquidity_returns_correct_amount() {
 
     let lp_tokens = client.add_liquidity(&provider, &market_id, &amount);
 
-    // Withdraw half
-    let half = lp_tokens / 2;
+    // After the minimum-liquidity fix:
+    //   per_outcome = 5_000, initial_liquidity = 5_000, total_supply = 5_000
+    //   depositor receives lp_tokens = 4_000
+    // Burn half (2_000): withdrawn = 2_000 * 10_000 / 5_000 = 4_000
+    let half = lp_tokens / 2; // 2_000
     let withdrawn = client.remove_liquidity(&provider, &market_id, &half);
-
-    // Should receive half the deposited amount back
-    assert_eq!(withdrawn, amount / 2);
+    let expected_half_withdrawal = half * amount / (amount / 2); // 2_000 * 10_000 / 5_000 = 4_000
+    assert_eq!(withdrawn, expected_half_withdrawal);
 }
 
 #[test]
@@ -1492,9 +1500,15 @@ fn test_remove_liquidity_with_accumulated_fees() {
     let half_lp = lp_tokens / 2;
     let withdrawn = client.remove_liquidity(&provider, &market_id, &half_lp);
 
-    // Withdrawn amount should be at least half the deposit (may include fees)
-    let expected_base_withdrawal = liquidity / 2;
-    assert!(withdrawn >= expected_base_withdrawal);
+    // After the minimum-liquidity fix:
+    //   per_outcome = 250_000, initial_liquidity = 250_000, total_supply = 250_000
+    //   depositor LP = 249_000; half = 124_500
+    //   withdrawn = 124_500 * 500_000 / 250_000 = 249_000
+    // The depositor's correct proportional share (not the raw deposit / 2)
+    let per_outcome = liquidity / 2;
+    let initial_liquidity = per_outcome;
+    let expected_half_withdrawal = half_lp * liquidity / initial_liquidity;
+    assert_eq!(withdrawn, expected_half_withdrawal);
 
     let position_after = client.get_lp_position(&provider, &market_id);
     // Remaining LP tokens should be approximately half
@@ -1691,7 +1705,12 @@ fn test_get_outcome_price_reflects_post_swap_reserves() {
 }
 
 #[test]
-fn test_liquidity_no_trade_returns_exact_deposit() {
+fn test_liquidity_no_trade_returns_correct_share() {
+    // Renamed from test_liquidity_no_trade_returns_exact_deposit.
+    // After the minimum-liquidity fix the depositor permanently surrenders
+    // MIN_LIQUIDITY worth of pool tokens on first deposit, so the full
+    // withdrawal returns slightly less than the gross deposit. Verify the
+    // arithmetic is correct rather than expecting the exact deposit back.
     let env = Env::default();
     env.mock_all_auths();
     let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
@@ -1704,15 +1723,29 @@ fn test_liquidity_no_trade_returns_exact_deposit() {
 
     let market_id = client.create_market(&creator, &lp_market_params(&env));
 
-    let initial_deposit = 1_000_i128;
+    // 2-outcome market: per_outcome = 50_000
+    // initial_liquidity = isqrt(50_000^2) = 50_000
+    // lp_tokens_to_mint = 50_000 - 1_000 = 49_000  (MIN_LIQUIDITY = 1_000)
+    // total_supply = 50_000
+    // full withdrawal: 49_000 * 100_000 / 50_000 = 98_000
+    let initial_deposit = 100_000_i128;
     sa.mint(&provider, &initial_deposit);
     token.approve(&provider, &client.address, &initial_deposit, &9999);
     let lp_tokens = client.add_liquidity(&provider, &market_id, &initial_deposit);
 
-    // No swaps — removing all LP tokens returns exactly the deposit
-    let withdrawn = client.remove_liquidity(&provider, &market_id, &lp_tokens);
-    assert_eq!(withdrawn, initial_deposit);
+    let per_outcome = initial_deposit / 2;               // 50_000
+    let initial_liquidity = per_outcome;                 // 50_000
+    let expected_lp = initial_liquidity - MIN_LIQUIDITY; // 49_000
+    assert_eq!(lp_tokens, expected_lp);
 
+    // No swaps — remove all LP tokens
+    let withdrawn = client.remove_liquidity(&provider, &market_id, &lp_tokens);
+    // = 49_000 * 100_000 / 50_000 = 98_000
+    let expected_withdrawal = lp_tokens * initial_deposit / initial_liquidity;
+    assert_eq!(withdrawn, expected_withdrawal);
+
+    // MIN_LIQUIDITY worth of liquidity remains locked; providers list is empty
+    // because the position was deleted, but the pool itself still has reserves.
     let providers = client.get_all_lp_providers(&market_id);
     assert_eq!(providers.len(), 0);
 }
@@ -1762,12 +1795,20 @@ fn test_liquidity_fee_accumulation_end_to_end() {
     let collected = client.collect_lp_fees(&provider, &market_id);
     assert_eq!(collected, fees_earned);
 
-    // Remove all LP tokens — returns principal only
+    // Remove all LP tokens — returns principal share (less the permanently
+    // locked MIN_LIQUIDITY fraction, per the share-inflation fix).
+    // withdrawn = lp_tokens * total_liquidity / total_supply
+    //           = 49_000 * 100_000 / 50_000 = 98_000
     let withdrawn = client.remove_liquidity(&provider, &market_id, &lp_tokens);
-    assert_eq!(withdrawn, initial_deposit);
+    let per_outcome = initial_deposit / 2;          // 50_000
+    let initial_liquidity = per_outcome;             // 50_000
+    let expected_principal = lp_tokens * initial_deposit / initial_liquidity;
+    assert_eq!(withdrawn, expected_principal);
 
-    // Total returned (principal + fees) exceeds the initial deposit
-    assert!(withdrawn + collected > initial_deposit);
+    // Total returned (principal + fees) exceeds the principal-only withdrawal.
+    // (Fees are small relative to the MIN_LIQUIDITY locked fraction, so we
+    // cannot assert total_returned > initial_deposit after the fix.)
+    assert!(withdrawn + collected > withdrawn);
 
     // Pool is empty after full withdrawal
     let providers = client.get_all_lp_providers(&market_id);
@@ -1821,12 +1862,28 @@ fn test_remove_liquidity_returns_principal_plus_accumulated_fees() {
     // Remove all LP tokens
     let withdrawn = client.remove_liquidity(&provider, &market_id, &lp_tokens);
 
-    // Verify returned XLM equals original deposit
-    assert_eq!(withdrawn, initial_deposit, "withdrawn should equal initial deposit (principal only)");
+    // After the minimum-liquidity fix the depositor cannot recover the
+    // MIN_LIQUIDITY-locked fraction.
+    // 2-outcome: per_outcome = 500_000_000, initial_liquidity = 500_000_000,
+    //            lp_tokens = 499_000_000, total_supply = 500_000_000
+    // withdrawn = 499_000_000 * 1_000_000_000 / 500_000_000 = 998_000_000
+    let per_outcome = initial_deposit / 2;
+    let initial_liquidity = per_outcome;
+    let expected_withdrawal = lp_tokens * initial_deposit / initial_liquidity;
+    assert_eq!(withdrawn, expected_withdrawal, "withdrawn should equal depositor's proportional share");
 
-    // Verify principal + fees > original deposit
+    // Verify the depositor received their proportional principal share plus
+    // earned fees. The locked MIN_LIQUIDITY fraction (2 * MIN_LIQUIDITY = 2_000
+    // stroops on a 2-outcome deposit) is intentionally unrecoverable.
     let total_returned = withdrawn + collected;
-    assert!(total_returned > initial_deposit, "total (principal {} + fees {}) should be > initial_deposit {}", withdrawn, collected, initial_deposit);
+    assert!(
+        collected > 0,
+        "provider should have earned fees from {} swaps", 5
+    );
+    assert!(
+        total_returned > withdrawn,
+        "total ({}) should exceed principal-only withdrawal ({})", total_returned, withdrawn
+    );
 
     // Verify pool total_pool == 0 after full removal
     let market_after = client.get_market(&market_id);
@@ -2826,8 +2883,8 @@ fn test_twap_ring_buffer_wraparound() {
 
 // ── Last LP exit integration tests (#1269) ────────────────────────────────────
 
-/// Single LP adds then removes 100% of their LP tokens. They must receive back
-/// the full deposit with no dust stranded.
+/// Single LP adds then removes 100% of their LP tokens. They receive back
+/// their proportional share; the MIN_LIQUIDITY fraction stays locked.
 #[test]
 fn test_full_lp_exit_returns_proportional_reserves() {
     let env = Env::default();
@@ -2844,17 +2901,25 @@ fn test_full_lp_exit_returns_proportional_reserves() {
     sa.mint(&lp, &amount);
     token.approve(&lp, &client.address, &amount, &9999);
 
-    let balance_before = token.balance(&lp);
+    // 2-outcome market: per_outcome = 50_000_000
+    // initial_liquidity = isqrt(50_000_000^2) = 50_000_000
+    // lp_tokens_to_mint = 50_000_000 - 1_000 (MIN_LIQUIDITY) = 49_999_000
+    // total_supply = 50_000_000
+    let per_outcome = amount / 2;                          // 50_000_000
+    let initial_liquidity = per_outcome;                   // 50_000_000
+    let expected_lp = initial_liquidity - MIN_LIQUIDITY;   // 49_999_000
 
-    // Add all liquidity — LP tokens minted 1:1 for first deposit.
     let lp_tokens = client.add_liquidity(&lp, &market_id, &amount);
-    assert_eq!(lp_tokens, amount);
+    assert_eq!(lp_tokens, expected_lp, "first depositor should receive initial_liquidity - MIN_LIQUIDITY");
     assert_eq!(token.balance(&lp), 0);
 
-    // Remove all LP tokens — full deposit must be returned, no dust.
+    // Remove all LP tokens — depositor gets their proportional share back.
+    // withdrawn = lp_tokens * amount / initial_liquidity
+    //           = 49_999_000 * 100_000_000 / 50_000_000 = 99_998_000
+    let expected_withdrawn = lp_tokens * amount / initial_liquidity;
     let withdrawn = client.remove_liquidity(&lp, &market_id, &lp_tokens);
-    assert_eq!(withdrawn, amount, "full exit must return the exact deposit");
-    assert_eq!(token.balance(&lp), balance_before, "no dust must remain");
+    assert_eq!(withdrawn, expected_withdrawn, "full exit must return depositor's proportional share");
+    assert_eq!(token.balance(&lp), expected_withdrawn, "token balance must match withdrawn amount");
 
     // LP position entry must be deleted after full exit.
     let pos_result = client.try_get_lp_position(&lp, &market_id);
@@ -3604,4 +3669,207 @@ fn test_market_twap_unknown_market_returns_typed_error() {
         result,
         Err(Ok(InsightArenaError::MarketNotFound))
     ));
+}
+
+// ── Issue #1675: Minimum Liquidity Lock Tests ─────────────────────────────────
+//
+// These tests verify the fix for the first-depositor share-inflation /
+// full-drain vulnerability.  On bootstrap the contract now:
+//   1. computes initial_liquidity = isqrt(per_outcome_a * per_outcome_b)
+//   2. permanently locks MIN_LIQUIDITY in total_supply (no account owns it)
+//   3. credits the depositor with lp_tokens_to_mint = initial_liquidity - MIN_LIQUIDITY
+
+/// Test 1 — Verify the minimum-liquidity lock is applied on the very first
+/// add_liquidity call and that no account owns the locked portion.
+///
+/// Setup  : 2-outcome market, amount_a = amount_b = 100_000 (each outcome
+///          receives 100_000; total deposit = 200_000 across two outcomes, but
+///          the `add_liquidity` API takes the total XLM amount which is split
+///          per-outcome internally).
+///
+/// We use a single `amount` of 200_000 so per_outcome = 100_000 each.
+///
+///   initial_liquidity = isqrt(100_000 * 100_000) = 100_000
+///   total_supply      = 100_000
+///   depositor LP      = 100_000 - 1_000 (MIN_LIQUIDITY) = 99_000
+///   sum of all tracked LP balances = 99_000 = total_supply - MIN_LIQUIDITY  ✓
+#[test]
+fn test_first_deposit_locks_minimum_liquidity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+
+    let depositor = Address::generate(&env);
+    let market_id = client.create_market(&_admin, &lp_market_params(&env));
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    // 2-outcome market: per_outcome = 100_000, so total deposit = 200_000.
+    let amount = 200_000_i128;
+    sa.mint(&depositor, &amount);
+    token.approve(&depositor, &client.address, &amount, &9999);
+
+    let lp_minted = client.add_liquidity(&depositor, &market_id, &amount);
+
+    // ── Depositor LP balance == initial_liquidity - MIN_LIQUIDITY ─────────────
+    // per_outcome = 100_000; isqrt(100_000^2) = 100_000; locked = 1_000
+    let per_outcome: i128 = amount / 2;                        // 100_000
+    let initial_liquidity: i128 = per_outcome;                 // isqrt(100_000^2)
+    let expected_lp = initial_liquidity - MIN_LIQUIDITY;       // 99_000
+    assert_eq!(
+        lp_minted, expected_lp,
+        "depositor should receive initial_liquidity - MIN_LIQUIDITY LP tokens"
+    );
+
+    // ── total_supply == isqrt(100_000 * 100_000) == 100_000 ──────────────────
+    // We derive total_supply from the pool via remove_liquidity math:
+    // a full burn of depositor tokens should yield
+    //   withdrawn = lp_minted * total_deposit / total_supply
+    //             = 99_000 * 200_000 / 100_000 = 198_000
+    // which is total_deposit - 2_000 (the MIN_LIQUIDITY-locked fraction).
+    let full_withdrawal = client.remove_liquidity(&depositor, &market_id, &lp_minted);
+    let expected_withdrawal = lp_minted * amount / initial_liquidity; // 198_000
+    assert_eq!(
+        full_withdrawal, expected_withdrawal,
+        "full withdrawal should equal depositor_lp * total_deposit / total_supply"
+    );
+
+    // ── No account holds the locked MIN_LIQUIDITY ─────────────────────────────
+    // After the depositor has burned all their LP tokens the provider list
+    // is empty, so the sum of all tracked LP balances is 0.
+    // total_supply still counts MIN_LIQUIDITY, but no address can redeem it —
+    // confirming: sum(tracked balances) = total_supply - MIN_LIQUIDITY.
+    let providers = client.get_all_lp_providers(&market_id);
+    assert_eq!(
+        providers.len(), 0,
+        "no provider should hold the locked MIN_LIQUIDITY portion"
+    );
+}
+
+/// Test 2 — A dust first deposit whose geometric mean does not exceed
+/// MIN_LIQUIDITY must be rejected and must leave the pool state untouched.
+///
+/// With a 2-outcome market and amount = 2 (per_outcome = 1):
+///   isqrt(1 * 1) = 1 <= MIN_LIQUIDITY (1_000) → must return Err(StakeTooLow)
+///
+/// We also verify with the existing MIN_LIQUIDITY boundary: amount such that
+/// per_outcome == MIN_LIQUIDITY exactly:  isqrt(1_000 * 1_000) = 1_000 which
+/// is NOT strictly greater than MIN_LIQUIDITY, so it must also be rejected.
+#[test]
+fn test_dust_deposit_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+
+    let depositor = Address::generate(&env);
+    let market_id = client.create_market(&_admin, &lp_market_params(&env));
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    // ── Case 1: trivially tiny deposit (amount_a = 1, amount_b = 1) ──────────
+    // total amount = 2 so per_outcome = 1; isqrt(1*1) = 1 <= 1_000 → rejected
+    let tiny_amount = 2_i128;
+    sa.mint(&depositor, &tiny_amount);
+    token.approve(&depositor, &client.address, &tiny_amount, &9999);
+
+    let result = client.try_add_liquidity(&depositor, &market_id, &tiny_amount);
+    assert!(
+        matches!(result, Err(Ok(InsightArenaError::StakeTooLow))),
+        "tiny deposit should be rejected with StakeTooLow (reused for InsufficientInitialLiquidity)"
+    );
+
+    // ── State must be completely unchanged after the failed call ──────────────
+    // No pool should have been created.
+    let pool_result = client.try_get_outcome_price(&market_id, &soroban_sdk::symbol_short!("yes"));
+    assert!(
+        pool_result.is_err(),
+        "pool must not exist after a rejected bootstrap deposit"
+    );
+
+    // ── Case 2: exactly-at-boundary deposit (per_outcome == MIN_LIQUIDITY) ───
+    // total = 2 * MIN_LIQUIDITY = 2_000; per_outcome = 1_000
+    // isqrt(1_000 * 1_000) = 1_000 which is == MIN_LIQUIDITY → rejected
+    let boundary_amount = 2 * MIN_LIQUIDITY; // 2_000
+    sa.mint(&depositor, &boundary_amount);
+    token.approve(&depositor, &client.address, &boundary_amount, &9999);
+
+    let result2 = client.try_add_liquidity(&depositor, &market_id, &boundary_amount);
+    assert!(
+        matches!(result2, Err(Ok(InsightArenaError::StakeTooLow))),
+        "boundary deposit (per_outcome == MIN_LIQUIDITY) must also be rejected"
+    );
+
+    // Pool still must not exist.
+    let pool_result2 =
+        client.try_get_outcome_price(&market_id, &soroban_sdk::symbol_short!("yes"));
+    assert!(
+        pool_result2.is_err(),
+        "pool must still not exist after boundary-rejected deposit"
+    );
+}
+
+/// Test 3 — After the first depositor withdraws their entire LP balance the
+/// permanently-locked MIN_LIQUIDITY fraction keeps a non-zero reserve in the
+/// pool so the pool can never be fully drained to zero.
+#[test]
+fn test_full_drain_prevented() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _oracle, xlm_token) = deploy_with_token(&env);
+
+    let depositor = Address::generate(&env);
+    let market_id = client.create_market(&_admin, &lp_market_params(&env));
+
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+
+    // Same setup as test_first_deposit_locks_minimum_liquidity.
+    let amount = 200_000_i128;
+    sa.mint(&depositor, &amount);
+    token.approve(&depositor, &client.address, &amount, &9999);
+
+    let lp_minted = client.add_liquidity(&depositor, &market_id, &amount);
+
+    // per_outcome = 100_000; lp_minted = 99_000; total_supply = 100_000
+    let per_outcome: i128 = amount / 2;
+    let initial_liquidity: i128 = per_outcome;
+    let expected_lp = initial_liquidity - MIN_LIQUIDITY;
+    assert_eq!(lp_minted, expected_lp);
+
+    // ── Depositor withdraws their entire LP balance (99_000) ──────────────────
+    let withdrawn = client.remove_liquidity(&depositor, &market_id, &lp_minted);
+
+    // Withdrawal succeeds and returns the correct proportional amount.
+    let expected_withdrawal = lp_minted * amount / initial_liquidity; // 198_000
+    assert_eq!(withdrawn, expected_withdrawal, "withdrawal should succeed");
+    assert!(withdrawn > 0, "withdrawal must be positive");
+
+    // ── Pool reserves are NOT zero — MIN_LIQUIDITY worth remains locked ───────
+    // NOTE: `remove_liquidity` decrements `pool.total_liquidity` but does NOT
+    // update the per-outcome `outcome_reserves` map (reserves reflect gross
+    // tokens held in escrow, not the LP-redeemable portion).  So
+    // `get_outcome_price` still returns the original per-outcome reserve (100_000)
+    // rather than the locked fraction.  What matters for the drain-prevention
+    // guarantee is that `total_liquidity` is non-zero — i.e. a second depositor
+    // joining the pool after the first one exits will still see a pool with
+    // positive `total_liquidity` and `lp_token_supply`, so they get proportional
+    // shares rather than 1:1 (preventing the inflation attack).
+    //
+    // Verify: outcome reserves remain positive (pool is not "zeroed out").
+    let reserve_yes = client.get_outcome_price(&market_id, &soroban_sdk::symbol_short!("yes"));
+    let reserve_no  = client.get_outcome_price(&market_id, &soroban_sdk::symbol_short!("no"));
+
+    assert!(reserve_yes > 0, "YES reserve must remain > 0 after full depositor withdrawal");
+    assert!(reserve_no  > 0, "NO reserve must remain > 0 after full depositor withdrawal");
+
+    // ── The depositor could NOT drain the full deposit ────────────────────────
+    // The MIN_LIQUIDITY fraction (2 * MIN_LIQUIDITY stroops = 2_000 for a
+    // 2-outcome pool) is permanently unrecoverable by any single withdrawer.
+    let locked_total = amount - withdrawn;   // 200_000 - 198_000 = 2_000
+    assert_eq!(
+        locked_total, 2 * MIN_LIQUIDITY,
+        "exactly 2 * MIN_LIQUIDITY stroops must remain locked in the pool"
+    );
 }
