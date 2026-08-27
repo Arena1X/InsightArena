@@ -171,6 +171,17 @@ class EnvironmentVariables {
   @IsNumber()
   ORACLE_ANOMALY_WINDOW?: number;
 
+  /** Absolute deviation from the baseline median beyond which a submission is flagged (#1611). Default: 15 */
+  @IsOptional()
+  @IsNumber()
+  ORACLE_MEDIAN_DEVIATION_THRESHOLD?: number;
+
+  /** Minimum eligible oracle sources before a match may be auto-finalized from consensus (#1611). Default: 2 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  ORACLE_CONSENSUS_MIN_SOURCES?: number;
+
   @IsOptional()
   @IsString()
   ORACLE_ANOMALY_HOLD?: string;
