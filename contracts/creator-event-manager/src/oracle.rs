@@ -3,7 +3,9 @@ use soroban_sdk::{Address, Env, Symbol, Vec};
 use crate::admin;
 use crate::leaderboard;
 use crate::storage::{self, StorageError};
-use crate::storage_types::{Event, Match, MatchResult, MatchResultSubmission, OracleSubmission};
+use crate::storage_types::{
+    Event, Match, MatchResult, MatchResultSubmission, OracleSubmission, PendingMatchResult,
+};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -48,6 +50,11 @@ pub enum OracleError {
     /// This source has already proposed a scoreline for this match's
     /// consensus round (#1698).
     DuplicateResultProposal = 15,
+    /// A result is already staged for this match, awaiting M-of-N verifier
+    /// sign-off (#1515). A match can have at most one pending result at a
+    /// time; wait for it to be verified (or admin-corrected) before
+    /// resubmitting.
+    ResultPendingVerification = 16,
 }
 
 impl From<StorageError> for OracleError {
@@ -72,6 +79,16 @@ fn emit_match_result_submitted(
             Symbol::new(env, "result_submitted"),
         ),
         (match_id, winning_team.clone(), submitted_by.clone()),
+    );
+}
+
+fn emit_match_result_pending(env: &Env, match_id: u64, submitted_by: &Address) {
+    env.events().publish(
+        (
+            Symbol::new(env, "match"),
+            Symbol::new(env, "result_pending"),
+        ),
+        (match_id, submitted_by.clone()),
     );
 }
 
@@ -101,6 +118,19 @@ fn emit_oracle_value_submitted(env: &Env, match_id: u64, source: &Address, value
 /// This is the core oracle function that resolves a match and grades every
 /// prediction made for it. Accepts a final scoreline and derives the 1X2 result.
 ///
+/// # M-of-N verifier threshold (#1515)
+/// When `admin::get_verifier_threshold` is `0` (never configured — the
+/// default), this call finalizes the result immediately, exactly as before:
+/// legacy behaviour is fully preserved for events that never opt into
+/// multi-sig verification.
+///
+/// When a threshold is configured (`> 0`), the submitted scoreline is instead
+/// **staged** as a [`crate::storage_types::PendingMatchResult`] and does
+/// *not* finalize here — `result_submitted` stays `false`, no predictions are
+/// graded. It only becomes final once `threshold` distinct configured
+/// verifier signers have called `verification::submit_match_verification`
+/// for this match.
+///
 /// # Flow
 /// 1. Require caller authorization.
 /// 2. Reject if the contract is paused.
@@ -108,10 +138,10 @@ fn emit_oracle_value_submitted(env: &Env, match_id: u64, source: &Address, value
 /// 4. Retrieve the match and verify it exists.
 /// 5. Verify a result has not already been submitted.
 /// 6. Verify the match has started (`now >= match_time`).
-/// 7. Store home_score, away_score, and derive winning_team from the scores.
-/// 8. Update the match.
-/// 9. Grade every prediction for the match (is_correct, points_earned).
-/// 10. Emit a `MatchResultSubmitted` event.
+/// 7. If no verifier threshold is configured, finalize immediately (record
+///    the result, grade predictions, recompute standings, emit). Otherwise,
+///    stage the scoreline pending verifier sign-off and emit a
+///    `("match", "result_pending")` event.
 ///
 /// # Errors
 /// * [`OracleError::Paused`] — the contract is paused.
@@ -119,6 +149,8 @@ fn emit_oracle_value_submitted(env: &Env, match_id: u64, source: &Address, value
 /// * [`OracleError::MatchNotFound`] — no match with the given id.
 /// * [`OracleError::ResultAlreadySubmitted`] — result already recorded.
 /// * [`OracleError::MatchNotStarted`] — match has not started yet.
+/// * [`OracleError::ResultPendingVerification`] — a result is already staged
+///   for this match awaiting verifier sign-off.
 pub fn submit_match_result(
     env: &Env,
     caller: Address,
@@ -154,27 +186,53 @@ pub fn submit_match_result(
         return Err(OracleError::MatchNotStarted);
     }
 
-    // 6-9. Record the result, grade predictions, recompute standings, emit.
-    finalize_match_result(
+    // 6. No verifier threshold configured: legacy single-oracle finalization.
+    let threshold = admin::get_verifier_threshold(env);
+    if threshold == 0 {
+        return finalize_match_result(
+            env,
+            match_record,
+            match_id,
+            caller,
+            home_score,
+            away_score,
+            now,
+        );
+    }
+
+    // 7. Threshold configured: stage the result pending M-of-N verifier
+    // sign-off rather than finalizing here.
+    if storage::get_pending_match_result(env, match_id).is_some() {
+        return Err(OracleError::ResultPendingVerification);
+    }
+
+    storage::set_pending_match_result(
         env,
-        match_record,
-        match_id,
-        caller,
-        home_score,
-        away_score,
-        now,
-    )
+        &PendingMatchResult {
+            match_id,
+            home_score,
+            away_score,
+            submitted_by: caller.clone(),
+            submitted_at: now,
+        },
+    );
+    emit_match_result_pending(env, match_id, &caller);
+
+    Ok(())
 }
 
 /// Shared finalization path for a match's winning result: records the
 /// scoreline, grades every prediction for the match, recomputes the event's
 /// weighted standings, and emits the result event.
 ///
-/// Used by both [`submit_match_result`] (single AI-agent oracle) and
-/// [`propose_match_result`]'s consensus path (#1698) once a result is ready
-/// to be locked in — the two paths differ only in *how* the result was
-/// authorized, not in what happens once it is.
-fn finalize_match_result(
+/// Used by [`submit_match_result`] (single AI-agent oracle, threshold == 0),
+/// [`propose_match_result`]'s consensus path (#1698), and
+/// `verification::submit_match_verification` (#1515) once a result is ready
+/// to be locked in — the three paths differ only in *how* the result was
+/// authorized, not in what happens once it is. `pub(crate)` so the
+/// verification module can call it once the configured M-of-N signer
+/// threshold is reached for a staged [`crate::storage_types::PendingMatchResult`].
+pub(crate) fn finalize_match_result(
     env: &Env,
     mut match_record: Match,
     match_id: u64,

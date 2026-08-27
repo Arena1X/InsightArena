@@ -1314,13 +1314,20 @@ fn validate_volume_fee_config(config: &VolumeFeeConfig) -> Result<(), InsightAre
     if first.volume_threshold != 0 {
         return Err(InsightArenaError::InvalidInput);
     }
+    if first.fee_bps > 10_000 {
+        return Err(InsightArenaError::InvalidFee);
+    }
 
-    // Thresholds must be monotonically increasing.
+    // Thresholds must be monotonically increasing (non-overlapping tiers);
+    // every tier's fee must stay within the valid bps range.
     let mut prev_threshold = first.volume_threshold;
     for i in 1..config.tiers.len() {
         let entry = config.tiers.get(i).unwrap();
         if entry.volume_threshold <= prev_threshold {
             return Err(InsightArenaError::InvalidInput);
+        }
+        if entry.fee_bps > 10_000 {
+            return Err(InsightArenaError::InvalidFee);
         }
         prev_threshold = entry.volume_threshold;
     }

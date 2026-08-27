@@ -369,6 +369,19 @@ pub enum DataKey {
     /// Written by `oracle::propose_match_result`; cleared implicitly once the
     /// match is finalized (no further submissions are accepted).
     MatchResultProposals(u64),
+
+    // ── Per-match M-of-N verifier threshold (#1515) ──────────────────────────
+    /// An oracle-submitted scoreline for a match, staged pending M-of-N
+    /// verifier sign-off (`admin::get_verifier_threshold`)  (match_id).
+    /// Written by `oracle::submit_match_result` when a threshold is
+    /// configured; consumed and removed by
+    /// `verification::submit_match_verification` once the threshold is met.
+    PendingMatchResult(u64),
+
+    /// Vec<Address> of distinct verifier signers who have submitted
+    /// verification for a match's pending result so far  (match_id). Written
+    /// by `verification::submit_match_verification`.
+    MatchVerificationSigners(u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -417,6 +430,37 @@ impl InviteCodeData {
     pub fn is_at_cap(&self) -> bool {
         self.max_uses != 0 && self.use_count >= self.max_uses
     }
+}
+
+// ---------------------------------------------------------------------------
+// InviteCodeInfo (#1514)
+// ---------------------------------------------------------------------------
+
+/// Read-only view of an invite code's redemption state, returned by
+/// `invite::get_invite_code_info`. Computed from the stored
+/// [`InviteCodeData`] as of the current ledger time rather than cached.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InviteCodeInfo {
+    /// The event this code grants entry to.
+    pub event_id: u64,
+
+    /// Unix timestamp after which the code is rejected. `0` = never expires.
+    pub expires_at: u64,
+
+    /// Maximum number of successful redemptions allowed. `0` = unlimited.
+    pub max_uses: u32,
+
+    /// Number of times the code has been successfully redeemed so far.
+    pub use_count: u32,
+
+    /// `max_uses - use_count`, or `u32::MAX` when `max_uses == 0`
+    /// (unlimited).
+    pub remaining_uses: u32,
+
+    /// `true` when the code is currently redeemable — neither expired nor at
+    /// its use cap, as of the current ledger time.
+    pub is_valid: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1268,6 +1312,40 @@ pub struct MatchResultSubmission {
     pub away_score: u32,
 
     /// Unix timestamp when the proposal was submitted.
+    pub submitted_at: u64,
+}
+
+// ---------------------------------------------------------------------------
+// PendingMatchResult (#1515)
+// ---------------------------------------------------------------------------
+
+/// An oracle-submitted scoreline staged pending M-of-N verifier sign-off.
+///
+/// Written by `oracle::submit_match_result` in place of finalizing
+/// immediately, whenever `admin::get_verifier_threshold` is non-zero (a
+/// threshold of `0` — never configured — preserves the legacy single-oracle
+/// behaviour, finalizing immediately with no staging). Consumed and removed
+/// by `verification::submit_match_verification` once enough distinct
+/// verifier signers have submitted for this match.
+///
+/// Stored under `DataKey::PendingMatchResult(match_id)`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingMatchResult {
+    /// The match this staged result resolves.
+    pub match_id: u64,
+
+    /// Final score for team A (home team), as submitted by the oracle.
+    pub home_score: u32,
+
+    /// Final score for team B (away team), as submitted by the oracle.
+    pub away_score: u32,
+
+    /// Address that originally submitted this scoreline via
+    /// `oracle::submit_match_result`.
+    pub submitted_by: Address,
+
+    /// Unix timestamp the scoreline was originally submitted.
     pub submitted_at: u64,
 }
 

@@ -21,7 +21,7 @@ use admin::AdminError;
 use event::EventError;
 use r#match::MatchError;
 use storage_types::{
-    CreatorVestingSchedule, Event, FinalizationBond, LeaderboardEntry, Match,
+    CreatorVestingSchedule, Event, FinalizationBond, InviteCodeInfo, LeaderboardEntry, Match,
     MatchResultSubmission, OracleSubmission, ParticipantScore, Prediction, StandingEntry,
 };
 use verification::VerificationError;
@@ -413,6 +413,63 @@ impl CreatorEventManagerContract {
     /// for this event so far.
     pub fn get_event_verification_count(env: Env, event_id: u64) -> u32 {
         verification::get_event_verification_count(&env, event_id)
+    }
+
+    /// Submit a signed verifier attestation for a match's staged pending
+    /// result (M-of-N match-result verification, #1515).
+    ///
+    /// `signer` must be one of the addresses configured via
+    /// `set_verifier_config`, with an ed25519 public key bound via
+    /// `set_verifier_public_key`. `signature` must be a valid ed25519
+    /// signature by that key over a match-bound payload (see
+    /// `verification::submit_match_verification`), so it cannot be replayed
+    /// against a different match or against event-level verification. Each
+    /// signer may submit at most once per match. Once the configured
+    /// threshold (`get_verifier_threshold`) of distinct signers has
+    /// submitted, the staged result is finalized: the winning outcome is
+    /// recorded, every prediction for the match is graded, and the event's
+    /// weighted standings are recomputed. Returns the number of distinct
+    /// signers who have now submitted.
+    ///
+    /// # Panics
+    /// * `"match_not_found"` — no match exists for `match_id`.
+    /// * `"no_pending_result"` — no result is currently staged for this
+    ///   match.
+    /// * `"not_a_verifier_signer"` — `signer` is not a configured verifier.
+    /// * `"no_public_key_configured"` — `signer` has no bound public key.
+    /// * `"duplicate_signer"` — `signer` already submitted for this match.
+    /// * an ed25519 verification panic — `signature` does not verify against
+    ///   the signer's bound key and the match-bound payload.
+    pub fn submit_match_verification(
+        env: Env,
+        match_id: u64,
+        signer: Address,
+        data: soroban_sdk::Bytes,
+        signature: soroban_sdk::BytesN<64>,
+    ) -> u32 {
+        match verification::submit_match_verification(&env, match_id, signer, data, signature) {
+            Ok(count) => count,
+            Err(VerificationError::MatchNotFound) => panic!("match_not_found"),
+            Err(VerificationError::NoPendingResult) => panic!("no_pending_result"),
+            Err(VerificationError::NotAVerifierSigner) => panic!("not_a_verifier_signer"),
+            Err(VerificationError::NoPublicKeyConfigured) => {
+                panic!("no_public_key_configured")
+            }
+            Err(VerificationError::DuplicateSigner) => panic!("duplicate_signer"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Returns `true` once at least M distinct configured signers have
+    /// submitted verification for a match's pending result (#1515).
+    pub fn is_match_verified(env: Env, match_id: u64) -> bool {
+        verification::is_match_verified(&env, match_id)
+    }
+
+    /// Returns the number of distinct signers who have submitted
+    /// verification for a match's pending result so far (#1515).
+    pub fn get_match_verification_count(env: Env, match_id: u64) -> u32 {
+        verification::get_match_verification_count(&env, match_id)
     }
 
     // =========================================================================
@@ -906,6 +963,21 @@ impl CreatorEventManagerContract {
         }
     }
 
+    /// Inspect an invite code's remaining uses and validity (#1514).
+    ///
+    /// Read-only — does not redeem the code. `remaining_uses` is `u32::MAX`
+    /// for an unlimited code (`max_uses == 0`).
+    ///
+    /// # Panics
+    /// * `"invalid_invite_code"` — no invite code data exists for this code.
+    pub fn get_invite_code_info(env: Env, invite_code: Symbol) -> InviteCodeInfo {
+        match invite::get_invite_code_info(&env, &invite_code) {
+            Ok(info) => info,
+            Err(invite::InviteError::InvalidCode) => panic!("invalid_invite_code"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
     /// Submit a prediction for a match in an event.
     ///
     /// Takes a predicted scoreline (predicted_home_score, predicted_away_score).
@@ -996,12 +1068,19 @@ impl CreatorEventManagerContract {
     /// prediction for the match (sets each `is_correct` and `points_earned`).
     /// The match must have started (current time >= match_time).
     ///
+    /// When a verifier threshold is configured (`get_verifier_threshold() >
+    /// 0`, see #1515), this instead stages the scoreline pending M-of-N
+    /// verifier sign-off via `submit_match_verification` — the result is not
+    /// finalized here in that case.
+    ///
     /// # Panics
     /// * `"contract_paused"` — the contract is paused.
     /// * `"unauthorized"` — caller is not the configured AI agent.
     /// * `"match_not_found"` — no match exists with the given ID.
     /// * `"result_already_submitted"` — a result was already submitted.
     /// * `"match_not_started"` — current time is before the match start time.
+    /// * `"result_pending_verification"` — a result is already staged for
+    ///   this match, awaiting verifier sign-off.
     pub fn submit_match_result(
         env: Env,
         caller: Address,
@@ -1016,6 +1095,9 @@ impl CreatorEventManagerContract {
             Err(oracle::OracleError::MatchNotFound) => panic!("match_not_found"),
             Err(oracle::OracleError::ResultAlreadySubmitted) => panic!("result_already_submitted"),
             Err(oracle::OracleError::MatchNotStarted) => panic!("match_not_started"),
+            Err(oracle::OracleError::ResultPendingVerification) => {
+                panic!("result_pending_verification")
+            }
             Err(_) => panic!("unexpected_error"),
         }
     }

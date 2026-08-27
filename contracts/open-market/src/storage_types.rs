@@ -665,7 +665,10 @@ impl FeeTierConfig {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VolumeFeeEntry {
-    /// Minimum cumulative volume (stroops) required to activate this tier.
+    /// Minimum cumulative volume (stroops) required to activate this tier —
+    /// an **inclusive lower bound**: a market whose `cumulative_volume`
+    /// exactly equals this value is already in this tier, not the previous
+    /// one (see `liquidity::select_volume_fee_tier`).
     pub volume_threshold: i128,
     /// Swap fee (bps) applied once this tier is active.
     pub fee_bps: u32,
