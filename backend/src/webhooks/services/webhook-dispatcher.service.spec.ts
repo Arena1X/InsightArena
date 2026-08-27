@@ -113,14 +113,16 @@ describe('WebhookDispatcherService', () => {
       });
 
       // attempt 1..4 are under the max attempt cap (default 5), so they schedule.
+      // Delay is base = 2^(attempt-1) * 1000ms plus up to 50% jitter, so the
+      // upper bound is 1.5x the base.
       expect(attemptDelays[0]).toBeGreaterThan(0);
       expect(attemptDelays[0]).toBeLessThanOrEqual(1500);
-      expect(attemptDelays[1]).toBeGreaterThan(1500);
-      expect(attemptDelays[1]).toBeLessThanOrEqual(2500);
-      expect(attemptDelays[2]).toBeGreaterThan(3500);
-      expect(attemptDelays[2]).toBeLessThanOrEqual(4500);
-      expect(attemptDelays[3]).toBeGreaterThan(7500);
-      expect(attemptDelays[3]).toBeLessThanOrEqual(8500);
+      expect(attemptDelays[1]).toBeGreaterThan(1999);
+      expect(attemptDelays[1]).toBeLessThanOrEqual(3000);
+      expect(attemptDelays[2]).toBeGreaterThan(3999);
+      expect(attemptDelays[2]).toBeLessThanOrEqual(6000);
+      expect(attemptDelays[3]).toBeGreaterThan(7999);
+      expect(attemptDelays[3]).toBeLessThanOrEqual(12000);
 
       // attempt 5 (== maxAttempts) and beyond are exhausted -> no next_retry_at.
       expect(attemptDelays[4]).toBeNull();
@@ -155,7 +157,7 @@ describe('WebhookDispatcherService', () => {
   });
 
   describe('signature preservation across retries', () => {
-    it('recomputes an identical HMAC signature on every retry attempt for the same payload/secret', async () => {
+    it('computes an HMAC signature bound to the payload, secret, and its own timestamp on every retry attempt', async () => {
       const log = makeLog({ attempt_count: 0 });
       httpService.axiosRef.post.mockRejectedValue(new Error('boom'));
 
@@ -167,15 +169,17 @@ describe('WebhookDispatcherService', () => {
       const secondCallHeaders = httpService.axiosRef.post.mock.calls[1][2]
         .headers as Record<string, string>;
 
-      const expectedSignature = crypto
-        .createHmac('sha256', log.endpoint.secret_key)
-        .update(JSON.stringify(log.payload))
-        .digest('hex');
+      const expectedSignatureFor = (timestamp: string) =>
+        crypto
+          .createHmac('sha256', log.endpoint.secret_key)
+          .update(`${timestamp}.${JSON.stringify(log.payload)}`)
+          .digest('hex');
 
-      expect(firstCallHeaders['X-Webhook-Signature']).toBe(expectedSignature);
-      expect(secondCallHeaders['X-Webhook-Signature']).toBe(expectedSignature);
       expect(firstCallHeaders['X-Webhook-Signature']).toBe(
-        secondCallHeaders['X-Webhook-Signature'],
+        expectedSignatureFor(firstCallHeaders['X-Webhook-Timestamp']),
+      );
+      expect(secondCallHeaders['X-Webhook-Signature']).toBe(
+        expectedSignatureFor(secondCallHeaders['X-Webhook-Timestamp']),
       );
       expect(secondCallHeaders['X-Delivery-Attempt']).toBe('2');
     });
