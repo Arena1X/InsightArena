@@ -452,4 +452,295 @@ describe('AnalyticsService', () => {
       expect(marketsRepository.find).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe('getMarketAnalytics caching', () => {
+    function makeMarket(id: string): Market {
+      return {
+        id,
+        on_chain_market_id: `chain-${id}`,
+        title: `Market ${id}`,
+        outcome_options: ['YES', 'NO'],
+        total_pool_stroops: '1000',
+        participant_count: 2,
+        end_time: new Date(Date.now() + 60_000),
+      } as Market;
+    }
+
+    it('serves a second identical request from cache without re-querying', async () => {
+      const predictionsRepo = module.get(getRepositoryToken(Prediction));
+      predictionsRepo.find = jest.fn().mockResolvedValue([]);
+      marketsRepository.findOne.mockResolvedValue(makeMarket('market-1'));
+
+      const first = await service.getMarketAnalytics('market-1');
+      const second = await service.getMarketAnalytics('market-1');
+
+      expect(second).toEqual(first);
+      expect(marketsRepository.findOne).toHaveBeenCalledTimes(1);
+      expect(predictionsRepo.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses a distinct cache entry for a different market id', async () => {
+      const predictionsRepo = module.get(getRepositoryToken(Prediction));
+      predictionsRepo.find = jest.fn().mockResolvedValue([]);
+      marketsRepository.findOne
+        .mockResolvedValueOnce(makeMarket('market-1'))
+        .mockResolvedValueOnce(makeMarket('market-2'));
+
+      const first = await service.getMarketAnalytics('market-1');
+      const second = await service.getMarketAnalytics('market-2');
+
+      expect(first.market_id).toBe('market-1');
+      expect(second.market_id).toBe('market-2');
+      expect(marketsRepository.findOne).toHaveBeenCalledTimes(2);
+      expect(predictionsRepo.find).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('getUserTrends caching', () => {
+    const trendsUser = { id: 'user-42', stellar_address: 'GADDR42' } as User;
+
+    function makePrediction(): Prediction {
+      return {
+        submitted_at: new Date(),
+        chosen_outcome: 'YES',
+        stake_amount_stroops: '100',
+        payout_amount_stroops: '0',
+        market: { category: 'Politics', is_resolved: false } as Market,
+      } as Prediction;
+    }
+
+    function setup() {
+      const predictionsRepo = module.get(getRepositoryToken(Prediction));
+      predictionsRepo.find = jest.fn().mockResolvedValue([makePrediction()]);
+      usersRepository.findOne.mockResolvedValue(trendsUser);
+      return predictionsRepo;
+    }
+
+    it('serves a second identical request from cache without re-querying', async () => {
+      const predictionsRepo = setup();
+
+      await service.getUserTrends('GADDR42', 30);
+      await service.getUserTrends('GADDR42', 30);
+
+      expect(predictionsRepo.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses a distinct cache entry when the days parameter differs', async () => {
+      const predictionsRepo = setup();
+
+      await service.getUserTrends('GADDR42', 30);
+      await service.getUserTrends('GADDR42', 60);
+
+      expect(predictionsRepo.find).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses a distinct cache entry for a different address', async () => {
+      const predictionsRepo = setup();
+
+      await service.getUserTrends('GADDR42', 30);
+      await service.getUserTrends('GOTHER99', 30);
+
+      expect(predictionsRepo.find).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('getDashboardKPIs caching', () => {
+    it('serves a second identical request from cache without re-querying', async () => {
+      usersRepository.findOne.mockResolvedValue(baseUser);
+      leaderboardRepository.createQueryBuilder.mockReturnValue(
+        mockLeaderboardQb(null) as any,
+      );
+      predictionsRepository.createQueryBuilder.mockReturnValue(
+        mockQb({ getCount: 1 }) as any,
+      );
+
+      await service.getDashboardKPIs(baseUser);
+      await service.getDashboardKPIs(baseUser);
+
+      expect(usersRepository.findOne).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses a distinct cache entry for a different user', async () => {
+      const otherUser = { ...baseUser, id: 'user-id-2' } as User;
+      usersRepository.findOne.mockImplementation((opts: any) =>
+        Promise.resolve(
+          opts.where.id === otherUser.id ? otherUser : baseUser,
+        ),
+      );
+      leaderboardRepository.createQueryBuilder.mockReturnValue(
+        mockLeaderboardQb(null) as any,
+      );
+      predictionsRepository.createQueryBuilder.mockReturnValue(
+        mockQb({ getCount: 1 }) as any,
+      );
+
+      await service.getDashboardKPIs(baseUser);
+      await service.getDashboardKPIs(otherUser);
+
+      expect(usersRepository.findOne).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('getMarketHistory caching', () => {
+    function makeHistoryQb() {
+      return {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      };
+    }
+
+    it('serves a second identical request from cache without re-querying', async () => {
+      const market = { id: 'market-1', title: 'Market 1' } as Market;
+      marketsRepository.findOne.mockResolvedValue(market);
+      marketHistoryRepository.createQueryBuilder.mockReturnValue(
+        makeHistoryQb() as any,
+      );
+
+      const from = new Date('2026-05-01T00:00:00.000Z');
+      const to = new Date('2026-06-01T00:00:00.000Z');
+
+      const first = await service.getMarketHistory('market-1', from, to);
+      const second = await service.getMarketHistory('market-1', from, to);
+
+      expect(second).toEqual(first);
+      expect(marketsRepository.findOne).toHaveBeenCalledTimes(1);
+      expect(
+        marketHistoryRepository.createQueryBuilder,
+      ).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses a distinct cache entry when the date range differs', async () => {
+      const market = { id: 'market-1', title: 'Market 1' } as Market;
+      marketsRepository.findOne.mockResolvedValue(market);
+      marketHistoryRepository.createQueryBuilder.mockReturnValue(
+        makeHistoryQb() as any,
+      );
+
+      await service.getMarketHistory(
+        'market-1',
+        new Date('2026-05-01T00:00:00.000Z'),
+        new Date('2026-06-01T00:00:00.000Z'),
+      );
+      await service.getMarketHistory(
+        'market-1',
+        new Date('2026-06-01T00:00:00.000Z'),
+        new Date('2026-07-01T00:00:00.000Z'),
+      );
+
+      expect(
+        marketHistoryRepository.createQueryBuilder,
+      ).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses a distinct cache entry for a different market id', async () => {
+      marketsRepository.findOne.mockImplementation((opts: any) =>
+        Promise.resolve({ id: opts.where[0].id, title: 'Market' } as Market),
+      );
+      marketHistoryRepository.createQueryBuilder.mockReturnValue(
+        makeHistoryQb() as any,
+      );
+
+      const from = new Date('2026-05-01T00:00:00.000Z');
+      const to = new Date('2026-06-01T00:00:00.000Z');
+
+      await service.getMarketHistory('market-1', from, to);
+      await service.getMarketHistory('market-2', from, to);
+
+      expect(
+        marketHistoryRepository.createQueryBuilder,
+      ).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('invalidateMarketResolutionCaches', () => {
+    it('clears the market, category, platform-stats, and per-user dashboard entries', async () => {
+      const cacheManager = module.get(CACHE_MANAGER);
+
+      await cacheService.getOrSet('analytics:market', 'market-1', () =>
+        Promise.resolve('market-by-id'),
+      );
+      await cacheService.getOrSet('analytics:market', 'chain-1', () =>
+        Promise.resolve('market-by-chain-id'),
+      );
+      await cacheService.getOrSet('analytics:category', 'all', () =>
+        Promise.resolve('category'),
+      );
+      await cacheService.getOrSet('analytics:platform-stats', 'all', () =>
+        Promise.resolve('platform'),
+      );
+      await cacheService.getOrSet('analytics:dashboard', 'user-1', () =>
+        Promise.resolve('dash-1'),
+      );
+      await cacheService.getOrSet('analytics:dashboard', 'user-2', () =>
+        Promise.resolve('dash-2'),
+      );
+      // Left alone: keyed by an unbounded parameter space, expires on its own TTL.
+      await cacheService.getOrSet(
+        'analytics:user-trends',
+        'GADDR:30',
+        () => Promise.resolve('trends'),
+      );
+
+      await service.invalidateMarketResolutionCaches('market-1', 'chain-1', [
+        'user-1',
+        'user-2',
+      ]);
+
+      expect(
+        await cacheManager.get('analytics:market:market-1'),
+      ).toBeUndefined();
+      expect(
+        await cacheManager.get('analytics:market:chain-1'),
+      ).toBeUndefined();
+      expect(
+        await cacheManager.get('analytics:category:all'),
+      ).toBeUndefined();
+      expect(
+        await cacheManager.get('analytics:platform-stats:all'),
+      ).toBeUndefined();
+      expect(
+        await cacheManager.get('analytics:dashboard:user-1'),
+      ).toBeUndefined();
+      expect(
+        await cacheManager.get('analytics:dashboard:user-2'),
+      ).toBeUndefined();
+      expect(await cacheManager.get('analytics:user-trends:GADDR:30')).toBe(
+        'trends',
+      );
+    });
+
+    it('is a no-op when no on-chain id or affected users are given', async () => {
+      const cacheManager = module.get(CACHE_MANAGER);
+      await cacheService.getOrSet('analytics:market', 'market-1', () =>
+        Promise.resolve('market-by-id'),
+      );
+
+      await service.invalidateMarketResolutionCaches('market-1', null, []);
+
+      expect(
+        await cacheManager.get('analytics:market:market-1'),
+      ).toBeUndefined();
+      expect(
+        await cacheManager.get('analytics:category:all'),
+      ).toBeUndefined();
+    });
+
+    it('logs a warning instead of throwing when a cache backend call fails', async () => {
+      const cacheManager = module.get(CACHE_MANAGER);
+      const warnSpy = jest
+        .spyOn((service as any).logger, 'warn')
+        .mockImplementation(() => undefined);
+      jest
+        .spyOn(cacheManager, 'del')
+        .mockRejectedValueOnce(new Error('cache backend unavailable'));
+
+      await expect(
+        service.invalidateMarketResolutionCaches('market-1', 'chain-1', []),
+      ).resolves.toBeUndefined();
+
+      expect(warnSpy).toHaveBeenCalled();
+    });
+  });
 });

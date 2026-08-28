@@ -129,7 +129,10 @@ describe('AdminService (Verified Addresses)', () => {
         },
         {
           provide: require('../analytics/analytics.service').AnalyticsService,
-          useValue: { logActivity: jest.fn() },
+          useValue: {
+            logActivity: jest.fn(),
+            invalidateMarketResolutionCaches: jest.fn(),
+          },
         },
         {
           provide: require('../notifications/notifications.service')
