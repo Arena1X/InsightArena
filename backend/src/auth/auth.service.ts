@@ -15,6 +15,10 @@ import { User } from '../users/entities/user.entity';
 import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { AuthAuditEvent } from './entities/auth-audit-event.entity';
+import {
+  AuthAuditEventType,
+  AuthAuditOutcome,
+} from './auth-audit-event-types';
 
 const DEFAULT_REFRESH_TOKEN_TTL_DAYS = 30;
 
@@ -42,6 +46,42 @@ export class AuthService implements OnModuleInit {
 
   onModuleInit() {
     this.logger.log('AuthService initialized - periodic cleanup enabled');
+  }
+
+  /**
+   * Writes one row to `auth_audit_events`. Used for every security-relevant
+   * auth action (login, refresh, revoke) — both successes and failures.
+   *
+   * `metadata` always carries `outcome` and `ip` so the audit trail is
+   * queryable without parsing `event_type` strings. A failure to write the
+   * audit row is logged but never allowed to break the underlying auth
+   * flow (e.g. throwing the real UnauthorizedException instead of a 500).
+   */
+  private async recordAuditEvent(params: {
+    eventType: string;
+    userId: string | null;
+    familyId?: string | null;
+    outcome: AuthAuditOutcome;
+    ip?: string | null;
+    metadata?: Record<string, unknown>;
+  }): Promise<void> {
+    try {
+      const auditEvent = this.authAuditEventsRepository.create({
+        event_type: params.eventType,
+        user_id: params.userId,
+        family_id: params.familyId ?? null,
+        metadata: {
+          outcome: params.outcome,
+          ip: params.ip ?? null,
+          ...params.metadata,
+        },
+      });
+      await this.authAuditEventsRepository.save(auditEvent);
+    } catch (error) {
+      this.logger.error(
+        `Failed to record auth audit event '${params.eventType}': ${error}`,
+      );
+    }
   }
 
   /**
@@ -102,8 +142,24 @@ export class AuthService implements OnModuleInit {
   async verifyChallenge(
     stellar_address: string,
     signed_challenge: string,
+    ip?: string | null,
   ): Promise<{ access_token: string; refresh_token: string; user: User }> {
-    const user = await this.verifySignature(stellar_address, signed_challenge);
+    let user: User;
+    try {
+      user = await this.verifySignature(stellar_address, signed_challenge);
+    } catch (error) {
+      await this.recordAuditEvent({
+        eventType: AuthAuditEventType.LOGIN_FAILURE,
+        userId: null,
+        outcome: 'failure',
+        ip,
+        metadata: {
+          stellar_address,
+          reason: error instanceof Error ? error.message : 'unknown_error',
+        },
+      });
+      throw error;
+    }
 
     // Sign JWT with sub: user.id
     const payload = { sub: user.id, stellar_address: user.stellar_address };
@@ -115,6 +171,15 @@ export class AuthService implements OnModuleInit {
       user.id,
       familyId,
     );
+
+    await this.recordAuditEvent({
+      eventType: AuthAuditEventType.LOGIN_SUCCESS,
+      userId: user.id,
+      familyId,
+      outcome: 'success',
+      ip,
+      metadata: { stellar_address: user.stellar_address },
+    });
 
     return { access_token, refresh_token, user };
   }
@@ -160,6 +225,7 @@ export class AuthService implements OnModuleInit {
    */
   async rotateRefreshToken(
     rawToken: string,
+    ip?: string | null,
   ): Promise<{ access_token: string; refresh_token: string }> {
     const tokenHash = this.hashToken(rawToken);
     const existing = await this.refreshTokensRepository.findOneBy({
@@ -167,12 +233,27 @@ export class AuthService implements OnModuleInit {
     });
 
     if (!existing) {
+      await this.recordAuditEvent({
+        eventType: AuthAuditEventType.REFRESH_FAILURE,
+        userId: null,
+        outcome: 'failure',
+        ip,
+        metadata: { reason: 'invalid_refresh_token' },
+      });
       throw new UnauthorizedException('Invalid refresh token');
     }
 
     const now = new Date();
 
     if (existing.expires_at < now) {
+      await this.recordAuditEvent({
+        eventType: AuthAuditEventType.REFRESH_FAILURE,
+        userId: existing.user_id,
+        familyId: existing.family_id,
+        outcome: 'failure',
+        ip,
+        metadata: { reason: 'refresh_token_expired', tokenId: existing.id },
+      });
       throw new UnauthorizedException('Refresh token expired');
     }
 
@@ -184,13 +265,14 @@ export class AuthService implements OnModuleInit {
         { revoked_at: now },
       );
 
-      const auditEvent = this.authAuditEventsRepository.create({
-        event_type: 'refresh_token_reuse_detected',
-        user_id: existing.user_id,
-        family_id: existing.family_id,
-        metadata: { tokenId: existing.id },
+      await this.recordAuditEvent({
+        eventType: AuthAuditEventType.REFRESH_TOKEN_REUSE_DETECTED,
+        userId: existing.user_id,
+        familyId: existing.family_id,
+        outcome: 'failure',
+        ip,
+        metadata: { tokenId: existing.id, reason: 'refresh_token_reuse' },
       });
-      await this.authAuditEventsRepository.save(auditEvent);
 
       this.logger.error(
         `Refresh token reuse detected for family ${existing.family_id}, user ${existing.user_id} — session revoked`,
@@ -205,6 +287,14 @@ export class AuthService implements OnModuleInit {
       id: existing.user_id,
     });
     if (!user) {
+      await this.recordAuditEvent({
+        eventType: AuthAuditEventType.REFRESH_FAILURE,
+        userId: existing.user_id,
+        familyId: existing.family_id,
+        outcome: 'failure',
+        ip,
+        metadata: { reason: 'user_not_found', tokenId: existing.id },
+      });
       throw new UnauthorizedException('User not found or has been deleted');
     }
 
@@ -224,7 +314,65 @@ export class AuthService implements OnModuleInit {
 
     this.logger.debug(`Refresh token rotated for user ${user.id}`);
 
+    await this.recordAuditEvent({
+      eventType: AuthAuditEventType.REFRESH_SUCCESS,
+      userId: user.id,
+      familyId: existing.family_id,
+      outcome: 'success',
+      ip,
+      metadata: { tokenId: existing.id },
+    });
+
     return { access_token, refresh_token };
+  }
+
+  /**
+   * Revokes the session (refresh token family) identified by `rawToken`,
+   * scoped to `userId` — a user may only revoke their own sessions. This is
+   * the "logout" action: it invalidates every non-revoked refresh token in
+   * the family so the presented token (and any token already rotated from
+   * it) can no longer mint new access tokens.
+   */
+  async revokeSession(
+    userId: string,
+    rawToken: string,
+    ip?: string | null,
+  ): Promise<{ revoked: boolean }> {
+    const tokenHash = this.hashToken(rawToken);
+    const existing = await this.refreshTokensRepository.findOneBy({
+      token_hash: tokenHash,
+    });
+
+    if (!existing || existing.user_id !== userId) {
+      await this.recordAuditEvent({
+        eventType: AuthAuditEventType.REVOKE_FAILURE,
+        userId,
+        outcome: 'failure',
+        ip,
+        metadata: { reason: 'refresh_token_not_found' },
+      });
+      throw new UnauthorizedException('Refresh token not found');
+    }
+
+    await this.refreshTokensRepository.update(
+      { family_id: existing.family_id, revoked_at: IsNull() },
+      { revoked_at: new Date() },
+    );
+
+    this.logger.debug(
+      `Session revoked for user ${userId}, family ${existing.family_id}`,
+    );
+
+    await this.recordAuditEvent({
+      eventType: AuthAuditEventType.REVOKE_SUCCESS,
+      userId,
+      familyId: existing.family_id,
+      outcome: 'success',
+      ip,
+      metadata: { tokenId: existing.id },
+    });
+
+    return { revoked: true };
   }
 
   async verifySignature(

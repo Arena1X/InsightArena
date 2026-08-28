@@ -1,6 +1,7 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
+import type { Request } from 'express';
 import { User } from '../users/entities/user.entity';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -16,6 +17,7 @@ const mockAuthService = () => ({
   verifyChallenge: jest.fn(),
   verifyStellarSignature: jest.fn(),
   rotateRefreshToken: jest.fn(),
+  revokeSession: jest.fn(),
 });
 
 const mockConfigService = () => ({
@@ -74,8 +76,29 @@ describe('AuthController', () => {
       expect(authService.verifyChallenge).toHaveBeenCalledWith(
         dto.stellar_address,
         dto.signed_challenge,
+        null,
       );
       expect(result).toEqual({ access_token: 'signed.jwt.token', user });
+    });
+
+    it('forwards the client IP from the request to the service', async () => {
+      const user = Object.assign(new User(), {
+        id: 'uuid-1',
+        stellar_address: dto.stellar_address,
+      });
+      authService.verifyChallenge.mockResolvedValue({
+        access_token: 'signed.jwt.token',
+        user,
+      });
+
+      const req = { ip: '198.51.100.20' } as unknown as Request;
+      await controller.verifyChallenge(dto, req);
+
+      expect(authService.verifyChallenge).toHaveBeenCalledWith(
+        dto.stellar_address,
+        dto.signed_challenge,
+        '198.51.100.20',
+      );
     });
 
     it('propagates UnauthorizedException from the service (invalid signature)', async () => {
@@ -160,6 +183,22 @@ describe('AuthController', () => {
       expect(result.expires_at).toBeDefined();
       expect(authService.rotateRefreshToken).toHaveBeenCalledWith(
         'raw-refresh-token',
+        null,
+      );
+    });
+
+    it('forwards the client IP from the request to the service', async () => {
+      authService.rotateRefreshToken.mockResolvedValue({
+        access_token: 'new.jwt.token',
+        refresh_token: 'new-refresh-token',
+      });
+
+      const req = { ip: '198.51.100.21' } as unknown as Request;
+      await controller.refreshToken(dto, req);
+
+      expect(authService.rotateRefreshToken).toHaveBeenCalledWith(
+        'raw-refresh-token',
+        '198.51.100.21',
       );
     });
 
@@ -223,6 +262,47 @@ describe('AuthController', () => {
       configService.get.mockReturnValue('3600s');
       const result3600s = await controller.refreshToken(dto);
       expect(result3600s.expires_at).toBeDefined();
+    });
+  });
+
+  describe('revoke', () => {
+    const user = Object.assign(new User(), { id: 'user-1' });
+    const dto = { refresh_token: 'raw-refresh-token' };
+
+    it('revokes the session for the current user and returns { revoked: true }', async () => {
+      authService.revokeSession.mockResolvedValue({ revoked: true });
+
+      const result = await controller.revoke(user, dto);
+
+      expect(result).toEqual({ revoked: true });
+      expect(authService.revokeSession).toHaveBeenCalledWith(
+        'user-1',
+        'raw-refresh-token',
+        null,
+      );
+    });
+
+    it('forwards the client IP from the request to the service', async () => {
+      authService.revokeSession.mockResolvedValue({ revoked: true });
+
+      const req = { ip: '198.51.100.22' } as unknown as Request;
+      await controller.revoke(user, dto, req);
+
+      expect(authService.revokeSession).toHaveBeenCalledWith(
+        'user-1',
+        'raw-refresh-token',
+        '198.51.100.22',
+      );
+    });
+
+    it('propagates UnauthorizedException from the service when the token is not found', async () => {
+      authService.revokeSession.mockRejectedValue(
+        new UnauthorizedException('Refresh token not found'),
+      );
+
+      await expect(controller.revoke(user, dto)).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
   });
 });

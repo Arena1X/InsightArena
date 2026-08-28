@@ -1,4 +1,5 @@
 import {
+  ExecutionContext,
   INestApplication,
   UnauthorizedException,
   ValidationPipe,
@@ -24,8 +25,16 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 const sign = (kp: Keypair, text: string): string =>
   kp.sign(Buffer.from(text, 'utf-8')).toString('hex');
 
+// The real JwtAuthGuard is overridden for these tests; requests never carry
+// a real bearer token. Protected endpoints (e.g. /auth/revoke) still need a
+// `req.user` to resolve `@CurrentUser()`, so this stub attaches one matching
+// the default mocked user id used throughout this file ('e2e-uuid').
 const mockJwtAuthGuard = {
-  canActivate: jest.fn(() => true),
+  canActivate: jest.fn((context: ExecutionContext) => {
+    const req = context.switchToHttp().getRequest();
+    req.user = { id: 'e2e-uuid' };
+    return true;
+  }),
 };
 
 const mockJwtService = {
@@ -298,6 +307,15 @@ describe('Auth E2E — challenge → verify flow', () => {
     expect(mockUserPreferencesRepository.save).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'e2e-uuid' }),
     );
+
+    // A login_success audit event is written for the successful login.
+    expect(mockAuthAuditEventRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'login_success',
+        user_id: 'e2e-uuid',
+        metadata: expect.objectContaining({ outcome: 'success' }),
+      }),
+    );
   });
 
   it('invalid signature → 401', async () => {
@@ -314,6 +332,15 @@ describe('Auth E2E — challenge → verify flow', () => {
       .expect(401);
 
     expect(mockUsersRepository.save).not.toHaveBeenCalled();
+
+    // A login_failure audit event is written, with no user_id resolved.
+    expect(mockAuthAuditEventRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'login_failure',
+        user_id: null,
+        metadata: expect.objectContaining({ outcome: 'failure' }),
+      }),
+    );
   });
 
   it('missing nonce → 401', async () => {
@@ -474,6 +501,15 @@ describe('Auth E2E — challenge → verify flow', () => {
       expect(body.refresh_token).not.toBe(refreshToken);
       expect(body.expires_at).toBeDefined();
 
+      // A refresh_success audit event is recorded for the rotation.
+      expect(mockAuthAuditEventRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'refresh_success',
+          user_id: 'refresh-e2e-uuid',
+          metadata: expect.objectContaining({ outcome: 'success' }),
+        }),
+      );
+
       // The rotated-away token can no longer be used.
       await server
         .post('/auth/refresh')
@@ -521,6 +557,77 @@ describe('Auth E2E — challenge → verify flow', () => {
 
     it('missing refresh_token field → 400', async () => {
       await server.post('/auth/refresh').send({}).expect(400);
+    });
+  });
+
+  describe('revoke session (logout)', () => {
+    /**
+     * mockJwtAuthGuard always attaches `req.user = { id: 'e2e-uuid' }`
+     * (see the guard stub above), so a plain login through the default
+     * mocked user repos — which mints user id 'e2e-uuid' — lines up with
+     * the caller identity `/auth/revoke` will see via `@CurrentUser()`.
+     */
+    const loginAndGetRefreshToken = async (): Promise<string> => {
+      const kp = Keypair.random();
+      const address = kp.publicKey();
+
+      const challengeRes = await server
+        .post('/auth/challenge')
+        .send({ stellar_address: address })
+        .expect(200);
+      const challenge = (challengeRes.body as ChallengeResponse).challenge;
+      const sig = sign(kp, challenge);
+
+      const verifyRes = await server
+        .post('/auth/verify')
+        .send({ stellar_address: address, signed_challenge: sig })
+        .expect(200);
+
+      return (verifyRes.body as VerifyResponse).refresh_token;
+    };
+
+    it('revokes the session and records a revoke_success audit event', async () => {
+      const refreshToken = await loginAndGetRefreshToken();
+
+      const res = await server
+        .post('/auth/revoke')
+        .send({ refresh_token: refreshToken })
+        .expect(200);
+
+      expect(res.body).toEqual({ revoked: true });
+
+      expect(mockAuthAuditEventRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'revoke_success',
+          user_id: 'e2e-uuid',
+          metadata: expect.objectContaining({ outcome: 'success' }),
+        }),
+      );
+
+      // The revoked refresh token can no longer be used to refresh.
+      await server
+        .post('/auth/refresh')
+        .send({ refresh_token: refreshToken })
+        .expect(401);
+    });
+
+    it('unknown refresh token → 401 with a revoke_failure audit event', async () => {
+      await server
+        .post('/auth/revoke')
+        .send({ refresh_token: 'not-a-real-token' })
+        .expect(401);
+
+      expect(mockAuthAuditEventRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'revoke_failure',
+          user_id: 'e2e-uuid',
+          metadata: expect.objectContaining({ outcome: 'failure' }),
+        }),
+      );
+    });
+
+    it('missing refresh_token field → 400', async () => {
+      await server.post('/auth/revoke').send({}).expect(400);
     });
   });
 });
