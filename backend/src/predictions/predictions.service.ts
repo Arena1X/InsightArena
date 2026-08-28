@@ -1,11 +1,4 @@
-import {
-  Injectable,
-  ConflictException,
-  BadRequestException,
-  ForbiddenException,
-  NotFoundException,
-  Logger,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Repository, DataSource, In } from 'typeorm';
@@ -52,6 +45,21 @@ import {
   ClaimAllRewardsResponseDto,
   RewardsSummaryDto,
 } from './dto/rewards-summary.dto';
+import {
+  MarketNotFoundException,
+  MarketClosedException,
+  InvalidOutcomeException,
+  DuplicatePredictionException,
+  PredictionNotFoundException,
+  UnauthorizedPredictionAccessException,
+  PayoutAlreadyClaimedException,
+  MarketNotResolvedException,
+  PredictionNotWonException,
+  NoClaimableRewardsException,
+  BatchSizeExceededException,
+  BatchValidationFailedException,
+  BatchChainSubmissionFailedException,
+} from './exceptions';
 
 const STROOPS_PER_XLM = 10_000_000n;
 
@@ -104,7 +112,7 @@ export class PredictionsService {
     });
 
     if (!market) {
-      throw new NotFoundException(`Market "${dto.market_id}" not found`);
+      throw new MarketNotFoundException(dto.market_id);
     }
 
     if (
@@ -113,7 +121,7 @@ export class PredictionsService {
       market.is_paused ||
       new Date() > market.end_time
     ) {
-      throw new BadRequestException(
+      throw new MarketClosedException(
         market.is_paused
           ? 'Market is paused - predictions are no longer accepted'
           : 'Market is closed - predictions are no longer accepted',
@@ -121,8 +129,9 @@ export class PredictionsService {
     }
 
     if (!market.outcome_options.includes(dto.chosen_outcome)) {
-      throw new BadRequestException(
-        `Invalid outcome "${dto.chosen_outcome}". Valid options: ${market.outcome_options.join(', ')}`,
+      throw new InvalidOutcomeException(
+        dto.chosen_outcome,
+        market.outcome_options,
       );
     }
 
@@ -130,9 +139,7 @@ export class PredictionsService {
       where: { user: { id: user.id }, market: { id: market.id } },
     });
     if (existing) {
-      throw new ConflictException(
-        'You have already submitted a prediction for this market',
-      );
+      throw new DuplicatePredictionException(market.id);
     }
 
     const { tx_hash, realized_price, shares_received } =
@@ -256,9 +263,7 @@ export class PredictionsService {
     const items = dto.predictions;
 
     if (items.length > MAX_BATCH_PREDICTIONS) {
-      throw new BadRequestException(
-        `Batch size exceeds the maximum of ${MAX_BATCH_PREDICTIONS} predictions`,
-      );
+      throw new BatchSizeExceededException(items.length, MAX_BATCH_PREDICTIONS);
     }
 
     // Bulk-load every referenced market exactly once.
@@ -299,11 +304,9 @@ export class PredictionsService {
     });
 
     if (atomic && failures.size > 0) {
-      throw new BadRequestException({
-        message:
-          'Batch submission failed validation - no predictions were submitted',
-        errors: [...failures].map(([index, error]) => ({ index, error })),
-      });
+      throw new BatchValidationFailedException(
+        [...failures].map(([index, error]) => ({ index, error })),
+      );
     }
 
     // On-chain submissions + slippage checks for actionable items only.
@@ -349,11 +352,9 @@ export class PredictionsService {
         failures.set(index, `On-chain submission failed: ${message}`);
 
         if (atomic) {
-          throw new BadRequestException({
-            message:
-              'Batch submission failed on-chain - no predictions were persisted',
-            errors: [...failures].map(([i, error]) => ({ index: i, error })),
-          });
+          throw new BatchChainSubmissionFailedException(
+            [...failures].map(([i, error]) => ({ index: i, error })),
+          );
         }
       }
     }
@@ -597,14 +598,12 @@ export class PredictionsService {
     });
 
     if (!prediction) {
-      throw new NotFoundException(`Prediction "${id}" not found`);
+      throw new PredictionNotFoundException(id);
     }
 
     // Check authorization: only owner can view
     if (prediction.user.id !== userId) {
-      throw new ForbiddenException(
-        'You do not have permission to view this prediction',
-      );
+      throw new UnauthorizedPredictionAccessException(id);
     }
 
     return this.enrichWithStatus(prediction);
@@ -662,7 +661,7 @@ export class PredictionsService {
     });
 
     if (!prediction) {
-      throw new NotFoundException(`Prediction "${predictionId}" not found`);
+      throw new PredictionNotFoundException(predictionId);
     }
 
     prediction.note = dto.note;
@@ -680,20 +679,20 @@ export class PredictionsService {
     });
 
     if (!prediction) {
-      throw new NotFoundException(`Prediction "${predictionId}" not found`);
+      throw new PredictionNotFoundException(predictionId);
     }
 
     if (prediction.payout_claimed) {
-      throw new ConflictException('Payout has already been claimed');
+      throw new PayoutAlreadyClaimedException(predictionId);
     }
 
     const market = prediction.market;
     if (!market.is_resolved) {
-      throw new BadRequestException('Market is not yet resolved');
+      throw new MarketNotResolvedException(market.id);
     }
 
     if (market.resolved_outcome !== prediction.chosen_outcome) {
-      throw new BadRequestException('You did not win this prediction');
+      throw new PredictionNotWonException(predictionId);
     }
 
     const { tx_hash, payout_amount_stroops } =
@@ -768,7 +767,7 @@ export class PredictionsService {
       .map((p) => p.id);
 
     if (claimableIds.length === 0) {
-      throw new BadRequestException('No claimable rewards');
+      throw new NoClaimableRewardsException(user.id);
     }
 
     let claimedStroops = 0n;

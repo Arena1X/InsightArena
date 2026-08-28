@@ -117,8 +117,8 @@ describe('Analytics market history time range (e2e)', () => {
     const fromBinding = historyQb.andWhere.mock.calls.find(
       ([clause]: [string]) => clause.includes('>= :from'),
     )?.[1]?.from as Date;
-    const toBinding = historyQb.andWhere.mock.calls.find(
-      ([clause]: [string]) => clause.includes('<= :to'),
+    const toBinding = historyQb.andWhere.mock.calls.find(([clause]: [string]) =>
+      clause.includes('<= :to'),
     )?.[1]?.to as Date;
 
     const windowDays =

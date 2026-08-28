@@ -105,7 +105,7 @@ describe('OracleAssignmentGuard', () => {
     );
   });
 
-  it('allows a submission from an oracle assigned to the match\'s event', async () => {
+  it("allows a submission from an oracle assigned to the match's event", async () => {
     mockMatchRepository.findOne.mockResolvedValue({
       on_chain_match_id: '123',
       event_id: 'event-a',

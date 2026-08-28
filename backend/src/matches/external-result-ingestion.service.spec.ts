@@ -2,7 +2,11 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Match, MatchDisputeStatus, WinningTeam } from './entities/match.entity';
+import {
+  Match,
+  MatchDisputeStatus,
+  WinningTeam,
+} from './entities/match.entity';
 import {
   ExternalMatchResult,
   ExternalResultStatus,
@@ -135,13 +139,23 @@ describe('ExternalResultIngestionService', () => {
       expect.objectContaining({
         match,
         source_a_name: 'match_submitted_result',
-        source_a_value: { home_score: 0, away_score: 0, winning_team: WinningTeam.DRAW },
+        source_a_value: {
+          home_score: 0,
+          away_score: 0,
+          winning_team: WinningTeam.DRAW,
+        },
         source_b_name: 'external_feed',
-        source_b_value: { home_score: 2, away_score: 1, winning_team: WinningTeam.TEAM_A },
+        source_b_value: {
+          home_score: 2,
+          away_score: 1,
+          winning_team: WinningTeam.TEAM_A,
+        },
       }),
     );
     expect(matchRepository.save).toHaveBeenCalledWith(
-      expect.objectContaining({ dispute_status: MatchDisputeStatus.DISPUTED_SOURCE }),
+      expect.objectContaining({
+        dispute_status: MatchDisputeStatus.DISPUTED_SOURCE,
+      }),
     );
     expect(notificationGenerator.notifyOracleDivergence).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -182,13 +196,23 @@ describe('ExternalResultIngestionService', () => {
       expect.objectContaining({
         match,
         source_a_name: 'queued_external_result',
-        source_a_value: { home_score: 3, away_score: 3, winning_team: WinningTeam.DRAW },
+        source_a_value: {
+          home_score: 3,
+          away_score: 3,
+          winning_team: WinningTeam.DRAW,
+        },
         source_b_name: 'external_feed',
-        source_b_value: { home_score: 2, away_score: 1, winning_team: WinningTeam.TEAM_A },
+        source_b_value: {
+          home_score: 2,
+          away_score: 1,
+          winning_team: WinningTeam.TEAM_A,
+        },
       }),
     );
     expect(matchRepository.save).toHaveBeenCalledWith(
-      expect.objectContaining({ dispute_status: MatchDisputeStatus.DISPUTED_SOURCE }),
+      expect.objectContaining({
+        dispute_status: MatchDisputeStatus.DISPUTED_SOURCE,
+      }),
     );
     expect(notificationGenerator.notifyOracleDivergence).toHaveBeenCalled();
     warning.mockRestore();

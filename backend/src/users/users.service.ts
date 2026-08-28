@@ -123,7 +123,6 @@ export class UsersService {
     return user;
   }
 
-
   async findPublicPredictionsByAddress(
     stellar_address: string,
     dto: ListUserPredictionsDto,

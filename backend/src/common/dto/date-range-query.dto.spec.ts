@@ -67,8 +67,7 @@ describe('DateRangeQueryDto', () => {
     await expectValid(dto);
 
     const { from, to } = dto.resolveRange(new Date('2026-01-02T00:00:00.000Z'));
-    const windowDays =
-      (to.getTime() - from.getTime()) / (24 * 60 * 60 * 1000);
+    const windowDays = (to.getTime() - from.getTime()) / (24 * 60 * 60 * 1000);
 
     expect(windowDays).toBeLessThanOrEqual(MAX_DATE_RANGE_DAYS);
     expect(windowDays).toBeCloseTo(MAX_DATE_RANGE_DAYS, 5);

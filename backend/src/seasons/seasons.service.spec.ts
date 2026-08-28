@@ -51,7 +51,9 @@ describe('SeasonsService', () => {
     distributionLedgerRepository = {
       findOne: jest.fn().mockResolvedValue(null),
       create: jest.fn((value) => value),
-      save: jest.fn().mockImplementation(async (v) => ({ id: 'ledger-1', ...v })),
+      save: jest
+        .fn()
+        .mockImplementation(async (v) => ({ id: 'ledger-1', ...v })),
       update: jest.fn().mockResolvedValue(undefined),
       find: jest.fn().mockResolvedValue([]),
     };
@@ -228,10 +230,7 @@ describe('SeasonsService', () => {
 
       await service.findAllPaginated({ page: 1, limit: 20, status });
 
-      expect(andWhere).toHaveBeenCalledWith(
-        clause,
-        expect.any(Object),
-      );
+      expect(andWhere).toHaveBeenCalledWith(clause, expect.any(Object));
     });
 
     it('sorts seasons by start date descending', async () => {

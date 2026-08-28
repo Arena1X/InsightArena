@@ -109,8 +109,11 @@ export function checkMigrationTimestamps(options: {
   mode?: 'all' | 'incremental';
   baseRef?: string;
 }): void {
-  const { migrationsDir, mode = 'incremental', baseRef = 'origin/main' } =
-    options;
+  const {
+    migrationsDir,
+    mode = 'incremental',
+    baseRef = 'origin/main',
+  } = options;
   const allFiles = listMigrationFiles(migrationsDir);
 
   if (mode === 'all') {

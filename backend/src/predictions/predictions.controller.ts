@@ -11,6 +11,7 @@ import {
   UseGuards,
   ParseUUIDPipe,
   Res,
+  UseFilters,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { BanGuard } from '../common/guards/ban.guard';
@@ -48,10 +49,12 @@ import {
   RewardsSummaryDto,
 } from './dto/rewards-summary.dto';
 import { PnlQueryDto, PnlResponseDto } from './dto/pnl-query.dto';
+import { PredictionsExceptionFilter } from './filters/predictions-exception.filter';
 
 @ApiTags('Predictions')
 @ApiBearerAuth()
 @Controller('predictions')
+@UseFilters(PredictionsExceptionFilter)
 export class PredictionsController {
   constructor(private readonly predictionsService: PredictionsService) {}
 
