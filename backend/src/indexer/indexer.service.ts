@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { LessThan, Repository } from 'typeorm';
+import { LessThan, MoreThan, Repository } from 'typeorm';
 import {
   ContractEvent,
   ContractEventStatus,
@@ -10,6 +10,7 @@ import {
 import { FeeHistory } from './entities/fee-history.entity';
 import { IndexerCheckpoint } from './entities/indexer-checkpoint.entity';
 import { ChainSyncCheckpoint } from './entities/chain-sync-checkpoint.entity';
+import { ReorgEvent } from './entities/reorg-event.entity';
 import { IndexerMetricsDto } from './dto/indexer-metrics.dto';
 import { Match, WinningTeam } from '../matches/entities/match.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
@@ -29,6 +30,11 @@ const CHECKPOINT_LEDGER_KEY_LATEST = 'indexer:latest_contract_ledger';
 const MAX_RETRIES = 5;
 const DLQ_THRESHOLD = 5;
 const BATCH_SIZE = 100;
+// How many ledgers to roll back past the last-known-good ledger when a reorg
+// is detected. Kept configurable via INDEXER_REORG_ROLLBACK_DEPTH (shared
+// with ReconciliationService's own reorg guard) since the "right" depth
+// depends on the target network's finality characteristics.
+const DEFAULT_REORG_ROLLBACK_DEPTH = 10;
 /**
  * Version of the event decoder's output shape. Bumped when a field is
  * renamed or removed (never for a purely additive change - new fields are
@@ -67,6 +73,9 @@ export class IndexerService implements OnModuleInit {
 
     @InjectRepository(ChainSyncCheckpoint)
     private readonly chainSyncCheckpointRepository: Repository<ChainSyncCheckpoint>,
+
+    @InjectRepository(ReorgEvent)
+    private readonly reorgEventRepository: Repository<ReorgEvent>,
 
     @InjectRepository(CreatorEvent)
     private readonly creatorEventRepository: Repository<CreatorEvent>,
@@ -172,6 +181,15 @@ export class IndexerService implements OnModuleInit {
     const batchStart = Date.now();
 
     try {
+      const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
+      if (rpcUrl) {
+        // Detect a chain reorg before fetching new events, so a poll that
+        // starts right after a fork immediately rewinds to the fork point
+        // and re-indexes from there instead of building on top of
+        // now-orphaned ledgers.
+        await this.detectAndHandleReorg(contractId, rpcUrl);
+      }
+
       const lastLedger = await this.getLastProcessedLedger();
       const fromLedger = Math.max(lastLedger + 1, 1);
 
@@ -191,6 +209,13 @@ export class IndexerService implements OnModuleInit {
           if (activeContractId) {
             await this.reconciliationService.advanceCheckpoint(
               activeContractId,
+              latestLedger,
+            );
+          }
+          if (rpcUrl) {
+            await this.persistIndexedLedgerHash(
+              contractId,
+              rpcUrl,
               latestLedger,
             );
           }
@@ -235,6 +260,9 @@ export class IndexerService implements OnModuleInit {
           activeContractId,
           finalLedger,
         );
+      }
+      if (rpcUrl) {
+        await this.persistIndexedLedgerHash(contractId, rpcUrl, finalLedger);
       }
 
       const elapsed = Date.now() - batchStart;
@@ -1375,6 +1403,161 @@ export class IndexerService implements OnModuleInit {
 
   async triggerManualSync(): Promise<void> {
     await this.pollContractEvents();
+  }
+
+  /**
+   * Compares the hash the chain currently reports for our last-indexed
+   * ledger against the hash we stored for that same ledger number. A
+   * mismatch means the ledger we built on has been orphaned by a reorg, so
+   * we roll back the affected ContractEvent rows and both checkpoint
+   * systems to a fork point a configurable number of ledgers behind the
+   * divergence, and record a ReorgEvent audit row capturing the depth
+   * (previous_ledger - fork_ledger) and affected range. The caller resumes
+   * polling from the rewound checkpoint immediately afterwards, so the
+   * fork-to-head range gets re-indexed from the canonical chain in the same
+   * cycle.
+   *
+   * Returns null (and makes no changes) when there is nothing to compare
+   * yet, the RPC hash lookup fails, or the stored hash still matches.
+   */
+  private async detectAndHandleReorg(
+    contractId: string,
+    rpcUrl: string,
+  ): Promise<ReorgEvent | null> {
+    const chainSync = await this.chainSyncCheckpointRepository.findOne({
+      where: { contract_id: contractId },
+    });
+    if (!chainSync) return null;
+
+    const previousLedger = Number(chainSync.last_indexed_ledger);
+    if (previousLedger <= 0 || !chainSync.last_indexed_ledger_hash) {
+      return null;
+    }
+
+    const currentHash = await this.fetchLedgerHash(rpcUrl, previousLedger);
+    if (currentHash === null) return null;
+    if (currentHash === chainSync.last_indexed_ledger_hash) return null;
+
+    const rollbackDepth =
+      this.configService.get<number>('INDEXER_REORG_ROLLBACK_DEPTH') ??
+      DEFAULT_REORG_ROLLBACK_DEPTH;
+    const forkLedger = Math.max(0, previousLedger - rollbackDepth);
+
+    const deleteResult = await this.contractEventRepository.delete({
+      ledger: MoreThan(forkLedger),
+    });
+    const rolledBackEventCount = deleteResult.affected ?? 0;
+
+    const previousHash = chainSync.last_indexed_ledger_hash;
+
+    chainSync.last_indexed_ledger = forkLedger;
+    chainSync.last_indexed_ledger_hash =
+      (await this.fetchLedgerHash(rpcUrl, forkLedger)) ?? null;
+    await this.chainSyncCheckpointRepository.save(chainSync);
+
+    // Rewind the working cursor too, so the caller's very next
+    // getLastProcessedLedger() call re-fetches from the fork point instead
+    // of continuing to build on the orphaned ledgers.
+    await this.saveCheckpoint(CHECKPOINT_LEDGER_KEY, forkLedger);
+
+    const reorgEvent = this.reorgEventRepository.create({
+      contract_id: contractId,
+      fork_ledger: forkLedger,
+      previous_ledger: previousLedger,
+      previous_hash: previousHash,
+      new_hash: currentHash,
+      rolled_back_event_count: rolledBackEventCount,
+    });
+    const saved = await this.reorgEventRepository.save(reorgEvent);
+
+    this.logger.error(
+      `Chain reorg detected for contract ${contractId}: rolled back ${rolledBackEventCount} event(s) from ledger ${previousLedger} to fork point ${forkLedger}`,
+    );
+
+    return saved;
+  }
+
+  /**
+   * Records the ledger hash for a ledger we just finished indexing, so the
+   * next poll's detectAndHandleReorg has a baseline to compare against.
+   * Creates the chain-sync checkpoint row on first use.
+   */
+  private async persistIndexedLedgerHash(
+    contractId: string,
+    rpcUrl: string,
+    ledger: number,
+  ): Promise<void> {
+    if (ledger <= 0) return;
+
+    const hash = await this.fetchLedgerHash(rpcUrl, ledger);
+    if (hash === null) return;
+
+    const chainSync = await this.getOrCreateChainSyncCheckpoint(contractId);
+    if (ledger >= Number(chainSync.last_indexed_ledger)) {
+      chainSync.last_indexed_ledger = ledger;
+    }
+    chainSync.last_indexed_ledger_hash = hash;
+    await this.chainSyncCheckpointRepository.save(chainSync);
+  }
+
+  private async getOrCreateChainSyncCheckpoint(
+    contractId: string,
+  ): Promise<ChainSyncCheckpoint> {
+    const existing = await this.chainSyncCheckpointRepository.findOne({
+      where: { contract_id: contractId },
+    });
+    if (existing) return existing;
+
+    const created = this.chainSyncCheckpointRepository.create({
+      contract_id: contractId,
+      last_indexed_ledger: 0,
+      last_indexed_ledger_hash: null,
+      chain_head_ledger: 0,
+      last_reconciled_from: 0,
+      last_reconciled_to: 0,
+      last_reconciled_at: null,
+      last_backfill_count: 0,
+    });
+    return this.chainSyncCheckpointRepository.save(created);
+  }
+
+  private async fetchLedgerHash(
+    rpcUrl: string,
+    ledger: number,
+  ): Promise<string | null> {
+    try {
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'insightarena-indexer-ledger-hash',
+          method: 'getLedgers',
+          params: {
+            startLedger: ledger,
+            limit: 1,
+          },
+        }),
+      });
+
+      if (!response.ok) return null;
+
+      const body = (await response.json()) as {
+        result?: { ledgers?: unknown[] };
+      };
+
+      const ledgers = body.result?.ledgers;
+      if (!Array.isArray(ledgers) || ledgers.length === 0) return null;
+
+      const first = ledgers[0];
+      if (!first || typeof first !== 'object') return null;
+
+      const hash = (first as Record<string, unknown>).hash;
+      return typeof hash === 'string' ? hash : null;
+    } catch {
+      this.logger.error(`Failed to fetch ledger hash for ledger ${ledger}`);
+      return null;
+    }
   }
 
   getEventsProcessedPerMinute(): number {
