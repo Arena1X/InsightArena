@@ -7,13 +7,18 @@ import {
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
-import { IndexerService, EVENT_DECODER_VERSION } from './indexer.service';
+import {
+  IndexerService,
+  EVENT_DECODER_VERSION,
+  CHECKPOINT_LEDGER_KEY,
+} from './indexer.service';
 import {
   ContractEvent,
   ContractEventStatus,
 } from './entities/contract-event.entity';
 import { FeeHistory } from './entities/fee-history.entity';
 import { IndexerCheckpoint } from './entities/indexer-checkpoint.entity';
+import { ChainSyncCheckpoint } from './entities/chain-sync-checkpoint.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
 import { CreatorEventLeaderboardEntry } from '../matches/entities/creator-event-leaderboard-entry.entity';
 import { CreatorEventPayout } from '../matches/entities/creator-event-payout.entity';
@@ -52,6 +57,9 @@ describe('IndexerService', () => {
   let checkpointRepository: jest.Mocked<
     Pick<Repository<IndexerCheckpoint>, 'findOne' | 'save' | 'upsert'>
   >;
+  let chainSyncCheckpointRepository: jest.Mocked<
+    Pick<Repository<ChainSyncCheckpoint>, 'findOne' | 'save'>
+  >;
   let creatorEventRepository: jest.Mocked<
     Pick<
       Repository<CreatorEvent>,
@@ -88,6 +96,11 @@ describe('IndexerService', () => {
       findOne: jest.fn(),
       save: jest.fn(),
       upsert: jest.fn(),
+    };
+
+    chainSyncCheckpointRepository = {
+      findOne: jest.fn(),
+      save: jest.fn(),
     };
 
     creatorEventRepository = {
@@ -144,6 +157,10 @@ describe('IndexerService', () => {
         {
           provide: getRepositoryToken(IndexerCheckpoint),
           useValue: checkpointRepository,
+        },
+        {
+          provide: getRepositoryToken(ChainSyncCheckpoint),
+          useValue: chainSyncCheckpointRepository,
         },
         {
           provide: getRepositoryToken(CreatorEvent),
@@ -218,6 +235,202 @@ describe('IndexerService', () => {
         expect.objectContaining({
           key: 'indexer:last_processed_ledger',
           value: 99,
+        }),
+        ['key'],
+      );
+    });
+
+    it('rewinds the persisted chain-sync checkpoint so a restart does not resurrect the old position', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+      checkpointRepository.upsert.mockResolvedValue({} as InsertResult);
+      const chainSync = {
+        contract_id: 'CCONTRACT',
+        last_indexed_ledger: 500,
+        last_indexed_ledger_hash: 'hash-500',
+      } as ChainSyncCheckpoint;
+      chainSyncCheckpointRepository.findOne.mockResolvedValue(chainSync);
+
+      await service.reindex(50);
+
+      expect(chainSync.last_indexed_ledger).toBe(49);
+      expect(chainSync.last_indexed_ledger_hash).toBeNull();
+      expect(chainSyncCheckpointRepository.save).toHaveBeenCalledWith(
+        chainSync,
+      );
+    });
+  });
+
+  describe('startup checkpoint resume', () => {
+    it('resumes from the persisted chain-sync checkpoint instead of genesis when the working cursor is missing', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      // No key/value checkpoint row exists yet (missing after restart).
+      checkpointRepository.findOne.mockResolvedValue(null);
+      chainSyncCheckpointRepository.findOne.mockResolvedValue({
+        contract_id: 'CCONTRACT',
+        last_indexed_ledger: 1234,
+      } as ChainSyncCheckpoint);
+      checkpointRepository.upsert.mockResolvedValue({} as InsertResult);
+
+      await (service as any).onModuleInit();
+
+      // Adopts the persisted ledger (1234) rather than starting at genesis.
+      expect(checkpointRepository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 1234,
+        }),
+        ['key'],
+      );
+    });
+
+    it('resumes from the persisted chain-sync checkpoint when the working cursor is behind', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      checkpointRepository.findOne.mockResolvedValue({
+        key: CHECKPOINT_LEDGER_KEY,
+        value: 10,
+      } as IndexerCheckpoint);
+      chainSyncCheckpointRepository.findOne.mockResolvedValue({
+        contract_id: 'CCONTRACT',
+        last_indexed_ledger: 999,
+      } as ChainSyncCheckpoint);
+      checkpointRepository.upsert.mockResolvedValue({} as InsertResult);
+
+      await (service as any).onModuleInit();
+
+      expect(checkpointRepository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 999,
+        }),
+        ['key'],
+      );
+    });
+
+    it('never regresses a working cursor that is already ahead of the persisted checkpoint', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      checkpointRepository.findOne.mockResolvedValue({
+        key: CHECKPOINT_LEDGER_KEY,
+        value: 5000,
+      } as IndexerCheckpoint);
+      chainSyncCheckpointRepository.findOne.mockResolvedValue({
+        contract_id: 'CCONTRACT',
+        last_indexed_ledger: 1234,
+      } as ChainSyncCheckpoint);
+
+      await (service as any).onModuleInit();
+
+      expect(checkpointRepository.upsert).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 1234,
+        }),
+        ['key'],
+      );
+    });
+  });
+
+  describe('pollContractEvents checkpoint advance', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('advances the checkpoint to the last processed ledger, not the chain head', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_RPC_URL') return 'https://rpc.example';
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      // Working cursor sits at ledger 100 (bigint column read back as string).
+      checkpointRepository.findOne.mockResolvedValue({
+        key: CHECKPOINT_LEDGER_KEY,
+        value: '100', // Postgres returns bigint as a string
+      } as unknown as IndexerCheckpoint);
+
+      // Chain head is at 10_000, but this batch only returns one event at 101.
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          result: {
+            events: [
+              {
+                id: 'evt-1',
+                ledger: 101,
+                log_index: 0,
+                topic: [{ symbol: 'event' }, { symbol: 'created' }],
+                value: { event_id: { u64: '1' } },
+              },
+            ],
+            latestLedger: 10000,
+          },
+        }),
+      } as unknown as Response);
+
+      // No need to exercise the full handler chain for this test.
+      jest
+        .spyOn(service as any, 'storeAndProcessEvent')
+        .mockResolvedValue(undefined);
+
+      await service.pollContractEvents();
+
+      // The checkpoint must land on the processed ledger (101), never jump to
+      // the chain head (10_000) and skip events 102..10_000.
+      expect(checkpointRepository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 101,
+        }),
+        ['key'],
+      );
+      expect(checkpointRepository.upsert).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 10000,
+        }),
+        ['key'],
+      );
+    });
+
+    it('still advances the checkpoint to the chain head when a poll returns no events', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_RPC_URL') return 'https://rpc.example';
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      checkpointRepository.findOne.mockResolvedValue({
+        key: CHECKPOINT_LEDGER_KEY,
+        value: 100,
+      } as IndexerCheckpoint);
+
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          result: { events: [], latestLedger: 5000 },
+        }),
+      } as unknown as Response);
+
+      await service.pollContractEvents();
+
+      expect(checkpointRepository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 5000,
         }),
         ['key'],
       );

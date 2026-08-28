@@ -9,6 +9,7 @@ import {
 } from './entities/contract-event.entity';
 import { FeeHistory } from './entities/fee-history.entity';
 import { IndexerCheckpoint } from './entities/indexer-checkpoint.entity';
+import { ChainSyncCheckpoint } from './entities/chain-sync-checkpoint.entity';
 import { IndexerMetricsDto } from './dto/indexer-metrics.dto';
 import { Match, WinningTeam } from '../matches/entities/match.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
@@ -64,6 +65,9 @@ export class IndexerService implements OnModuleInit {
     @InjectRepository(IndexerCheckpoint)
     private readonly checkpointRepository: Repository<IndexerCheckpoint>,
 
+    @InjectRepository(ChainSyncCheckpoint)
+    private readonly chainSyncCheckpointRepository: Repository<ChainSyncCheckpoint>,
+
     @InjectRepository(CreatorEvent)
     private readonly creatorEventRepository: Repository<CreatorEvent>,
 
@@ -89,6 +93,44 @@ export class IndexerService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     await this.ensureCheckpoints();
+    await this.resumeFromPersistedCheckpoint();
+  }
+
+  /**
+   * Resumes the indexer from the persisted chain-sync checkpoint ledger
+   * (chain_sync_checkpoints, keyed by contract_id) instead of defaulting to
+   * genesis.
+   *
+   * The key/value checkpoint (indexer_checkpoints) is used as the working
+   * cursor during polls, but it can be missing or stale after a restart (for
+   * example when its row was wiped or the table was recreated). The
+   * chain-sync checkpoint table is created by a dedicated migration and is
+   * treated as the durable source of truth, so if it is ahead of the working
+   * cursor we adopt it. The cursor is never moved backwards here.
+   */
+  private async resumeFromPersistedCheckpoint(): Promise<void> {
+    const contractId = this.configService.get<string>('SOROBAN_CONTRACT_ID');
+    if (!contractId || contractId === 'your-contract-id-here') return;
+
+    const chainSync = await this.chainSyncCheckpointRepository.findOne({
+      where: { contract_id: contractId },
+    });
+    if (!chainSync) return;
+
+    const persistedLedger = Number(chainSync.last_indexed_ledger);
+    if (!Number.isFinite(persistedLedger) || persistedLedger <= 0) return;
+
+    const current = await this.checkpointRepository.findOne({
+      where: { key: CHECKPOINT_LEDGER_KEY },
+    });
+    const currentLedger = Number(current?.value ?? 0);
+
+    if (persistedLedger > currentLedger) {
+      await this.saveCheckpoint(CHECKPOINT_LEDGER_KEY, persistedLedger);
+      this.logger.log(
+        `Indexer resumed from persisted checkpoint ledger ${persistedLedger} (was ${currentLedger})`,
+      );
+    }
   }
 
   private async ensureCheckpoints(): Promise<void> {
@@ -176,7 +218,13 @@ export class IndexerService implements OnModuleInit {
         }
       }
 
-      const finalLedger = Math.max(maxProcessedLedger, latestLedger);
+      // Advance the checkpoint only to the highest ledger that was actually
+      // processed in this batch. `latestLedger` is the chain head at query
+      // time and can be far ahead of the events this batch returned (e.g.
+      // when the RPC result was truncated by the limit), so advancing to it
+      // would skip any events between the last processed ledger and the head.
+      // The next poll resumes at finalLedger + 1 and keeps going from there.
+      const finalLedger = maxProcessedLedger;
       await this.saveCheckpoint(CHECKPOINT_LEDGER_KEY, finalLedger);
 
       const activeContractId = this.configService.get<string>(
@@ -1307,10 +1355,22 @@ export class IndexerService implements OnModuleInit {
 
   async reindex(fromLedger: number): Promise<void> {
     this.logger.log(`Reindex triggered from ledger ${fromLedger}`);
-    await this.saveCheckpoint(
-      CHECKPOINT_LEDGER_KEY,
-      Math.max(0, fromLedger - 1),
-    );
+    const rewindTo = Math.max(0, fromLedger - 1);
+    await this.saveCheckpoint(CHECKPOINT_LEDGER_KEY, rewindTo);
+
+    // Rewind the persisted chain-sync checkpoint too, so a subsequent restart
+    // (which resumes from it) does not resurrect the pre-reindex position.
+    const contractId = this.configService.get<string>('SOROBAN_CONTRACT_ID');
+    if (contractId && contractId !== 'your-contract-id-here') {
+      const chainSync = await this.chainSyncCheckpointRepository.findOne({
+        where: { contract_id: contractId },
+      });
+      if (chainSync && Number(chainSync.last_indexed_ledger) > rewindTo) {
+        chainSync.last_indexed_ledger = rewindTo;
+        chainSync.last_indexed_ledger_hash = null;
+        await this.chainSyncCheckpointRepository.save(chainSync);
+      }
+    }
   }
 
   async triggerManualSync(): Promise<void> {
@@ -1540,7 +1600,11 @@ export class IndexerService implements OnModuleInit {
 
   private async getCheckpointValue(key: string): Promise<number> {
     const cp = await this.checkpointRepository.findOne({ where: { key } });
-    return cp ? cp.value : 0;
+    if (!cp) return 0;
+    // bigint columns are returned as strings by the Postgres driver; coerce
+    // so arithmetic like `lastLedger + 1` is numeric, not string concat.
+    const parsed = Number(cp.value);
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 
   private async saveCheckpoint(key: string, value: number): Promise<void> {
