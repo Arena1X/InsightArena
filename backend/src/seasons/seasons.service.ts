@@ -556,7 +556,10 @@ export class SeasonsService {
     pool: bigint,
   ): Promise<{ matches: boolean; totalDistributed: string }> {
     const succeeded = await this.distributionLedgerRepository.find({
-      where: { season: { id: seasonId }, status: DistributionLedgerStatus.SUCCEEDED },
+      where: {
+        season: { id: seasonId },
+        status: DistributionLedgerStatus.SUCCEEDED,
+      },
     });
     const totalDistributed = succeeded.reduce(
       (sum, entry) => sum + BigInt(entry.amount_stroops),

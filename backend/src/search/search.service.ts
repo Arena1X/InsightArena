@@ -379,7 +379,11 @@ export class SearchService {
   ): Promise<FuzzySearchItemDto[]> {
     const rows = await this.competitionsRepository
       .createQueryBuilder('competition')
-      .select(['competition.id', 'competition.title', 'competition.description'])
+      .select([
+        'competition.id',
+        'competition.title',
+        'competition.description',
+      ])
       .addSelect(
         `greatest(similarity(competition.title, :query), similarity(coalesce(competition.description, ''), :query))`,
         'sim',

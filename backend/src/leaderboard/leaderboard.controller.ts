@@ -132,7 +132,9 @@ export class LeaderboardController {
   })
   async getHistory(
     @Query() query: LeaderboardHistoryQueryDto,
-  ): Promise<PaginatedLeaderboardHistoryResponse | PaginatedAddressHistoryResponse> {
+  ): Promise<
+    PaginatedLeaderboardHistoryResponse | PaginatedAddressHistoryResponse
+  > {
     if (query.address) {
       return this.leaderboardService.getHistoryForAddress(
         query.address,

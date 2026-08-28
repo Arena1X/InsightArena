@@ -1,7 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { BadRequestException } from '@nestjs/common';
+import { ConflictException } from '@nestjs/common';
+import {
+  BatchSizeExceededException,
+  BatchValidationFailedException,
+  BatchChainSubmissionFailedException,
+} from './exceptions';
 import { ObjectLiteral } from 'typeorm';
 import { PredictionsService } from './predictions.service';
 import { Prediction } from './entities/prediction.entity';
@@ -241,7 +246,7 @@ describe('PredictionsService - submitBatch', () => {
         },
         user,
       ),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(BatchValidationFailedException);
 
     // Nothing touched the chain and nothing was persisted.
     expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
@@ -343,8 +348,8 @@ describe('PredictionsService - submitBatch', () => {
       .catch((err) => err);
 
     // Atomic mode -> whole slip rejected with the duplicate reason.
-    expect(result).toBeInstanceOf(BadRequestException);
-    expect(result.response.errors[0].error).toBe(
+    expect(result).toBeInstanceOf(BatchValidationFailedException);
+    expect(result.response.error.errors[0].error).toBe(
       'You have already submitted a prediction for this market',
     );
     expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
@@ -408,7 +413,7 @@ describe('PredictionsService - submitBatch', () => {
         },
         user,
       ),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(BatchChainSubmissionFailedException);
 
     // First chain call succeeded but nothing may be persisted.
     expect(savedEntities).toHaveLength(0);
@@ -424,7 +429,7 @@ describe('PredictionsService - submitBatch', () => {
 
     await expect(
       service.submitBatch({ atomic: true, predictions: items }, user),
-    ).rejects.toThrow(BadRequestException);
+    ).rejects.toThrow(BatchSizeExceededException);
 
     expect(mockMarketsRepo.find).not.toHaveBeenCalled();
   });

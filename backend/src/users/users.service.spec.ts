@@ -170,7 +170,10 @@ describe('UsersService', () => {
 
       expect(result).toEqual(mockUser);
       expect(findOneMock).toHaveBeenCalledWith({
-        where: { stellar_address: mockUser.stellar_address, deleted_at: expect.anything() },
+        where: {
+          stellar_address: mockUser.stellar_address,
+          deleted_at: expect.anything(),
+        },
       });
     });
 
@@ -185,7 +188,9 @@ describe('UsersService', () => {
 
   describe('findAll', () => {
     it('should exclude soft-deleted users', async () => {
-      const findMock = jest.spyOn(repository, 'find').mockResolvedValue([mockUser]);
+      const findMock = jest
+        .spyOn(repository, 'find')
+        .mockResolvedValue([mockUser]);
       const result = await service.findAll();
       expect(result).toEqual([mockUser]);
       expect(findMock).toHaveBeenCalledWith({
@@ -193,7 +198,6 @@ describe('UsersService', () => {
       });
     });
   });
-
 
   describe('findUserCompetitions', () => {
     it('should return paginated user competitions', async () => {
@@ -598,8 +602,15 @@ describe('UsersService', () => {
       jest
         .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria?.where?.id === mockUser.id || criteria?.id === mockUser.id) return mockUser;
-          if (criteria?.where?.stellar_address === mockUser.stellar_address || criteria?.stellar_address === mockUser.stellar_address)
+          if (
+            criteria?.where?.id === mockUser.id ||
+            criteria?.id === mockUser.id
+          )
+            return mockUser;
+          if (
+            criteria?.where?.stellar_address === mockUser.stellar_address ||
+            criteria?.stellar_address === mockUser.stellar_address
+          )
             return mockUser;
           return null;
         });
@@ -618,8 +629,15 @@ describe('UsersService', () => {
       jest
         .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria?.where?.id === mockUser.id || criteria?.id === mockUser.id) return mockUser;
-          if (criteria?.where?.stellar_address === mockUserB.stellar_address || criteria?.stellar_address === mockUserB.stellar_address)
+          if (
+            criteria?.where?.id === mockUser.id ||
+            criteria?.id === mockUser.id
+          )
+            return mockUser;
+          if (
+            criteria?.where?.stellar_address === mockUserB.stellar_address ||
+            criteria?.stellar_address === mockUserB.stellar_address
+          )
             return mockUserB;
           return null;
         });
@@ -650,7 +668,10 @@ describe('UsersService', () => {
       jest
         .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria?.where?.stellar_address === mockUser.stellar_address || criteria?.stellar_address === mockUser.stellar_address)
+          if (
+            criteria?.where?.stellar_address === mockUser.stellar_address ||
+            criteria?.stellar_address === mockUser.stellar_address
+          )
             return mockUser;
           return null;
         });
@@ -690,7 +711,10 @@ describe('UsersService', () => {
       jest
         .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
-          if (criteria?.where?.stellar_address === mockUser.stellar_address || criteria?.stellar_address === mockUser.stellar_address)
+          if (
+            criteria?.where?.stellar_address === mockUser.stellar_address ||
+            criteria?.stellar_address === mockUser.stellar_address
+          )
             return mockUser;
           return null;
         });

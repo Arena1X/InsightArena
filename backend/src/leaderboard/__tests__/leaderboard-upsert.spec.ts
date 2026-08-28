@@ -30,11 +30,23 @@ describe('LeaderboardService upsert', () => {
         { provide: getRepositoryToken(LeaderboardHistory), useValue: {} },
         { provide: getRepositoryToken(LeaderboardSnapshot), useValue: {} },
         { provide: getRepositoryToken(Prediction), useValue: {} },
-        { provide: UsersService, useValue: { findAll: jest.fn().mockResolvedValue([]) } },
+        {
+          provide: UsersService,
+          useValue: { findAll: jest.fn().mockResolvedValue([]) },
+        },
         { provide: SeasonsService, useValue: { findActive: jest.fn() } },
-        { provide: DataSource, useValue: { transaction: jest.fn((fn: any) => fn(mockManager)) } },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(30) } },
-        { provide: CACHE_MANAGER, useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() } },
+        {
+          provide: DataSource,
+          useValue: { transaction: jest.fn((fn: any) => fn(mockManager)) },
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(30) },
+        },
+        {
+          provide: CACHE_MANAGER,
+          useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
+        },
       ],
     }).compile();
 
@@ -42,7 +54,9 @@ describe('LeaderboardService upsert', () => {
   });
 
   it('handles unique-violation gracefully as an update', async () => {
-    const uniqueError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    const uniqueError = Object.assign(new Error('duplicate key'), {
+      code: '23505',
+    });
     mockManager.create.mockReturnValue({ user_id: 'u1' });
     mockManager.save.mockRejectedValueOnce(uniqueError);
     mockManager.update.mockResolvedValue(undefined);

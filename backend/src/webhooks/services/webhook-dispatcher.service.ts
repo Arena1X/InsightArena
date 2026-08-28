@@ -176,9 +176,7 @@ export class WebhookDispatcherService {
     timestamp?: string,
   ): string {
     const payloadStr = JSON.stringify(payload);
-    const signedPayload = timestamp
-      ? `${timestamp}.${payloadStr}`
-      : payloadStr;
+    const signedPayload = timestamp ? `${timestamp}.${payloadStr}` : payloadStr;
     return crypto
       .createHmac('sha256', secretKey)
       .update(signedPayload)

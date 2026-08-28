@@ -197,7 +197,9 @@ describe('IdempotencyInterceptor', () => {
       });
 
       const throwingHandler: CallHandler = {
-        handle: jest.fn(() => throwError(() => new Error('downstream failure'))),
+        handle: jest.fn(() =>
+          throwError(() => new Error('downstream failure')),
+        ),
       };
 
       const ctx = makeContext({ idempotencyKey: 'idempotency-key-abc' });
@@ -424,9 +426,9 @@ describe('IdempotencyInterceptor', () => {
         body: { amount: 100 }, // body differs from the stored hash
       });
 
-      await expect(
-        interceptor.intercept(ctx, makeHandler()),
-      ).rejects.toThrow(UnprocessableEntityException);
+      await expect(interceptor.intercept(ctx, makeHandler())).rejects.toThrow(
+        UnprocessableEntityException,
+      );
     });
   });
 
@@ -453,9 +455,9 @@ describe('IdempotencyInterceptor', () => {
         body: { amount: 100 },
       });
 
-      await expect(
-        interceptor.intercept(ctx, makeHandler()),
-      ).rejects.toThrow(ConflictException);
+      await expect(interceptor.intercept(ctx, makeHandler())).rejects.toThrow(
+        ConflictException,
+      );
     });
   });
 });

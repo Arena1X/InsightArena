@@ -86,11 +86,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     // Fold the route pattern into the stored key so the DB unique constraint on
     // (key, userId) effectively enforces uniqueness across (userId, route, clientKey)
     // without requiring a schema change.
-    const storedKey = this.buildStoredKey(
-      request.method,
-      routePattern,
-      rawKey,
-    );
+    const storedKey = this.buildStoredKey(request.method, routePattern, rawKey);
 
     // sha256 of method+originalUrl+body — detects same-key/different-body reuse.
     // Use originalUrl (with actual IDs) for the hash so two requests to

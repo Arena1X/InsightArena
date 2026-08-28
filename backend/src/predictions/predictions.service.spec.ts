@@ -2,12 +2,22 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import {
-  BadRequestException,
   ConflictException,
-  ForbiddenException,
   NotFoundException,
   HttpStatus,
 } from '@nestjs/common';
+import {
+  MarketNotFoundException,
+  MarketClosedException,
+  InvalidOutcomeException,
+  DuplicatePredictionException,
+  PredictionNotFoundException,
+  UnauthorizedPredictionAccessException,
+  PayoutAlreadyClaimedException,
+  MarketNotResolvedException,
+  PredictionNotWonException,
+  NoClaimableRewardsException,
+} from './exceptions';
 import { Repository, ObjectLiteral } from 'typeorm';
 import { PredictionsService } from './predictions.service';
 import { Prediction } from './entities/prediction.entity';
@@ -237,7 +247,7 @@ describe('PredictionsService', () => {
       );
     });
 
-    it('throws NotFoundException when market does not exist', async () => {
+    it('throws MarketNotFoundException when market does not exist', async () => {
       mockMarketsRepo.findOne.mockResolvedValue(null);
 
       await expect(
@@ -249,12 +259,12 @@ describe('PredictionsService', () => {
           },
           makeUser(),
         ),
-      ).rejects.toThrow(NotFoundException);
+      ).rejects.toThrow(MarketNotFoundException);
       expect(submitPrediction).not.toHaveBeenCalled();
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws BadRequestException when market is resolved', async () => {
+    it('throws MarketClosedException when market is resolved', async () => {
       mockMarketsRepo.findOne.mockResolvedValue(
         makeMarket({ is_resolved: true }),
       );
@@ -268,12 +278,12 @@ describe('PredictionsService', () => {
           },
           makeUser(),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(MarketClosedException);
       expect(submitPrediction).not.toHaveBeenCalled();
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws BadRequestException when market is cancelled', async () => {
+    it('throws MarketClosedException when market is cancelled', async () => {
       mockMarketsRepo.findOne.mockResolvedValue(
         makeMarket({ is_cancelled: true }),
       );
@@ -287,12 +297,12 @@ describe('PredictionsService', () => {
           },
           makeUser(),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(MarketClosedException);
       expect(submitPrediction).not.toHaveBeenCalled();
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws BadRequestException when end_time has passed', async () => {
+    it('throws MarketClosedException when end_time has passed', async () => {
       mockMarketsRepo.findOne.mockResolvedValue(
         makeMarket({ end_time: new Date(Date.now() - 1000) }),
       );
@@ -306,12 +316,12 @@ describe('PredictionsService', () => {
           },
           makeUser(),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(MarketClosedException);
       expect(submitPrediction).not.toHaveBeenCalled();
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws BadRequestException for invalid outcome', async () => {
+    it('throws InvalidOutcomeException for invalid outcome', async () => {
       mockMarketsRepo.findOne.mockResolvedValue(makeMarket());
 
       await expect(
@@ -323,12 +333,12 @@ describe('PredictionsService', () => {
           },
           makeUser(),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(InvalidOutcomeException);
       expect(submitPrediction).not.toHaveBeenCalled();
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws ConflictException for duplicate prediction', async () => {
+    it('throws DuplicatePredictionException for duplicate prediction', async () => {
       mockMarketsRepo.findOne.mockResolvedValue(makeMarket());
       mockPredictionsRepo.findOne.mockResolvedValue({
         id: 'existing',
@@ -343,7 +353,7 @@ describe('PredictionsService', () => {
           },
           makeUser(),
         ),
-      ).rejects.toThrow(ConflictException);
+      ).rejects.toThrow(DuplicatePredictionException);
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
@@ -599,7 +609,7 @@ describe('PredictionsService', () => {
       );
     });
 
-    it('throws ConflictException if already claimed', async () => {
+    it('throws PayoutAlreadyClaimedException if already claimed', async () => {
       const user = makeUser();
       const prediction = {
         id: 'pred-1',
@@ -610,11 +620,11 @@ describe('PredictionsService', () => {
       mockPredictionsRepo.findOne.mockResolvedValue(prediction);
 
       await expect(service.claim('pred-1', user)).rejects.toThrow(
-        ConflictException,
+        PayoutAlreadyClaimedException,
       );
     });
 
-    it('throws BadRequestException if market not resolved', async () => {
+    it('throws MarketNotResolvedException if market not resolved', async () => {
       const user = makeUser();
       const market = makeMarket({ is_resolved: false });
       const prediction = {
@@ -628,11 +638,11 @@ describe('PredictionsService', () => {
       mockPredictionsRepo.findOne.mockResolvedValue(prediction);
 
       await expect(service.claim('pred-1', user)).rejects.toThrow(
-        BadRequestException,
+        MarketNotResolvedException,
       );
     });
 
-    it('throws BadRequestException if not a winner', async () => {
+    it('throws PredictionNotWonException if not a winner', async () => {
       const user = makeUser();
       const market = makeMarket({
         is_resolved: true,
@@ -649,14 +659,14 @@ describe('PredictionsService', () => {
       mockPredictionsRepo.findOne.mockResolvedValue(prediction);
 
       await expect(service.claim('pred-1', user)).rejects.toThrow(
-        BadRequestException,
+        PredictionNotWonException,
       );
     });
 
-    it('throws NotFoundException if prediction not found', async () => {
+    it('throws PredictionNotFoundException if prediction not found', async () => {
       mockPredictionsRepo.findOne.mockResolvedValue(null);
       await expect(service.claim('non-existent', makeUser())).rejects.toThrow(
-        NotFoundException,
+        PredictionNotFoundException,
       );
     });
   });
@@ -797,11 +807,11 @@ describe('PredictionsService', () => {
       expect(mockSoroban.claimPayout).toHaveBeenCalledTimes(2);
     });
 
-    it('throws BadRequestException when there is nothing to claim', async () => {
+    it('throws NoClaimableRewardsException when there is nothing to claim', async () => {
       mockPredictionsRepo.find.mockResolvedValue([]);
 
       await expect(service.claimAllRewards(makeUser())).rejects.toThrow(
-        BadRequestException,
+        NoClaimableRewardsException,
       );
     });
   });
@@ -837,12 +847,12 @@ describe('PredictionsService', () => {
       });
     });
 
-    it('should throw NotFoundException if prediction is not found or not owned', async () => {
+    it('should throw PredictionNotFoundException if prediction is not found or not owned', async () => {
       mockPredictionsRepo.findOne.mockResolvedValue(null);
 
       await expect(
         service.updateNote('non-existent', { note: 'Some note' }, makeUser()),
-      ).rejects.toThrow(NotFoundException);
+      ).rejects.toThrow(PredictionNotFoundException);
       expect(submitPrediction).not.toHaveBeenCalled();
     });
   });
@@ -882,15 +892,15 @@ describe('PredictionsService', () => {
       });
     });
 
-    it('should throw NotFoundException if prediction does not exist', async () => {
+    it('should throw PredictionNotFoundException if prediction does not exist', async () => {
       mockPredictionsRepo.findOne.mockResolvedValue(null);
 
       await expect(service.findById('non-existent', 'user-1')).rejects.toThrow(
-        NotFoundException,
+        PredictionNotFoundException,
       );
     });
 
-    it('should throw ForbiddenException if user does not own the prediction', async () => {
+    it('should throw UnauthorizedPredictionAccessException if user does not own the prediction', async () => {
       const owner = makeUser({ id: 'owner-1' });
       const otherUser = makeUser({ id: 'other-user' });
       const market = makeMarket();
@@ -904,7 +914,7 @@ describe('PredictionsService', () => {
       mockPredictionsRepo.findOne.mockResolvedValue(prediction);
 
       await expect(service.findById('pred-1', otherUser.id)).rejects.toThrow(
-        ForbiddenException,
+        UnauthorizedPredictionAccessException,
       );
     });
 

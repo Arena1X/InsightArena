@@ -13,10 +13,7 @@ import {
   GlobalSearchResponseDto,
   SuggestionsResponseDto,
 } from './dto/global-search.dto';
-import {
-  FuzzySearchDto,
-  FuzzySearchResponseDto,
-} from './dto/fuzzy-search.dto';
+import { FuzzySearchDto, FuzzySearchResponseDto } from './dto/fuzzy-search.dto';
 import { SearchQueryDto } from './dto/search-query.dto';
 import { SuggestQueryDto, SuggestResponseDto } from './dto/suggest-query.dto';
 import { SearchService } from './search.service';

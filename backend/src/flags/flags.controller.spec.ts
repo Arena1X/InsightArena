@@ -2,7 +2,12 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { FlagsController } from './flags.controller';
 import { FlagsService } from './flags.service';
-import { Flag, FlagStatus, FlagReason, FlagResolutionAction } from './entities/flag.entity';
+import {
+  Flag,
+  FlagStatus,
+  FlagReason,
+  FlagResolutionAction,
+} from './entities/flag.entity';
 import { CreateFlagDto } from './dto/create-flag.dto';
 import { ListFlagsQueryDto } from './dto/list-flags-query.dto';
 import { User } from '../users/entities/user.entity';
@@ -188,16 +193,22 @@ describe('FlagsController', () => {
 
   describe('resolveFlag (Admin)', () => {
     it('should resolve a flag', async () => {
-      const dto = { action: FlagResolutionAction.DISMISS, admin_notes: 'Done' } as any;
+      const dto = {
+        action: FlagResolutionAction.DISMISS,
+        admin_notes: 'Done',
+      } as any;
       const adminUser = { ...mockUser, id: 'admin-1', role: 'admin' } as User;
       const resolvedFlag = { ...mockFlag, status: FlagStatus.DISMISSED };
 
       jest.spyOn(flagsService, 'resolveFlag').mockResolvedValue(resolvedFlag);
 
       const result = await controller.resolveFlag('flag-1', dto, adminUser);
-      expect(flagsService.resolveFlag).toHaveBeenCalledWith('flag-1', dto, 'admin-1');
+      expect(flagsService.resolveFlag).toHaveBeenCalledWith(
+        'flag-1',
+        dto,
+        'admin-1',
+      );
       expect(result).toEqual(resolvedFlag);
     });
   });
 });
-

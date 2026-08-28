@@ -5,6 +5,7 @@ import { PredictionFraudFlag } from './entities/prediction-fraud-flag.entity';
 import { PredictionsService } from './predictions.service';
 import { PredictionsController } from './predictions.controller';
 import { SlippageCheckerService } from './services/slippage-checker.service';
+import { PredictionsExceptionFilter } from './filters/predictions-exception.filter';
 import { UsersModule } from '../users/users.module';
 import { MarketsModule } from '../markets/markets.module';
 import { SorobanModule } from '../soroban/soroban.module';
@@ -21,7 +22,11 @@ import { Market } from '../markets/entities/market.entity';
     CommonModule,
   ],
   controllers: [PredictionsController],
-  providers: [PredictionsService, SlippageCheckerService],
+  providers: [
+    PredictionsService,
+    SlippageCheckerService,
+    PredictionsExceptionFilter,
+  ],
   exports: [PredictionsService],
 })
 export class PredictionsModule {}

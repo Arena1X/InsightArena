@@ -374,9 +374,7 @@ describe('LeaderboardService', () => {
     });
 
     it('throws BadRequestException for a malformed cursor', async () => {
-      const malformedCursor = Buffer.from('bogus', 'utf-8').toString(
-        'base64',
-      );
+      const malformedCursor = Buffer.from('bogus', 'utf-8').toString('base64');
 
       await expect(
         service.getLeaderboardCursor({
@@ -533,11 +531,23 @@ describe('LeaderboardService', () => {
 
     it('returns non-overlapping, ordered pages with total count metadata', async () => {
       const pageOneEntries = [
-        makeHistoryEntry({ id: 'h1', rank: 1, snapshot_date: new Date('2024-01-03') }),
-        makeHistoryEntry({ id: 'h2', rank: 2, snapshot_date: new Date('2024-01-02') }),
+        makeHistoryEntry({
+          id: 'h1',
+          rank: 1,
+          snapshot_date: new Date('2024-01-03'),
+        }),
+        makeHistoryEntry({
+          id: 'h2',
+          rank: 2,
+          snapshot_date: new Date('2024-01-02'),
+        }),
       ];
       const pageTwoEntries = [
-        makeHistoryEntry({ id: 'h3', rank: 3, snapshot_date: new Date('2024-01-01') }),
+        makeHistoryEntry({
+          id: 'h3',
+          rank: 3,
+          snapshot_date: new Date('2024-01-01'),
+        }),
       ];
 
       mockHistoryRepository.findAndCount.mockResolvedValueOnce([
