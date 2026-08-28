@@ -56,8 +56,10 @@ export class WebhookAuthGuard implements CanActivate {
     }
 
     // Verify signature
-    const body = JSON.stringify(request.body);
-    const expectedSignature = this.generateSignature(body, timestamp);
+    const rawBody = (request as any).rawBody
+      ? (request as any).rawBody.toString('utf8')
+      : JSON.stringify(request.body);
+    const expectedSignature = this.generateSignature(rawBody, timestamp);
 
     // Use timing-safe comparison to prevent timing attacks
     const signatureBuffer = Buffer.from(signature, 'hex');

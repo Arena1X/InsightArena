@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -25,6 +25,7 @@ import {
   ListDivergencesQueryDto,
   PaginatedDivergencesResponse,
 } from './dto/list-divergences.dto';
+import { OracleReliabilityService } from './oracle-reliability.service';
 
 @Injectable()
 export class OracleService {
@@ -43,6 +44,8 @@ export class OracleService {
     @InjectRepository(OracleSubmission)
     private readonly submissionRepository: Repository<OracleSubmission>,
     private readonly configService: ConfigService,
+    @Optional()
+    private readonly reliabilityService?: OracleReliabilityService,
   ) {}
 
   async getPendingMatches(
@@ -189,9 +192,14 @@ export class OracleService {
       [WinningTeam.TEAM_B]: 0,
       [WinningTeam.DRAW]: 0,
     };
+    let totalWeight = 0;
     for (const s of eligible) {
       if (s.winning_team in outcomeVotes) {
-        outcomeVotes[s.winning_team]++;
+        const weight = this.reliabilityService
+          ? await this.reliabilityService.getWeight(s.data_source)
+          : 1.0;
+        outcomeVotes[s.winning_team] += weight;
+        totalWeight += weight;
       }
     }
 
@@ -203,9 +211,12 @@ export class OracleService {
         votes = count;
       }
     }
-    // A majority requires strictly more than half of eligible participants;
+    // A majority requires strictly more than half of eligible participants (or total weight);
     // every count equal qualifies only as a tie otherwise.
-    if (outcome && votes <= eligible.length / 2) {
+    const totalThreshold = this.reliabilityService
+      ? totalWeight / 2
+      : eligible.length / 2;
+    if (outcome && votes <= totalThreshold) {
       outcome = null;
     }
 

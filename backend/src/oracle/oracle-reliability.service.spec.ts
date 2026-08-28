@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { OracleReliabilityService } from './oracle-reliability.service';
 import { OracleSourceReliability } from './entities/oracle-source-reliability.entity';
+import { OracleReliabilityHistory } from './entities/oracle-reliability-history.entity';
 
 const mockRepo = () => ({
   findOne: jest.fn(),
@@ -134,9 +135,69 @@ describe('OracleReliabilityService', () => {
       expect(await service.getWeight('src-a')).toBe(0.8);
     });
 
+    it('returns bounded weight above minimum floor when reliability is very low', async () => {
+      repo.findOne.mockResolvedValue({ reliability_score: 0.02 });
+      expect(await service.getWeight('low-rep-src', 0.1)).toBe(0.1);
+    });
+
     it('returns 1.0 as neutral fallback when no record exists', async () => {
       repo.findOne.mockResolvedValue(null);
       expect(await service.getWeight('unknown')).toBe(1.0);
+    });
+  });
+
+  describe('with history repository', () => {
+    let historyRepo: ReturnType<typeof mockRepo>;
+
+    beforeEach(async () => {
+      repo = mockRepo();
+      historyRepo = mockRepo();
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          OracleReliabilityService,
+          {
+            provide: getRepositoryToken(OracleSourceReliability),
+            useValue: repo,
+          },
+          {
+            provide: getRepositoryToken(OracleReliabilityHistory),
+            useValue: historyRepo,
+          },
+        ],
+      }).compile();
+
+      service = module.get(OracleReliabilityService);
+    });
+
+    it('saves score history entry when recording outcome', async () => {
+      repo.findOne.mockResolvedValue(null);
+      repo.create.mockReturnValue({
+        data_source: 'src-h',
+        total_submissions: 0,
+        correct_submissions: 0,
+        reliability_score: null,
+      });
+      repo.save.mockImplementation(async (r: any) => ({
+        ...r,
+        updated_at: new Date(),
+      }));
+
+      const histCreated = { data_source: 'src-h' };
+      historyRepo.create.mockReturnValue(histCreated);
+      historyRepo.save.mockResolvedValue(histCreated);
+
+      await service.recordOutcome('src-h', true, 'match-999');
+
+      expect(historyRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data_source: 'src-h',
+          was_correct: true,
+          match_id: 'match-999',
+          total_submissions: 1,
+          correct_submissions: 1,
+        }),
+      );
+      expect(historyRepo.save).toHaveBeenCalled();
     });
   });
 });

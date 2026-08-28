@@ -643,5 +643,43 @@ describe('OracleService', () => {
       expect(result.can_auto_finalize).toBe(false);
       expect(result.reason).toBe('insufficient_sources');
     });
+
+    it('shifts consensus outcome toward higher-reliability oracle when votes are split', async () => {
+      const mockReliabilityService = {
+        getWeight: jest.fn().mockImplementation((source: string) => {
+          if (source === 'https://high-rep.com') return Promise.resolve(0.9);
+          if (source === 'https://low-rep.com') return Promise.resolve(0.2);
+          return Promise.resolve(1.0);
+        }),
+      };
+
+      const highRepSub = makeSubmission({
+        data_source: 'https://high-rep.com',
+        winning_team: WinningTeam.TEAM_A,
+      });
+      const lowRepSub = makeSubmission({
+        data_source: 'https://low-rep.com',
+        winning_team: WinningTeam.TEAM_B,
+      });
+
+      submissionRepo.find.mockResolvedValue([highRepSub, lowRepSub]);
+
+      const weightedService = new OracleService(
+        matchRepo as any,
+        eventRepo as any,
+        divergenceRepo as any,
+        submissionRepo as any,
+        { get: jest.fn((key: string) => configValues[key]) } as any,
+        mockReliabilityService as any,
+      );
+
+      const result = await weightedService.getMatchConsensus('123');
+
+      expect(result.outcome).toBe(WinningTeam.TEAM_A);
+      expect(result.outcome_votes[WinningTeam.TEAM_A]).toBeCloseTo(0.9);
+      expect(result.outcome_votes[WinningTeam.TEAM_B]).toBeCloseTo(0.2);
+      expect(result.can_auto_finalize).toBe(true);
+      expect(result.reason).toBe('majority_reached');
+    });
   });
 });

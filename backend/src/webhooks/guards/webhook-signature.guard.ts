@@ -58,6 +58,22 @@ export class WebhookSignatureGuard implements CanActivate {
       throw new BadRequestException('Missing event_id');
     }
 
+    const timestampHeader = (request.headers['x-webhook-timestamp'] ||
+      request.headers['x-timestamp']) as string | undefined;
+    if (timestampHeader) {
+      const parsedTs = parseInt(timestampHeader, 10);
+      if (isNaN(parsedTs)) {
+        throw new UnauthorizedException('Invalid webhook timestamp');
+      }
+      const nowSec = Math.floor(Date.now() / 1000);
+      const windowSec = this.signatureService.getReplayWindowMs() / 1000;
+      if (Math.abs(nowSec - parsedTs) > windowSec) {
+        throw new UnauthorizedException(
+          'Webhook timestamp out of allowed window',
+        );
+      }
+    }
+
     if (await this.signatureService.isReplay(source, eventId)) {
       throw new UnauthorizedException('Duplicate webhook event');
     }

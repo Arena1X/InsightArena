@@ -31,6 +31,7 @@ describe('WebhookSignatureGuard', () => {
       verifySignature: jest.fn().mockReturnValue(true),
       isReplay: jest.fn().mockResolvedValue(false),
       recordProcessed: jest.fn().mockResolvedValue(undefined),
+      getReplayWindowMs: jest.fn().mockReturnValue(300000),
     } as unknown as jest.Mocked<WebhookSignatureService>;
 
     guard = new WebhookSignatureGuard(signatureService);
@@ -108,5 +109,69 @@ describe('WebhookSignatureGuard', () => {
       'abc123',
       'test-secret',
     );
+  });
+
+  describe('timestamp tolerance', () => {
+    beforeEach(() => {
+      signatureService.getReplayWindowMs.mockReturnValue(300000);
+    });
+
+    it('allows a request with a fresh x-webhook-timestamp header', async () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const request = buildRequest({
+        headers: {
+          'x-webhook-signature': 'abc123',
+          'x-webhook-timestamp': nowSec.toString(),
+        },
+      });
+      const context = buildContext(request);
+
+      const result = await guard.canActivate(context);
+      expect(result).toBe(true);
+    });
+
+    it('rejects a request with a stale timestamp (>300s old)', async () => {
+      const staleSec = Math.floor(Date.now() / 1000) - 350;
+      const request = buildRequest({
+        headers: {
+          'x-webhook-signature': 'abc123',
+          'x-webhook-timestamp': staleSec.toString(),
+        },
+      });
+      const context = buildContext(request);
+
+      await expect(guard.canActivate(context)).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('rejects a request with a future timestamp (>300s in future)', async () => {
+      const futureSec = Math.floor(Date.now() / 1000) + 350;
+      const request = buildRequest({
+        headers: {
+          'x-webhook-signature': 'abc123',
+          'x-webhook-timestamp': futureSec.toString(),
+        },
+      });
+      const context = buildContext(request);
+
+      await expect(guard.canActivate(context)).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('rejects a request with an invalid non-numeric timestamp', async () => {
+      const request = buildRequest({
+        headers: {
+          'x-webhook-signature': 'abc123',
+          'x-webhook-timestamp': 'not-a-number',
+        },
+      });
+      const context = buildContext(request);
+
+      await expect(guard.canActivate(context)).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
   });
 });
