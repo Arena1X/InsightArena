@@ -815,6 +815,177 @@ describe('UsersService', () => {
     });
   });
 
+  describe('getFeed', () => {
+    let followRepository: Repository<UserFollow>;
+    let predictionsRepo: Repository<Prediction>;
+
+    beforeEach(() => {
+      followRepository = module.get<Repository<UserFollow>>(
+        getRepositoryToken(UserFollow),
+      );
+      predictionsRepo = module.get<Repository<Prediction>>(
+        getRepositoryToken(Prediction),
+      );
+    });
+
+    const makeAuthor = (id: string, extra: Partial<User> = {}): User =>
+      ({
+        ...mockUser,
+        id,
+        stellar_address: `G_USER_${id}`,
+        username: `user_${id}`,
+        deleted_at: null,
+        ...extra,
+      }) as User;
+
+    const makePrediction = (id: string, author: User, submittedAt: Date) => ({
+      id,
+      chosen_outcome: 'YES',
+      stake_amount_stroops: '1000',
+      payout_claimed: false,
+      payout_amount_stroops: '0',
+      tx_hash: null,
+      note: null,
+      submitted_at: submittedAt,
+      user: author,
+      market: {
+        id: `market-${id}`,
+        title: `Market ${id}`,
+        end_time: new Date('2025-12-31'),
+        resolved_outcome: null,
+        is_resolved: false,
+        is_cancelled: false,
+      },
+    });
+
+    it('returns an empty feed when the user has no follows', async () => {
+      jest.spyOn(followRepository, 'find').mockResolvedValue([]);
+
+      const result = await service.getFeed(mockUser.id, { page: 1, limit: 20 });
+
+      expect(result).toEqual({ data: [], total: 0, page: 1, limit: 20 });
+      // predictions repo should never be queried
+      expect(predictionsRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('returns predictions from followed users only, ordered by recency descending', async () => {
+      const followedUser = makeAuthor('followed-1');
+      const unfollowedUser = makeAuthor('not-followed');
+
+      jest.spyOn(followRepository, 'find').mockResolvedValue([
+        { following_id: followedUser.id } as UserFollow,
+      ]);
+
+      const older = makePrediction('pred-old', followedUser, new Date('2025-01-01'));
+      const newer = makePrediction('pred-new', followedUser, new Date('2025-06-01'));
+
+      // getManyAndCount returns already-ordered results (DB handles ORDER BY)
+      const qb = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[newer, older], 2]),
+      };
+      jest.spyOn(predictionsRepo, 'createQueryBuilder').mockReturnValue(qb as any);
+
+      const result = await service.getFeed(mockUser.id, { page: 1, limit: 20 });
+
+      expect(result.total).toBe(2);
+      expect(result.data[0].id).toBe('pred-new');
+      expect(result.data[1].id).toBe('pred-old');
+      expect(qb.orderBy).toHaveBeenCalledWith('prediction.submitted_at', 'DESC');
+      // author should be mapped
+      expect(result.data[0].author.stellar_address).toBe(followedUser.stellar_address);
+    });
+
+    it('excludes activity from soft-deleted followed users', async () => {
+      const activeUser = makeAuthor('active-1');
+      const deletedUser = makeAuthor('deleted-1', { deleted_at: new Date() });
+
+      jest.spyOn(followRepository, 'find').mockResolvedValue([
+        { following_id: activeUser.id } as UserFollow,
+        { following_id: deletedUser.id } as UserFollow,
+      ]);
+
+      // The query should apply the deleted_at IS NULL filter — simulate DB
+      // returning only the active user's prediction
+      const predFromActive = makePrediction('pred-active', activeUser, new Date('2025-05-01'));
+
+      const qb = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[predFromActive], 1]),
+      };
+      jest.spyOn(predictionsRepo, 'createQueryBuilder').mockReturnValue(qb as any);
+
+      const result = await service.getFeed(mockUser.id, { page: 1, limit: 20 });
+
+      // Confirm the exclusion filter was applied in the query
+      expect(qb.andWhere).toHaveBeenCalledWith('author.deleted_at IS NULL');
+      expect(result.total).toBe(1);
+      expect(result.data[0].id).toBe('pred-active');
+    });
+
+    it('pagination returns the correct slice and does not leak items across pages', async () => {
+      const followedUser = makeAuthor('paged-user');
+
+      jest.spyOn(followRepository, 'find').mockResolvedValue([
+        { following_id: followedUser.id } as UserFollow,
+      ]);
+
+      const page1Pred = makePrediction('pred-p1', followedUser, new Date('2025-06-01'));
+      const page2Pred = makePrediction('pred-p2', followedUser, new Date('2025-05-01'));
+
+      const qbPage1 = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[page1Pred], 2]),
+      };
+      const qbPage2 = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[page2Pred], 2]),
+      };
+
+      jest
+        .spyOn(predictionsRepo, 'createQueryBuilder')
+        .mockReturnValueOnce(qbPage1 as any)
+        .mockReturnValueOnce(qbPage2 as any);
+
+      const resultP1 = await service.getFeed(mockUser.id, { page: 1, limit: 1 });
+      const resultP2 = await service.getFeed(mockUser.id, { page: 2, limit: 1 });
+
+      expect(resultP1.data).toHaveLength(1);
+      expect(resultP1.data[0].id).toBe('pred-p1');
+      expect(resultP2.data).toHaveLength(1);
+      expect(resultP2.data[0].id).toBe('pred-p2');
+
+      // Confirm correct skip values were applied
+      expect(qbPage1.skip).toHaveBeenCalledWith(0); // (1-1)*1
+      expect(qbPage2.skip).toHaveBeenCalledWith(1); // (2-1)*1
+
+      // No overlap between pages
+      const p1Ids = resultP1.data.map((i) => i.id);
+      const p2Ids = resultP2.data.map((i) => i.id);
+      expect(p1Ids.filter((id) => p2Ids.includes(id))).toHaveLength(0);
+    });
+  });
+
   describe('recordQualifyingAction', () => {
     it('advances a pending referral to qualified', async () => {
       const referral = {

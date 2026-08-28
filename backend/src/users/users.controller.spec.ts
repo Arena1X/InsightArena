@@ -4,6 +4,7 @@ import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 import { User } from './entities/user.entity';
 import { PublicPredictionOutcomeFilter } from './dto/list-user-predictions.dto';
+import { FeedResponseDto } from './dto/feed-response.dto';
 
 describe('UsersController', () => {
   let controller: UsersController;
