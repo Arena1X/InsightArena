@@ -6,6 +6,7 @@ import * as crypto from 'crypto';
 import { WebhookProcessedEvent } from '../entities/webhook-processed-event.entity';
 
 const DEFAULT_REPLAY_WINDOW_SECONDS = 300;
+const DEFAULT_TIMESTAMP_FRESHNESS_SECONDS = 300;
 
 @Injectable()
 export class WebhookSignatureService {
@@ -61,6 +62,41 @@ export class WebhookSignatureService {
       'WEBHOOK_REPLAY_WINDOW_SECONDS',
     );
     return (seconds ?? DEFAULT_REPLAY_WINDOW_SECONDS) * 1000;
+  }
+
+  getTimestampFreshnessMs(): number {
+    const seconds = this.configService.get<number>(
+      'WEBHOOK_TIMESTAMP_FRESHNESS_SECONDS',
+    );
+    return (seconds ?? DEFAULT_TIMESTAMP_FRESHNESS_SECONDS) * 1000;
+  }
+
+  /**
+   * Validates that the provided timestamp is within the freshness window.
+   * Returns true if the timestamp is fresh (within the window), false otherwise.
+   */
+  isTimestampFresh(timestampStr: string | undefined): boolean {
+    if (!timestampStr) {
+      return false;
+    }
+
+    try {
+      const timestamp = parseInt(timestampStr, 10);
+      if (isNaN(timestamp)) {
+        return false;
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      const age = Math.abs(now - timestamp);
+      const freshnessWindowSeconds = this.getTimestampFreshnessMs() / 1000;
+
+      return age <= freshnessWindowSeconds;
+    } catch (error) {
+      this.logger.warn(
+        `Failed to validate webhook timestamp: ${(error as Error).message}`,
+      );
+      return false;
+    }
   }
 
   async isReplay(source: string, eventId: string): Promise<boolean> {
