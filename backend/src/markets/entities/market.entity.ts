@@ -126,6 +126,11 @@ export class Market {
   @Min(0)
   grace_period_seconds: number;
 
+  @Column({ type: 'int', default: 0 })
+  @IsNumber()
+  @Min(0)
+  settlement_attempt_count: number;
+
   @Column({ default: true })
   @IsBoolean()
   is_public: boolean;
