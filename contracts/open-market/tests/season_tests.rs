@@ -858,7 +858,9 @@ fn test_season_overlap_fully_contained_fails() {
 
 #[test]
 fn test_season_overlap_touching_at_start_succeeds() {
-    // S1=[100,200], S2=[50,100]: S2 ends exactly at S1's start → allow (no overlap)
+    // S1=[100,200], S2=[50,100]: S2 ends exactly at S1's start → allow (no overlap).
+    // This codebase uses half-open intervals [start, end): touching at a boundary
+    // is NOT an overlap, so adjacent seasons must be permitted.
     let env = Env::default();
     let (client, xlm_token, admin, _oracle) = deploy(&env);
 
@@ -870,6 +872,55 @@ fn test_season_overlap_touching_at_start_succeeds() {
 
     let season2_id = client.create_season(&admin, &50, &100, &100_000_000);
     assert_eq!(season2_id, 2);
+}
+
+#[test]
+fn test_season_overlap_touching_at_end_succeeds() {
+    // S1=[100,200], S2=[200,300]: S2 starts exactly at S1's end → allow (no overlap).
+    // Symmetrical boundary case: new season starting exactly when an existing live
+    // season ends must be permitted under the half-open interval convention.
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 300_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 200_000_000);
+
+    let season1_id = client.create_season(&admin, &100, &200, &100_000_000);
+    assert_eq!(season1_id, 1);
+
+    // S2 starts exactly where S1 ends — must succeed.
+    let season2_id = client.create_season(&admin, &200, &300, &100_000_000);
+    assert_eq!(season2_id, 2);
+}
+
+#[test]
+fn test_season_overlap_starts_inside_fails() {
+    // S1=[100,200], S2=[150,300]: S2 starts inside S1 and extends beyond it → reject.
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 300_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 200_000_000);
+
+    client.create_season(&admin, &100, &200, &100_000_000);
+
+    let result = client.try_create_season(&admin, &150, &300, &100_000_000);
+    assert_eq!(result, Err(Ok(InsightArenaError::SeasonOverlap)));
+}
+
+#[test]
+fn test_season_overlap_fully_contains_existing_fails() {
+    // S1=[100,200], S2=[50,300]: S2 fully wraps around S1 → reject.
+    let env = Env::default();
+    let (client, xlm_token, admin, _oracle) = deploy(&env);
+
+    fund(&env, &xlm_token, &admin, 300_000_000);
+    approve_reward_pool(&env, &xlm_token, &admin, &client.address, 200_000_000);
+
+    client.create_season(&admin, &100, &200, &100_000_000);
+
+    let result = client.try_create_season(&admin, &50, &300, &100_000_000);
+    assert_eq!(result, Err(Ok(InsightArenaError::SeasonOverlap)));
 }
 
 // ── calculate_points arithmetic edge cases (#1266) ────────────────────────────
