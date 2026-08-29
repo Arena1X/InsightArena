@@ -23,7 +23,8 @@ export class WebhookReceiverController {
     summary: 'Receive an incoming webhook event',
     description:
       'Verifies an HMAC-SHA256 signature (X-Webhook-Signature header) against a shared ' +
-      'secret and rejects replayed event_id values within the configured window. ' +
+      'secret, validates the timestamp (X-Webhook-Timestamp) is within the freshness window, ' +
+      'and rejects replayed event_id values within the configured window. ' +
       'Downstream business processing of the payload for a specific integration is out ' +
       'of scope for this endpoint.',
   })
@@ -40,13 +41,17 @@ export class WebhookReceiverController {
   @ApiResponse({
     status: 401,
     description:
-      'Missing/invalid signature, unconfigured secret, or a replayed event_id',
+      'Missing/invalid signature, unconfigured secret, or stale timestamp',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Replayed event_id within the rejection window',
   })
   async receive(
     @Param('source') source: string,
     @Body() dto: IncomingWebhookDto,
   ): Promise<{ received: true }> {
-    // Signature verification and replay detection already happened in
+    // Signature verification, timestamp freshness, and replay detection already happened in
     // WebhookSignatureGuard before this handler runs. `source` and `dto`
     // are accepted here (and documented via Swagger above) so downstream
     // business processing of a specific integration's payload can be added
