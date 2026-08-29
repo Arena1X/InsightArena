@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useWallet } from "@/context/WalletContext";
 import { apiClient, ApiError } from "@/lib/api";
 import { useToast } from "./useToast";
@@ -25,6 +25,7 @@ export function useWalletBalance(): UseWalletBalanceReturn {
     const [balance, setBalance] = useState<WalletBalance | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const previousAddressRef = useRef<string | null>(null);
 
     const fetchBalance = useCallback(async () => {
         if (!address || !isAuthenticated) {
@@ -60,6 +61,18 @@ export function useWalletBalance(): UseWalletBalanceReturn {
             setLoading(false);
         }
     }, [address, isAuthenticated, balance, toast]);
+
+    // Reset balance when address changes (account switch detection)
+    useEffect(() => {
+        if (previousAddressRef.current !== address) {
+            if (previousAddressRef.current !== null && address !== null) {
+                // Address changed - clear old balance immediately
+                setBalance(null);
+                setError(null);
+            }
+            previousAddressRef.current = address;
+        }
+    }, [address]);
 
     // Initial fetch and interval refresh
     useEffect(() => {
