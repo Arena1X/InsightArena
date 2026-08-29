@@ -40,6 +40,7 @@ describe('MarketSettlementScheduler', () => {
       resolution_proposed_at: new Date(currentNow.getTime() - 90_000_000),
       grace_period_seconds: 86400,
       is_resolved: false,
+      settlement_attempt_count: 0,
       ...overrides,
     }) as Market;
 
@@ -157,7 +158,10 @@ describe('MarketSettlementScheduler', () => {
     expect(queryRunners[0].manager.update).toHaveBeenCalledWith(
       Market,
       { id: 'market-1' },
-      { settlement_state: MarketSettlementState.SETTLING },
+      {
+        settlement_state: MarketSettlementState.SETTLING,
+        settlement_attempt_count: 1,
+      },
     );
     // Finalize transaction: market SETTLED, attempt RESOLVED.
     expect(queryRunners[1].manager.update).toHaveBeenCalledWith(
@@ -354,5 +358,87 @@ describe('MarketSettlementScheduler', () => {
     marketsRepository.find.mockRejectedValue(new Error('DB unavailable'));
 
     await expect(scheduler.handleSettlement()).resolves.not.toThrow();
+  });
+
+  it('increments the persisted settlement_attempt_count on every claim', async () => {
+    const market = makeMarket({ settlement_attempt_count: 2 });
+    mockProposedCandidates([market]);
+    lockResultsQueue = [true, true];
+
+    const queryRunners: ReturnType<typeof makeQueryRunner>[] = [];
+    dataSource.createQueryRunner = jest.fn(() => {
+      const qr = makeQueryRunner();
+      qr.manager.findOne.mockResolvedValue(market);
+      queryRunners.push(qr);
+      return qr;
+    }) as unknown as jest.Mocked<DataSource>['createQueryRunner'];
+
+    await scheduler.settleEligibleMarkets();
+
+    expect(queryRunners[0].manager.update).toHaveBeenCalledWith(
+      Market,
+      { id: 'market-1' },
+      expect.objectContaining({ settlement_attempt_count: 3 }),
+    );
+  });
+
+  it('refuses to claim a market that has exhausted its persisted retry budget, even after a restart', async () => {
+    // No in-memory retry-queue entry (simulating a fresh process), but the
+    // persisted counter already recorded MAX_RETRY_ATTEMPTS failures.
+    const exhaustedMarket = makeMarket({ settlement_attempt_count: 5 });
+    mockProposedCandidates([exhaustedMarket]);
+
+    dataSource.createQueryRunner = jest.fn(() => {
+      const qr = makeQueryRunner();
+      qr.manager.findOne.mockResolvedValue(exhaustedMarket);
+      return qr;
+    }) as unknown as jest.Mocked<DataSource>['createQueryRunner'];
+
+    const settled = await scheduler.settleEligibleMarkets();
+
+    expect(settled).toBe(0);
+    expect(sorobanService.resolveMarket).not.toHaveBeenCalled();
+  });
+
+  it('routes a manual retry through the same transactional claim/finalize path as a fresh sweep', async () => {
+    // First sweep: the on-chain call fails, landing the market in the
+    // dead-letter queue with attempts=0.
+    const market = makeMarket();
+    mockProposedCandidates([market]);
+    lockResultsQueue = [true];
+    dataSource.createQueryRunner = jest.fn(() => {
+      const qr = makeQueryRunner();
+      qr.manager.findOne.mockResolvedValue(market);
+      return qr;
+    }) as unknown as jest.Mocked<DataSource>['createQueryRunner'];
+    sorobanService.resolveMarket.mockRejectedValueOnce(new Error('RPC down'));
+
+    await scheduler.settleEligibleMarkets();
+    expect(scheduler.getDeadLetterQueue()).toHaveLength(1);
+
+    // Manual retry (admin endpoint): should go through claimMarketForSettlement
+    // again (advisory lock + attempt row + persisted counter), not a bare
+    // resolveMarket call.
+    sorobanService.resolveMarket.mockResolvedValueOnce(undefined);
+    marketsRepository.findOne.mockResolvedValue(market);
+    lockResultsQueue = [true, true]; // claim, then finalize
+
+    const queryRunners: ReturnType<typeof makeQueryRunner>[] = [];
+    dataSource.createQueryRunner = jest.fn(() => {
+      const qr = makeQueryRunner();
+      qr.manager.findOne.mockResolvedValue(market);
+      queryRunners.push(qr);
+      return qr;
+    }) as unknown as jest.Mocked<DataSource>['createQueryRunner'];
+
+    const settled = await scheduler.retrySettlement('market-1');
+
+    expect(settled).toBe(true);
+    expect(scheduler.getDeadLetterQueue()).toHaveLength(0);
+    expect(queryRunners[0].manager.update).toHaveBeenCalledWith(
+      Market,
+      { id: 'market-1' },
+      expect.objectContaining({ settlement_attempt_count: 1 }),
+    );
   });
 });
