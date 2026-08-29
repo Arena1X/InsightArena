@@ -596,6 +596,15 @@ export class AdminService {
       },
     );
 
+    // Resolution changes this market's analytics, category/platform
+    // aggregates, and every participant's dashboard KPIs (streak/tier) —
+    // invalidate now instead of waiting out their TTL.
+    await this.analyticsService.invalidateMarketResolutionCaches(
+      market.id,
+      market.on_chain_market_id,
+      predictions.map((p) => p.user.id),
+    );
+
     this.logger.log(
       `Admin ${adminId} resolved market "${market.title}" (${market.id}) with outcome "${dto.resolved_outcome}"`,
     );

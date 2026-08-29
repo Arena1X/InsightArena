@@ -101,7 +101,17 @@ export class AnalyticsService {
     return this.activityLogsRepository.save(log);
   }
 
+  /**
+   * Cached per-user (short TTL, since rank/streak change with live activity)
+   * since this fans out into several queries over predictions/leaderboard.
+   */
   async getDashboardKPIs(user: User): Promise<DashboardKpisDto> {
+    return this.cacheService.getOrSet('analytics:dashboard', user.id, () =>
+      this.computeDashboardKPIs(user),
+    );
+  }
+
+  private async computeDashboardKPIs(user: User): Promise<DashboardKpisDto> {
     const fullUser = await this.usersRepository.findOne({
       where: { id: user.id },
     });
@@ -163,9 +173,18 @@ export class AnalyticsService {
   }
 
   /**
-   * Get market analytics: pool size, participant count, outcome distribution, and time remaining
+   * Get market analytics: pool size, participant count, outcome distribution, and time remaining.
+   * Cached per market id (short TTL, since pool/participant counts move with live predictions).
    */
   async getMarketAnalytics(marketId: string): Promise<MarketAnalyticsDto> {
+    return this.cacheService.getOrSet('analytics:market', marketId, () =>
+      this.computeMarketAnalytics(marketId),
+    );
+  }
+
+  private async computeMarketAnalytics(
+    marketId: string,
+  ): Promise<MarketAnalyticsDto> {
     const market = await this.marketsRepository.findOne({
       where: [{ id: marketId }, { on_chain_market_id: marketId }],
     });
@@ -223,13 +242,29 @@ export class AnalyticsService {
   }
 
   /**
-   * Get historical data for a market: prediction volume, pool size, participant growth over time
+   * Get historical data for a market: prediction volume, pool size, participant growth over time.
+   * Cached per (market, from, to, interval) combination — short TTL, since new
+   * snapshots land periodically via recordMarketSnapshot.
    */
   async getMarketHistory(
     marketId: string,
     from: Date,
     to: Date,
     interval?: string, // TODO: Implement interval-based aggregation
+  ): Promise<MarketHistoryResponseDto> {
+    const cacheKey = `${marketId}:${from.toISOString()}:${to.toISOString()}:${interval ?? ''}`;
+    return this.cacheService.getOrSet(
+      'analytics:market-history',
+      cacheKey,
+      () => this.computeMarketHistory(marketId, from, to, interval),
+    );
+  }
+
+  private async computeMarketHistory(
+    marketId: string,
+    from: Date,
+    to: Date,
+    interval?: string,
   ): Promise<MarketHistoryResponseDto> {
     const clampedRange = clampAnalyticsDateRange(from, to);
     from = clampedRange.from;
@@ -312,11 +347,24 @@ export class AnalyticsService {
   }
 
   /**
-   * Get user performance trends over time
+   * Get user performance trends over time.
+   * Cached per (address, days) combination — short TTL, since a new
+   * prediction or resolution shifts the trend.
    */
   async getUserTrends(
     address: string,
     days: number = 30,
+  ): Promise<UserTrendsDto> {
+    return this.cacheService.getOrSet(
+      'analytics:user-trends',
+      `${address}:${days}`,
+      () => this.computeUserTrends(address, days),
+    );
+  }
+
+  private async computeUserTrends(
+    address: string,
+    days: number,
   ): Promise<UserTrendsDto> {
     const validDays = Math.min(Math.max(days || 30, 1), 90);
 
@@ -761,5 +809,55 @@ export class AnalyticsService {
       active_users,
       active_markets,
     };
+  }
+
+  /**
+   * Invalidate cached aggregates that go stale the moment a market
+   * resolves, rather than waiting out their TTL:
+   * - this market's own analytics (looked up by either id, since callers
+   *   may key `getMarketAnalytics`/`getMarketHistory` by either one),
+   * - category analytics and platform stats, since resolution changes
+   *   active/resolved market counts,
+   * - the dashboard KPIs of every affected predictor, since resolution can
+   *   flip their streak/tier.
+   *
+   * `getMarketHistory` and `getUserTrends` are keyed by (id, date-range)
+   * and (address, days) respectively — an unbounded set of parameter
+   * combinations that can't be enumerated here, so those two are left to
+   * expire on their own short TTL instead.
+   *
+   * Called from write paths that resolve a market (e.g. admin resolution).
+   * Best-effort: failures are logged, not thrown, so a cache hiccup never
+   * blocks the write it's attached to.
+   */
+  async invalidateMarketResolutionCaches(
+    marketId: string,
+    onChainMarketId: string | null | undefined,
+    affectedUserIds: string[] = [],
+  ): Promise<void> {
+    const marketKeys = new Set([marketId]);
+    if (onChainMarketId) {
+      marketKeys.add(onChainMarketId);
+    }
+
+    const tasks = [
+      ...Array.from(marketKeys).map((key) =>
+        this.cacheService.invalidate('analytics:market', key),
+      ),
+      this.cacheService.invalidate('analytics:category', 'all'),
+      this.cacheService.invalidate('analytics:platform-stats', 'all'),
+      ...affectedUserIds.map((userId) =>
+        this.cacheService.invalidate('analytics:dashboard', userId),
+      ),
+    ];
+
+    const results = await Promise.allSettled(tasks);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        this.logger.warn(
+          `Cache invalidation failed after market resolution: ${result.reason}`,
+        );
+      }
+    }
   }
 }
