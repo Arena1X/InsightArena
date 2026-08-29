@@ -338,11 +338,16 @@ describe('PredictionsService', () => {
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws DuplicatePredictionException for duplicate prediction', async () => {
+    it('throws DuplicatePredictionException for duplicate prediction on same market without idempotency key', async () => {
+      // After idempotency check passes (no existing key), but user has already predicted on market
       mockMarketsRepo.findOne.mockResolvedValue(makeMarket());
-      mockPredictionsRepo.findOne.mockResolvedValue({
-        id: 'existing',
-      } as Prediction);
+      // First findOne (idempotency key check) returns null
+      // Second findOne (market duplicate check) returns existing
+      mockPredictionsRepo.findOne
+        .mockResolvedValueOnce(null) // No existing by idempotency key
+        .mockResolvedValueOnce({
+          id: 'existing',
+        } as Prediction); // Existing by market
 
       await expect(
         service.submit(
@@ -350,6 +355,7 @@ describe('PredictionsService', () => {
             market_id: 'market-uuid-1',
             chosen_outcome: 'Yes',
             stake_amount_stroops: '10000000',
+            clientIdempotencyKey: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
           },
           makeUser(),
         ),
