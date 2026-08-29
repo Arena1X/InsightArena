@@ -3,6 +3,7 @@ import { PredictionsController } from './predictions.controller';
 import { PredictionsService } from './predictions.service';
 import { IDEMPOTENT_KEY } from '../common/idempotency/idempotent.decorator';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { PredictionsRateLimitGuard } from '../common/guards/predictions-rate-limit.guard';
 
 describe('PredictionsController — idempotency', () => {
   let controller: PredictionsController;
@@ -27,6 +28,12 @@ describe('PredictionsController — idempotency', () => {
             acquire: jest.fn(),
             complete: jest.fn(),
             release: jest.fn(),
+          },
+        },
+        {
+          provide: PredictionsRateLimitGuard,
+          useValue: {
+            canActivate: jest.fn().mockResolvedValue(true),
           },
         },
       ],
