@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository, SelectQueryBuilder } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { OracleService } from './oracle.service';
+import { OracleReliabilityService } from './oracle-reliability.service';
 import { CreatorEventMatch } from '../creator-events/entities/creator-event-match.entity';
 import { CreatorEvent } from '../creator-events/entities/creator-event.entity';
 import { MatchResultDivergence } from '../matches/entities/match-result-divergence.entity';
@@ -45,6 +46,7 @@ describe('OracleService', () => {
   let eventRepo: MockRepo;
   let divergenceRepo: MockRepo;
   let submissionRepo: MockRepo;
+  let reliabilityService: jest.Mocked<OracleReliabilityService>;
   let configValues: Record<string, string | number | undefined>;
 
   const mockEvent = {
@@ -129,10 +131,19 @@ describe('OracleService', () => {
             get: jest.fn((key: string) => configValues[key]),
           },
         },
+        {
+          provide: OracleReliabilityService,
+          useValue: {
+            getWeight: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
     service = module.get<OracleService>(OracleService);
+    reliabilityService = module.get(
+      OracleReliabilityService,
+    ) as jest.Mocked<OracleReliabilityService>;
     eventRepo.find.mockResolvedValue([mockEvent]);
   });
 
@@ -642,6 +653,122 @@ describe('OracleService', () => {
       expect(result.outcome).toBe(WinningTeam.TEAM_A);
       expect(result.can_auto_finalize).toBe(false);
       expect(result.reason).toBe('insufficient_sources');
+    });
+
+    it('weights consensus by oracle reliability scores (#1765)', async () => {
+      // High-reliability oracle votes TEAM_A
+      const highReliable = makeSubmission({
+        id: 'sub-high-reliable',
+        data_source: 'oracle-high',
+        winning_team: WinningTeam.TEAM_A,
+        confidence_score: 95,
+      });
+
+      // Low-reliability oracle votes TEAM_B
+      const lowReliable = makeSubmission({
+        id: 'sub-low-reliable',
+        data_source: 'oracle-low',
+        winning_team: WinningTeam.TEAM_B,
+        confidence_score: 85,
+      });
+
+      // Fresh oracle (no history) votes TEAM_B
+      const newOracle = makeSubmission({
+        id: 'sub-new',
+        data_source: 'oracle-new',
+        winning_team: WinningTeam.TEAM_B,
+        confidence_score: 88,
+      });
+
+      submissionRepo.find.mockResolvedValue([
+        highReliable,
+        lowReliable,
+        newOracle,
+      ]);
+
+      // High-reliability oracle has weight 0.9
+      reliabilityService.getWeight.mockImplementation(async (source: string) => {
+        if (source === 'oracle-high') return 0.9;
+        if (source === 'oracle-low') return 0.2;
+        if (source === 'oracle-new') return 1.0; // default neutral weight
+        return 1.0;
+      });
+
+      const result = await service.getMatchConsensus('match-123');
+
+      // Weighted votes:
+      // TEAM_A: 0.9 (high-reliable)
+      // TEAM_B: 0.2 (low-reliable) + 1.0 (new) = 1.2
+      // Total weight: 2.1
+      // TEAM_B wins with 1.2/2.1 > 0.5
+      expect(result.outcome).toBe(WinningTeam.TEAM_B);
+      expect(result.can_auto_finalize).toBe(true);
+      expect(result.eligible_participants).toBe(3);
+    });
+
+    it('prevents single high-reliability oracle from unilaterally deciding outcome', async () => {
+      // High-reliability oracle votes TEAM_A
+      const perfect = makeSubmission({
+        id: 'sub-perfect',
+        data_source: 'oracle-perfect',
+        winning_team: WinningTeam.TEAM_A,
+        confidence_score: 99,
+      });
+
+      // Low-reliability oracle votes TEAM_B
+      const unreliable = makeSubmission({
+        id: 'sub-unreliable',
+        data_source: 'oracle-unreliable',
+        winning_team: WinningTeam.TEAM_B,
+        confidence_score: 50,
+      });
+
+      submissionRepo.find.mockResolvedValue([perfect, unreliable]);
+
+      reliabilityService.getWeight.mockImplementation(async (source: string) => {
+        if (source === 'oracle-perfect') return 1.0; // perfect history
+        if (source === 'oracle-unreliable') return 0.5; // mediocre
+        return 1.0;
+      });
+
+      const result = await service.getMatchConsensus('match-456');
+
+      // Weighted votes:
+      // TEAM_A: 1.0 (perfect)
+      // TEAM_B: 0.5 (unreliable)
+      // Total: 1.5
+      // TEAM_A wins with 1.0/1.5 = 0.667 > 0.5 ✓
+      expect(result.outcome).toBe(WinningTeam.TEAM_A);
+      expect(result.can_auto_finalize).toBe(true);
+    });
+
+    it('detects tie in weighted consensus when weights split exactly 50/50', async () => {
+      const oracleA = makeSubmission({
+        id: 'sub-a',
+        data_source: 'oracle-a',
+        winning_team: WinningTeam.TEAM_A,
+        confidence_score: 90,
+      });
+
+      const oracleB = makeSubmission({
+        id: 'sub-b',
+        data_source: 'oracle-b',
+        winning_team: WinningTeam.TEAM_B,
+        confidence_score: 90,
+      });
+
+      submissionRepo.find.mockResolvedValue([oracleA, oracleB]);
+
+      reliabilityService.getWeight.mockResolvedValue(1.0); // equal weights
+
+      const result = await service.getMatchConsensus('match-tie');
+
+      // Weighted votes both equal 1.0 each
+      // Total = 2.0
+      // No winner > 0.5 of total
+      expect(result.outcome).toBeNull();
+      expect(result.can_auto_finalize).toBe(false);
+      expect(result.reason).toBe('vote_tie');
     });
   });
 });
