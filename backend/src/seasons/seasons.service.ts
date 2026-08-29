@@ -6,11 +6,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, SelectQueryBuilder } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  Repository,
+  SelectQueryBuilder,
+} from 'typeorm';
 import { NotificationType } from '../notifications/entities/notification.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { User } from '../users/entities/user.entity';
 import { Season } from './entities/season.entity';
+import { SeasonLeaderboardSnapshot } from './entities/season-leaderboard-snapshot.entity';
 import {
   DistributionLedgerStatus,
   SeasonDistributionLedgerEntry,
@@ -337,7 +343,17 @@ export class SeasonsService {
 
   /**
    * Close an ending season and open the next one at the schedule boundary.
-   * Idempotent via `rollover_processed_at` — re-running does not double-finalize.
+   *
+   * Runs as a single DB transaction: freeze the ending season (finalize +
+   * mark rollover_processed_at), snapshot its final leaderboard into the
+   * immutable season_leaderboard_snapshots table, then activate the next
+   * season. A crash or overlapping tick mid-write can never leave standings
+   * finalized without a snapshot, or vice versa — both commit together or
+   * neither does.
+   *
+   * Idempotent via `rollover_processed_at`: re-running for an
+   * already-rolled season is a no-op (checked both before and again inside
+   * the transaction to close the race between two concurrent ticks).
    */
   async processSeasonRollover(now = new Date()): Promise<SeasonRolloverResult> {
     const ending = await this.seasonsRepository
@@ -380,46 +396,89 @@ export class SeasonsService {
       };
     }
 
-    if (!ending.is_finalized) {
-      try {
-        await this.finalizeSeason(ending.id);
-      } catch (err) {
-        // Concurrent rollover may have finalized already; continue if so.
-        if (!(err instanceof ConflictException)) {
-          throw err;
-        }
-      }
-    }
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    const closed = await this.findById(ending.id);
-    if (closed.rollover_processed_at) {
-      return {
-        closedSeasonId: closed.id,
-        openedSeasonId: null,
-        rewardsComputed: false,
-        skipped: true,
-        reason: 'already_processed',
-      };
+    let closed: Season;
+    let opened: Season | null;
+    try {
+      const season = await queryRunner.manager.findOne(Season, {
+        where: { id: ending.id },
+      });
+      if (!season) {
+        throw new NotFoundException(`Season "${ending.id}" not found`);
+      }
+
+      // Re-check inside the transaction: another worker may have committed
+      // a rollover for this season between our lookup above and now.
+      if (season.rollover_processed_at) {
+        await queryRunner.rollbackTransaction();
+        return {
+          closedSeasonId: season.id,
+          openedSeasonId: null,
+          rewardsComputed: false,
+          skipped: true,
+          reason: 'already_processed',
+        };
+      }
+
+      const topWinner = await queryRunner.manager.findOne(User, {
+        where: {},
+        order: { season_points: 'DESC' },
+      });
+
+      season.is_active = false;
+      season.is_finalized = true;
+      season.top_winner = topWinner ?? null;
+      season.rollover_processed_at = now;
+      closed = await queryRunner.manager.save(Season, season);
+
+      await this.snapshotLeaderboard(queryRunner.manager, closed);
+
+      await queryRunner.manager.update(User, {}, { season_points: 0 });
+
+      opened =
+        (await queryRunner.manager.findOne(Season, {
+          where: { season_number: closed.season_number + 1 },
+        })) ?? null;
+
+      if (opened && !opened.is_finalized) {
+        opened.is_active = true;
+        if (opened.starts_at > now) {
+          opened.starts_at = now;
+        }
+        opened = await queryRunner.manager.save(Season, opened);
+      } else {
+        opened = await this.activateDueSeasonWithManager(
+          queryRunner.manager,
+          now,
+        );
+      }
+
+      await queryRunner.commitTransaction();
+    } catch (err) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error(`Season rollover failed for "${ending.id}"`, err);
+      throw err;
+    } finally {
+      await queryRunner.release();
     }
 
     const rewardsComputed = await this.computeSeasonRewards(closed);
-    closed.rollover_processed_at = now;
-    closed.is_active = false;
-    await this.seasonsRepository.save(closed);
 
-    let opened =
-      (await this.seasonsRepository.findOne({
-        where: { season_number: closed.season_number + 1 },
-      })) ?? null;
-
-    if (opened && !opened.is_finalized) {
-      opened.is_active = true;
-      if (opened.starts_at > now) {
-        opened.starts_at = now;
-      }
-      opened = await this.seasonsRepository.save(opened);
-    } else {
-      opened = await this.activateDueSeason(now);
+    if (closed.top_winner?.stellar_address) {
+      await this.notificationsService.create(
+        closed.top_winner.stellar_address,
+        NotificationType.EventCreated,
+        '🎉 Season Winner!',
+        `Congratulations! You are the winner of the ${closed.name} season with the highest points!`,
+        {
+          season_id: closed.id,
+          season_name: closed.name,
+          winning_points: closed.top_winner.season_points,
+        },
+      );
     }
 
     await this.emitRolloverEvents(closed, opened);
@@ -434,6 +493,47 @@ export class SeasonsService {
       rewardsComputed,
       skipped: false,
     };
+  }
+
+  /**
+   * Snapshot the closed season's final standings into the immutable
+   * season_leaderboard_snapshots table, ordered by season_points desc.
+   * Skips if a snapshot for this season already exists (defends against a
+   * retry racing the unique (season, user) constraint mid-transaction).
+   */
+  private async snapshotLeaderboard(
+    manager: EntityManager,
+    season: Season,
+  ): Promise<void> {
+    const alreadySnapshotted = await manager.exists(SeasonLeaderboardSnapshot, {
+      where: { season: { id: season.id } },
+    });
+    if (alreadySnapshotted) {
+      return;
+    }
+
+    const standings = await manager
+      .createQueryBuilder(User, 'u')
+      .select(['u.id'])
+      .addSelect('u.season_points', 'season_points')
+      .orderBy('u.season_points', 'DESC')
+      .addOrderBy('u.id', 'ASC')
+      .getRawMany<{ u_id: string; season_points: number }>();
+
+    if (standings.length === 0) {
+      return;
+    }
+
+    const snapshots = standings.map((row, index) =>
+      manager.create(SeasonLeaderboardSnapshot, {
+        season,
+        user: { id: row.u_id } as User,
+        rank: index + 1,
+        season_points: Number(row.season_points),
+      }),
+    );
+
+    await manager.save(SeasonLeaderboardSnapshot, snapshots);
   }
 
   private async activateDueSeason(now: Date): Promise<Season | null> {
@@ -452,6 +552,27 @@ export class SeasonsService {
 
     due.is_active = true;
     return this.seasonsRepository.save(due);
+  }
+
+  private async activateDueSeasonWithManager(
+    manager: EntityManager,
+    now: Date,
+  ): Promise<Season | null> {
+    const due = await manager
+      .createQueryBuilder(Season, 's')
+      .where('s.is_active = :active', { active: false })
+      .andWhere('s.is_finalized = :fin', { fin: false })
+      .andWhere('s.starts_at <= :now', { now })
+      .andWhere('s.ends_at > :now', { now })
+      .orderBy('s.season_number', 'ASC')
+      .getOne();
+
+    if (!due) {
+      return null;
+    }
+
+    due.is_active = true;
+    return manager.save(Season, due);
   }
 
   /**

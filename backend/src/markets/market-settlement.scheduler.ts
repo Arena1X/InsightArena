@@ -243,6 +243,14 @@ export class MarketSettlementScheduler {
         return null;
       }
 
+      if (fresh.settlement_attempt_count >= this.MAX_RETRY_ATTEMPTS) {
+        await queryRunner.rollbackTransaction();
+        this.logger.error(
+          `Market ${market.id} has exhausted its persisted retry budget (${fresh.settlement_attempt_count} attempts), skipping`,
+        );
+        return null;
+      }
+
       const attempt = queryRunner.manager.create(SettlementAttempt, {
         market_id: fresh.id,
         status: SettlementAttemptStatus.RESOLVING,
@@ -250,13 +258,18 @@ export class MarketSettlementScheduler {
       });
       const savedAttempt = await queryRunner.manager.save(attempt);
 
-      if (fresh.settlement_state !== MarketSettlementState.SETTLING) {
-        await queryRunner.manager.update(
-          Market,
-          { id: fresh.id },
-          { settlement_state: MarketSettlementState.SETTLING },
-        );
-      }
+      // Persisted alongside the in-memory retry queue so the attempt count
+      // survives a process restart instead of resetting to zero.
+      await queryRunner.manager.update(
+        Market,
+        { id: fresh.id },
+        {
+          ...(fresh.settlement_state !== MarketSettlementState.SETTLING
+            ? { settlement_state: MarketSettlementState.SETTLING }
+            : {}),
+          settlement_attempt_count: fresh.settlement_attempt_count + 1,
+        },
+      );
 
       await queryRunner.commitTransaction();
       return {
@@ -364,38 +377,25 @@ export class MarketSettlementScheduler {
   }
 
   /**
-   * Settle market with retry tracking
+   * Settle market with retry tracking. Reuses the same claim/finalize
+   * transaction path as a fresh sweep (advisory lock, settlement-attempt
+   * row, persisted attempt counter) so a retry is never a second,
+   * untracked code path around the DB.
    */
   private async settleMarketWithRetry(
     market: Market,
     retryInfo: SettlementRetryInfo,
   ): Promise<boolean> {
-    try {
-      await this.sorobanService.resolveMarket(
-        market.on_chain_market_id,
-        market.proposed_outcome as string,
-      );
-
-      await this.webhookDispatcher.emit('market.settled', {
-        id: market.id,
-        on_chain_market_id: market.on_chain_market_id,
-        resolved_outcome: market.proposed_outcome,
-        settled_at: new Date(),
-      });
-
+    const settled = await this.settleMarket(market);
+    if (settled) {
       return true;
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-      this.logger.warn(
-        `Retry attempt ${retryInfo.attempts + 1} failed for market ${market.id}: ${errorMsg}`,
-      );
-
-      retryInfo.attempts++;
-      retryInfo.lastError = errorMsg;
-      retryInfo.nextRetryAt = this.calculateNextRetry(retryInfo.attempts);
-
-      return false;
     }
+
+    retryInfo.attempts++;
+    retryInfo.lastError = 'Settlement attempt failed, see logs';
+    retryInfo.nextRetryAt = this.calculateNextRetry(retryInfo.attempts);
+
+    return false;
   }
 
   /**

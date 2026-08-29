@@ -5,6 +5,7 @@ import { DataSource, Repository } from 'typeorm';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SeasonsService } from './seasons.service';
 import { Season } from './entities/season.entity';
+import { User } from '../users/entities/user.entity';
 import {
   DistributionLedgerStatus,
   SeasonDistributionLedgerEntry,
@@ -657,6 +658,74 @@ describe('SeasonsService', () => {
       updated_at: new Date(),
     };
 
+    function buildTransactionalManager(overrides: {
+      season: Season;
+      winner: {
+        id: string;
+        stellar_address: string;
+        season_points: number;
+      } | null;
+      finalized: Season;
+      opened: Season | null;
+      standings: { u_id: string; season_points: number }[];
+      snapshotExists?: boolean;
+    }) {
+      const savedSnapshots: unknown[] = [];
+      const manager = {
+        findOne: jest
+          .fn()
+          .mockImplementation(
+            async (
+              entity: unknown,
+              opts: { where?: { id?: string; season_number?: number } },
+            ) => {
+              if (entity === Season) {
+                if (opts?.where?.id === overrides.season.id) {
+                  return { ...overrides.season };
+                }
+                if (
+                  opts?.where?.season_number ===
+                  overrides.season.season_number + 1
+                ) {
+                  return overrides.opened;
+                }
+                return null;
+              }
+              if (entity === User) {
+                return overrides.winner;
+              }
+              return null;
+            },
+          ),
+        save: jest
+          .fn()
+          .mockImplementation(async (entity: unknown, value: unknown) => {
+            if (entity === Season) {
+              const v = value as Season;
+              return v.id === overrides.season.id ? overrides.finalized : v;
+            }
+            if (Array.isArray(value)) {
+              savedSnapshots.push(...value);
+            }
+            return value;
+          }),
+        update: jest.fn().mockResolvedValue(undefined),
+        exists: jest.fn().mockResolvedValue(overrides.snapshotExists ?? false),
+        create: jest.fn().mockImplementation((_entity, value) => value),
+        createQueryBuilder: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnThis(),
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          orderBy: jest.fn().mockReturnThis(),
+          addOrderBy: jest.fn().mockReturnThis(),
+          getRawMany: jest.fn().mockResolvedValue(overrides.standings),
+          getOne: jest.fn().mockResolvedValue(null),
+        }),
+      };
+      return { manager, savedSnapshots };
+    }
+
     it('closes ending season, opens next, and is idempotent on re-run', async () => {
       const now = new Date('2020-06-01T00:00:00.000Z');
       const winner = {
@@ -669,6 +738,7 @@ describe('SeasonsService', () => {
         ...ending,
         is_active: false,
         is_finalized: true,
+        rollover_processed_at: now,
         top_winner: winner as Season['top_winner'],
       };
 
@@ -679,14 +749,13 @@ describe('SeasonsService', () => {
         getOne: jest.fn().mockResolvedValue(ending),
       } as never);
 
-      const manager = {
-        findOne: jest
-          .fn()
-          .mockResolvedValueOnce(ending)
-          .mockResolvedValueOnce(winner),
-        save: jest.fn().mockResolvedValue(finalized),
-        update: jest.fn().mockResolvedValue(undefined),
-      };
+      const { manager, savedSnapshots } = buildTransactionalManager({
+        season: ending,
+        winner,
+        finalized,
+        opened: nextSeason,
+        standings: [{ u_id: 'u1', season_points: 10 }],
+      });
       const qr = {
         connect: jest.fn().mockResolvedValue(undefined),
         startTransaction: jest.fn().mockResolvedValue(undefined),
@@ -718,12 +787,15 @@ describe('SeasonsService', () => {
       expect(first.closedSeasonId).toBe('end-1');
       expect(first.openedSeasonId).toBe('next-1');
       expect(first.rewardsComputed).toBe(true);
-      expect(seasonsRepository.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: 'end-1',
-          rollover_processed_at: now,
-        }),
-      );
+      expect(qr.commitTransaction).toHaveBeenCalledTimes(1);
+      expect(qr.rollbackTransaction).not.toHaveBeenCalled();
+      // Exactly one snapshot row written for the closed season's sole standing.
+      expect(savedSnapshots).toHaveLength(1);
+      expect(savedSnapshots[0]).toMatchObject({
+        rank: 1,
+        season_points: 10,
+        user: { id: 'u1' },
+      });
 
       // Second run with already-processed ending season filtered out.
       seasonsRepository.createQueryBuilder.mockReturnValue({
@@ -736,6 +808,121 @@ describe('SeasonsService', () => {
       const second = await service.processSeasonRollover(now);
       expect(second.skipped).toBe(true);
       expect(second.reason).toBe('nothing_to_rollover');
+    });
+
+    it('does not duplicate the snapshot when re-run inside the transaction finds one already exists', async () => {
+      const now = new Date('2020-06-01T00:00:00.000Z');
+      const winner = {
+        id: 'u1',
+        username: 'winner',
+        stellar_address: 'GWINNER',
+        season_points: 10,
+      };
+      const finalized: Season = {
+        ...ending,
+        is_active: false,
+        is_finalized: true,
+        rollover_processed_at: now,
+        top_winner: winner as Season['top_winner'],
+      };
+
+      seasonsRepository.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(ending),
+      } as never);
+
+      const { manager, savedSnapshots } = buildTransactionalManager({
+        season: ending,
+        winner,
+        finalized,
+        opened: nextSeason,
+        standings: [{ u_id: 'u1', season_points: 10 }],
+        snapshotExists: true,
+      });
+      const qr = {
+        connect: jest.fn().mockResolvedValue(undefined),
+        startTransaction: jest.fn().mockResolvedValue(undefined),
+        manager,
+        commitTransaction: jest.fn().mockResolvedValue(undefined),
+        rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+        release: jest.fn().mockResolvedValue(undefined),
+      };
+      (
+        service as unknown as { dataSource: { createQueryRunner: jest.Mock } }
+      ).dataSource.createQueryRunner = jest.fn().mockReturnValue(qr);
+
+      seasonsRepository.findOne = jest.fn().mockResolvedValue(finalized);
+      seasonsRepository.save = jest
+        .fn()
+        .mockImplementation(async (s: Season) => s);
+
+      await service.processSeasonRollover(now);
+
+      expect(manager.exists).toHaveBeenCalledTimes(1);
+      expect(savedSnapshots).toHaveLength(0);
+    });
+
+    it('rolls back the whole transaction if the leaderboard snapshot write fails', async () => {
+      const now = new Date('2020-06-01T00:00:00.000Z');
+      const winner = {
+        id: 'u1',
+        username: 'winner',
+        stellar_address: 'GWINNER',
+        season_points: 10,
+      };
+      const finalized: Season = {
+        ...ending,
+        is_active: false,
+        is_finalized: true,
+        rollover_processed_at: now,
+        top_winner: winner as Season['top_winner'],
+      };
+
+      seasonsRepository.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(ending),
+      } as never);
+
+      const { manager } = buildTransactionalManager({
+        season: ending,
+        winner,
+        finalized,
+        opened: nextSeason,
+        standings: [{ u_id: 'u1', season_points: 10 }],
+      });
+      manager.save = jest
+        .fn()
+        .mockImplementation(async (entity: unknown, value: unknown) => {
+          if (entity === Season) {
+            const v = value as Season;
+            return v.id === ending.id ? finalized : v;
+          }
+          throw new Error('snapshot write failed');
+        });
+      const qr = {
+        connect: jest.fn().mockResolvedValue(undefined),
+        startTransaction: jest.fn().mockResolvedValue(undefined),
+        manager,
+        commitTransaction: jest.fn().mockResolvedValue(undefined),
+        rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+        release: jest.fn().mockResolvedValue(undefined),
+      };
+      (
+        service as unknown as { dataSource: { createQueryRunner: jest.Mock } }
+      ).dataSource.createQueryRunner = jest.fn().mockReturnValue(qr);
+
+      await expect(service.processSeasonRollover(now)).rejects.toThrow(
+        'snapshot write failed',
+      );
+
+      expect(qr.commitTransaction).not.toHaveBeenCalled();
+      expect(qr.rollbackTransaction).toHaveBeenCalledTimes(1);
+      // Standings must not be reset if the snapshot never committed.
+      expect(manager.update).not.toHaveBeenCalled();
     });
 
     it('skips when rollover_processed_at is already set on ending season', async () => {

@@ -71,6 +71,7 @@ describe('Markets (e2e)', () => {
     proposed_outcome: null,
     resolution_proposed_at: null,
     grace_period_seconds: 86400,
+    settlement_attempt_count: 0,
   };
 
   const mockResolvedMarket: Market = {
