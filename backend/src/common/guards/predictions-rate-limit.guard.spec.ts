@@ -43,6 +43,9 @@ describe('PredictionsRateLimitGuard', () => {
 
   describe('canActivate', () => {
     beforeEach(() => {
+      const mockResponse = {
+        setHeader: jest.fn(),
+      };
       mockContext = {
         switchToHttp: jest.fn().mockReturnValue({
           getRequest: jest.fn().mockReturnValue({
@@ -50,7 +53,7 @@ describe('PredictionsRateLimitGuard', () => {
               authorization: 'Bearer valid-token',
             },
           }),
-          getResponse: jest.fn().mockReturnValue({}),
+          getResponse: jest.fn().mockReturnValue(mockResponse),
         }),
       } as unknown as jest.Mocked<ExecutionContext>;
     });
@@ -70,7 +73,7 @@ describe('PredictionsRateLimitGuard', () => {
 
     it('blocks request with 429 when rate limit is exceeded', async () => {
       mockJwtService.decode.mockReturnValue({ sub: 'user-123' });
-      mockThrottlerStorage.increment.mockResolvedValue({
+      mockThrottlerStorage.increment.mockResolvedValueOnce({
         totalHits: 31, // Exceeds default limit of 30
         timeToExpire: 50,
       } as any);
@@ -116,28 +119,15 @@ describe('PredictionsRateLimitGuard', () => {
     });
 
     it('sets rate-limit headers on response', async () => {
-      const mockResponse = {
-        setHeader: jest.fn(),
-      };
-      const contextWithResponse = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue({
-            headers: {
-              authorization: 'Bearer valid-token',
-            },
-          }),
-          getResponse: jest.fn().mockReturnValue(mockResponse),
-        }),
-      } as unknown as jest.Mocked<ExecutionContext>;
-
       mockJwtService.decode.mockReturnValue({ sub: 'user-123' });
       mockThrottlerStorage.increment.mockResolvedValue({
         totalHits: 5,
         timeToExpire: 50,
       } as any);
 
-      await guard.canActivate(contextWithResponse);
+      await guard.canActivate(mockContext);
 
+      const mockResponse = mockContext.switchToHttp().getResponse();
       expect(mockResponse.setHeader).toHaveBeenCalledWith(
         'X-RateLimit-Limit',
         '30',
@@ -150,7 +140,7 @@ describe('PredictionsRateLimitGuard', () => {
 
     it('returns 429 error message with rate limit info', async () => {
       mockJwtService.decode.mockReturnValue({ sub: 'user-123' });
-      mockThrottlerStorage.increment.mockResolvedValue({
+      mockThrottlerStorage.increment.mockResolvedValueOnce({
         totalHits: 31,
         timeToExpire: 45,
       } as any);
