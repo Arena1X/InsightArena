@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { BanGuard } from '../common/guards/ban.guard';
+import { PredictionsRateLimitGuard } from '../common/guards/predictions-rate-limit.guard';
 import {
   ApiTags,
   ApiOperation,
@@ -59,7 +60,7 @@ export class PredictionsController {
   constructor(private readonly predictionsService: PredictionsService) {}
 
   @Post()
-  @UseGuards(BanGuard)
+  @UseGuards(BanGuard, PredictionsRateLimitGuard)
   @Idempotent()
   @ThrottleTier('write')
   @HttpCode(HttpStatus.CREATED)
@@ -82,6 +83,10 @@ export class PredictionsController {
     description:
       'Duplicate prediction on this market, slippage exceeded, a request with the same Idempotency-Key already in progress, or the same Idempotency-Key reused with a different request body',
   })
+  @ApiResponse({
+    status: 429,
+    description: 'Rate limit exceeded for prediction submissions',
+  })
   async submit(
     @Body() dto: SubmitPredictionDto,
     @CurrentUser() user: User,
@@ -90,7 +95,7 @@ export class PredictionsController {
   }
 
   @Post('batch')
-  @UseGuards(BanGuard)
+  @UseGuards(BanGuard, PredictionsRateLimitGuard)
   @Idempotent()
   @ThrottleTier('write')
   @HttpCode(HttpStatus.OK)
@@ -113,6 +118,10 @@ export class PredictionsController {
     status: 409,
     description:
       'A request with the same Idempotency-Key is already in progress, or it was reused with a different request body',
+  })
+  @ApiResponse({
+    status: 429,
+    description: 'Rate limit exceeded for prediction submissions',
   })
   async submitBatch(
     @Body() dto: SubmitBatchPredictionsDto,
