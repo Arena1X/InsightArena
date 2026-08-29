@@ -8,7 +8,7 @@ pub mod pool;
 pub mod storage_types;
 
 pub use crate::errors::StakingError;
-pub use crate::storage_types::{Config, DataKey, LockTier, Position, PoolState};
+pub use crate::storage_types::{Config, DataKey, LockTier, Position, PoolState, UnbondingConfig};
 
 use soroban_sdk::{contract, contractimpl, token::Client as TokenClient, Address, Env, Vec};
 
@@ -90,6 +90,7 @@ impl StakingVault {
         token: Address,
         fee_source: Address,
         lock_tiers: Vec<LockTier>,
+        unbonding_config: UnbondingConfig,
     ) -> Result<(), StakingError> {
         if env
             .storage()
@@ -101,6 +102,11 @@ impl StakingVault {
 
         admin.require_auth();
 
+        // Validate unbonding config
+        if unbonding_config.penalty_bps > lock::MAX_PENALTY_BPS {
+            return Err(StakingError::InvalidPenaltyConfig);
+        }
+
         let config = Config {
             admin,
             token,
@@ -110,6 +116,9 @@ impl StakingVault {
         env.storage()
             .instance()
             .set(&DataKey::LockTiers, &lock_tiers);
+        env.storage()
+            .instance()
+            .set(&DataKey::UnbondingConfig, &unbonding_config);
         env.storage().instance().set(&DataKey::Paused, &false);
 
         let pool_state = PoolState {
@@ -156,6 +165,8 @@ impl StakingVault {
             shares: 0,
             unlock_at: 0,
             reward_debt: 0,
+            unlock_requested_at: 0,
+            pending_unlock_amount: 0,
         });
 
         // Settle any pending rewards on the existing position before changing
@@ -195,6 +206,131 @@ impl StakingVault {
         Ok(())
     }
 
+    /// Request to unlock `amount` of staked tokens once the lock period has elapsed.
+    /// This starts the unbonding cooldown period.
+    pub fn request_unlock(env: Env, staker: Address, amount: i128) -> Result<(), StakingError> {
+        staker.require_auth();
+        require_not_paused(&env)?;
+
+        if amount <= 0 {
+            return Err(StakingError::InvalidAmount);
+        }
+
+        let mut position =
+            get_position_raw(&env, &staker).ok_or(StakingError::PositionNotFound)?;
+
+        if amount > position.amount {
+            return Err(StakingError::InsufficientStake);
+        }
+
+        // Check if lock period has elapsed
+        if env.ledger().timestamp() < position.unlock_at {
+            return Err(StakingError::LockNotElapsed);
+        }
+
+        // Record the unlock request
+        position.unlock_requested_at = env.ledger().timestamp();
+        position.pending_unlock_amount = amount;
+
+        set_position(&env, &staker, &position);
+
+        Ok(())
+    }
+
+    /// Withdraw unlocked tokens after the cooldown period.
+    /// If withdrawn before cooldown ends, an early-exit penalty is applied.
+    /// Pending rewards are auto-claimed as part of withdrawal.
+    pub fn withdraw(env: Env, staker: Address) -> Result<(), StakingError> {
+        staker.require_auth();
+        require_not_paused(&env)?;
+
+        let config = get_config(&env)?;
+        let unbonding_config = env
+            .storage()
+            .instance()
+            .get::<DataKey, UnbondingConfig>(&DataKey::UnbondingConfig)
+            .ok_or(StakingError::NotInitialized)?;
+
+        let mut pool_state = get_pool_state(&env)?;
+        let mut position =
+            get_position_raw(&env, &staker).ok_or(StakingError::PositionNotFound)?;
+
+        if position.pending_unlock_amount <= 0 {
+            return Err(StakingError::NoPendingUnlock);
+        }
+
+        let amount = position.pending_unlock_amount;
+        let current_time = env.ledger().timestamp();
+        let cooldown_end = position
+            .unlock_requested_at
+            .checked_add(unbonding_config.cooldown_period)
+            .ok_or(StakingError::Overflow)?;
+
+        // Calculate penalty if withdrawing early
+        let penalty = if current_time < cooldown_end {
+            lock::calculate_penalty(amount, unbonding_config.penalty_bps)?
+        } else {
+            0
+        };
+
+        let amount_after_penalty = amount
+            .checked_sub(penalty)
+            .ok_or(StakingError::Overflow)?;
+
+        // Calculate pending rewards
+        let owed = pool::pending(&pool_state, &position)?;
+
+        // Shares are proportional to the raw amount being withdrawn.
+        let shares_to_burn = if amount == position.amount {
+            position.shares
+        } else {
+            position
+                .shares
+                .checked_mul(amount)
+                .ok_or(StakingError::Overflow)?
+                .checked_div(position.amount)
+                .ok_or(StakingError::Overflow)?
+        };
+
+        position.amount = position
+            .amount
+            .checked_sub(amount)
+            .ok_or(StakingError::Overflow)?;
+        position.shares = position
+            .shares
+            .checked_sub(shares_to_burn)
+            .ok_or(StakingError::Overflow)?;
+        position.pending_unlock_amount = 0;
+        position.unlock_requested_at = 0;
+
+        pool_state.total_shares = pool_state
+            .total_shares
+            .checked_sub(shares_to_burn)
+            .ok_or(StakingError::Overflow)?;
+
+        pool::settle_debt(&pool_state, &mut position);
+
+        set_position(&env, &staker, &position);
+        set_pool_state(&env, &pool_state);
+
+        // Route penalty to reward pool if applicable
+        if penalty > 0 {
+            fees::route_penalty_to_pool(&env, penalty)?;
+        }
+
+        // Transfer tokens to staker
+        let token_client = TokenClient::new(&env, &config.token);
+        let total_out = amount_after_penalty
+            .checked_add(owed)
+            .ok_or(StakingError::Overflow)?;
+        if total_out > 0 {
+            token_client.transfer(&env.current_contract_address(), &staker, &total_out);
+        }
+
+        Ok(())
+    }
+
+    /// Legacy unstake function for backward compatibility.
     /// Withdraw `amount` of staked tokens once the lock has elapsed.
     /// Pending rewards are auto-claimed as part of unstaking.
     pub fn unstake(env: Env, staker: Address, amount: i128) -> Result<(), StakingError> {
@@ -311,6 +447,14 @@ impl StakingVault {
     /// Return global pool accounting.
     pub fn get_pool(env: Env) -> Result<PoolState, StakingError> {
         get_pool_state(&env)
+    }
+
+    /// Return the unbonding configuration.
+    pub fn get_unbonding_config(env: Env) -> Result<UnbondingConfig, StakingError> {
+        env.storage()
+            .instance()
+            .get::<DataKey, UnbondingConfig>(&DataKey::UnbondingConfig)
+            .ok_or(StakingError::NotInitialized)
     }
 
     // ── Admin ───────────────────────────────────────────────────────────────────
