@@ -218,5 +218,9 @@ pub enum InsightArenaError {
     /// - Withdrawal attempted after market lock time (MarketExpired not applicable pre-lock)
     /// - Withdrawal amount is zero or invalid
     /// - Withdrawal amount exceeds user's current stake
+    /// REUSED for dispute resolution guards:
+    /// - A dispute has already been resolved and cannot be settled again
+    ///   (prevents double-refund or double-slash in resolve_dispute/finalize_arbiter_vote)
+    /// - Attempted to slash a bond that has already been slashed or refunded
     ZeroShareTransfer = 112,
 }

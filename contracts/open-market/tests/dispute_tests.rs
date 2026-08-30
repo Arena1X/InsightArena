@@ -769,13 +769,391 @@ fn setup_appealed_dispute(
     TokenClient::new(env, xlm_token).approve(&disputer, &client.address, &bond, &9999);
     client.raise_dispute(&disputer, &id, &bond);
 
-    // Tier 1 requires 2× the original bond.
+    // Calculate appeal bond for tier 1
     let appeal_bond = bond * 2;
     StellarAssetClient::new(env, xlm_token).mint(&appealer, &appeal_bond);
     TokenClient::new(env, xlm_token).approve(&appealer, &client.address, &appeal_bond, &9999);
     client.appeal_dispute(&appealer, &id, &appeal_bond);
 
     (id, appealer, appeal_bond)
+}
+
+// ── Bond Slashing and Distribution Tests ──────────────────────────────────────
+
+#[test]
+fn test_resolve_dispute_reject_slashes_bond_correctly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    let id = client.create_market(&creator, &market_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    let bond = 10_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+    client.raise_dispute(&disputer, &id, &bond);
+
+    let treasury_before = client.get_treasury_balance();
+    let insurance_before = client.get_insurance_pool_balance();
+    let disputer_before = TokenClient::new(&env, &xlm_token).balance(&disputer);
+
+    // Reject dispute: disputer loses bond
+    client.resolve_dispute(&admin, &id, &false);
+
+    // Disputer should not receive refund
+    let disputer_after = TokenClient::new(&env, &xlm_token).balance(&disputer);
+    assert_eq!(disputer_after, disputer_before);
+
+    // Bond should be split between insurance and treasury
+    let insurance_share = bond * 1000 / 10_000; // 10% default
+    let treasury_share = bond - insurance_share;
+    
+    assert_eq!(client.get_treasury_balance(), treasury_before + treasury_share);
+    assert_eq!(client.get_insurance_pool_balance(), insurance_before + insurance_share);
+}
+
+#[test]
+fn test_resolve_dispute_uphold_refunds_disputer_full_bond() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    let id = client.create_market(&creator, &market_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    let bond = 10_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+    client.raise_dispute(&disputer, &id, &bond);
+
+    let token = TokenClient::new(&env, &xlm_token);
+    let disputer_before = token.balance(&disputer);
+    let treasury_before = client.get_treasury_balance();
+    let insurance_before = client.get_insurance_pool_balance();
+
+    // Uphold dispute: disputer wins
+    client.resolve_dispute(&admin, &id, &true);
+
+    // Disputer should receive full bond back
+    assert_eq!(token.balance(&disputer), disputer_before + bond);
+    
+    // Treasury and insurance should not change
+    assert_eq!(client.get_treasury_balance(), treasury_before);
+    assert_eq!(client.get_insurance_pool_balance(), insurance_before);
+}
+
+#[test]
+fn test_resolve_dispute_cannot_be_resolved_twice() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    let id = client.create_market(&creator, &market_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    let bond = 10_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+    client.raise_dispute(&disputer, &id, &bond);
+
+    // First resolution succeeds
+    client.resolve_dispute(&admin, &id, &false);
+
+    // Second resolution should fail with DisputeNotFound (dispute was removed)
+    let result = client.try_resolve_dispute(&admin, &id, &false);
+    assert!(matches!(result, Err(Ok(InsightArenaError::DisputeNotFound))));
+}
+
+// ── Reputation Impact Tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_resolve_dispute_reject_penalizes_disputer_reputation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    let id = client.create_market(&creator, &market_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    let bond = 10_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+
+    // Get initial reputation (will be 0 for new user)
+    let stats_before = client.get_creator_stats(&disputer);
+    let disputes_before = stats_before.dispute_count;
+
+    client.raise_dispute(&disputer, &id, &bond);
+    client.resolve_dispute(&admin, &id, &false);
+
+    // Disputer should have increased dispute count (reputation penalty)
+    let stats_after = client.get_creator_stats(&disputer);
+    assert_eq!(stats_after.dispute_count, disputes_before + 1);
+    assert!(stats_after.reputation_score <= stats_before.reputation_score);
+}
+
+#[test]
+fn test_resolve_dispute_uphold_penalizes_creator_reputation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    let id = client.create_market(&creator, &market_params(&env));
+
+    // Record baseline dispute count
+    let disputes_before = client.get_creator_stats(&creator).dispute_count;
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    let bond = 10_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+
+    // Raising the dispute applies the first creator penalty (+1 dispute_count)
+    client.raise_dispute(&disputer, &id, &bond);
+    assert_eq!(
+        client.get_creator_stats(&creator).dispute_count,
+        disputes_before + 1,
+        "raise_dispute must increment creator dispute_count"
+    );
+
+    // Upholding applies the second creator penalty (+1 more dispute_count)
+    client.resolve_dispute(&admin, &id, &true);
+    let stats_final = client.get_creator_stats(&creator);
+    assert_eq!(
+        stats_final.dispute_count,
+        disputes_before + 2,
+        "upholding a dispute must add a second dispute_count penalty to the creator"
+    );
+
+    // Each dispute subtracts 50 from reputation (formula: min(dispute_count * 50, 200)).
+    // With 2 disputes the penalty is 100; a brand-new creator with 0 resolved markets
+    // starts at score 0, so the floor clamps it there — verify it never exceeds what
+    // it would be with zero disputes.
+    let penalty_per_dispute: u32 = 50;
+    let expected_max_score = 1000_u32
+        .saturating_sub(stats_final.dispute_count.saturating_mul(penalty_per_dispute).min(200));
+    assert!(
+        stats_final.reputation_score <= expected_max_score,
+        "reputation_score must not exceed the penalised ceiling"
+    );
+}
+
+// ── Appeal Bond Slashing Tests ────────────────────────────────────────────────
+
+#[test]
+fn test_resolve_appeal_uphold_refunds_appealer_full_bond() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (id, appealer, appeal_bond) = setup_appealed_dispute(&env, &client, &oracle, &xlm_token);
+
+    let token = TokenClient::new(&env, &xlm_token);
+    let appealer_before = token.balance(&appealer);
+    let treasury_before = client.get_treasury_balance();
+
+    client.resolve_appeal(&admin, &id, &true);
+
+    // Appealer should receive full bond back
+    assert_eq!(token.balance(&appealer), appealer_before + appeal_bond);
+    
+    // Treasury should not change
+    assert_eq!(client.get_treasury_balance(), treasury_before);
+}
+
+#[test]
+fn test_resolve_appeal_reject_slashes_appealer_bond() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (id, appealer, appeal_bond) = setup_appealed_dispute(&env, &client, &oracle, &xlm_token);
+
+    let token = TokenClient::new(&env, &xlm_token);
+    let appealer_before = token.balance(&appealer);
+    let treasury_before = client.get_treasury_balance();
+    let insurance_before = client.get_insurance_pool_balance();
+
+    client.resolve_appeal(&admin, &id, &false);
+
+    // Appealer should not receive refund
+    assert_eq!(token.balance(&appealer), appealer_before);
+    
+    // Bond should be split between insurance and treasury
+    let insurance_share = appeal_bond * 1000 / 10_000;
+    let treasury_share = appeal_bond - insurance_share;
+    
+    assert_eq!(client.get_treasury_balance(), treasury_before + treasury_share);
+    assert_eq!(client.get_insurance_pool_balance(), insurance_before + insurance_share);
+}
+
+#[test]
+fn test_resolve_appeal_cannot_be_resolved_twice() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (id, _appealer, _appeal_bond) = setup_appealed_dispute(&env, &client, &oracle, &xlm_token);
+
+    // First resolution succeeds
+    client.resolve_appeal(&admin, &id, &true);
+
+    // Second resolution should fail (appeal_bond is now 0)
+    let result = client.try_resolve_appeal(&admin, &id, &true);
+    assert!(matches!(result, Err(Ok(InsightArenaError::EscrowEmpty))));
+}
+
+// ── Comprehensive Integration Tests ───────────────────────────────────────────
+
+#[test]
+fn test_complete_dispute_lifecycle_with_reputation_tracking() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    // Create and resolve market
+    let id = client.create_market(&creator, &market_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    let bond = 15_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+
+    // Track initial state
+    let creator_stats_initial = client.get_creator_stats(&creator);
+    let disputer_stats_initial = client.get_creator_stats(&disputer);
+    let contract_balance_initial = TokenClient::new(&env, &xlm_token).balance(&client.address);
+
+    // Raise dispute
+    client.raise_dispute(&disputer, &id, &bond);
+    
+    // Creator's dispute count should increase
+    let creator_stats_after_raise = client.get_creator_stats(&creator);
+    assert_eq!(
+        creator_stats_after_raise.dispute_count,
+        creator_stats_initial.dispute_count + 1
+    );
+
+    // Contract should hold the bond
+    assert_eq!(
+        TokenClient::new(&env, &xlm_token).balance(&client.address),
+        contract_balance_initial + bond
+    );
+
+    // Reject dispute
+    client.resolve_dispute(&admin, &id, &false);
+
+    // Disputer should be penalized
+    let disputer_stats_final = client.get_creator_stats(&disputer);
+    assert_eq!(
+        disputer_stats_final.dispute_count,
+        disputer_stats_initial.dispute_count + 1
+    );
+
+    // Bond should be slashed (split between insurance and treasury)
+    let insurance_share = bond * 1000 / 10_000;
+    let treasury_share = bond - insurance_share;
+    assert!(client.get_treasury_balance() >= treasury_share);
+    assert!(client.get_insurance_pool_balance() >= insurance_share);
+
+    // Dispute should be removed
+    let result = client.try_get_dispute(&id);
+    assert!(matches!(result, Err(Ok(InsightArenaError::DisputeNotFound))));
+}
+
+#[test]
+fn test_uphold_dispute_reopens_market_and_updates_all_parties() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    let id = client.create_market(&creator, &market_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    let bond = 12_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+
+    let disputer_balance_before = TokenClient::new(&env, &xlm_token).balance(&disputer);
+    let creator_disputes_before = client.get_creator_stats(&creator).dispute_count;
+
+    client.raise_dispute(&disputer, &id, &bond);
+    client.resolve_dispute(&admin, &id, &true);
+
+    // Market should be reopened
+    let market = client.get_market(&id);
+    assert!(!market.is_resolved);
+    assert_eq!(market.resolved_outcome, None);
+
+    // Disputer should get full refund
+    assert_eq!(
+        TokenClient::new(&env, &xlm_token).balance(&disputer),
+        disputer_balance_before
+    );
+
+    // Creator should have additional reputation penalty
+    let creator_disputes_after = client.get_creator_stats(&creator).dispute_count;
+    assert_eq!(creator_disputes_after, creator_disputes_before + 2); // +1 from raise, +1 from uphold
+}
+
+#[test]
+fn test_checked_arithmetic_in_bond_distribution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let creator = Address::generate(&env);
+    let disputer = Address::generate(&env);
+
+    let id = client.create_market(&creator, &market_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    // Use a bond amount that tests precision in percentage calculations
+    let bond = 999_999_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+
+    let treasury_before = client.get_treasury_balance();
+    let insurance_before = client.get_insurance_pool_balance();
+
+    client.raise_dispute(&disputer, &id, &bond);
+    client.resolve_dispute(&admin, &id, &false);
+
+    // Verify no funds are lost due to rounding
+    let insurance_share = bond * 1000 / 10_000;
+    let treasury_share = bond - insurance_share;
+    
+    assert_eq!(
+        client.get_treasury_balance() - treasury_before,
+        treasury_share
+    );
+    assert_eq!(
+        client.get_insurance_pool_balance() - insurance_before,
+        insurance_share
+    );
+    
+    // Verify the shares add up to the original bond
+    assert_eq!(insurance_share + treasury_share, bond);
 }
 
 #[test]

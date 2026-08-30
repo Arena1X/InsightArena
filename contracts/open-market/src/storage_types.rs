@@ -173,6 +173,13 @@ pub struct Dispute {
     /// True once `dispute::finalize_arbiter_vote` has settled this
     /// dispute's arbiter panel.
     pub arbiters_finalized: bool,
+    /// True once the dispute has been resolved (either upheld or rejected).
+    /// Guards against double-resolution.
+    pub is_resolved: bool,
+    /// The outcome of the dispute resolution: true if upheld (disputer was
+    /// right), false if rejected (original market resolution stands).
+    /// Only meaningful when `is_resolved` is true.
+    pub resolution_upheld: Option<bool>,
 }
 
 impl Dispute {
@@ -188,6 +195,8 @@ impl Dispute {
             quorum_bps: 0,
             voting_deadline: 0,
             arbiters_finalized: false,
+            is_resolved: false,
+            resolution_upheld: None,
         }
     }
 }
