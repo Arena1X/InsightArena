@@ -5,7 +5,9 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { AuthService } from './auth.service';
 import { RateLimitService } from './rate-limit.service';
 import { GenerateChallengeDto } from './dto/generate-challenge.dto';
@@ -16,6 +18,10 @@ import {
   RefreshTokenResponseDto,
   RotateRefreshTokenDto,
 } from './dto/refresh-token.dto';
+import {
+  RevokeSessionDto,
+  RevokeSessionResponseDto,
+} from './dto/revoke-session.dto';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -38,6 +44,19 @@ export class AuthController {
     private readonly configService: ConfigService,
   ) {}
 
+  /**
+   * Best-effort client IP extraction, matching the convention already used
+   * by TieredThrottlerGuard: prefer Express's parsed `req.ip` (respects
+   * `trust proxy`), fall back to the raw socket address.
+   */
+  private getClientIp(req?: Request): string | null {
+    return (
+      req?.ip ??
+      (req?.socket as { remoteAddress?: string })?.remoteAddress ??
+      null
+    );
+  }
+
   @Post('challenge')
   @HttpCode(HttpStatus.OK)
   generateChallenge(@Body() generateChallengeDto: GenerateChallengeDto) {
@@ -49,10 +68,14 @@ export class AuthController {
 
   @Post('verify')
   @HttpCode(HttpStatus.OK)
-  async verifyChallenge(@Body() verifyChallengeDto: VerifyChallengeDto) {
+  async verifyChallenge(
+    @Body() verifyChallengeDto: VerifyChallengeDto,
+    @Req() req?: Request,
+  ) {
     return this.authService.verifyChallenge(
       verifyChallengeDto.stellar_address,
       verifyChallengeDto.signed_challenge,
+      this.getClientIp(req),
     );
   }
 
@@ -105,9 +128,13 @@ export class AuthController {
   })
   async refreshToken(
     @Body() dto: RotateRefreshTokenDto,
+    @Req() req?: Request,
   ): Promise<RefreshTokenResponseDto> {
     const { access_token, refresh_token } =
-      await this.authService.rotateRefreshToken(dto.refresh_token);
+      await this.authService.rotateRefreshToken(
+        dto.refresh_token,
+        this.getClientIp(req),
+      );
 
     // Calculate expiry timestamp
     const expiresIn = this.configService.get<string>('JWT_EXPIRES_IN') || '7d';
@@ -115,6 +142,35 @@ export class AuthController {
     const expires_at = new Date(Date.now() + expiresMs).toISOString();
 
     return { access_token, refresh_token, expires_at };
+  }
+
+  @Post('revoke')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Revoke a session (logout)',
+    description:
+      'Revokes the refresh token family for the presented refresh token, ending that session. The presented token — and any token already rotated from it — can no longer be used to obtain new access tokens. Requires authentication; a caller may only revoke their own sessions.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Session revoked',
+    type: RevokeSessionResponseDto,
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - not authenticated, or refresh token not found',
+  })
+  async revoke(
+    @CurrentUser() user: User,
+    @Body() dto: RevokeSessionDto,
+    @Req() req?: Request,
+  ): Promise<RevokeSessionResponseDto> {
+    return this.authService.revokeSession(
+      user.id,
+      dto.refresh_token,
+      this.getClientIp(req),
+    );
   }
 
   /**

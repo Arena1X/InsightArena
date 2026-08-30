@@ -185,7 +185,11 @@ describe('AuthService', () => {
       userId: savedUser.id,
     } as UserPreferences);
 
-    const result = await service.verifyChallenge(address, 'signed-hex');
+    const result = await service.verifyChallenge(
+      address,
+      'signed-hex',
+      '203.0.113.5',
+    );
 
     expect(result.access_token).toBe('token.jwt.value');
     expect(result.user).toEqual(savedUser);
@@ -201,6 +205,56 @@ describe('AuthService', () => {
       expect.objectContaining({
         user_id: 'u-2',
         previous_token_id: null,
+      }),
+    );
+
+    // A login_success audit event is recorded with actor, ip and outcome.
+    expect(authAuditEventsRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'login_success',
+        user_id: 'u-2',
+        family_id: expect.any(String),
+        metadata: expect.objectContaining({
+          outcome: 'success',
+          ip: '203.0.113.5',
+        }),
+      }),
+    );
+  });
+
+  it('verifyChallenge() records a login_failure audit event (no user_id) on invalid signature', async () => {
+    service.generateChallenge(address);
+    jest.spyOn(service, 'verifyStellarSignature').mockReturnValue(false);
+
+    await expect(
+      service.verifyChallenge(address, 'bad-sig', '198.51.100.9'),
+    ).rejects.toThrow(UnauthorizedException);
+
+    expect(authAuditEventsRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'login_failure',
+        user_id: null,
+        metadata: expect.objectContaining({
+          outcome: 'failure',
+          ip: '198.51.100.9',
+        }),
+      }),
+    );
+
+    // No session should have been started.
+    expect(refreshTokensRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('verifyChallenge() records a login_failure audit event when no challenge exists', async () => {
+    await expect(
+      service.verifyChallenge('unknown-address', 'sig'),
+    ).rejects.toThrow(UnauthorizedException);
+
+    expect(authAuditEventsRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'login_failure',
+        user_id: null,
+        metadata: expect.objectContaining({ outcome: 'failure' }),
       }),
     );
   });
@@ -365,13 +419,13 @@ describe('AuthService', () => {
         ...overrides,
       }) as RefreshToken;
 
-    it('issues a new access + refresh token and revokes the old one on valid rotation', async () => {
+    it('issues a new access + refresh token, revokes the old one, and records a refresh_success audit event', async () => {
       const stored = buildStoredToken();
       refreshTokensRepository.findOneBy.mockResolvedValue(stored);
       usersRepository.findOneBy.mockResolvedValue(existingUser);
       jwtService.signAsync.mockResolvedValue('new.jwt.token');
 
-      const result = await service.rotateRefreshToken(rawToken);
+      const result = await service.rotateRefreshToken(rawToken, '203.0.113.7');
 
       expect(result.access_token).toBe('new.jwt.token');
       expect(typeof result.refresh_token).toBe('string');
@@ -396,22 +450,45 @@ describe('AuthService', () => {
         stellar_address: existingUser.stellar_address,
       });
 
-      // No reuse => no audit event.
-      expect(authAuditEventsRepository.save).not.toHaveBeenCalled();
+      // A refresh_success audit event is recorded with actor, ip and outcome.
+      expect(authAuditEventsRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'refresh_success',
+          user_id: existingUser.id,
+          family_id: 'family-1',
+          metadata: expect.objectContaining({
+            outcome: 'success',
+            ip: '203.0.113.7',
+            tokenId: 'rt-1',
+          }),
+        }),
+      );
     });
 
-    it('throws UnauthorizedException when the token does not exist', async () => {
+    it('throws UnauthorizedException and records a refresh_failure audit event when the token does not exist', async () => {
       refreshTokensRepository.findOneBy.mockResolvedValue(null);
 
-      await expect(service.rotateRefreshToken('unknown')).rejects.toThrow(
-        UnauthorizedException,
-      );
+      await expect(
+        service.rotateRefreshToken('unknown', '203.0.113.8'),
+      ).rejects.toThrow(UnauthorizedException);
       await expect(service.rotateRefreshToken('unknown')).rejects.toThrow(
         'Invalid refresh token',
       );
+
+      expect(authAuditEventsRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'refresh_failure',
+          user_id: null,
+          metadata: expect.objectContaining({
+            outcome: 'failure',
+            ip: '203.0.113.8',
+            reason: 'invalid_refresh_token',
+          }),
+        }),
+      );
     });
 
-    it('throws UnauthorizedException when the token has expired', async () => {
+    it('throws UnauthorizedException and records a refresh_failure audit event when the token has expired', async () => {
       const stored = buildStoredToken({
         expires_at: new Date(Date.now() - 1000),
       });
@@ -423,9 +500,21 @@ describe('AuthService', () => {
       await expect(service.rotateRefreshToken(rawToken)).rejects.toThrow(
         'Refresh token expired',
       );
+
+      expect(authAuditEventsRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'refresh_failure',
+          user_id: existingUser.id,
+          family_id: 'family-1',
+          metadata: expect.objectContaining({
+            outcome: 'failure',
+            reason: 'refresh_token_expired',
+          }),
+        }),
+      );
     });
 
-    it('throws UnauthorizedException when the user no longer exists', async () => {
+    it('throws UnauthorizedException and records a refresh_failure audit event when the user no longer exists', async () => {
       const stored = buildStoredToken();
       refreshTokensRepository.findOneBy.mockResolvedValue(stored);
       usersRepository.findOneBy.mockResolvedValue(null);
@@ -433,15 +522,27 @@ describe('AuthService', () => {
       await expect(service.rotateRefreshToken(rawToken)).rejects.toThrow(
         'User not found or has been deleted',
       );
+
+      expect(authAuditEventsRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'refresh_failure',
+          user_id: existingUser.id,
+          family_id: 'family-1',
+          metadata: expect.objectContaining({
+            outcome: 'failure',
+            reason: 'user_not_found',
+          }),
+        }),
+      );
     });
 
     it('detects reuse of an already-rotated token, revokes the whole family, and records an audit event', async () => {
       const stored = buildStoredToken({ revoked_at: new Date() });
       refreshTokensRepository.findOneBy.mockResolvedValue(stored);
 
-      await expect(service.rotateRefreshToken(rawToken)).rejects.toThrow(
-        UnauthorizedException,
-      );
+      await expect(
+        service.rotateRefreshToken(rawToken, '203.0.113.9'),
+      ).rejects.toThrow(UnauthorizedException);
       await expect(service.rotateRefreshToken(rawToken)).rejects.toThrow(
         'Refresh token reuse detected; session revoked',
       );
@@ -456,12 +557,108 @@ describe('AuthService', () => {
           event_type: 'refresh_token_reuse_detected',
           user_id: existingUser.id,
           family_id: 'family-1',
-          metadata: { tokenId: 'rt-1' },
+          metadata: expect.objectContaining({
+            outcome: 'failure',
+            ip: '203.0.113.9',
+            tokenId: 'rt-1',
+          }),
         }),
       );
 
       // Reuse must never mint new tokens or an access token.
       expect(jwtService.signAsync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('revokeSession', () => {
+    const userId = 'user-revoke-1';
+    const rawToken = 'raw-refresh-token-to-revoke';
+
+    const buildStoredToken = (
+      overrides: Partial<RefreshToken> = {},
+    ): RefreshToken =>
+      ({
+        id: 'rt-revoke-1',
+        user_id: userId,
+        family_id: 'family-revoke-1',
+        token_hash: service['hashToken'](rawToken),
+        previous_token_id: null,
+        revoked_at: null,
+        expires_at: new Date(Date.now() + 60_000),
+        created_at: new Date(),
+        ...overrides,
+      }) as RefreshToken;
+
+    it('revokes the token family and records a revoke_success audit event', async () => {
+      const stored = buildStoredToken();
+      refreshTokensRepository.findOneBy.mockResolvedValue(stored);
+
+      const result = await service.revokeSession(
+        userId,
+        rawToken,
+        '203.0.113.10',
+      );
+
+      expect(result).toEqual({ revoked: true });
+
+      expect(refreshTokensRepository.update).toHaveBeenCalledWith(
+        expect.objectContaining({ family_id: 'family-revoke-1' }),
+        expect.objectContaining({ revoked_at: expect.any(Date) }),
+      );
+
+      expect(authAuditEventsRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'revoke_success',
+          user_id: userId,
+          family_id: 'family-revoke-1',
+          metadata: expect.objectContaining({
+            outcome: 'success',
+            ip: '203.0.113.10',
+            tokenId: 'rt-revoke-1',
+          }),
+        }),
+      );
+    });
+
+    it('throws UnauthorizedException and records a revoke_failure audit event when the token is unknown', async () => {
+      refreshTokensRepository.findOneBy.mockResolvedValue(null);
+
+      await expect(
+        service.revokeSession(userId, 'unknown-token', '203.0.113.11'),
+      ).rejects.toThrow(UnauthorizedException);
+
+      expect(refreshTokensRepository.update).not.toHaveBeenCalled();
+
+      expect(authAuditEventsRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'revoke_failure',
+          user_id: userId,
+          metadata: expect.objectContaining({
+            outcome: 'failure',
+            ip: '203.0.113.11',
+            reason: 'refresh_token_not_found',
+          }),
+        }),
+      );
+    });
+
+    it('throws UnauthorizedException and records a revoke_failure audit event when the token belongs to another user', async () => {
+      const stored = buildStoredToken({ user_id: 'someone-else' });
+      refreshTokensRepository.findOneBy.mockResolvedValue(stored);
+
+      await expect(
+        service.revokeSession(userId, rawToken),
+      ).rejects.toThrow('Refresh token not found');
+
+      expect(refreshTokensRepository.update).not.toHaveBeenCalled();
+
+      expect(authAuditEventsRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event_type: 'revoke_failure',
+          user_id: userId,
+          metadata: expect.objectContaining({ outcome: 'failure' }),
+        }),
+      );
     });
   });
 });
