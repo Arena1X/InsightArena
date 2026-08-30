@@ -1009,12 +1009,14 @@ fn test_resolve_appeal_cannot_be_resolved_twice() {
     let (client, admin, oracle, xlm_token) = deploy(&env);
     let (id, _appealer, _appeal_bond) = setup_appealed_dispute(&env, &client, &oracle, &xlm_token);
 
-    // First resolution succeeds
+    // First resolution succeeds; clears appealer and appeal_bond on the record
     client.resolve_appeal(&admin, &id, &true);
 
-    // Second resolution should fail (appeal_bond is now 0)
+    // Second call: appealer is now None so the function returns DisputeNotFound
+    // before it can even reach the appeal_bond == 0 guard — same end result:
+    // the second settlement is rejected cleanly with no fund movement.
     let result = client.try_resolve_appeal(&admin, &id, &true);
-    assert!(matches!(result, Err(Ok(InsightArenaError::EscrowEmpty))));
+    assert!(matches!(result, Err(Ok(InsightArenaError::DisputeNotFound))));
 }
 
 // ── Comprehensive Integration Tests ───────────────────────────────────────────
