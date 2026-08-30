@@ -13,10 +13,12 @@ import { Market } from '../../markets/entities/market.entity';
 
 @Entity('predictions')
 @Unique('UQ_prediction_user_market', ['user', 'market'])
+@Unique('UQ_prediction_client_idempotency_key', ['clientIdempotencyKey'])
 @Index(['user'])
 @Index(['market'])
 @Index(['submitted_at'])
 @Index(['payout_claimed', 'submitted_at'])
+@Index(['clientIdempotencyKey'])
 export class Prediction {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -46,6 +48,9 @@ export class Prediction {
 
   @Column({ type: 'text', nullable: true })
   note: string | null;
+
+  @Column({ type: 'uuid' })
+  clientIdempotencyKey: string;
 
   @CreateDateColumn()
   submitted_at: Date;

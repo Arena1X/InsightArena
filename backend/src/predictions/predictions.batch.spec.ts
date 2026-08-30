@@ -59,6 +59,12 @@ const makeMarket = (
     ...overrides,
   }) as Market;
 
+// Helper to generate deterministic UUIDs for idempotency keys in format: 00000000-0000-4000-a000-000000000XXX
+const makeIdempotencyKey = (index: number): string => {
+  const padded = String(index).padStart(3, '0');
+  return `00000000-0000-4000-a000-000000000${padded}`;
+};
+
 describe('PredictionsService - submitBatch', () => {
   let service: PredictionsService;
   let mockPredictionsRepo: MockRepo<Prediction>;
@@ -85,7 +91,7 @@ describe('PredictionsService - submitBatch', () => {
 
     mockPredictionsRepo = {
       findOne: jest.fn(),
-      find: jest.fn().mockResolvedValue([]),
+      find: jest.fn().mockResolvedValue([]), // Default: no existing predictions
       create: jest.fn((v) => v),
       save: jest.fn((v) => v),
       createQueryBuilder: jest.fn(),
@@ -182,20 +188,24 @@ describe('PredictionsService - submitBatch', () => {
     const marketA = makeMarket('market-a', 'on-chain-a');
     const marketB = makeMarket('market-b', 'on-chain-b');
     mockMarketsRepo.find.mockResolvedValue([marketA, marketB]);
+    mockPredictionsRepo.find.mockResolvedValue([]); // Explicitly reset for this test
 
     const result = await service.submitBatch(
       {
         atomic: true,
+        clientIdempotencyKey: makeIdempotencyKey(1),
         predictions: [
           {
             market_id: marketA.id,
             chosen_outcome: 'Yes',
             stake_amount_stroops: '10000000',
+            clientIdempotencyKey: makeIdempotencyKey(11),
           },
           {
             market_id: marketB.id,
             chosen_outcome: 'No',
             stake_amount_stroops: '5000000',
+            clientIdempotencyKey: makeIdempotencyKey(12),
           },
         ],
       },
@@ -226,21 +236,25 @@ describe('PredictionsService - submitBatch', () => {
     const user = makeUser();
     const marketA = makeMarket('market-a', 'on-chain-a');
     mockMarketsRepo.find.mockResolvedValue([marketA]); // market-b missing
+    mockPredictionsRepo.find.mockResolvedValue([]);
 
     await expect(
       service.submitBatch(
         {
           atomic: true,
+          clientIdempotencyKey: makeIdempotencyKey(2),
           predictions: [
             {
               market_id: marketA.id,
               chosen_outcome: 'Yes',
               stake_amount_stroops: '10000000',
+              clientIdempotencyKey: makeIdempotencyKey(21),
             },
             {
               market_id: 'missing-market',
               chosen_outcome: 'Yes',
               stake_amount_stroops: '10000000',
+              clientIdempotencyKey: makeIdempotencyKey(22),
             },
           ],
         },
@@ -257,20 +271,24 @@ describe('PredictionsService - submitBatch', () => {
     const user = makeUser();
     const marketA = makeMarket('market-a', 'on-chain-a');
     mockMarketsRepo.find.mockResolvedValue([marketA]);
+    mockPredictionsRepo.find.mockResolvedValue([]);
 
     const result = await service.submitBatch(
       {
         atomic: false,
+        clientIdempotencyKey: makeIdempotencyKey(3),
         predictions: [
           {
             market_id: marketA.id,
             chosen_outcome: 'Yes',
             stake_amount_stroops: '10000000',
+            clientIdempotencyKey: makeIdempotencyKey(31),
           },
           {
             market_id: 'missing-market',
             chosen_outcome: 'Yes',
             stake_amount_stroops: '10000000',
+            clientIdempotencyKey: makeIdempotencyKey(32),
           },
         ],
       },
@@ -292,20 +310,24 @@ describe('PredictionsService - submitBatch', () => {
     const user = makeUser();
     const marketA = makeMarket('market-a', 'on-chain-a');
     mockMarketsRepo.find.mockResolvedValue([marketA]);
+    mockPredictionsRepo.find.mockResolvedValue([]);
 
     const result = await service.submitBatch(
       {
         atomic: false,
+        clientIdempotencyKey: makeIdempotencyKey(4),
         predictions: [
           {
             market_id: marketA.id,
             chosen_outcome: 'Yes',
             stake_amount_stroops: '10000000',
+            clientIdempotencyKey: makeIdempotencyKey(41),
           },
           {
             market_id: marketA.id,
             chosen_outcome: 'No',
             stake_amount_stroops: '10000000',
+            clientIdempotencyKey: makeIdempotencyKey(42),
           },
         ],
       },
@@ -335,11 +357,13 @@ describe('PredictionsService - submitBatch', () => {
       .submitBatch(
         {
           atomic: true,
+          clientIdempotencyKey: makeIdempotencyKey(5),
           predictions: [
             {
               market_id: marketA.id,
               chosen_outcome: 'Yes',
               stake_amount_stroops: '10000000',
+              clientIdempotencyKey: makeIdempotencyKey(51),
             },
           ],
         },
@@ -359,15 +383,18 @@ describe('PredictionsService - submitBatch', () => {
     const user = makeUser();
     const marketA = makeMarket('market-a', 'on-chain-a');
     mockMarketsRepo.find.mockResolvedValue([marketA]);
+    mockPredictionsRepo.find.mockResolvedValue([]);
 
     const result = await service.submitBatch(
       {
         atomic: false,
+        clientIdempotencyKey: makeIdempotencyKey(6),
         predictions: [
           {
             market_id: marketA.id,
             chosen_outcome: 'Maybe',
             stake_amount_stroops: '10000000',
+            clientIdempotencyKey: makeIdempotencyKey(61),
           },
         ],
       },
@@ -386,6 +413,7 @@ describe('PredictionsService - submitBatch', () => {
     const marketA = makeMarket('market-a', 'on-chain-a');
     const marketB = makeMarket('market-b', 'on-chain-b');
     mockMarketsRepo.find.mockResolvedValue([marketA, marketB]);
+    mockPredictionsRepo.find.mockResolvedValue([]);
     mockSoroban.submitPrediction
       .mockResolvedValueOnce({
         tx_hash: 'tx-ok',
@@ -398,16 +426,19 @@ describe('PredictionsService - submitBatch', () => {
       service.submitBatch(
         {
           atomic: true,
+          clientIdempotencyKey: makeIdempotencyKey(7),
           predictions: [
             {
               market_id: marketA.id,
               chosen_outcome: 'Yes',
               stake_amount_stroops: '10000000',
+              clientIdempotencyKey: makeIdempotencyKey(71),
             },
             {
               market_id: marketB.id,
               chosen_outcome: 'No',
               stake_amount_stroops: '10000000',
+              clientIdempotencyKey: makeIdempotencyKey(72),
             },
           ],
         },
@@ -425,10 +456,11 @@ describe('PredictionsService - submitBatch', () => {
       market_id: `market-${i}`,
       chosen_outcome: 'Yes',
       stake_amount_stroops: '10000000',
+      clientIdempotencyKey: makeIdempotencyKey(i + 80),
     }));
 
     await expect(
-      service.submitBatch({ atomic: true, predictions: items }, user),
+      service.submitBatch({ atomic: true, clientIdempotencyKey: makeIdempotencyKey(8), predictions: items }, user),
     ).rejects.toThrow(BatchSizeExceededException);
 
     expect(mockMarketsRepo.find).not.toHaveBeenCalled();
@@ -439,6 +471,7 @@ describe('PredictionsService - submitBatch', () => {
     const marketA = makeMarket('market-a', 'on-chain-a');
     const marketB = makeMarket('market-b', 'on-chain-b');
     mockMarketsRepo.find.mockResolvedValue([marketA, marketB]);
+    mockPredictionsRepo.find.mockResolvedValue([]);
     mockSoroban.submitPrediction
       .mockRejectedValueOnce(new Error('ledger error'))
       .mockResolvedValueOnce({
@@ -450,16 +483,19 @@ describe('PredictionsService - submitBatch', () => {
     const result = await service.submitBatch(
       {
         atomic: false,
+        clientIdempotencyKey: makeIdempotencyKey(9),
         predictions: [
           {
             market_id: marketA.id,
             chosen_outcome: 'Yes',
             stake_amount_stroops: '10000000',
+            clientIdempotencyKey: makeIdempotencyKey(91),
           },
           {
             market_id: marketB.id,
             chosen_outcome: 'No',
             stake_amount_stroops: '10000000',
+            clientIdempotencyKey: makeIdempotencyKey(92),
           },
         ],
       },

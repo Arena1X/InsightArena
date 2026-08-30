@@ -135,6 +135,24 @@ export class PredictionsService {
       );
     }
 
+    // Check for existing prediction with the same clientIdempotencyKey
+    // If found, return it to support safe retries
+    const existingByKey = await this.predictionsRepository.findOne({
+      where: { clientIdempotencyKey: dto.clientIdempotencyKey },
+      relations: ['market'],
+    });
+    if (existingByKey) {
+      this.logger.log(
+        `Idempotent key reuse detected for user ${user.id}; returning existing prediction ${existingByKey.id}`,
+      );
+      return {
+        prediction: existingByKey,
+        realized_price: '0',
+        shares_received: '0',
+      };
+    }
+
+    // Check for duplicate prediction on the same market (market uniqueness constraint)
     const existing = await this.predictionsRepository.findOne({
       where: { user: { id: user.id }, market: { id: market.id } },
     });
@@ -170,6 +188,7 @@ export class PredictionsService {
         market,
         chosen_outcome: dto.chosen_outcome,
         stake_amount_stroops: dto.stake_amount_stroops,
+        clientIdempotencyKey: dto.clientIdempotencyKey,
         tx_hash,
         payout_claimed: false,
         payout_amount_stroops: '0',
@@ -288,8 +307,23 @@ export class PredictionsService {
       existingPredictions.map((prediction) => prediction.market.id),
     );
 
+    // Check for existing predictions with the same clientIdempotencyKeys
+    const idempotencyKeys = items.map((item) => item.clientIdempotencyKey);
+    const existingByKey =
+      idempotencyKeys.length > 0
+        ? await this.predictionsRepository.find({
+            where: {
+              clientIdempotencyKey: In(idempotencyKeys),
+            },
+          })
+        : [];
+    const existingKeySet = new Set(
+      existingByKey.map((p) => p.clientIdempotencyKey),
+    );
+
     // Validate every item before touching the chain.
     const seenInBatch = new Set<string>();
+    const seenIdempotencyKeys = new Set<string>();
     const failures = new Map<number, string>();
     items.forEach((item, index) => {
       const failure = this.getBatchItemFailure(
@@ -297,6 +331,8 @@ export class PredictionsService {
         marketById.get(item.market_id),
         predictedMarketIds,
         seenInBatch,
+        seenIdempotencyKeys,
+        existingKeySet,
       );
       if (failure) {
         failures.set(index, failure);
@@ -380,6 +416,7 @@ export class PredictionsService {
             market,
             chosen_outcome: item.chosen_outcome,
             stake_amount_stroops: item.stake_amount_stroops,
+            clientIdempotencyKey: item.clientIdempotencyKey,
             tx_hash: result.tx_hash,
             payout_claimed: false,
             payout_amount_stroops: '0',
@@ -492,6 +529,8 @@ export class PredictionsService {
     market: Market | undefined,
     predictedMarketIds: Set<string>,
     seenInBatch: Set<string>,
+    seenIdempotencyKeys: Set<string>,
+    existingKeySet: Set<string>,
   ): string | null {
     if (!market) {
       return `Market "${item.market_id}" not found`;
@@ -521,6 +560,15 @@ export class PredictionsService {
       return 'Duplicate prediction for this market within the batch';
     }
     seenInBatch.add(market.id);
+
+    // Check for duplicate or existing idempotency keys
+    if (seenIdempotencyKeys.has(item.clientIdempotencyKey)) {
+      return 'Duplicate clientIdempotencyKey within this batch';
+    }
+    if (existingKeySet.has(item.clientIdempotencyKey)) {
+      return 'clientIdempotencyKey already used in a previous prediction';
+    }
+    seenIdempotencyKeys.add(item.clientIdempotencyKey);
 
     return null;
   }

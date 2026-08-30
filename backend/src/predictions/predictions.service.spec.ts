@@ -338,11 +338,16 @@ describe('PredictionsService', () => {
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws DuplicatePredictionException for duplicate prediction', async () => {
+    it('throws DuplicatePredictionException for duplicate prediction on same market without idempotency key', async () => {
+      // After idempotency check passes (no existing key), but user has already predicted on market
       mockMarketsRepo.findOne.mockResolvedValue(makeMarket());
-      mockPredictionsRepo.findOne.mockResolvedValue({
-        id: 'existing',
-      } as Prediction);
+      // First findOne (idempotency key check) returns null
+      // Second findOne (market duplicate check) returns existing
+      mockPredictionsRepo.findOne
+        .mockResolvedValueOnce(null) // No existing by idempotency key
+        .mockResolvedValueOnce({
+          id: 'existing',
+        } as Prediction); // Existing by market
 
       await expect(
         service.submit(
@@ -350,6 +355,7 @@ describe('PredictionsService', () => {
             market_id: 'market-uuid-1',
             chosen_outcome: 'Yes',
             stake_amount_stroops: '10000000',
+            clientIdempotencyKey: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
           },
           makeUser(),
         ),
@@ -1494,6 +1500,161 @@ describe('PredictionsService', () => {
         limit: 20,
         totalPages: 1,
       });
+    });
+  });
+
+  describe('idempotency key validation and duplicate handling', () => {
+    const validIdempotencyKey = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
+
+    it('returns existing prediction when same clientIdempotencyKey is used', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+      const existingPrediction: Prediction = {
+        id: 'existing-pred-id',
+        user,
+        market,
+        chosen_outcome: 'Yes',
+        stake_amount_stroops: '10000000',
+        payout_claimed: false,
+        payout_amount_stroops: '0',
+        tx_hash: 'existing-tx-hash',
+        note: null,
+        clientIdempotencyKey: validIdempotencyKey,
+        submitted_at: new Date(),
+      };
+
+      mockMarketsRepo.findOne.mockResolvedValue(market);
+      mockPredictionsRepo.findOne.mockResolvedValue(existingPrediction);
+
+      const result = await service.submit(
+        {
+          market_id: market.id,
+          chosen_outcome: 'Yes',
+          stake_amount_stroops: '10000000',
+          clientIdempotencyKey: validIdempotencyKey,
+        },
+        user,
+      );
+
+      expect(result.prediction.id).toBe('existing-pred-id');
+      expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
+    });
+
+    it('creates new prediction when clientIdempotencyKey is unique', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+
+      mockMarketsRepo.findOne.mockResolvedValue(market);
+      mockPredictionsRepo.findOne.mockResolvedValue(null);
+
+      const result = await service.submit(
+        {
+          market_id: market.id,
+          chosen_outcome: 'Yes',
+          stake_amount_stroops: '10000000',
+          clientIdempotencyKey: validIdempotencyKey,
+        },
+        user,
+      );
+
+      expect(result.prediction).toBeDefined();
+      expect(mockSoroban.submitPrediction).toHaveBeenCalled();
+    });
+
+    it('still throws DuplicatePredictionException when user already has prediction on market (after idempotency check passes)', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+
+      // First call to findOne checks for existing key (returns null)
+      // Second call checks for duplicate market prediction (returns existing)
+      mockMarketsRepo.findOne.mockResolvedValue(market);
+      mockPredictionsRepo.findOne
+        .mockResolvedValueOnce(null) // No existing by idempotency key
+        .mockResolvedValueOnce({
+          id: 'existing-market-pred',
+          market,
+          user,
+        } as Prediction); // Existing by market
+
+      await expect(
+        service.submit(
+          {
+            market_id: market.id,
+            chosen_outcome: 'Yes',
+            stake_amount_stroops: '10000000',
+            clientIdempotencyKey: validIdempotencyKey,
+          },
+          user,
+        ),
+      ).rejects.toThrow(DuplicatePredictionException);
+    });
+
+    it('stores clientIdempotencyKey with prediction in database', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+      mockMarketsRepo.findOne.mockResolvedValue(market);
+      mockPredictionsRepo.findOne.mockResolvedValue(null);
+
+      let savedPredictionData: Partial<Prediction> | null = null;
+      const mockDataSource = {
+        transaction: jest.fn(
+          (cb: (manager: unknown) => Promise<Prediction>) => {
+            const manager = {
+              create: (_entity: unknown, data: Partial<Prediction>) => {
+                savedPredictionData = data;
+                return data;
+              },
+              save: (entity: Partial<Prediction>) =>
+                Promise.resolve({ id: 'pred-uuid-1', ...entity } as Prediction),
+              createQueryBuilder: () => qbMock,
+            };
+            return cb(manager);
+          },
+        ),
+      };
+
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          PredictionsService,
+          {
+            provide: getRepositoryToken(Prediction),
+            useValue: mockPredictionsRepo,
+          },
+          { provide: getRepositoryToken(Market), useValue: mockMarketsRepo },
+          { provide: getRepositoryToken(User), useValue: {} },
+          {
+            provide: getRepositoryToken(PredictionFraudFlag),
+            useValue: mockFraudFlagsRepo,
+          },
+          { provide: SorobanService, useValue: mockSoroban },
+          { provide: SlippageCheckerService, useValue: mockSlippageChecker },
+          {
+            provide: UsersService,
+            useValue: {
+              recordQualifyingAction: jest.fn().mockResolvedValue(undefined),
+            },
+          },
+          { provide: getDataSourceToken(), useValue: mockDataSource },
+          { provide: ConfigService, useValue: mockConfigService },
+        ],
+      }).compile();
+
+      const serviceWithNewDataSource =
+        module.get<PredictionsService>(PredictionsService);
+
+      await serviceWithNewDataSource.submit(
+        {
+          market_id: market.id,
+          chosen_outcome: 'Yes',
+          stake_amount_stroops: '10000000',
+          clientIdempotencyKey: validIdempotencyKey,
+        },
+        user,
+      );
+
+      expect(savedPredictionData?.clientIdempotencyKey).toBe(
+        validIdempotencyKey,
+      );
     });
   });
 });

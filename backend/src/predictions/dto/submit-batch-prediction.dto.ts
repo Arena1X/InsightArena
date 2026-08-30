@@ -40,6 +40,16 @@ export class BatchPredictionItemDto {
   @IsNumberString()
   stake_amount_stroops!: string;
 
+  @ApiProperty({
+    description:
+      'Client-supplied idempotency key (UUID4 format) unique per (user, market). Used to prevent duplicate submissions within batch and enable idempotent retries.',
+    example: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+  })
+  @IsUUID('4', {
+    message: 'clientIdempotencyKey must be a valid UUID4',
+  })
+  clientIdempotencyKey!: string;
+
   @ApiPropertyOptional({
     description: 'Maximum acceptable price for slippage protection (optional)',
     example: '5000000',
@@ -70,6 +80,16 @@ export class SubmitBatchPredictionsDto {
   @ValidateNested({ each: true })
   @Type(() => BatchPredictionItemDto)
   predictions!: BatchPredictionItemDto[];
+
+  @ApiProperty({
+    description:
+      'Client-supplied idempotency key (UUID4 format) unique per batch submission. Used to prevent duplicate batch submissions and enable safe retries. Same key returns the existing batch result.',
+    example: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+  })
+  @IsUUID('4', {
+    message: 'clientIdempotencyKey must be a valid UUID4',
+  })
+  clientIdempotencyKey!: string;
 
   @ApiPropertyOptional({
     description:
