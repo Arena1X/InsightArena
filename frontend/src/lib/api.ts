@@ -610,3 +610,57 @@ export function flagAdminUser(
     { ...options, headers: { ...adminHeaders(token), ...options?.headers } },
   );
 }
+
+// ---------------------------------------------------------------------------
+// Markets list — filter chips & sort (#1582)
+// ---------------------------------------------------------------------------
+
+export interface MarketListItem {
+  id: string;
+  title: string;
+  category: string;
+  probability: number;
+  totalStaked: number;
+  closeAt: string;
+  status: string;
+  createdAt?: string;
+}
+
+export type MarketSortKey = 'volume' | 'newest' | 'closing';
+
+export const MARKET_SORT_OPTIONS: { key: MarketSortKey; label: string }[] = [
+  { key: 'volume', label: 'Volume' },
+  { key: 'newest', label: 'Newest' },
+  { key: 'closing', label: 'Closing Soon' },
+];
+
+const ENDING_SOON_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** True when `closeAt` falls within the "ending soon" window relative to `now`. */
+export function isEndingSoon(closeAt: string, now: number = Date.now()): boolean {
+  const closeTime = new Date(closeAt).getTime();
+  if (Number.isNaN(closeTime)) return false;
+  const diff = closeTime - now;
+  return diff > 0 && diff <= ENDING_SOON_WINDOW_MS;
+}
+
+/** Sorts markets by the given key. Returns a new array; never mutates the input. */
+export function sortMarkets<T extends MarketListItem>(markets: T[], sortKey: MarketSortKey): T[] {
+  const sorted = [...markets];
+  switch (sortKey) {
+    case 'volume':
+      sorted.sort((a, b) => b.totalStaked - a.totalStaked);
+      break;
+    case 'newest':
+      sorted.sort((a, b) => {
+        const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bTime - aTime;
+      });
+      break;
+    case 'closing':
+      sorted.sort((a, b) => new Date(a.closeAt).getTime() - new Date(b.closeAt).getTime());
+      break;
+  }
+  return sorted;
+}

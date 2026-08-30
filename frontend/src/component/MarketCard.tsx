@@ -17,11 +17,14 @@ export default function MarketCard({
   onPredict,
   isFavorite = false,
   onFavoriteToggle,
+  preview = false,
 }: {
   market: Market;
   onPredict: () => void;
   isFavorite?: boolean;
   onFavoriteToggle?: () => void;
+  /** Renders a static, non-navigating preview (e.g. in the create-market form). */
+  preview?: boolean;
 }) {
   const probabilityPct = Math.round((market.probability || 0) * 100);
 
@@ -43,8 +46,13 @@ export default function MarketCard({
     return "bg-white/5 text-gray-300 border-white/6";
   }
 
-  return (
-    <Link href={`/markets/${market.id}`} className="block min-h-[220px] rounded-xl border border-white/6 bg-white/3 p-4 hover:border-white/20 transition-colors">
+  const cardContent = (
+    <>
+      {preview && (
+        <span className="absolute right-3 top-3 rounded-full bg-orange-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-300">
+          Preview
+        </span>
+      )}
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1">
           <div className="flex items-center justify-between gap-2">
@@ -108,11 +116,29 @@ export default function MarketCard({
       <div className="mt-4 flex items-center gap-2">
         <button
           onClick={(e) => { e.preventDefault(); onPredict(); }}
-          className="ml-auto rounded-md bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600"
+          disabled={preview}
+          className="ml-auto rounded-md bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:cursor-default disabled:opacity-60"
         >
           Predict
         </button>
       </div>
+    </>
+  );
+
+  if (preview) {
+    return (
+      <div className="relative block min-h-[220px] rounded-xl border border-white/6 bg-white/3 p-4">
+        {cardContent}
+      </div>
+    );
+  }
+
+  return (
+    <Link
+      href={`/markets/${market.id}`}
+      className="relative block min-h-[220px] rounded-xl border border-white/6 bg-white/3 p-4 hover:border-white/20 transition-colors"
+    >
+      {cardContent}
     </Link>
   );
 }

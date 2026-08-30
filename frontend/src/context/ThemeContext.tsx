@@ -15,15 +15,34 @@ interface ThemeContextValue {
   theme: Theme;
   toggleTheme: () => void;
   setTheme: (theme: Theme) => void;
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (collapsed: boolean) => void;
+  toggleSidebarCollapsed: () => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue>({
   theme: "dark",
   toggleTheme: () => {},
   setTheme: () => {},
+  sidebarCollapsed: false,
+  setSidebarCollapsed: () => {},
+  toggleSidebarCollapsed: () => {},
 });
 
 const THEME_STORAGE_KEY = "insightarena.theme.v1";
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "insightarena.sidebar-collapsed.v1";
+
+function readStoredSidebarCollapsed(): boolean | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+  } catch {
+    // storage unavailable
+  }
+  return null;
+}
 
 function getSystemPreference(): Theme {
   if (typeof window === "undefined") return "dark";
@@ -55,12 +74,18 @@ function applyThemeToDocument(theme: Theme) {
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<Theme>("dark");
+  const [sidebarCollapsed, setSidebarCollapsedState] = useState(false);
 
   useEffect(() => {
     const stored = readStoredTheme();
     const initial = stored ?? getSystemPreference();
     setThemeState(initial);
     applyThemeToDocument(initial);
+  }, []);
+
+  useEffect(() => {
+    const stored = readStoredSidebarCollapsed();
+    if (stored !== null) setSidebarCollapsedState(stored);
   }, []);
 
   useEffect(() => {
@@ -99,9 +124,37 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const setSidebarCollapsed = useCallback((collapsed: boolean) => {
+    setSidebarCollapsedState(collapsed);
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(collapsed));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsedState((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
   const value = useMemo(
-    () => ({ theme, toggleTheme, setTheme }),
-    [theme, toggleTheme, setTheme],
+    () => ({
+      theme,
+      toggleTheme,
+      setTheme,
+      sidebarCollapsed,
+      setSidebarCollapsed,
+      toggleSidebarCollapsed,
+    }),
+    [theme, toggleTheme, setTheme, sidebarCollapsed, setSidebarCollapsed, toggleSidebarCollapsed],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

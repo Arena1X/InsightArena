@@ -214,3 +214,32 @@ export const asyncValidators = {
     async (value: any, _signal: AbortSignal): Promise<string | undefined> =>
       syncFn(value),
 } as const;
+
+// ---------------------------------------------------------------------------
+// Market outcome list validator (#1583)
+// ---------------------------------------------------------------------------
+
+const MIN_MARKET_OUTCOMES = 2;
+const MAX_MARKET_OUTCOMES = 10;
+
+/**
+ * Validates a market's outcome list: rejects empty/whitespace-only labels,
+ * enforces the 2–10 count bounds, and rejects case-insensitive duplicates
+ * (after trimming).
+ */
+export function validateOutcomes(outcomes: string[]): string | undefined {
+  if (outcomes.some((o) => !o.trim())) {
+    return "Outcomes cannot be empty.";
+  }
+  if (outcomes.length < MIN_MARKET_OUTCOMES) {
+    return `Add at least ${MIN_MARKET_OUTCOMES} outcomes.`;
+  }
+  if (outcomes.length > MAX_MARKET_OUTCOMES) {
+    return `You can add up to ${MAX_MARKET_OUTCOMES} outcomes.`;
+  }
+  const normalized = outcomes.map((o) => o.trim().toLowerCase());
+  if (new Set(normalized).size !== normalized.length) {
+    return "Outcomes must be distinct.";
+  }
+  return undefined;
+}
