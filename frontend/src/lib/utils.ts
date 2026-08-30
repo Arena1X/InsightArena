@@ -403,3 +403,17 @@ export function formatPnlXlm(pnl: number, digits = 2): string {
   const sign = pnl > 0 ? "+" : "";
   return `\( {sign} \){pnl.toFixed(digits)} XLM`;
 }
+
+// ── Dashboard sidebar auto-collapse (#1584) ─────────────────────────────────
+
+/**
+ * Viewport width (px) below which the dashboard sidebar auto-collapses to an
+ * icon-only rail, regardless of the user's persisted preference. Matches
+ * Tailwind's `lg` breakpoint so the CSS and the JS resize logic stay in sync.
+ */
+export const SIDEBAR_AUTO_COLLAPSE_BREAKPOINT_PX = 1024;
+
+/** Pure predicate so the auto-collapse threshold is testable without a DOM. */
+export function shouldAutoCollapseSidebar(viewportWidth: number): boolean {
+  return viewportWidth < SIDEBAR_AUTO_COLLAPSE_BREAKPOINT_PX;
+}

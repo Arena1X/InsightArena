@@ -4,15 +4,19 @@ import RewardsWalletCard from "@/component/RewardsWalletCard";
 import NotificationsCard from "@/component/NotificationsCard";
 import CoachCard from "@/component/CoachCard";
 import { useWallet } from "@/context/WalletContext";
+import { useTheme } from "@/context/ThemeContext";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useToast } from "@/hooks/useToast";
+import { shouldAutoCollapseSidebar } from "@/lib/utils";
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   BarChart3,
   Gift,
   LayoutDashboard,
@@ -43,30 +47,35 @@ const navigation = [
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 
-function Brand() {
+function Brand({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <Link
       href="/dashboard"
-      className="flex items-center gap-3 rounded-2xl px-6 py-6 text-white transition hover:bg-white/5"
+      className={`flex items-center gap-3 rounded-2xl py-6 text-white transition hover:bg-white/5 ${
+        collapsed ? "justify-center px-3" : "px-6"
+      }`}
     >
-      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-orange-500 text-xs font-bold text-white shadow-[0_0_0_6px_rgba(249,115,22,0.15)]">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-orange-500 text-xs font-bold text-white shadow-[0_0_0_6px_rgba(249,115,22,0.15)]">
         IA
       </span>
-      <div className="min-w-0">
-        <p className="truncate text-base font-semibold tracking-tight">
-          InsightArena
-        </p>
-        <p className="text-xs text-gray-400">Prediction Markets</p>
-      </div>
+      {!collapsed && (
+        <div className="min-w-0">
+          <p className="truncate text-base font-semibold tracking-tight">
+            InsightArena
+          </p>
+          <p className="text-xs text-gray-400">Prediction Markets</p>
+        </div>
+      )}
     </Link>
   );
 }
 
 type SidebarContentProps = {
   onNavigate?: () => void;
+  collapsed?: boolean;
 };
 
-function SidebarContent({ onNavigate }: SidebarContentProps) {
+function SidebarContent({ onNavigate, collapsed = false }: SidebarContentProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { address, logout } = useWallet();
@@ -101,10 +110,11 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
   return (
     <div className="flex h-full flex-col bg-transparent text-white">
       <div className="border-b border-white/10">
-        <Brand />
+        <Brand collapsed={collapsed} />
       </div>
 
       <nav
+        id="dashboard-sidebar-nav"
         className="flex-1 space-y-1 overflow-y-auto px-3 py-5"
         aria-label="Dashboard navigation"
       >
@@ -117,58 +127,81 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
               href={href}
               onClick={onNavigate}
               aria-current={isActive ? "page" : undefined}
-              className={`group relative flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition ${
+              title={collapsed ? label : undefined}
+              className={`group relative flex items-center gap-3 rounded-xl py-3 text-sm font-medium transition ${
+                collapsed ? "justify-center px-2" : "px-4"
+              } ${
                 isActive
                   ? "bg-white/10 text-white shadow-[inset_3px_0_0_0_#f97316]"
                   : "text-gray-400 hover:bg-white/5 hover:text-white"
               }`}
             >
               <Icon
-                className={`h-4 w-4 ${
+                className={`h-4 w-4 shrink-0 ${
                   isActive
                     ? "text-orange-400"
                     : "text-gray-500 group-hover:text-white"
                 }`}
               />
-              <span>{label}</span>
+              {!collapsed && <span>{label}</span>}
             </Link>
           );
         })}
       </nav>
 
       <div className="border-t border-white/10 px-4 py-4">
-        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4">
-          <p className="text-xs uppercase tracking-[0.24em] text-gray-400">
-            Connected
-          </p>
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <p
-              className="truncate text-sm font-semibold text-white cursor-help"
-              title={address ?? ""}
-            >
-              {address ? truncateAddress(address) : "Not connected"}
-            </p>
+        {collapsed ? (
+          <div className="flex flex-col items-center gap-3">
+            <span
+              className={`h-2.5 w-2.5 rounded-full ${address ? "bg-emerald-400" : "bg-gray-500"}`}
+              title={address ? truncateAddress(address) : "Not connected"}
+            />
             {address && (
               <button
                 type="button"
-                onClick={handleCopyAddress}
-                aria-label="Copy wallet address"
-                className="text-xs text-orange-400 hover:text-orange-300 transition"
-                title={copied ? "Copied!" : "Copy address"}
+                onClick={handleDisconnect}
+                aria-label="Disconnect wallet"
+                title="Disconnect wallet"
+                className="text-xs font-medium text-orange-400 transition hover:text-orange-300"
               >
-                {copied ? "✓" : "📋"}
+                ⏻
               </button>
             )}
           </div>
-          <button
-            type="button"
-            onClick={handleDisconnect}
-            aria-label="Disconnect wallet"
-            className="mt-3 text-sm font-medium text-orange-400 transition hover:text-orange-300"
-          >
-            Disconnect
-          </button>
-        </div>
+        ) : (
+          <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4">
+            <p className="text-xs uppercase tracking-[0.24em] text-gray-400">
+              Connected
+            </p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <p
+                className="truncate text-sm font-semibold text-white cursor-help"
+                title={address ?? ""}
+              >
+                {address ? truncateAddress(address) : "Not connected"}
+              </p>
+              {address && (
+                <button
+                  type="button"
+                  onClick={handleCopyAddress}
+                  aria-label="Copy wallet address"
+                  className="text-xs text-orange-400 hover:text-orange-300 transition"
+                  title={copied ? "Copied!" : "Copy address"}
+                >
+                  {copied ? "✓" : "📋"}
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={handleDisconnect}
+              aria-label="Disconnect wallet"
+              className="mt-3 text-sm font-medium text-orange-400 transition hover:text-orange-300"
+            >
+              Disconnect
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -226,11 +259,35 @@ type DashboardShellProps = {
 
 export function DashboardShell({ children }: DashboardShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [autoCollapsed, setAutoCollapsed] = useState(false);
   const pathname = usePathname();
+  const { sidebarCollapsed, toggleSidebarCollapsed } = useTheme();
+  const collapseButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     setMobileOpen(false);
   }, [pathname]);
+
+  // Auto-collapse the sidebar to an icon-only rail below the medium-viewport
+  // breakpoint, independent of (and without overwriting) the user's
+  // persisted manual preference.
+  useEffect(() => {
+    function evaluate() {
+      setAutoCollapsed(shouldAutoCollapseSidebar(window.innerWidth));
+    }
+    evaluate();
+    window.addEventListener("resize", evaluate);
+    return () => window.removeEventListener("resize", evaluate);
+  }, []);
+
+  const collapsed = autoCollapsed || sidebarCollapsed;
+
+  const handleToggleCollapsed = useCallback(() => {
+    toggleSidebarCollapsed();
+    // Keep focus on the toggle control itself so keyboard users don't lose
+    // their place when the sidebar's width/labels shift after the toggle.
+    requestAnimationFrame(() => collapseButtonRef.current?.focus());
+  }, [toggleSidebarCollapsed]);
 
   return (
     <div className="dark relative min-h-screen overflow-x-hidden bg-gradient-to-br from-gray-900 via-black to-gray-900 text-white">
@@ -281,14 +338,37 @@ export function DashboardShell({ children }: DashboardShellProps) {
       </div>
 
       <div className="relative z-10 flex min-h-screen">
-        <aside className="hidden w-[280px] shrink-0 border-r border-white/10 lg:fixed lg:inset-y-0 lg:flex">
-          <div className="w-full">
-            <SidebarContent />
+        <aside
+          className={`hidden shrink-0 border-r border-white/10 transition-[width] duration-300 ease-in-out md:fixed md:inset-y-0 md:flex ${
+            collapsed ? "md:w-20" : "md:w-[280px]"
+          }`}
+        >
+          <div className="relative w-full">
+            <SidebarContent collapsed={collapsed} />
+            <button
+              ref={collapseButtonRef}
+              type="button"
+              aria-expanded={!collapsed}
+              aria-controls="dashboard-sidebar-nav"
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              onClick={handleToggleCollapsed}
+              className="absolute -right-3 top-8 z-10 hidden h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-gray-900 text-gray-300 shadow transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 lg:inline-flex"
+            >
+              {collapsed ? (
+                <ChevronRight className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronLeft className="h-3.5 w-3.5" />
+              )}
+            </button>
           </div>
         </aside>
 
-        <div className="flex min-h-screen w-full flex-col lg:pl-[280px]">
-          <header className="sticky top-0 z-30 flex items-center justify-between border-b border-white/10 bg-gray-900/80 px-4 py-4 backdrop-blur lg:hidden">
+        <div
+          className={`flex min-h-screen w-full flex-col transition-[padding] duration-300 ease-in-out ${
+            collapsed ? "md:pl-20" : "md:pl-[280px]"
+          }`}
+        >
+          <header className="sticky top-0 z-30 flex items-center justify-between border-b border-white/10 bg-gray-900/80 px-4 py-4 backdrop-blur md:hidden">
             <Brand />
             <button
               type="button"
@@ -300,7 +380,7 @@ export function DashboardShell({ children }: DashboardShellProps) {
             </button>
           </header>
 
-          <div className="sticky top-[72px] z-20 bg-gray-900/80 backdrop-blur lg:top-0">
+          <div className="sticky top-[72px] z-20 bg-gray-900/80 backdrop-blur md:top-0">
             <TopNavigation />
           </div>
 
@@ -321,7 +401,7 @@ export function DashboardShell({ children }: DashboardShellProps) {
       </div>
 
       <div
-        className={`fixed inset-0 z-50 lg:hidden transition-[visibility] duration-300 ${
+        className={`fixed inset-0 z-50 md:hidden transition-[visibility] duration-300 ${
           mobileOpen ? "visible" : "invisible"
         }`}
         aria-hidden={!mobileOpen}
