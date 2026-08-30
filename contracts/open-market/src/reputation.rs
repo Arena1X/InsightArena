@@ -242,6 +242,31 @@ pub fn on_dispute_raised(env: &Env, creator: &Address) {
     touch_active_season(env, creator);
 }
 
+/// Called when a dispute is resolved in favor of the disputer (upheld).
+/// The market creator suffers an additional reputation penalty for having
+/// their market resolution overturned.
+pub fn on_dispute_upheld(env: &Env, creator: &Address) {
+    let mut stats = load_stats(env, creator);
+    // Additional penalty: increment dispute count again (double penalty)
+    stats.dispute_count = stats.dispute_count.saturating_add(1);
+    stats.reputation_score = calculate_creator_reputation(&stats);
+    stats.last_updated = env.ledger().timestamp();
+    save_stats(env, creator, &stats);
+    touch_active_season(env, creator);
+}
+
+/// Called when a dispute is resolved in favor of the market creator (rejected).
+/// The disputer who filed a frivolous dispute gets a reputation penalty.
+pub fn on_dispute_rejected(env: &Env, disputer: &Address) {
+    let mut stats = load_stats(env, disputer);
+    // Penalty for filing a rejected dispute
+    stats.dispute_count = stats.dispute_count.saturating_add(1);
+    stats.reputation_score = calculate_creator_reputation(&stats);
+    stats.last_updated = env.ledger().timestamp();
+    save_stats(env, disputer, &stats);
+    touch_active_season(env, disputer);
+}
+
 // ── View ──────────────────────────────────────────────────────────────────────
 
 pub fn get_creator_stats(env: Env, creator: Address) -> Result<CreatorStats, InsightArenaError> {
