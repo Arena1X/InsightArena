@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { WebhookReceiverController } from './webhook-receiver.controller';
 import { WebhookSignatureGuard } from './guards/webhook-signature.guard';
 import { IncomingWebhookDto } from './dto/incoming-webhook.dto';
+import { ConflictException } from '@nestjs/common';
 
 describe('WebhookReceiverController', () => {
   let controller: WebhookReceiverController;

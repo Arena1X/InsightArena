@@ -131,6 +131,78 @@ describe('WebhookSignatureService', () => {
     });
   });
 
+  describe('getTimestampFreshnessMs', () => {
+    it('reads WEBHOOK_TIMESTAMP_FRESHNESS_SECONDS from ConfigService and converts to ms', () => {
+      const result = service.getTimestampFreshnessMs();
+
+      expect(configService.get).toHaveBeenCalledWith(
+        'WEBHOOK_TIMESTAMP_FRESHNESS_SECONDS',
+      );
+      expect(result).toBe(300 * 1000);
+    });
+
+    it('defaults to 300 seconds when not configured', async () => {
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          WebhookSignatureService,
+          {
+            provide: getRepositoryToken(WebhookProcessedEvent),
+            useValue: mockRepository,
+          },
+          {
+            provide: ConfigService,
+            useValue: { get: jest.fn().mockReturnValue(undefined) },
+          },
+        ],
+      }).compile();
+
+      const svc = module.get<WebhookSignatureService>(WebhookSignatureService);
+      expect(svc.getTimestampFreshnessMs()).toBe(300 * 1000);
+    });
+  });
+
+  describe('isTimestampFresh', () => {
+    it('returns true for a recent timestamp within the freshness window', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const timestamp = (now - 50).toString();
+
+      expect(service.isTimestampFresh(timestamp)).toBe(true);
+    });
+
+    it('returns false for an old timestamp outside the freshness window', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const timestamp = (now - 600).toString(); // 600s ago, window is 300s
+
+      expect(service.isTimestampFresh(timestamp)).toBe(false);
+    });
+
+    it('returns false when timestamp header is missing', () => {
+      expect(service.isTimestampFresh(undefined)).toBe(false);
+    });
+
+    it('returns false when timestamp header is empty', () => {
+      expect(service.isTimestampFresh('')).toBe(false);
+    });
+
+    it('returns false when timestamp is not a valid number', () => {
+      expect(service.isTimestampFresh('not-a-number')).toBe(false);
+    });
+
+    it('returns true for a future timestamp within the freshness window (clock skew)', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const timestamp = (now + 50).toString();
+
+      expect(service.isTimestampFresh(timestamp)).toBe(true);
+    });
+
+    it('returns false for a future timestamp far outside the freshness window', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const timestamp = (now + 600).toString(); // 600s in the future, window is 300s
+
+      expect(service.isTimestampFresh(timestamp)).toBe(false);
+    });
+  });
+
   describe('isReplay', () => {
     it('returns false when no prior record exists', async () => {
       mockRepository.findOne.mockResolvedValue(null);

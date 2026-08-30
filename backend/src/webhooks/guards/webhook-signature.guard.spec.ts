@@ -2,6 +2,7 @@ import {
   ExecutionContext,
   UnauthorizedException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { WebhookSignatureGuard } from './webhook-signature.guard';
 import { WebhookSignatureService } from '../services/webhook-signature.service';
@@ -19,7 +20,10 @@ describe('WebhookSignatureGuard', () => {
 
   const buildRequest = (overrides: Record<string, any> = {}) => ({
     params: { source: 'provider-x' },
-    headers: { 'x-webhook-signature': 'abc123' },
+    headers: { 
+      'x-webhook-signature': 'abc123',
+      'x-webhook-timestamp': Math.floor(Date.now() / 1000).toString(),
+    },
     rawBody: Buffer.from(JSON.stringify({ event_id: 'evt_1' })),
     body: { event_id: 'evt_1' },
     ...overrides,
@@ -29,6 +33,7 @@ describe('WebhookSignatureGuard', () => {
     signatureService = {
       getSecret: jest.fn().mockReturnValue('test-secret'),
       verifySignature: jest.fn().mockReturnValue(true),
+      isTimestampFresh: jest.fn().mockReturnValue(true),
       isReplay: jest.fn().mockResolvedValue(false),
       recordProcessed: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<WebhookSignatureService>;
@@ -36,7 +41,7 @@ describe('WebhookSignatureGuard', () => {
     guard = new WebhookSignatureGuard(signatureService);
   });
 
-  it('allows a request with a valid signature and a fresh event_id', async () => {
+  it('allows a request with a valid signature, fresh timestamp, and a fresh event_id', async () => {
     const request = buildRequest();
     const context = buildContext(request);
 
@@ -61,7 +66,7 @@ describe('WebhookSignatureGuard', () => {
 
   it('rejects with 401 when the signature header is missing', async () => {
     signatureService.verifySignature.mockReturnValue(false);
-    const request = buildRequest({ headers: {} });
+    const request = buildRequest({ headers: { 'x-webhook-timestamp': Math.floor(Date.now() / 1000).toString() } });
     const context = buildContext(request);
 
     await expect(guard.canActivate(context)).rejects.toThrow(
@@ -87,12 +92,22 @@ describe('WebhookSignatureGuard', () => {
     );
   });
 
-  it('rejects with 401 when the event_id has already been processed within the window', async () => {
-    signatureService.isReplay.mockResolvedValue(true);
+  it('rejects with 401 when the timestamp is stale or missing', async () => {
+    signatureService.isTimestampFresh.mockReturnValue(false);
     const context = buildContext(buildRequest());
 
     await expect(guard.canActivate(context)).rejects.toThrow(
       UnauthorizedException,
+    );
+    expect(signatureService.isReplay).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 409 (ConflictException) when the event_id has already been processed within the window', async () => {
+    signatureService.isReplay.mockResolvedValue(true);
+    const context = buildContext(buildRequest());
+
+    await expect(guard.canActivate(context)).rejects.toThrow(
+      ConflictException,
     );
     expect(signatureService.recordProcessed).not.toHaveBeenCalled();
   });

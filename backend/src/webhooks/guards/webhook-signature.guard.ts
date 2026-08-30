@@ -5,6 +5,7 @@ import {
   Logger,
   UnauthorizedException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { WebhookSignatureService } from '../services/webhook-signature.service';
@@ -58,8 +59,17 @@ export class WebhookSignatureGuard implements CanActivate {
       throw new BadRequestException('Missing event_id');
     }
 
+    // Validate timestamp freshness
+    const timestampHeader = request.headers['x-webhook-timestamp'] as
+      | string
+      | undefined;
+
+    if (!this.signatureService.isTimestampFresh(timestampHeader)) {
+      throw new UnauthorizedException('Webhook timestamp is stale or invalid');
+    }
+
     if (await this.signatureService.isReplay(source, eventId)) {
-      throw new UnauthorizedException('Duplicate webhook event');
+      throw new ConflictException('Duplicate webhook event');
     }
 
     await this.signatureService.recordProcessed(source, eventId);
