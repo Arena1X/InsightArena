@@ -19,6 +19,16 @@ pub struct Config {
     pub fee_source: Address,
 }
 
+/// Unbonding configuration for early-exit penalties.
+#[contracttype]
+#[derive(Clone)]
+pub struct UnbondingConfig {
+    /// Cooldown period in seconds after unlock request before funds can be claimed.
+    pub cooldown_period: u64,
+    /// Early-exit penalty in basis points (e.g. 500 = 5%). Max is 10_000 bps.
+    pub penalty_bps: u32,
+}
+
 /// Global reward accounting for the pool, using the accumulator-per-share model.
 #[contracttype]
 #[derive(Clone)]
@@ -44,6 +54,10 @@ pub struct Position {
     pub unlock_at: u64,
     /// Reward debt — bookkeeping for the accumulator model.
     pub reward_debt: i128,
+    /// Timestamp when unlock was requested (0 if not requested).
+    pub unlock_requested_at: u64,
+    /// Amount pending unlock (0 if not unlocking).
+    pub pending_unlock_amount: i128,
 }
 
 /// A configured lock tier: longer locks earn a higher boost multiplier.
@@ -70,4 +84,6 @@ pub enum DataKey {
     Position(Address),
     /// Configured [`LockTier`] list.
     LockTiers,
+    /// Unbonding configuration for early-exit penalties.
+    UnbondingConfig,
 }

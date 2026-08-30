@@ -41,3 +41,22 @@ pub fn deposit_fees(env: &Env, from: Address, amount: i128) -> Result<(), Stakin
 
     Ok(())
 }
+
+/// Route early-exit penalty into the reward pool using checked arithmetic.
+pub fn route_penalty_to_pool(env: &Env, penalty_amount: i128) -> Result<(), StakingError> {
+    if penalty_amount <= 0 {
+        return Ok(());
+    }
+
+    let mut pool_state = env
+        .storage()
+        .instance()
+        .get::<DataKey, PoolState>(&DataKey::Pool)
+        .ok_or(StakingError::NotInitialized)?;
+
+    pool::distribute(env, &mut pool_state, penalty_amount)?;
+
+    env.storage().instance().set(&DataKey::Pool, &pool_state);
+
+    Ok(())
+}

@@ -37,6 +37,14 @@ pub enum StakingError {
     /// The underlying token transfer failed.
     TransferFailed = 22,
 
+    // ── Unbonding ─────────────────────────────────────────────────────────────
+    /// Withdrawal before cooldown period has elapsed.
+    WithdrawalLocked = 30,
+    /// Penalty configuration exceeds maximum (10_000 bps).
+    InvalidPenaltyConfig = 31,
+    /// No pending unlock exists for this position.
+    NoPendingUnlock = 32,
+
     // ── General ───────────────────────────────────────────────────────────────
     /// A checked arithmetic operation overflowed.
     Overflow = 100,
