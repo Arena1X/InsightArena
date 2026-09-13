@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Notification, NotificationType } from './entities/notification.entity';
 import {
   NotificationCategoryPreference,
@@ -120,9 +120,11 @@ export class NotificationGeneratorService implements OnModuleDestroy {
 
     // Notify all participants of the event
     const participants = await this.getEventParticipants(eventId);
-    const notifications = participants
-      .filter((addr) => addr !== event.creator_address)
-      .map((address) => ({
+    const recipients = await this.filterAllowedRecipients(
+      participants.filter((addr) => addr !== event.creator_address),
+      NotificationType.MatchAdded,
+    );
+    const notifications = recipients.map((address) => ({
         userAddress: address,
         type: NotificationType.MatchAdded,
         title: 'New Match Added',
@@ -232,7 +234,17 @@ export class NotificationGeneratorService implements OnModuleDestroy {
       relations: ['user'],
     });
 
-    const notifications = predictions.map((prediction) => ({
+    const allowedRecipients = new Set(
+      await this.filterAllowedRecipients(
+        predictions.map((prediction) => prediction.user.stellar_address),
+        NotificationType.MatchResolved,
+      ),
+    );
+    const allowedPredictions = predictions.filter((prediction) =>
+      allowedRecipients.has(prediction.user.stellar_address),
+    );
+
+    const notifications = allowedPredictions.map((prediction) => ({
       userAddress: prediction.user.stellar_address,
       type: NotificationType.MatchResolved,
       title: 'Match Result Submitted',
@@ -282,7 +294,11 @@ export class NotificationGeneratorService implements OnModuleDestroy {
       }
     }
 
-    const notifications = Array.from(winnerAddresses).map((address) => ({
+    const recipients = await this.filterAllowedRecipients(
+      Array.from(winnerAddresses),
+      NotificationType.WinnerVerified,
+    );
+    const notifications = recipients.map((address) => ({
       userAddress: address,
       type: NotificationType.WinnerVerified,
       title: 'Congratulations! You Won!',
@@ -313,7 +329,11 @@ export class NotificationGeneratorService implements OnModuleDestroy {
 
     // Notify all participants
     const participants = await this.getEventParticipants(eventId);
-    const notifications = participants.map((address) => ({
+    const recipients = await this.filterAllowedRecipients(
+      participants,
+      NotificationType.EventCancelled,
+    );
+    const notifications = recipients.map((address) => ({
       userAddress: address,
       type: NotificationType.EventCancelled,
       title: 'Event Cancelled',
@@ -333,7 +353,13 @@ export class NotificationGeneratorService implements OnModuleDestroy {
   ): Promise<void> {
     if (input.recipientAddresses.length === 0) return;
 
-    const notifications = input.recipientAddresses.map((address) => ({
+    const recipients = await this.filterAllowedRecipients(
+      input.recipientAddresses,
+      NotificationType.DisputeSlaApproaching,
+    );
+    if (recipients.length === 0) return;
+
+    const notifications = recipients.map((address) => ({
       userAddress: address,
       type: NotificationType.DisputeSlaApproaching,
       title: 'Dispute SLA Approaching',
@@ -364,7 +390,13 @@ export class NotificationGeneratorService implements OnModuleDestroy {
       input.escalated ? ' and has been escalated' : ''
     }.`;
 
-    const notifications = input.recipientAddresses.map((address) => ({
+    const recipients = await this.filterAllowedRecipients(
+      input.recipientAddresses,
+      NotificationType.DisputeSlaBreached,
+    );
+    if (recipients.length === 0) return;
+
+    const notifications = recipients.map((address) => ({
       userAddress: address,
       type: NotificationType.DisputeSlaBreached,
       title,
@@ -396,7 +428,13 @@ export class NotificationGeneratorService implements OnModuleDestroy {
 
     if (addresses.length === 0) return;
 
-    const notifications = addresses.map((address) => ({
+    const recipients = await this.filterAllowedRecipients(
+      addresses,
+      NotificationType.OracleResultDivergence,
+    );
+    if (recipients.length === 0) return;
+
+    const notifications = recipients.map((address) => ({
       userAddress: address,
       type: NotificationType.OracleResultDivergence,
       title: 'Oracle Result Divergence Detected',
@@ -501,49 +539,127 @@ export class NotificationGeneratorService implements OnModuleDestroy {
         relations: ['preferences'],
       });
 
-      if (user?.preferences) {
-        const prefs = user.preferences;
-        switch (notificationType) {
-          case NotificationType.EventCreated:
-            if (prefs.event_created_notifications === false) return false;
-            break;
-          case NotificationType.MatchAdded:
-            if (prefs.match_added_notifications === false) return false;
-            break;
-          case NotificationType.PredictionSubmitted:
-            if (prefs.prediction_submitted_notifications === false)
-              return false;
-            break;
-          case NotificationType.MatchResolved:
-            if (prefs.match_resolved_notifications === false) return false;
-            break;
-          case NotificationType.WinnerVerified:
-            if (prefs.winner_verified_notifications === false) return false;
-            break;
-          case NotificationType.EventCancelled:
-            if (prefs.event_cancelled_notifications === false) return false;
-            break;
-        }
+      let categoryPreference: NotificationCategoryPreference | null = null;
+      const category = this.mapTypeToCategory(notificationType);
+      if (user?.id && category) {
+        categoryPreference = await this.categoryPreferencesRepository.findOne({
+          where: { userId: user.id, category },
+        });
       }
 
-      // Check per-category preference for in_app channel
-      if (user?.id) {
-        const category = this.mapTypeToCategory(notificationType);
-        if (category) {
-          const catPref = await this.categoryPreferencesRepository.findOne({
-            where: { userId: user.id, category },
-          });
-          if (catPref && !catPref.in_app) return false;
-        }
-      }
-
-      return true;
+      return this.isAllowedByPreferences(
+        user?.preferences,
+        categoryPreference,
+        notificationType,
+      );
     } catch (error) {
       this.logger.error(
         `Error checking notification preferences for ${userAddress}`,
         error,
       );
       return true;
+    }
+  }
+
+  /**
+   * The preference decision itself, shared by the single-recipient check and
+   * the batched recipient filter so both agree on what "enabled" means.
+   *
+   * Legacy per-type flags reject when explicitly false; a missing category row
+   * means the category has never been touched and stays opted in.
+   */
+  private isAllowedByPreferences(
+    prefs: UserPreferences | null | undefined,
+    categoryPreference: NotificationCategoryPreference | null | undefined,
+    notificationType: NotificationType,
+  ): boolean {
+    if (prefs) {
+      switch (notificationType) {
+        case NotificationType.EventCreated:
+          if (prefs.event_created_notifications === false) return false;
+          break;
+        case NotificationType.MatchAdded:
+          if (prefs.match_added_notifications === false) return false;
+          break;
+        case NotificationType.PredictionSubmitted:
+          if (prefs.prediction_submitted_notifications === false) return false;
+          break;
+        case NotificationType.MatchResolved:
+          if (prefs.match_resolved_notifications === false) return false;
+          break;
+        case NotificationType.WinnerVerified:
+          if (prefs.winner_verified_notifications === false) return false;
+          break;
+        case NotificationType.EventCancelled:
+          if (prefs.event_cancelled_notifications === false) return false;
+          break;
+      }
+    }
+
+    if (categoryPreference && !categoryPreference.in_app) return false;
+
+    return true;
+  }
+
+  /**
+   * Filter a recipient list down to the addresses whose preferences allow this
+   * notification type. Lookups are batched, so notifying an event's
+   * participants costs two queries rather than two per participant.
+   *
+   * An address with no user record is kept: the single-recipient path does not
+   * block delivery when the record cannot be read, and both paths must agree.
+   */
+  private async filterAllowedRecipients(
+    userAddresses: string[],
+    notificationType: NotificationType,
+  ): Promise<string[]> {
+    const unique = Array.from(new Set(userAddresses.filter(Boolean)));
+    if (unique.length === 0) return [];
+
+    try {
+      const users = await this.userRepository.find({
+        where: { stellar_address: In(unique) },
+        relations: ['preferences'],
+      });
+      const usersByAddress = new Map(
+        users.map((user) => [user.stellar_address, user]),
+      );
+
+      const category = this.mapTypeToCategory(notificationType);
+      const categoryPrefsByUserId = new Map<
+        string,
+        NotificationCategoryPreference
+      >();
+      if (category) {
+        const userIds = users
+          .map((user) => user.id)
+          .filter((id): id is string => Boolean(id));
+        if (userIds.length > 0) {
+          const rows = await this.categoryPreferencesRepository.find({
+            where: { userId: In(userIds), category },
+          });
+          for (const row of rows) {
+            categoryPrefsByUserId.set(row.userId, row);
+          }
+        }
+      }
+
+      return unique.filter((address) => {
+        const user = usersByAddress.get(address);
+        if (!user) return true;
+
+        return this.isAllowedByPreferences(
+          user.preferences,
+          category ? (categoryPrefsByUserId.get(user.id) ?? null) : null,
+          notificationType,
+        );
+      });
+    } catch (error) {
+      this.logger.error(
+        `Error filtering notification recipients for ${notificationType}`,
+        error,
+      );
+      return unique;
     }
   }
 

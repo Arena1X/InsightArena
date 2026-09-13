@@ -3,7 +3,10 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { NotificationGeneratorService } from './notification-generator.service';
 import { Notification, NotificationType } from './entities/notification.entity';
-import { NotificationCategoryPreference } from './entities/notification-category-preference.entity';
+import {
+  NotificationCategory,
+  NotificationCategoryPreference,
+} from './entities/notification-category-preference.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
 import { Match } from '../matches/entities/match.entity';
 import { MatchPrediction } from '../matches/entities/match-prediction.entity';
@@ -17,6 +20,7 @@ describe('NotificationGeneratorService', () => {
   let matchRepository: Repository<Match>;
   let matchPredictionRepository: Repository<MatchPrediction>;
   let userRepository: Repository<User>;
+  let categoryPreferencesRepository: Repository<NotificationCategoryPreference>;
 
   const mockUser: User = {
     id: 'user-1',
@@ -77,6 +81,7 @@ describe('NotificationGeneratorService', () => {
           provide: getRepositoryToken(NotificationCategoryPreference),
           useValue: {
             findOne: jest.fn().mockResolvedValue(null),
+            find: jest.fn().mockResolvedValue([]),
           },
         },
         {
@@ -130,6 +135,96 @@ describe('NotificationGeneratorService', () => {
       getRepositoryToken(MatchPrediction),
     );
     userRepository = module.get<Repository<User>>(getRepositoryToken(User));
+    categoryPreferencesRepository = module.get<
+      Repository<NotificationCategoryPreference>
+    >(getRepositoryToken(NotificationCategoryPreference));
+  });
+
+  describe('category preference enforcement', () => {
+    const matchAddedData = {
+      match_id: 1,
+      event_id: 1,
+      team_a: 'Team A',
+      team_b: 'Team B',
+    };
+
+    it('skips participants whose category preference is disabled', async () => {
+      jest
+        .spyOn(creatorEventRepository, 'findOne')
+        .mockResolvedValue(mockCreatorEvent as any);
+      jest
+        .spyOn(service as any, 'getEventParticipants')
+        .mockResolvedValue(['GDEF456']);
+      jest
+        .spyOn(userRepository, 'find')
+        .mockResolvedValue([
+          { ...mockUser, stellar_address: 'GDEF456' } as any,
+        ]);
+      jest.spyOn(categoryPreferencesRepository, 'find').mockResolvedValue([
+        {
+          userId: 'user-1',
+          category: NotificationCategory.MatchAdded,
+          in_app: false,
+        } as any,
+      ]);
+      jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
+      jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+
+      await service.handleMatchAdded(matchAddedData);
+      await service.flushQueue();
+
+      expect(notificationsRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('creates notifications when the category is enabled', async () => {
+      jest
+        .spyOn(creatorEventRepository, 'findOne')
+        .mockResolvedValue(mockCreatorEvent as any);
+      jest
+        .spyOn(service as any, 'getEventParticipants')
+        .mockResolvedValue(['GDEF456']);
+      jest
+        .spyOn(userRepository, 'find')
+        .mockResolvedValue([
+          { ...mockUser, stellar_address: 'GDEF456' } as any,
+        ]);
+      jest.spyOn(categoryPreferencesRepository, 'find').mockResolvedValue([
+        {
+          userId: 'user-1',
+          category: NotificationCategory.MatchAdded,
+          in_app: true,
+        } as any,
+      ]);
+      jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
+      jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+
+      await service.handleMatchAdded(matchAddedData);
+      await service.flushQueue();
+
+      expect(notificationsRepository.create).toHaveBeenCalled();
+    });
+
+    it('treats a missing category row as opted in', async () => {
+      jest
+        .spyOn(creatorEventRepository, 'findOne')
+        .mockResolvedValue(mockCreatorEvent as any);
+      jest
+        .spyOn(service as any, 'getEventParticipants')
+        .mockResolvedValue(['GDEF456']);
+      jest
+        .spyOn(userRepository, 'find')
+        .mockResolvedValue([
+          { ...mockUser, stellar_address: 'GDEF456' } as any,
+        ]);
+      jest.spyOn(categoryPreferencesRepository, 'find').mockResolvedValue([]);
+      jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
+      jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+
+      await service.handleMatchAdded(matchAddedData);
+      await service.flushQueue();
+
+      expect(notificationsRepository.create).toHaveBeenCalled();
+    });
   });
 
   it('should be defined', () => {
