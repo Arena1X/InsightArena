@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In, FindOptionsWhere } from 'typeorm';
+import { Repository, In, IsNull, FindOptionsWhere } from 'typeorm';
 import { Notification, NotificationType } from './entities/notification.entity';
 import {
   NotificationPreference,
@@ -75,6 +75,21 @@ export class NotificationsService {
     private readonly categoryPreferencesRepository: Repository<NotificationCategoryPreference>,
     private readonly notificationBroadcaster: NotificationBroadcasterService,
   ) {}
+
+  /**
+   * Scope every notification query to rows that are not soft-deleted.
+   *
+   * TypeORM only applies the @DeleteDateColumn filter to select queries, so a
+   * bare update() will happily mutate a deleted row. Spelling the condition out
+   * here keeps reads and writes consistent, and gives future queries one place to
+   * inherit it from.
+   */
+  private activeNotificationWhere(
+    userAddress: string,
+    extra: FindOptionsWhere<Notification> = {},
+  ): FindOptionsWhere<Notification> {
+    return { ...extra, user_address: userAddress, deleted_at: IsNull() };
+  }
 
   // -------------------------------------------------------------------------
   // Preference helpers
@@ -231,23 +246,23 @@ export class NotificationsService {
     const take = Math.min(limit, 100);
     const skip = (page - 1) * take;
 
-    const where: Record<string, unknown> = { user_address: userAddress };
+    const extra: FindOptionsWhere<Notification> = {};
     if (readFilter !== undefined) {
-      where.read = readFilter;
+      extra.read = readFilter;
     }
     if (type) {
-      where.type = type;
+      extra.type = type;
     }
 
     const [data, total] = await this.notificationsRepository.findAndCount({
-      where: where as FindOptionsWhere<Notification>,
+      where: this.activeNotificationWhere(userAddress, extra),
       order: { created_at: 'DESC' },
       skip,
       take,
     });
 
     const unreadCount = await this.notificationsRepository.count({
-      where: { user_address: userAddress, read: false },
+      where: this.activeNotificationWhere(userAddress, { read: false }),
     });
 
     return { data, total, page, limit: take, unreadCount };
@@ -255,7 +270,7 @@ export class NotificationsService {
 
   async markAsRead(id: number, userAddress: string): Promise<void> {
     const result = await this.notificationsRepository.update(
-      { id, user_address: userAddress },
+      this.activeNotificationWhere(userAddress, { id }),
       { read: true },
     );
 
@@ -268,7 +283,7 @@ export class NotificationsService {
 
   async markAllAsRead(userAddress: string): Promise<{ unreadCount: number }> {
     await this.notificationsRepository.update(
-      { user_address: userAddress, read: false },
+      this.activeNotificationWhere(userAddress, { read: false }),
       { read: true },
     );
 
@@ -282,7 +297,7 @@ export class NotificationsService {
   ): Promise<{ unreadCount: number }> {
     if (notificationIds.length > 0) {
       await this.notificationsRepository.update(
-        { user_address: userAddress, id: In(notificationIds) },
+        this.activeNotificationWhere(userAddress, { id: In(notificationIds) }),
         { read: true },
       );
     }
@@ -293,7 +308,7 @@ export class NotificationsService {
 
   async markAllAsUnread(userAddress: string): Promise<{ unreadCount: number }> {
     await this.notificationsRepository.update(
-      { user_address: userAddress, read: true },
+      this.activeNotificationWhere(userAddress, { read: true }),
       { read: false },
     );
 
@@ -307,7 +322,7 @@ export class NotificationsService {
   ): Promise<{ unreadCount: number }> {
     if (notificationIds.length > 0) {
       await this.notificationsRepository.update(
-        { user_address: userAddress, id: In(notificationIds) },
+        this.activeNotificationWhere(userAddress, { id: In(notificationIds) }),
         { read: false },
       );
     }
@@ -330,7 +345,7 @@ export class NotificationsService {
 
   async getUnreadCount(userAddress: string): Promise<number> {
     return this.notificationsRepository.count({
-      where: { user_address: userAddress, read: false },
+      where: this.activeNotificationWhere(userAddress, { read: false }),
     });
   }
 

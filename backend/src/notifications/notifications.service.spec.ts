@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { IsNull } from 'typeorm';
 import { NotificationsService, isInQuietHours } from './notifications.service';
 import { Notification, NotificationType } from './entities/notification.entity';
 import {
@@ -627,7 +628,7 @@ describe('NotificationsService', () => {
       mockNotificationRepo.update.mockResolvedValue({ affected: 1 });
       await service.markAsRead(1, 'GBRPYHIL');
       expect(mockNotificationRepo.update).toHaveBeenCalledWith(
-        { id: 1, user_address: 'GBRPYHIL' },
+        { id: 1, user_address: 'GBRPYHIL', deleted_at: IsNull() },
         { read: true },
       );
       expect(
@@ -651,7 +652,7 @@ describe('NotificationsService', () => {
       const result = await service.markAllAsRead('GBRPYHIL');
 
       expect(mockNotificationRepo.update).toHaveBeenCalledWith(
-        { user_address: 'GBRPYHIL', read: false },
+        { user_address: 'GBRPYHIL', read: false, deleted_at: IsNull() },
         { read: true },
       );
       expect(result).toEqual({ unreadCount: 0 });
@@ -674,7 +675,7 @@ describe('NotificationsService', () => {
       const result = await service.markAllAsUnread('GBRPYHIL');
 
       expect(mockNotificationRepo.update).toHaveBeenCalledWith(
-        { user_address: 'GBRPYHIL', read: true },
+        { user_address: 'GBRPYHIL', read: true, deleted_at: IsNull() },
         { read: false },
       );
       expect(result).toEqual({ unreadCount: 5 });
@@ -697,7 +698,11 @@ describe('NotificationsService', () => {
       const result = await service.markMultipleAsRead('GBRPYHIL', [1, 2, 3]);
 
       expect(mockNotificationRepo.update).toHaveBeenCalledWith(
-        { user_address: 'GBRPYHIL', id: expect.any(Object) },
+        {
+          user_address: 'GBRPYHIL',
+          id: expect.any(Object),
+          deleted_at: IsNull(),
+        },
         { read: true },
       );
       expect(result).toEqual({ unreadCount: 3 });
@@ -731,6 +736,7 @@ describe('NotificationsService', () => {
         {
           user_address: 'GBRPYHIL',
           id: expect.any(Object),
+          deleted_at: IsNull(),
         },
         { read: true },
       );
@@ -745,7 +751,11 @@ describe('NotificationsService', () => {
       const result = await service.markMultipleAsUnread('GBRPYHIL', [4, 5]);
 
       expect(mockNotificationRepo.update).toHaveBeenCalledWith(
-        { user_address: 'GBRPYHIL', id: expect.any(Object) },
+        {
+          user_address: 'GBRPYHIL',
+          id: expect.any(Object),
+          deleted_at: IsNull(),
+        },
         { read: false },
       );
       expect(result).toEqual({ unreadCount: 7 });
@@ -778,6 +788,7 @@ describe('NotificationsService', () => {
         {
           user_address: 'GBRPYHIL',
           id: expect.any(Object),
+          deleted_at: IsNull(),
         },
         { read: false },
       );
@@ -798,6 +809,72 @@ describe('NotificationsService', () => {
       mockNotificationRepo.findOne.mockResolvedValue(null);
       await expect(service.remove(1, 'GBRPYHIL')).rejects.toThrow(
         NotFoundException,
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Soft-deleted notifications
+  // -------------------------------------------------------------------------
+
+  describe('soft-deleted notifications', () => {
+    it('scopes the list query to rows that are not deleted', async () => {
+      mockNotificationRepo.findAndCount.mockResolvedValue([[], 0]);
+      mockNotificationRepo.count.mockResolvedValue(0);
+
+      await service.findAllForUser('GBRPYHIL', 1, 20);
+
+      expect(mockNotificationRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ deleted_at: IsNull() }),
+        }),
+      );
+    });
+
+    it('scopes the unread count to rows that are not deleted', async () => {
+      mockNotificationRepo.count.mockResolvedValue(2);
+
+      await service.getUnreadCount('GBRPYHIL');
+
+      expect(mockNotificationRepo.count).toHaveBeenCalledWith({
+        where: { user_address: 'GBRPYHIL', read: false, deleted_at: IsNull() },
+      });
+    });
+
+    it('scopes the unread count returned with a page too', async () => {
+      mockNotificationRepo.findAndCount.mockResolvedValue([[], 0]);
+      mockNotificationRepo.count.mockResolvedValue(3);
+
+      const result = await service.findAllForUser('GBRPYHIL', 1, 20);
+
+      expect(result.unreadCount).toBe(3);
+      expect(mockNotificationRepo.count).toHaveBeenCalledWith({
+        where: { user_address: 'GBRPYHIL', read: false, deleted_at: IsNull() },
+      });
+    });
+
+    it('does not flip deleted rows back to unread', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 0 });
+      mockNotificationRepo.count.mockResolvedValue(0);
+
+      await service.markAllAsUnread('GBRPYHIL');
+
+      expect(mockNotificationRepo.update).toHaveBeenCalledWith(
+        { user_address: 'GBRPYHIL', read: true, deleted_at: IsNull() },
+        { read: false },
+      );
+    });
+
+    it('treats a deleted notification as not found when marking it read', async () => {
+      mockNotificationRepo.update.mockResolvedValue({ affected: 0 });
+
+      await expect(service.markAsRead(7, 'GBRPYHIL')).rejects.toThrow(
+        NotFoundException,
+      );
+
+      expect(mockNotificationRepo.update).toHaveBeenCalledWith(
+        { id: 7, user_address: 'GBRPYHIL', deleted_at: IsNull() },
+        { read: true },
       );
     });
   });
