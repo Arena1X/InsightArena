@@ -42,6 +42,12 @@ const DEFAULT_EVIDENCE_ALLOWED_MIME_TYPES = [
   'application/pdf',
 ];
 
+/** Hard cap on how many evidence records one dispute may hold. */
+const DEFAULT_EVIDENCE_MAX_COUNT = 10;
+
+/** Matches the file_url column length, so a stored URL always fits. */
+const MAX_EVIDENCE_URL_LENGTH = 2048;
+
 const DEFAULT_SLA_INITIAL_REVIEW_HOURS = 48;
 const DEFAULT_SLA_ESCALATION_HOURS = 24;
 const DEFAULT_SLA_APPROACHING_WINDOW_HOURS = 6;
@@ -67,6 +73,8 @@ export class DisputesService {
   private readonly evidenceMaxSizeBytes: number;
   /** MIME types accepted by attachEvidence. */
   private readonly evidenceAllowedMimeTypes: string[];
+  /** Most evidence records a single dispute may hold. */
+  private readonly evidenceMaxCount: number;
 
   constructor(
     @InjectRepository(Dispute)
@@ -95,6 +103,14 @@ export class DisputesService {
     this.evidenceAllowedMimeTypes = configuredMimeTypes
       ? configuredMimeTypes.split(',').map((type) => type.trim())
       : DEFAULT_EVIDENCE_ALLOWED_MIME_TYPES;
+
+    const configuredMaxCount = this.configService.get<number>(
+      'DISPUTE_EVIDENCE_MAX_COUNT',
+    );
+    this.evidenceMaxCount =
+      typeof configuredMaxCount === 'number' && configuredMaxCount > 0
+        ? configuredMaxCount
+        : DEFAULT_EVIDENCE_MAX_COUNT;
   }
 
   /**
@@ -719,10 +735,14 @@ export class DisputesService {
       );
     }
 
+    const fileUrl = this.normalizeEvidenceUrl(dto.fileUrl);
+    await this.assertEvidenceIsNew(disputeId, fileUrl);
+    await this.assertEvidenceCountAllowed(disputeId);
+
     const evidence = this.evidenceRepository.create({
       disputeId,
       uploadedById: user.id,
-      fileUrl: dto.fileUrl,
+      fileUrl,
       fileName: dto.fileName,
       mimeType: dto.mimeType,
       sizeBytes: dto.sizeBytes,
@@ -730,6 +750,67 @@ export class DisputesService {
     });
 
     return this.evidenceRepository.save(evidence);
+  }
+
+  /**
+   * Evidence URLs end up in front of participants and arbiters, so only
+   * http(s) is accepted and the stored value is the parsed, normalised form
+   * rather than whatever string arrived.
+   */
+  private normalizeEvidenceUrl(raw: string): string {
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw new BadRequestException('Evidence URL is not a valid URL');
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new BadRequestException(
+        'Evidence URL scheme "' + parsed.protocol + '" is not allowed; use http or https',
+      );
+    }
+
+    if (!parsed.hostname) {
+      throw new BadRequestException('Evidence URL must have a hostname');
+    }
+
+    if (parsed.href.length > MAX_EVIDENCE_URL_LENGTH) {
+      throw new BadRequestException(
+        'Evidence URL exceeds the maximum length of ' + MAX_EVIDENCE_URL_LENGTH + ' characters',
+      );
+    }
+
+    return parsed.href;
+  }
+
+  /** The same file should not be attachable twice to one dispute. */
+  private async assertEvidenceIsNew(
+    disputeId: string,
+    fileUrl: string,
+  ): Promise<void> {
+    const existing = await this.evidenceRepository.findOne({
+      where: { disputeId, fileUrl },
+    });
+
+    if (existing) {
+      throw new BadRequestException(
+        'This evidence has already been attached to the dispute',
+      );
+    }
+  }
+
+  /** Keeps one dispute's evidence list bounded. */
+  private async assertEvidenceCountAllowed(disputeId: string): Promise<void> {
+    const attached = await this.evidenceRepository.count({
+      where: { disputeId },
+    });
+
+    if (attached >= this.evidenceMaxCount) {
+      throw new BadRequestException(
+        'A dispute can hold at most ' + this.evidenceMaxCount + ' evidence records',
+      );
+    }
   }
 
   /**

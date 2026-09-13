@@ -103,6 +103,8 @@ describe('DisputesService', () => {
             create: jest.fn(),
             save: jest.fn(),
             find: jest.fn(),
+            findOne: jest.fn().mockResolvedValue(null),
+            count: jest.fn().mockResolvedValue(0),
           },
         },
         {
@@ -579,6 +581,53 @@ describe('DisputesService', () => {
       description: null,
       createdAt: new Date(),
     } as DisputeEvidence;
+
+    it('rejects an evidence URL whose scheme is not http or https', async () => {
+      jest.spyOn(service, 'findOne').mockResolvedValue(pendingDispute);
+      jest.spyOn(evidenceRepository, 'create').mockReturnValue(mockEvidence);
+      jest.spyOn(evidenceRepository, 'save').mockResolvedValue(mockEvidence);
+
+      await expect(
+        service.attachEvidence(
+          'dispute-123',
+          { ...attachEvidenceDto, fileUrl: 'ftp://files.example.com/evidence.png' },
+          mockUser,
+        ),
+      ).rejects.toThrow(/scheme "ftp:" is not allowed/);
+
+      await expect(
+        service.attachEvidence(
+          'dispute-123',
+          { ...attachEvidenceDto, fileUrl: 'javascript:alert(1)' },
+          mockUser,
+        ),
+      ).rejects.toThrow(/is not allowed/);
+
+      expect(evidenceRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a duplicate evidence URL for the same dispute', async () => {
+      jest.spyOn(service, 'findOne').mockResolvedValue(pendingDispute);
+      jest.spyOn(evidenceRepository, 'findOne').mockResolvedValue(mockEvidence);
+
+      await expect(
+        service.attachEvidence('dispute-123', attachEvidenceDto, mockUser),
+      ).rejects.toThrow(/already been attached/);
+
+      expect(evidenceRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('enforces the per-dispute evidence cap', async () => {
+      jest.spyOn(service, 'findOne').mockResolvedValue(pendingDispute);
+      jest.spyOn(evidenceRepository, 'findOne').mockResolvedValue(null);
+      jest.spyOn(evidenceRepository, 'count').mockResolvedValue(10);
+
+      await expect(
+        service.attachEvidence('dispute-123', attachEvidenceDto, mockUser),
+      ).rejects.toThrow(/at most 10 evidence records/);
+
+      expect(evidenceRepository.save).not.toHaveBeenCalled();
+    });
 
     it('should attach evidence as the disputant', async () => {
       jest.spyOn(service, 'findOne').mockResolvedValue(pendingDispute);
