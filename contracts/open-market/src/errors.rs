@@ -114,9 +114,9 @@ pub enum InsightArenaError {
     /// with `bond_amount > 0` but the creator has not transferred the required
     /// bond into escrow (i.e. allowance/balance is insufficient).
     InsufficientFunds = 30,
-    /// A native XLM token transfer via the Stellar asset contract failed.
-    /// Raised when the underlying `transfer` call returns an error.
-    TransferFailed = 31,
+    /// Spot price deviates from the TWAP by more than the configured max deviation bps.
+    /// Raised during market settlement/resolution when last-block price manipulation is detected.
+    PriceDeviationTooHigh = 31,
     /// The escrow pool for this market contains no funds.
     /// Raised when resolution or refund logic encounters a zero `total_pool`.
     EscrowEmpty = 32,
@@ -221,6 +221,6 @@ pub enum InsightArenaError {
     /// REUSED for dispute resolution guards:
     /// - A dispute has already been resolved and cannot be settled again
     ///   (prevents double-refund or double-slash in resolve_dispute/finalize_arbiter_vote)
-    /// - Attempted to slash a bond that has already been slashed or refunded
+    /// Attempted to slash a bond that has already been slashed or refunded
     ZeroShareTransfer = 112,
 }

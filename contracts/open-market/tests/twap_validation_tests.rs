@@ -478,6 +478,169 @@ fn test_single_observation_twap_succeeds() {
     );
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// REQUIREMENT 4: Settlement TWAP Price Manipulation Guard (Issue #1762)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// **Test Case**: Manipulated spot price beyond the deviation band is rejected at settlement; normal price passes.
+#[test]
+fn test_settlement_price_manipulation_rejected_and_normal_price_passes() {
+    let env = Env::default();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+    env.mock_all_auths();
+    let (client, admin, oracle, _xlm_token) = deploy_with_token(&env);
+
+    let provider = Address::generate(&env);
+    let trader = Address::generate(&env);
+
+    let mut params = lp_market_params(&env);
+    params.end_time = 5000;
+    params.resolution_time = 5100;
+    let market_id = client.create_market(&admin, &params);
+
+    let sa = StellarAssetClient::new(&env, &_xlm_token);
+    let token = TokenClient::new(&env, &_xlm_token);
+
+    // Initial balanced liquidity: 100_000 each in "yes" and "no"
+    let liquidity = 100_000_i128;
+    sa.mint(&provider, &liquidity);
+    token.approve(&provider, &client.address, &liquidity, &9999);
+    client.add_liquidity(&provider, &market_id, &liquidity);
+
+    // Enable settlement TWAP guard: 500 bps (5%) max deviation, 1000 second window
+    client.set_settlement_twap_config(&admin, &500_u32, &1000_u64);
+
+    // Advance time to 4500 (within steady state for > 1000s)
+    env.ledger().with_mut(|l| l.timestamp = 4500);
+
+    // Execute small swaps to build steady-state TWAP
+    sa.mint(&trader, &10_000_i128);
+    token.approve(&trader, &client.address, &10_000_i128, &9999);
+    client.swap_outcome(
+        &trader,
+        &market_id,
+        &symbol_short!("yes"),
+        &symbol_short!("no"),
+        &100_i128,
+        &0_i128,
+    );
+
+    // Advance time to 5050 (near end time)
+    env.ledger().with_mut(|l| l.timestamp = 5050);
+
+    // Under normal trading, validation helper succeeds
+    let val_res = client.try_validate_settlement_price(&market_id, &symbol_short!("yes"));
+    assert!(val_res.is_ok(), "Normal price must pass TWAP validation");
+
+    // Attacker performs a massive swap in the final block before resolution (manipulating spot price)
+    sa.mint(&trader, &200_000_i128);
+    token.approve(&trader, &client.address, &200_000_i128, &9999);
+    client.swap_outcome(
+        &trader,
+        &market_id,
+        &symbol_short!("no"),
+        &symbol_short!("yes"),
+        &60_000_i128,
+        &0_i128,
+    );
+
+    // Advance to resolution time: 5101
+    env.ledger().with_mut(|l| l.timestamp = 5101);
+
+    // 1. Validation helper must reject the manipulated price with PriceDeviationTooHigh
+    let check_res = client.try_validate_settlement_price(&market_id, &symbol_short!("yes"));
+    assert_eq!(
+        check_res,
+        Err(Ok(InsightArenaError::PriceDeviationTooHigh)),
+        "Expected PriceDeviationTooHigh from settlement validation helper"
+    );
+
+    // 2. Settlement / resolve_market must also reject resolution with PriceDeviationTooHigh
+    let resolve_res = client.try_resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+    assert_eq!(
+        resolve_res,
+        Err(Ok(InsightArenaError::PriceDeviationTooHigh)),
+        "Expected PriceDeviationTooHigh during market settlement/resolution"
+    );
+}
+
+/// **Test Case**: Return `TwapInsufficientHistory` when the window isn't covered.
+#[test]
+fn test_settlement_price_insufficient_history() {
+    let env = Env::default();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+    env.mock_all_auths();
+    let (client, admin, oracle, _xlm_token) = deploy_with_token(&env);
+
+    let provider = Address::generate(&env);
+    let mut params = lp_market_params(&env);
+    params.end_time = 2000;
+    params.resolution_time = 2100;
+    let market_id = client.create_market(&admin, &params);
+
+    let sa = StellarAssetClient::new(&env, &_xlm_token);
+    let token = TokenClient::new(&env, &_xlm_token);
+    let liquidity = 100_000_i128;
+    sa.mint(&provider, &liquidity);
+    token.approve(&provider, &client.address, &liquidity, &9999);
+    client.add_liquidity(&provider, &market_id, &liquidity);
+
+    // Set settlement TWAP window to 3600 seconds, but only ~1105 seconds have elapsed since pool creation
+    client.set_settlement_twap_config(&admin, &1000_u32, &3600_u64);
+
+    env.ledger().with_mut(|l| l.timestamp = 2105);
+
+    // Both helper and resolve_market must return TwapInsufficientHistory
+    let check_res = client.try_validate_settlement_price(&market_id, &symbol_short!("yes"));
+    assert_eq!(
+        check_res,
+        Err(Ok(InsightArenaError::TwapInsufficientHistory)),
+        "Expected TwapInsufficientHistory when window is not covered"
+    );
+
+    let resolve_res = client.try_resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+    assert_eq!(
+        resolve_res,
+        Err(Ok(InsightArenaError::TwapInsufficientHistory)),
+        "Expected TwapInsufficientHistory during resolution when window is not covered"
+    );
+}
+
+/// **Test Case**: Admin configuration validation for settlement TWAP parameters.
+#[test]
+fn test_settlement_twap_config_validation() {
+    let env = Env::default();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+    env.mock_all_auths();
+    let (client, admin, _oracle, _xlm_token) = deploy_with_token(&env);
+
+    let non_admin = Address::generate(&env);
+
+    // Default configuration: 0 bps (disabled), 3600s
+    let (dev, win) = client.get_settlement_twap_config();
+    assert_eq!(dev, 0);
+    assert_eq!(win, 3600);
+
+    // Admin sets valid configuration
+    client.set_settlement_twap_config(&admin, &1500_u32, &1800_u64);
+    let (dev, win) = client.get_settlement_twap_config();
+    assert_eq!(dev, 1500);
+    assert_eq!(win, 1800);
+
+    // Non-admin rejected with Unauthorized
+    let res_unauth = client.try_set_settlement_twap_config(&non_admin, &1000_u32, &1800_u64);
+    assert_eq!(res_unauth, Err(Ok(InsightArenaError::Unauthorized)));
+
+    // Max deviation > 10,000 bps rejected with InvalidInput
+    let res_invalid_bps = client.try_set_settlement_twap_config(&admin, &10_001_u32, &1800_u64);
+    assert_eq!(res_invalid_bps, Err(Ok(InsightArenaError::InvalidInput)));
+
+    // Zero window when max deviation > 0 rejected with InvalidInput
+    let res_zero_win = client.try_set_settlement_twap_config(&admin, &500_u32, &0_u64);
+    assert_eq!(res_zero_win, Err(Ok(InsightArenaError::InvalidInput)));
+}
+
+
 
 
 

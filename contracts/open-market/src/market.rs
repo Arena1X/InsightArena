@@ -901,6 +901,30 @@ pub fn resolve_market(
         return Err(InsightArenaError::InvalidOutcome);
     }
 
+    // ── Guard 9: TWAP Price Manipulation Guard (Issue #1762) ──────────────────
+    // If this market has an active AMM liquidity pool and settlement TWAP guard is enabled
+    // (settlement_twap_max_deviation_bps > 0), verify that the spot price of the resolved
+    // outcome does not deviate from the TWAP by more than the configured max deviation band.
+    // Reverts with PriceDeviationTooHigh if manipulated, or TwapInsufficientHistory if window
+    // is not covered.
+    if env.storage().persistent().has(&DataKey::LiquidityPool(market_id)) {
+        let max_dev = cfg.twap_max_deviation_bps;
+        if max_dev > 0 {
+            let window = if cfg.settlement_twap_window > 0 {
+                cfg.settlement_twap_window
+            } else {
+                3600
+            };
+            crate::liquidity::validate_settlement_price_twap(
+                &env,
+                market_id,
+                resolved_outcome.clone(),
+                window,
+                max_dev,
+            )?;
+        }
+    }
+
     market.is_resolved = true;
     market.resolved_outcome = Some(resolved_outcome.clone());
     market.resolved_at = Some(now);
@@ -948,6 +972,28 @@ pub fn resolve_market(
 
     Ok(())
 }
+
+/// Validate an outcome's settlement price against its TWAP using the contract's
+/// global settlement TWAP configuration.
+pub fn validate_settlement_price(
+    env: &Env,
+    market_id: u64,
+    outcome: Symbol,
+) -> Result<i128, InsightArenaError> {
+    let cfg = config::get_config(env)?;
+    let window = if cfg.settlement_twap_window > 0 {
+        cfg.settlement_twap_window
+    } else {
+        3600
+    };
+    let max_dev = if cfg.twap_max_deviation_bps > 0 {
+        cfg.twap_max_deviation_bps
+    } else {
+        1000 // default 10% deviation band when query helper is invoked directly
+    };
+    crate::liquidity::validate_settlement_price_twap(env, market_id, outcome, window, max_dev)
+}
+
 
 pub fn update_oracle_from_governance(
     env: &Env,

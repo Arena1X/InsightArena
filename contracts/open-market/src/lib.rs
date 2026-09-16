@@ -1283,6 +1283,32 @@ impl InsightArenaContract {
         liquidity::get_market_twap(&env, market_id, window_seconds)
     }
 
+    /// Validate that an outcome's spot price is within the allowed TWAP deviation band
+    /// at settlement. Returns the TWAP if valid, or reverts with PriceDeviationTooHigh / TwapInsufficientHistory.
+    pub fn validate_settlement_price(
+        env: Env,
+        market_id: u64,
+        outcome: Symbol,
+    ) -> Result<i128, InsightArenaError> {
+        market::validate_settlement_price(&env, market_id, outcome)
+    }
+
+    /// Set settlement TWAP guard parameters (admin-only).
+    pub fn set_settlement_twap_config(
+        env: Env,
+        admin: Address,
+        max_deviation_bps: u32,
+        window_seconds: u64,
+    ) -> Result<(), InsightArenaError> {
+        config::set_settlement_twap_config(&env, admin, max_deviation_bps, window_seconds)
+    }
+
+    /// Get current settlement TWAP guard parameters: (max_deviation_bps, window_seconds).
+    pub fn get_settlement_twap_config(env: Env) -> Result<(u32, u64), InsightArenaError> {
+        config::get_settlement_twap_config(&env)
+    }
+
+
     // ── Dynamic Swap Fee ──────────────────────────────────────────────────────
 
     /// Return the current dynamic fee tier and effective swap fee for a market.

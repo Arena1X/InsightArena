@@ -365,6 +365,13 @@ pub struct Config {
     /// via `set_season_decay_config`. Defaults to `1000` (10% per season) at
     /// initialization. See `reputation::apply_season_inactivity_decay`.
     pub reputation_season_decay_bps: u32,
+    /// Maximum allowed deviation in basis points (bps, 0-10000) between spot price and
+    /// TWAP during market settlement/resolution to guard against last-block manipulation.
+    /// 0 disables the check. Admin-configurable via `set_settlement_twap_config`. Defaults to 0.
+    pub twap_max_deviation_bps: u32,
+    /// Time window (seconds) over which TWAP is calculated during settlement validation.
+    /// Admin-configurable via `set_settlement_twap_config`. Defaults to 3600 (1 hour).
+    pub settlement_twap_window: u64,
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -509,6 +516,8 @@ pub fn initialize(
         early_exit_fee_bps: 500, // 5% default early-exit fee
         reputation_season_decay_grace: 1, // tolerate one inactive season before decaying
         reputation_season_decay_bps: 1000, // 10% compounding decay per inactive season
+        twap_max_deviation_bps: 0, // 0 disables check by default; admin opts in
+        settlement_twap_window: 3600, // 1 hour default window
     };
 
     env.storage().persistent().set(&DataKey::Config, &config);
@@ -1605,3 +1614,52 @@ pub fn get_early_exit_fee_bps(env: &Env) -> Result<u32, InsightArenaError> {
     let config = load_config(env)?;
     Ok(config.early_exit_fee_bps)
 }
+
+/// Set the settlement TWAP guard parameters: max allowed deviation in bps (0-10000)
+/// between spot price and TWAP, and the TWAP evaluation window in seconds.
+/// 0 max_deviation_bps disables the settlement price guard.
+/// Caller must be the stored admin.
+pub fn set_settlement_twap_config(
+    env: &Env,
+    admin: Address,
+    max_deviation_bps: u32,
+    window_seconds: u64,
+) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
+    let mut config = load_config(env)?;
+
+    admin.require_auth();
+    if admin != config.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    if max_deviation_bps > 10_000 || (max_deviation_bps > 0 && window_seconds == 0) {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
+    config.twap_max_deviation_bps = max_deviation_bps;
+    config.settlement_twap_window = window_seconds;
+    env.storage().persistent().set(&DataKey::Config, &config);
+    bump_config(env);
+
+    emit_settlement_twap_config_updated(env, max_deviation_bps, window_seconds);
+
+    Ok(())
+}
+
+fn emit_settlement_twap_config_updated(env: &Env, max_deviation_bps: u32, window_seconds: u64) {
+    env.events().publish(
+        (symbol_short!("cfg"), symbol_short!("twap_grd")),
+        (max_deviation_bps, window_seconds),
+    );
+}
+
+/// Get the current settlement TWAP configuration: (max_deviation_bps, window_seconds).
+pub fn get_settlement_twap_config(env: &Env) -> Result<(u32, u64), InsightArenaError> {
+    let config = load_config(env)?;
+    Ok((
+        config.twap_max_deviation_bps,
+        config.settlement_twap_window,
+    ))
+}
+

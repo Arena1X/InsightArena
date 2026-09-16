@@ -535,6 +535,68 @@ pub fn get_market_twap(
     get_twap(env, market_id, outcome, window_seconds)
 }
 
+/// Validate that an outcome's spot price has not deviated excessively from its
+/// Time-Weighted Average Price (TWAP) over `window` seconds.
+///
+/// # Mathematical Model & Security Invariants
+///
+/// Under constant-product or multi-outcome pool dynamics, a large trade immediately
+/// preceding settlement can drastically distort the spot reserve ratio:
+///     P_spot = outcome_reserve
+/// An attacker exploiting this could manipulate the outcome pricing used for settlement payouts.
+///
+/// This settlement guard enforces that:
+///     |P_spot - P_twap| * 10_000 / P_twap <= max_deviation_bps
+///
+/// # Errors
+/// - [`InsightArenaError::PriceDeviationTooHigh`] — Spot price has deviated from TWAP by more than `max_deviation_bps`.
+/// - [`InsightArenaError::TwapInsufficientHistory`] — The ring buffer does not cover the full `window` duration.
+/// - [`InsightArenaError::TwapEmptyWindow`] — `window` is 0.
+/// - [`InsightArenaError::InvalidOutcome`] — Outcome is not in the pool.
+pub fn validate_settlement_price_twap(
+    env: &Env,
+    market_id: u64,
+    outcome: Symbol,
+    window: u64,
+    max_deviation_bps: u32,
+) -> Result<i128, InsightArenaError> {
+    if window == 0 {
+        return Err(InsightArenaError::TwapEmptyWindow);
+    }
+    if max_deviation_bps > 10_000 {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
+    let spot_price = get_outcome_price(env, market_id, outcome.clone())?;
+    let twap_price = get_twap(env, market_id, outcome, window)?;
+
+    if twap_price <= 0 {
+        if spot_price > 0 {
+            return Err(InsightArenaError::PriceDeviationTooHigh);
+        }
+        return Ok(twap_price);
+    }
+
+    let diff = if spot_price >= twap_price {
+        spot_price - twap_price
+    } else {
+        twap_price - spot_price
+    };
+
+    let deviation_bps = diff
+        .checked_mul(10_000)
+        .ok_or(InsightArenaError::Overflow)?
+        .checked_div(twap_price)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    if deviation_bps > (max_deviation_bps as i128) {
+        return Err(InsightArenaError::PriceDeviationTooHigh);
+    }
+
+    Ok(twap_price)
+}
+
+
 // ── Impermanent Loss Accounting ───────────────────────────────────────────────
 //
 // Scope: this contract's AMM pool is generalized to N outcomes
