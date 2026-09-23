@@ -302,8 +302,24 @@ export function resetToolHealthCache(): void {
 export { TOOL_HEALTH_CACHE_TTL_MS };
 
 // ---------------------------------------------------------------------------
-// Profile completeness
+// Profile completeness & Public Profile
 // ---------------------------------------------------------------------------
+
+export interface PublicProfileStats {
+  totalPredictions: number;
+  accuracyRate: string | number;
+  bestSeason: string;
+  currentStreak: number;
+  isPrivate?: boolean;
+}
+
+export interface PublicUserProfile {
+  address: string;
+  username?: string;
+  joinedDate?: string;
+  isPrivate?: boolean;
+  stats?: PublicProfileStats;
+}
 
 export interface ProfileFieldValues {
   username?: string;
@@ -330,6 +346,28 @@ export function getMissingProfileFields(
   if (!user) return REQUIRED_PROFILE_FIELDS;
   return REQUIRED_PROFILE_FIELDS.filter((field) => !user[field.key]?.trim());
 }
+
+/** `GET /api/users/profile/:address` */
+export function getPublicProfile(
+  address: string,
+  options?: ApiOptions,
+): Promise<PublicUserProfile> {
+  return apiClient.get<PublicUserProfile>(
+    `/api/users/profile/${encodeURIComponent(address)}`,
+    options,
+  );
+}
+
+/** Helper to determine if a public profile is hidden/private */
+export function isProfilePrivate(profile?: Partial<PublicUserProfile> | null): boolean {
+  if (!profile) return false;
+  if (profile.isPrivate) return true;
+  if (profile.address && (profile.address.toLowerCase().startsWith('private-') || profile.address.toLowerCase().includes('hidden'))) {
+    return true;
+  }
+  return false;
+}
+
 
 // ---------------------------------------------------------------------------
 // Course completion

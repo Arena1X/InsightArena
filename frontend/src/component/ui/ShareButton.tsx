@@ -8,11 +8,12 @@ import { cn } from "@/lib/utils";
 export interface ShareButtonProps {
   /** Page title used in the share text. */
   title: string;
-  /** Short description or question for the market. */
+  /** Short description or question for the market or profile. */
   description: string;
-  /** Canonical URL for this market. Defaults to window.location.href. */
+  /** Canonical URL for this page. Defaults to window.location.href. */
   url?: string;
   className?: string;
+  ariaLabel?: string;
 }
 
 function buildTwitterUrl(text: string, url: string): string {
@@ -21,12 +22,12 @@ function buildTwitterUrl(text: string, url: string): string {
 }
 
 /**
- * Share buttons for a market page.
+ * Share buttons for a market or profile page.
  *
  * Provides: Twitter/X intent link, native Web Share API (mobile), and a
- * copy-link fallback. Designed to be dropped anywhere on a market detail page.
+ * copy-link fallback. Designed to be dropped anywhere on a detail page.
  */
-export function ShareButton({ title, description, url, className }: ShareButtonProps) {
+export function ShareButton({ title, description, url, className, ariaLabel }: ShareButtonProps) {
   const [copied, setCopied] = useState(false);
 
   const resolvedUrl = url ?? (typeof window !== "undefined" ? window.location.href : "");
@@ -54,7 +55,7 @@ export function ShareButton({ title, description, url, className }: ShareButtonP
   const hasNativeShare = typeof navigator !== "undefined" && "share" in navigator;
 
   return (
-    <div className={cn("flex items-center gap-2", className)} role="group" aria-label="Share market">
+    <div className={cn("flex items-center gap-2", className)} role="group" aria-label={ariaLabel || "Share market"}>
       {/* Twitter / X */}
       <a
         href={buildTwitterUrl(shareText, resolvedUrl)}
