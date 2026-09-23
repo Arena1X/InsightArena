@@ -6,6 +6,28 @@ interface UseInfiniteScrollOptions {
     threshold?: number;
 }
 
+/**
+ * Append a page of items without duplicating keys already present.
+ * Used when infinite-scroll pages are merged into the visible list.
+ */
+export function appendUniqueByKey<T>(
+    current: T[],
+    incoming: T[],
+    getKey: (item: T) => string,
+): T[] {
+    const seen = new Set(current.map(getKey));
+    const appended: T[] = [];
+
+    for (const item of incoming) {
+        const key = getKey(item);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        appended.push(item);
+    }
+
+    return appended.length === 0 ? current : [...current, ...appended];
+}
+
 interface UseInfiniteScrollReturn {
     observerTarget: React.RefObject<HTMLDivElement | null>;
     isLoading: boolean;

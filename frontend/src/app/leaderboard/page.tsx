@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, Award, Clock3, TrendingUp } from "lucide-react";
 
 import Footer from "@/component/Footer";
@@ -12,8 +12,14 @@ import LeaderboardOverview from "@/component/leaderboard/LeaderboardOverview";
 import LeaderboardTable, {
   type LeaderboardEntry,
 } from "@/component/leaderboard/LeaderboardTable";
+import { LeaderboardTailSkeleton } from "@/component/loading-route-skeletons";
 import type { StatCardProps } from "@/component/rewards/StatCard";
 import PageBackground from "@/component/PageBackground";
+import { useWallet } from "@/context/WalletContext";
+import {
+  appendUniqueByKey,
+  useInfiniteScroll,
+} from "@/hooks/useInfiniteScroll";
 
 type RankedEntry = LeaderboardEntry & {
   streak: number;
@@ -122,7 +128,37 @@ const INITIAL_ENTRIES: RankedEntry[] = [
     category: "crypto",
     badges: ["Steady Climber"],
   },
+  {
+    rank: 11,
+    username: "Alex",
+    points: 5100,
+    winRate: 70,
+    predictions: 160,
+    streak: 4,
+    category: "crypto",
+    badges: ["Wallet Connected"],
+  },
 ];
+
+const EXTRA_ENTRIES: RankedEntry[] = Array.from({ length: 28 }, (_, i) => {
+  const n = i + 12;
+  return {
+    rank: n,
+    username: `Predictor_${n}`,
+    points: 3400 - i * 55,
+    winRate: 58 + ((i * 3) % 20),
+    predictions: 115 - i,
+    streak: (i % 6) + 1,
+    category: (["crypto", "sports", "politics", "custom"] as const)[i % 4],
+    badges: ["Challenger"],
+  };
+});
+
+const LEADERBOARD_PAGE_SIZE = 8;
+
+function leaderboardEntryKey(entry: Pick<RankedEntry, "username">) {
+  return entry.username.toLowerCase();
+}
 
 function rankEntries(entries: RankedEntry[]) {
   return [...entries]
@@ -169,8 +205,14 @@ export default function LeaderboardPage() {
     category: "all",
     sortBy: "points",
   });
-  const [entries, setEntries] = useState(rankEntries(INITIAL_ENTRIES));
+  const { user, address } = useWallet();
+  const currentUser = user?.username ?? address ?? undefined;
+
+  const [entries, setEntries] = useState(() =>
+    rankEntries([...INITIAL_ENTRIES, ...EXTRA_ENTRIES]),
+  );
   const [lastUpdated, setLastUpdated] = useState(new Date());
+  const [loadedEntries, setLoadedEntries] = useState<RankedEntry[]>([]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -194,13 +236,40 @@ export default function LeaderboardPage() {
     return () => window.clearInterval(interval);
   }, []);
 
-  const visibleEntries = useMemo(
+  const filteredEntries = useMemo(
     () => getVisibleEntries(entries, filters),
     [entries, filters]
   );
 
-  const topEntry = visibleEntries[0];
-  const hotStreak = [...visibleEntries].sort((a, b) => b.streak - a.streak)[0];
+  const loadMore = useCallback(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 120));
+    setLoadedEntries((current) => {
+      const nextPage = filteredEntries.slice(
+        current.length,
+        current.length + LEADERBOARD_PAGE_SIZE,
+      );
+      return appendUniqueByKey(current, nextPage, leaderboardEntryKey);
+    });
+  }, [filteredEntries]);
+
+  const { observerTarget, isLoading, hasMore, setHasMore } = useInfiniteScroll({
+    onLoadMore: loadMore,
+    enabled: filteredEntries.length > LEADERBOARD_PAGE_SIZE,
+  });
+
+  useEffect(() => {
+    const firstPage = filteredEntries.slice(0, LEADERBOARD_PAGE_SIZE);
+    setLoadedEntries(firstPage);
+    setHasMore(filteredEntries.length > firstPage.length);
+  }, [filteredEntries, setHasMore]);
+
+  useEffect(() => {
+    setHasMore(loadedEntries.length < filteredEntries.length);
+  }, [loadedEntries.length, filteredEntries.length, setHasMore]);
+
+  const visibleEntries = loadedEntries;
+  const topEntry = filteredEntries[0];
+  const hotStreak = [...filteredEntries].sort((a, b) => b.streak - a.streak)[0];
 
   const overviewStats: StatCardProps[] = [
     {
@@ -212,14 +281,14 @@ export default function LeaderboardPage() {
     },
     {
       label: "Live Competitors",
-      value: visibleEntries.length.toString(),
+      value: filteredEntries.length.toString(),
       supportingText: "Public rankings currently visible",
       icon: <Activity className="h-4 w-4" />,
       valueColor: "text-[#4FD1C5]",
     },
     {
       label: "Best Win Rate",
-      value: `${visibleEntries[0]?.winRate ?? 0}%`,
+      value: `${filteredEntries[0]?.winRate ?? 0}%`,
       supportingText: "Among visible leaderboard entries",
       icon: <TrendingUp className="h-4 w-4" />,
       valueColor: "text-white",
@@ -274,7 +343,20 @@ export default function LeaderboardPage() {
 
               {topEntry ? (
                 <div className="grid gap-6 lg:grid-cols-[minmax(0,1.65fr)_320px]">
-                  <LeaderboardTable entries={visibleEntries} />
+                  <div>
+                    <LeaderboardTable
+                      entries={visibleEntries}
+                      currentUser={currentUser}
+                    />
+                    {isLoading && <LeaderboardTailSkeleton />}
+                    {hasMore && (
+                      <div
+                        ref={observerTarget}
+                        className="h-6"
+                        aria-hidden="true"
+                      />
+                    )}
+                  </div>
 
                   <aside className="h-fit space-y-4 rounded-[1.75rem] border border-white/10 bg-[#111726]/92 p-6 backdrop-blur">
                     <div>
