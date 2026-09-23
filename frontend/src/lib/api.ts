@@ -664,3 +664,52 @@ export function sortMarkets<T extends MarketListItem>(markets: T[], sortKey: Mar
   }
   return sorted;
 }
+
+// ---------------------------------------------------------------------------
+// Notification preferences (#1551)
+// ---------------------------------------------------------------------------
+
+export interface NotificationPreferences {
+  predictions: boolean;
+  rewards: boolean;
+  disputes: boolean;
+  digests: boolean;
+}
+
+export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  predictions: true,
+  rewards: true,
+  disputes: true,
+  digests: false,
+};
+
+/** `GET /api/users/preferences/notifications` */
+export async function getNotificationPreferences(
+  options?: ApiOptions,
+): Promise<NotificationPreferences> {
+  try {
+    return await apiClient.get<NotificationPreferences>(
+      '/api/users/preferences/notifications',
+      options,
+    );
+  } catch {
+    return DEFAULT_NOTIFICATION_PREFERENCES;
+  }
+}
+
+/** `PATCH /api/users/preferences/notifications` */
+export async function updateNotificationPreferences(
+  preferences: NotificationPreferences,
+  options?: ApiOptions,
+): Promise<NotificationPreferences> {
+  try {
+    return await apiClient.patch<NotificationPreferences>(
+      '/api/users/preferences/notifications',
+      preferences,
+      options,
+    );
+  } catch {
+    return preferences;
+  }
+}
+

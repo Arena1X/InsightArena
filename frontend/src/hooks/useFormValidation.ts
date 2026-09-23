@@ -81,7 +81,7 @@ interface UseFormValidationReturn {
    * Resolves to true only when every field is valid.
    */
   validateAllAsync: () => Promise<boolean>;
-  reset: () => void;
+  reset: (newValues?: Record<string, any>) => void;
   /** True when no field has a sync error and no async validation is pending. */
   isValid: boolean;
 }
@@ -400,7 +400,7 @@ export function useFormValidation({
   // Reset
   // ---------------------------------------------------------------------------
 
-  const reset = useCallback(() => {
+  const reset = useCallback((newValues?: Record<string, any>) => {
     for (const controller of Object.values(abortControllers.current)) {
       controller.abort();
     }
@@ -411,14 +411,18 @@ export function useFormValidation({
     }
     debounceTimers.current = {};
 
-    // Reset the eager value cache to initial values.
-    latestValues.current = { ...initialValues };
+    const valuesToUse = newValues ?? initialValues;
+
+    // Reset the eager value cache to valuesToUse.
+    latestValues.current = { ...valuesToUse };
 
     setFormState((prev) => {
       const next: FormValidationState = {};
-      for (const key of Object.keys(prev)) {
+      const allKeys = new Set([...Object.keys(prev), ...Object.keys(valuesToUse)]);
+      for (const key of allKeys) {
+        const val = valuesToUse[key] !== undefined ? valuesToUse[key] : (initialValues[key] ?? "");
         next[key] = {
-          value: initialValues[key] ?? "",
+          value: val,
           touched: false,
           error: undefined,
           pending: false,
@@ -427,6 +431,7 @@ export function useFormValidation({
       return next;
     });
   }, [initialValues]);
+
 
   // ---------------------------------------------------------------------------
   // Derived memos
