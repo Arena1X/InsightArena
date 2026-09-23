@@ -34,6 +34,16 @@ export class AddDisputeTieredEscalation1777800000000 implements MigrationInterfa
         type: 'uuid',
         isNullable: true,
       }),
+      new TableColumn({
+        name: 'escalated_by_id',
+        type: 'uuid',
+        isNullable: true,
+      }),
+      new TableColumn({
+        name: 'escalated_at',
+        type: 'timestamp',
+        isNullable: true,
+      }),
     ]);
 
     await queryRunner.createIndex(
@@ -52,12 +62,31 @@ export class AddDisputeTieredEscalation1777800000000 implements MigrationInterfa
       }),
     );
 
+    await queryRunner.createIndex(
+      'disputes',
+      new TableIndex({
+        name: 'IDX_disputes_escalated_by_id',
+        columnNames: ['escalated_by_id'],
+      }),
+    );
+
     await queryRunner.createForeignKey(
       'disputes',
       new TableForeignKey({
         name: 'FK_disputes_escalated_from_id',
         columnNames: ['escalated_from_id'],
         referencedTableName: 'disputes',
+        referencedColumnNames: ['id'],
+        onDelete: 'SET NULL',
+      }),
+    );
+
+    await queryRunner.createForeignKey(
+      'disputes',
+      new TableForeignKey({
+        name: 'FK_disputes_escalated_by_id',
+        columnNames: ['escalated_by_id'],
+        referencedTableName: 'users',
         referencedColumnNames: ['id'],
         onDelete: 'SET NULL',
       }),
@@ -143,11 +172,18 @@ export class AddDisputeTieredEscalation1777800000000 implements MigrationInterfa
 
     await queryRunner.dropForeignKey(
       'disputes',
+      'FK_disputes_escalated_by_id',
+    );
+    await queryRunner.dropForeignKey(
+      'disputes',
       'FK_disputes_escalated_from_id',
     );
+    await queryRunner.dropIndex('disputes', 'IDX_disputes_escalated_by_id');
     await queryRunner.dropIndex('disputes', 'IDX_disputes_escalated_from_id');
     await queryRunner.dropIndex('disputes', 'IDX_disputes_tier');
     await queryRunner.dropColumns('disputes', [
+      'escalated_at',
+      'escalated_by_id',
       'escalated_from_id',
       'quorum_threshold',
       'tier',
