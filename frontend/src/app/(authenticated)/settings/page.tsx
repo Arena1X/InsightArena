@@ -9,6 +9,13 @@ import {
   Download,
   LogOut,
 } from "lucide-react";
+import { useFormValidation } from "@/hooks/useFormValidation";
+import {
+  getNotificationPreferences,
+  updateNotificationPreferences,
+  DEFAULT_NOTIFICATION_PREFERENCES,
+  type NotificationPreferences,
+} from "@/lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -17,25 +24,32 @@ interface ToggleProps {
   onChange: (v: boolean) => void;
   label: string;
   description?: string;
+  id?: string;
 }
 
 // ── Primitives ────────────────────────────────────────────────────────────────
 
-function Toggle({ checked, onChange, label, description }: ToggleProps) {
+function Toggle({ checked, onChange, label, description, id }: ToggleProps) {
+  const toggleId = id || `toggle-${label.toLowerCase().replace(/\s+/g, "-")}`;
   return (
-    <label className="flex items-center justify-between gap-4 py-3 cursor-pointer group">
+    <div className="flex items-center justify-between gap-4 py-3 group">
       <div>
-        <p className="text-sm text-gray-200 group-hover:text-white transition">
+        <label
+          htmlFor={toggleId}
+          className="text-sm text-gray-200 group-hover:text-white transition cursor-pointer"
+        >
           {label}
-        </p>
+        </label>
         {description && (
           <p className="text-xs text-gray-500 mt-0.5">{description}</p>
         )}
       </div>
       <button
+        id={toggleId}
         type="button"
         role="switch"
         aria-checked={checked}
+        aria-label={label}
         onClick={() => onChange(!checked)}
         className={`relative flex-shrink-0 h-6 w-11 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 ${
           checked ? "bg-orange-500" : "bg-white/10"
@@ -47,9 +61,10 @@ function Toggle({ checked, onChange, label, description }: ToggleProps) {
           }`}
         />
       </button>
-    </label>
+    </div>
   );
 }
+
 
 function SectionCard({
   id,
@@ -159,16 +174,96 @@ function ProfileSettings() {
 }
 
 function NotificationSettings() {
-  const [prefs, setPrefs] = useState({
-    marketResolution: true,
-    competition: true,
-    leaderboard: false,
-    achievements: true,
-    marketing: false,
+  const [initialPrefs, setInitialPrefs] = useState<NotificationPreferences>(
+    DEFAULT_NOTIFICATION_PREFERENCES,
+  );
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const { values, setState, reset } = useFormValidation({
+    initialValues: DEFAULT_NOTIFICATION_PREFERENCES,
   });
 
-  function toggle(key: keyof typeof prefs) {
-    setPrefs((p) => ({ ...p, [key]: !p[key] }));
+  useEffect(() => {
+    let isMounted = true;
+    getNotificationPreferences()
+      .then((prefs) => {
+        if (isMounted) {
+          setInitialPrefs(prefs);
+          reset(prefs);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [reset]);
+
+  const predictions =
+    values.predictions !== undefined
+      ? Boolean(values.predictions)
+      : initialPrefs.predictions;
+  const rewards =
+    values.rewards !== undefined ? Boolean(values.rewards) : initialPrefs.rewards;
+  const disputes =
+    values.disputes !== undefined
+      ? Boolean(values.disputes)
+      : initialPrefs.disputes;
+  const digests =
+    values.digests !== undefined ? Boolean(values.digests) : initialPrefs.digests;
+
+  const isDirty =
+    predictions !== initialPrefs.predictions ||
+    rewards !== initialPrefs.rewards ||
+    disputes !== initialPrefs.disputes ||
+    digests !== initialPrefs.digests;
+
+  // Dirty-state guard warning on navigation away with unsaved changes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = "You have unsaved changes in your notification preferences.";
+        return e.returnValue;
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isDirty]);
+
+  async function handleSave(e?: React.FormEvent) {
+    if (e) e.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const updated: NotificationPreferences = {
+        predictions,
+        rewards,
+        disputes,
+        digests,
+      };
+      const res = await updateNotificationPreferences(updated);
+      setInitialPrefs(res);
+      reset(res);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save preferences.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleReset() {
+    reset(initialPrefs);
+    setError(null);
   }
 
   return (
@@ -177,44 +272,94 @@ function NotificationSettings() {
       icon={Bell}
       title="Notification Preferences"
     >
-      <div className="divide-y divide-white/5">
-        <Toggle
-          checked={prefs.marketResolution}
-          onChange={() => toggle("marketResolution")}
-          label="Market Resolution"
-          description="Get notified when a market you participated in resolves"
-        />
-        <Toggle
-          checked={prefs.competition}
-          onChange={() => toggle("competition")}
-          label="Competition Updates"
-          description="New competitions and results"
-        />
-        <Toggle
-          checked={prefs.leaderboard}
-          onChange={() => toggle("leaderboard")}
-          label="Leaderboard Updates"
-          description="Weekly rank summaries"
-        />
-        <Toggle
-          checked={prefs.achievements}
-          onChange={() => toggle("achievements")}
-          label="Achievement Unlocks"
-          description="When you earn a new badge"
-        />
-        <Toggle
-          checked={prefs.marketing}
-          onChange={() => toggle("marketing")}
-          label="Marketing Emails"
-          description="Platform news and promotions"
-        />
-      </div>
-      <button className="mt-2 px-4 py-2 rounded-lg border border-white/10 bg-white/5 text-sm font-medium text-gray-300 hover:bg-white/10 transition">
-        Save Preferences
-      </button>
+      {loading ? (
+        <div className="py-4 text-sm text-gray-400">Loading preferences...</div>
+      ) : (
+        <form onSubmit={handleSave} className="space-y-4">
+          <div className="divide-y divide-white/5">
+            <Toggle
+              checked={predictions}
+              onChange={(v) => setState("predictions", v)}
+              label="Predictions & Market Resolutions"
+              description="Get notified when markets you predicted on update or resolve"
+              id="toggle-predictions"
+            />
+            <Toggle
+              checked={rewards}
+              onChange={(v) => setState("rewards", v)}
+              label="Rewards & Claims"
+              description="Alerts for claimable payout rewards and achievement unlocks"
+              id="toggle-rewards"
+            />
+            <Toggle
+              checked={disputes}
+              onChange={(v) => setState("disputes", v)}
+              label="Dispute Escalations"
+              description="Notifications when disputes are opened or escalated on your markets"
+              id="toggle-disputes"
+            />
+            <Toggle
+              checked={digests}
+              onChange={(v) => setState("digests", v)}
+              label="Weekly Activity Digests"
+              description="Receive weekly performance summaries and digest emails"
+              id="toggle-digests"
+            />
+          </div>
+
+          {error && (
+            <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2">
+              {error}
+            </div>
+          )}
+
+          {isDirty && (
+            <div
+              data-testid="save-reset-bar"
+              className="flex items-center justify-between gap-3 p-3 bg-orange-500/10 border border-orange-500/30 rounded-lg"
+            >
+              <span className="text-xs text-orange-300 font-medium">
+                Unsaved notification preference changes
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleReset}
+                  disabled={saving}
+                  className="px-3 py-1.5 rounded-md border border-white/10 bg-white/5 text-xs font-medium text-gray-300 hover:bg-white/10 transition disabled:opacity-50"
+                >
+                  Reset
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="px-3 py-1.5 rounded-md bg-orange-500 text-xs font-semibold text-white hover:bg-orange-600 transition disabled:opacity-50"
+                >
+                  {saving ? "Saving..." : "Save Preferences"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!isDirty && saveSuccess && (
+            <p className="text-xs text-green-400 font-medium">Preferences saved successfully!</p>
+          )}
+
+          {!isDirty && !saveSuccess && (
+            <button
+              type="submit"
+              disabled
+              className="px-4 py-2 rounded-lg border border-white/5 bg-white/5 text-sm font-medium text-gray-500 cursor-not-allowed opacity-50"
+            >
+              Saved
+            </button>
+          )}
+        </form>
+      )}
     </SectionCard>
   );
 }
+
 
 function PrivacySettings() {
   const [prefs, setPrefs] = useState({
