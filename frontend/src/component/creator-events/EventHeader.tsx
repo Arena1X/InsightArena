@@ -1,15 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { CalendarDays, Check, Copy, KeyRound, Tag, Users, Zap } from "lucide-react";
+import { CalendarDays, Check, Clock, Copy, KeyRound, Tag, Users, Zap } from "lucide-react";
 
 import { Badge } from "@/component/ui/badge";
 import { Button } from "@/component/ui/button";
+import { Progress } from "@/component/ui/progress";
 import type { EventStatus } from "@/hooks/useCreatorEvents";
 import { cn } from "@/lib/utils";
 import { useCountdown, formatCountdown } from "@/hooks/useCountdown";
 
-interface EventHeaderProps {
+export interface EventHeaderProps {
   title: string;
   description: string;
   creator: string;
@@ -17,10 +18,16 @@ interface EventHeaderProps {
   participants: number;
   maxParticipants: number;
   createdAt: string;
+  startsAt?: string;
   endsAt?: string;
   inviteCode?: string;
   category?: string;
   bannerUrl?: string;
+  hasWaitlist?: boolean;
+  waitlistConfigured?: boolean;
+  waitlistHint?: string;
+  isJoined?: boolean;
+  onJoin?: () => void;
 }
 
 const statusClasses: Record<EventStatus, string> = {
@@ -37,15 +44,28 @@ export default function EventHeader({
   participants,
   maxParticipants,
   createdAt,
+  startsAt,
   endsAt,
   inviteCode,
   category,
   bannerUrl,
+  hasWaitlist,
+  waitlistConfigured,
+  waitlistHint,
+  isJoined,
+  onJoin,
 }: EventHeaderProps) {
   const [copied, setCopied] = useState(false);
   const [bannerError, setBannerError] = useState(false);
   const showBanner = Boolean(bannerUrl) && !bannerError;
-  const countdown = useCountdown(endsAt || createdAt);
+
+  const startCountdown = useCountdown(startsAt || "");
+  const lockCountdown = useCountdown(endsAt || createdAt);
+
+  const isFull = maxParticipants > 0 && participants >= maxParticipants;
+  const capacityPercentage =
+    maxParticipants > 0 ? Math.min(100, Math.round((participants / maxParticipants) * 100)) : 0;
+  const isWaitlistActive = Boolean(hasWaitlist || waitlistConfigured);
 
   const handleCopyCreator = async () => {
     try {
@@ -88,9 +108,17 @@ export default function EventHeader({
                   {category}
                 </span>
               )}
-              <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-300">
+              <span
+                className={cn(
+                  "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em]",
+                  isFull
+                    ? "border-rose-500/40 bg-rose-500/10 text-rose-300"
+                    : "border-white/10 bg-white/5 text-slate-300",
+                )}
+                data-testid="capacity-pill"
+              >
                 <Users className="h-3.5 w-3.5" />
-                {participants} / {maxParticipants}
+                {participants} / {maxParticipants} {isFull ? "(Full)" : ""}
               </span>
             </div>
 
@@ -100,9 +128,87 @@ export default function EventHeader({
                 {description}
               </p>
             </div>
+
+            {/* Capacity Meter Progress Bar */}
+            <div
+              className="mt-4 space-y-2 rounded-2xl border border-white/10 bg-slate-950/60 p-4"
+              data-testid="capacity-section"
+            >
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span className="font-semibold uppercase tracking-wider">Capacity Fill</span>
+                <span
+                  className={cn("font-medium", isFull ? "text-rose-400" : "text-slate-300")}
+                  data-testid="capacity-text"
+                >
+                  {participants} / {maxParticipants} ({capacityPercentage}%)
+                </span>
+              </div>
+              <Progress
+                value={capacityPercentage}
+                className="h-2.5 bg-slate-800"
+                indicatorClassName={
+                  isFull ? "bg-rose-500" : capacityPercentage >= 85 ? "bg-amber-400" : "bg-emerald-500"
+                }
+                data-testid="capacity-meter"
+              />
+              {isFull && (
+                <div className="mt-2 flex flex-col gap-1 text-xs" data-testid="full-state-notice">
+                  <span className="font-semibold text-rose-400" data-testid="full-badge">
+                    Event Full — Maximum capacity reached
+                  </span>
+                  {isWaitlistActive && (
+                    <p className="text-amber-300/90 italic" data-testid="waitlist-hint">
+                      {waitlistHint || "Waitlist is active. Join the waitlist for updates."}
+                    </p>
+                  )}
+                </div>
+              )}
+              {!isFull && isWaitlistActive && (
+                <p className="mt-1 text-xs text-slate-400" data-testid="waitlist-hint">
+                  {waitlistHint || "Waitlist configured for this event."}
+                </p>
+              )}
+            </div>
+
+            {onJoin && !isJoined && (
+              <div className="pt-2">
+                <Button
+                  type="button"
+                  onClick={onJoin}
+                  disabled={isFull}
+                  className={cn("rounded-full font-medium", isFull && "opacity-50 cursor-not-allowed")}
+                  data-testid="header-join-button"
+                >
+                  {isFull ? "Event Full" : "Join Event"}
+                </Button>
+              </div>
+            )}
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[360px] lg:grid-cols-1">
+            {startsAt ? (
+              <div
+                className={cn(
+                  "rounded-2xl border p-4",
+                  startCountdown.isExpired
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                    : "border-amber-500/30 bg-amber-500/10 text-amber-200",
+                )}
+                data-testid="time-to-start"
+              >
+                <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Time to Start</p>
+                <p
+                  className={cn(
+                    "mt-2 flex items-center gap-2 text-sm font-semibold",
+                    startCountdown.isExpired ? "text-emerald-300" : "text-amber-300",
+                  )}
+                >
+                  <Clock className="h-4 w-4" />
+                  {formatCountdown(startCountdown, "Event Started")}
+                </p>
+              </div>
+            ) : null}
+
             <div className="rounded-2xl border border-white/10 bg-slate-950/80 p-4">
               <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Creator</p>
               <div className="mt-2 flex items-center justify-between gap-3">
@@ -129,11 +235,21 @@ export default function EventHeader({
             </div>
 
             {endsAt ? (
-              <div className={cn("rounded-2xl p-4", countdown.isExpired ? "border-red-500/30 bg-red-500/10" : "border-white/10 bg-slate-950/80 border")}>
+              <div
+                className={cn(
+                  "rounded-2xl p-4",
+                  lockCountdown.isExpired ? "border-red-500/30 bg-red-500/10" : "border-white/10 bg-slate-950/80 border",
+                )}
+              >
                 <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Time Until Lock</p>
-                <p className={cn("mt-2 flex items-center gap-2 text-sm font-semibold", countdown.isExpired ? "text-red-300" : "text-white")}>
+                <p
+                  className={cn(
+                    "mt-2 flex items-center gap-2 text-sm font-semibold",
+                    lockCountdown.isExpired ? "text-red-300" : "text-white",
+                  )}
+                >
                   <Zap className="h-4 w-4" />
-                  {formatCountdown(countdown, 'Event Locked')}
+                  {formatCountdown(lockCountdown, "Event Locked")}
                 </p>
               </div>
             ) : null}

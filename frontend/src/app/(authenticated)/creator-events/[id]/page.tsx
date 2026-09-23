@@ -291,6 +291,16 @@ export default function CreatorEventDetailPage() {
       return;
     }
 
+    const isFull = Boolean(event && event.maxParticipants > 0 && event.participants >= event.maxParticipants);
+    if (isFull) {
+      setActionMessage(
+        event?.hasWaitlist || event?.waitlistConfigured
+          ? "Event is at full capacity. " + (event?.waitlistHint || "Join the waitlist for updates.")
+          : "Event is at full capacity."
+      );
+      return;
+    }
+
     const code = inviteCode.trim() || event?.inviteCode;
     if (!code) {
       setActionMessage("Enter an invite code to join this creator event.");
@@ -377,9 +387,15 @@ export default function CreatorEventDetailPage() {
           participants={event.participants}
           maxParticipants={event.maxParticipants}
           createdAt={event.createdAt}
+          startsAt={event.startsAt}
+          endsAt={event.endsAt}
           inviteCode={isCreator ? event.inviteCode : undefined}
           category={event.category}
           bannerUrl={event.bannerUrl}
+          hasWaitlist={event.hasWaitlist}
+          waitlistConfigured={event.waitlistConfigured}
+          waitlistHint={event.waitlistHint}
+          isJoined={isJoined}
         />
 
         <section className="rounded-3xl border border-white/10 bg-slate-900/80 p-5">
@@ -400,11 +416,16 @@ export default function CreatorEventDetailPage() {
                     value={inviteCode}
                     onChange={(inputEvent) => setInviteCode(inputEvent.target.value)}
                     placeholder="Invite code"
-                    className="rounded-full border border-white/10 bg-slate-950 px-4 py-2 text-sm text-white outline-none focus:border-amber-400"
+                    disabled={Boolean(event && event.maxParticipants > 0 && event.participants >= event.maxParticipants)}
+                    className="rounded-full border border-white/10 bg-slate-950 px-4 py-2 text-sm text-white outline-none focus:border-amber-400 disabled:opacity-50"
                   />
-                  <Button className="rounded-full" onClick={handleJoinEvent}>
+                  <Button
+                    className="rounded-full"
+                    onClick={handleJoinEvent}
+                    disabled={Boolean(event && event.maxParticipants > 0 && event.participants >= event.maxParticipants)}
+                  >
                     <UserPlus className="h-4 w-4" />
-                    Join Event
+                    {event && event.maxParticipants > 0 && event.participants >= event.maxParticipants ? "Event Full" : "Join Event"}
                   </Button>
                 </div>
               ) : (
