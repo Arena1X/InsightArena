@@ -273,43 +273,122 @@ export class DisputesService {
   }
 
   /**
-   * Escalate a resolved dispute tier to the next tier. Only permitted once a
-   * tier has resolved and only within the escalation window that follows its
-   * resolution. A fresh dispute is created one tier up, linked back to this
-   * one via {@link Dispute.escalatedFrom}, with a higher quorum threshold.
-   * Escalation past {@link MAX_TIER}, outside the window, or of an
-   * already-escalated tier is rejected.
+   * Validate status transitions according to the state machine:
+   * open / pending -> review
+   * review -> escalated | resolved
+   * escalated -> resolved
+   * resolved -> escalated (when escalating a resolved tier)
    */
-  async escalate(disputeId: string, user: User): Promise<Dispute> {
-    const dispute = await this.findOne(disputeId);
-
-    if (dispute.status !== DisputeStatus.RESOLVED) {
-      throw new BadRequestException(
-        'Only a resolved dispute tier can be escalated',
-      );
+  validateStatusTransition(
+    currentStatus: DisputeStatus,
+    targetStatus: DisputeStatus,
+  ): void {
+    if (currentStatus === targetStatus) {
+      return;
     }
 
-    if (dispute.tier >= MAX_TIER) {
+    const allowedTransitions: Record<string, string[]> = {
+      [DisputeStatus.OPEN]: [DisputeStatus.REVIEW],
+      [DisputeStatus.PENDING]: [DisputeStatus.OPEN, DisputeStatus.REVIEW],
+      [DisputeStatus.REVIEW]: [DisputeStatus.ESCALATED, DisputeStatus.RESOLVED],
+      [DisputeStatus.ESCALATED]: [DisputeStatus.RESOLVED],
+      [DisputeStatus.RESOLVED]: [DisputeStatus.ESCALATED],
+    };
+
+    const allowed = allowedTransitions[currentStatus] ?? [];
+    if (!allowed.includes(targetStatus)) {
+      throw new BadRequestException(
+        `Invalid status transition from ${currentStatus} to ${targetStatus}`,
+      );
+    }
+  }
+
+  /**
+   * Validate tier transitions:
+   * Enforce allowed tier jumps (e.g. tier 1 -> tier 2 -> tier 3).
+   * Rejects invalid tier jumps (e.g. 1 -> 3) or exceeding MAX_TIER.
+   */
+  validateTierTransition(currentTier: number, targetTier: number): void {
+    if (currentTier >= MAX_TIER || targetTier > MAX_TIER) {
       throw new BadRequestException(
         `Dispute has reached the maximum tier (${MAX_TIER})`,
       );
     }
 
-    if (!dispute.resolvedAt) {
+    if (targetTier <= currentTier) {
       throw new BadRequestException(
-        'Resolved dispute is missing a resolution timestamp',
+        `Target tier (${targetTier}) must be greater than current tier (${currentTier})`,
       );
     }
 
-    const windowHours = this.getNumericConfig(
-      'DISPUTE_ESCALATION_WINDOW_HOURS',
-      DEFAULT_ESCALATION_WINDOW_HOURS,
-    );
-    const windowEnd = new Date(
-      dispute.resolvedAt.getTime() + windowHours * 60 * 60 * 1000,
-    );
-    if (new Date() > windowEnd) {
-      throw new BadRequestException('Escalation window has passed');
+    if (targetTier !== currentTier + 1) {
+      throw new BadRequestException(
+        `Invalid tier jump: cannot skip tiers from ${currentTier} to ${targetTier}`,
+      );
+    }
+  }
+
+  /**
+   * Transition a dispute's status enforcing the state machine.
+   */
+  async transitionStatus(
+    id: string,
+    targetStatus: DisputeStatus,
+    user?: User,
+  ): Promise<Dispute> {
+    const dispute = await this.findOne(id);
+    this.validateStatusTransition(dispute.status, targetStatus);
+
+    dispute.status = targetStatus;
+    if (targetStatus === DisputeStatus.ESCALATED && user) {
+      dispute.escalatedById = user.id;
+      dispute.escalatedAt = new Date();
+    }
+
+    await this.disputesRepository.save(dispute);
+    return this.findOne(id);
+  }
+
+  /**
+   * Escalate a dispute tier to the next tier. Only permitted once a
+   * tier has resolved or under review and within the escalation window that follows its
+   * resolution. A fresh dispute is created one tier up, linked back to this
+   * one via {@link Dispute.escalatedFrom}, with a higher quorum threshold.
+   * Escalation past {@link MAX_TIER}, outside the window, or of an
+   * already-escalated tier is rejected.
+   */
+  async escalate(
+    disputeId: string,
+    user: User,
+    dto?: { target_tier?: number },
+  ): Promise<Dispute> {
+    const dispute = await this.findOne(disputeId);
+
+    const nextTier = dto?.target_tier ?? (dispute.tier + 1);
+    this.validateTierTransition(dispute.tier, nextTier);
+
+    if (dispute.status !== DisputeStatus.RESOLVED) {
+      this.validateStatusTransition(dispute.status, DisputeStatus.ESCALATED);
+    }
+
+
+    if (dispute.status === DisputeStatus.RESOLVED) {
+      if (!dispute.resolvedAt) {
+        throw new BadRequestException(
+          'Resolved dispute is missing a resolution timestamp',
+        );
+      }
+
+      const windowHours = this.getNumericConfig(
+        'DISPUTE_ESCALATION_WINDOW_HOURS',
+        DEFAULT_ESCALATION_WINDOW_HOURS,
+      );
+      const windowEnd = new Date(
+        dispute.resolvedAt.getTime() + windowHours * 60 * 60 * 1000,
+      );
+      if (new Date() > windowEnd) {
+        throw new BadRequestException('Escalation window has passed');
+      }
     }
 
     // A tier can only be escalated once - guard against duplicate chains.
@@ -320,7 +399,12 @@ export class DisputesService {
       throw new ConflictException('This dispute has already been escalated');
     }
 
-    const nextTier = dispute.tier + 1;
+    // Record escalation on original dispute
+    dispute.status = DisputeStatus.ESCALATED;
+    dispute.escalatedById = user.id;
+    dispute.escalatedAt = new Date();
+    await this.disputesRepository.save(dispute);
+
     const slaDeadline = new Date();
     slaDeadline.setHours(
       slaDeadline.getHours() +
@@ -338,6 +422,8 @@ export class DisputesService {
       tier: nextTier,
       quorumThreshold: this.quorumForTier(nextTier),
       escalatedFromId: dispute.id,
+      escalatedById: user.id,
+      escalatedAt: new Date(),
       slaStage: DisputeSlaStage.INITIAL_REVIEW,
       slaDeadline,
     });

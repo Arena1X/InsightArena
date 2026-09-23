@@ -11,8 +11,11 @@ import { Market } from '../../markets/entities/market.entity';
 import { User } from '../../users/entities/user.entity';
 
 export enum DisputeStatus {
-  PENDING = 'pending',
+  OPEN = 'open',
+  REVIEW = 'review',
+  ESCALATED = 'escalated',
   RESOLVED = 'resolved',
+  PENDING = 'pending',
 }
 
 export enum DisputeResolution {
@@ -148,6 +151,13 @@ export class Dispute {
   @Index()
   escalatedFromId: string | null;
 
+  @Column({ name: 'escalated_by_id', type: 'uuid', nullable: true })
+  @Index()
+  escalatedById: string | null;
+
+  @Column({ name: 'escalated_at', type: 'timestamp', nullable: true })
+  escalatedAt: Date | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 
@@ -163,6 +173,10 @@ export class Dispute {
   @ManyToOne(() => User, { eager: true, nullable: true })
   @JoinColumn({ name: 'resolved_by_id', referencedColumnName: 'id' })
   resolvedBy: User | null;
+
+  @ManyToOne(() => User, { eager: true, nullable: true })
+  @JoinColumn({ name: 'escalated_by_id', referencedColumnName: 'id' })
+  escalatedBy: User | null;
 
   @ManyToOne(() => User, { eager: true, nullable: true })
   @JoinColumn({ name: 'assigned_arbiter_id', referencedColumnName: 'id' })

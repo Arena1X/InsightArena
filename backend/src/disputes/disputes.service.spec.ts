@@ -1243,6 +1243,102 @@ describe('DisputesService', () => {
         service.escalate('dispute-esc-1', mockEscalator),
       ).rejects.toThrow(ConflictException);
     });
+
+    it('rejects invalid tier jumps (e.g. tier 1 to tier 3)', async () => {
+      const tier1 = makeResolvedTierDispute({ tier: 1 });
+      jest.spyOn(service, 'findOne').mockResolvedValue(tier1);
+
+      await expect(
+        service.escalate('dispute-esc-1', mockEscalator, { target_tier: 3 }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('records who escalated and when on escalation', async () => {
+      const tier1 = makeResolvedTierDispute();
+      const escalated = makeResolvedTierDispute({
+        id: 'dispute-esc-2',
+        tier: 2,
+        status: DisputeStatus.PENDING,
+        escalatedById: 'escalator-1',
+      });
+      jest
+        .spyOn(service, 'findOne')
+        .mockResolvedValueOnce(tier1)
+        .mockResolvedValueOnce(escalated);
+      jest.spyOn(disputesRepository, 'findOne').mockResolvedValue(null);
+      jest
+        .spyOn(disputesRepository, 'create')
+        .mockImplementation((d) => d as Dispute);
+      jest.spyOn(disputesRepository, 'save').mockResolvedValue(escalated);
+
+      await service.escalate('dispute-esc-1', mockEscalator);
+
+      expect(disputesRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          escalatedById: 'escalator-1',
+          escalatedAt: expect.any(Date),
+        }),
+      );
+    });
+  });
+
+  describe('state machine transitions', () => {
+    it('valid status transitions succeed (open -> review -> escalated -> resolved)', () => {
+      expect(() =>
+        service.validateStatusTransition(DisputeStatus.OPEN, DisputeStatus.REVIEW),
+      ).not.toThrow();
+
+      expect(() =>
+        service.validateStatusTransition(DisputeStatus.REVIEW, DisputeStatus.ESCALATED),
+      ).not.toThrow();
+
+      expect(() =>
+        service.validateStatusTransition(
+          DisputeStatus.ESCALATED,
+          DisputeStatus.RESOLVED,
+        ),
+      ).not.toThrow();
+    });
+
+    it('invalid status transitions throw BadRequestException', () => {
+      expect(() =>
+        service.validateStatusTransition(
+          DisputeStatus.OPEN,
+          DisputeStatus.ESCALATED,
+        ),
+      ).toThrow(BadRequestException);
+
+      expect(() =>
+        service.validateStatusTransition(
+          DisputeStatus.OPEN,
+          DisputeStatus.RESOLVED,
+        ),
+      ).toThrow(BadRequestException);
+
+      expect(() =>
+        service.validateStatusTransition(
+          DisputeStatus.RESOLVED,
+          DisputeStatus.OPEN,
+        ),
+      ).toThrow(BadRequestException);
+    });
+
+    it('valid tier transitions succeed (1 -> 2 -> 3)', () => {
+      expect(() => service.validateTierTransition(1, 2)).not.toThrow();
+      expect(() => service.validateTierTransition(2, 3)).not.toThrow();
+    });
+
+    it('invalid tier transitions throw BadRequestException', () => {
+      expect(() => service.validateTierTransition(1, 3)).toThrow(
+        BadRequestException,
+      );
+      expect(() => service.validateTierTransition(3, 4)).toThrow(
+        BadRequestException,
+      );
+      expect(() => service.validateTierTransition(2, 1)).toThrow(
+        BadRequestException,
+      );
+    });
   });
 
   describe('findBreachedDisputes', () => {
