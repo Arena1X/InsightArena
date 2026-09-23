@@ -1,10 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Check, Copy, Lock } from "lucide-react";
 
 import Footer from "@/component/Footer";
 import Header from "@/component/Header";
 import PageBackground from "@/component/PageBackground";
+import { ShareButton } from "@/component/ui/ShareButton";
+import { isProfilePrivate } from "@/lib/api";
 
 type PublicPrediction = {
   id: string;
@@ -42,6 +45,7 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
   }, [displayName]);
 
   const joinedDate = "Jan 2026";
+  const isPrivate = isProfilePrivate({ address });
 
   const [copied, setCopied] = useState(false);
 
@@ -57,9 +61,9 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
 
   const stats = [
     { label: "Total Predictions", value: "312" },
-    { label: "Win Rate", value: "58%" },
-    { label: "Reputation Score", value: "2,045" },
-    { label: "Total Winnings", value: "3,820 XLM" },
+    { label: "Accuracy %", value: "58%" },
+    { label: "Best Season", value: "Season 1 (#3)" },
+    { label: "Current Streak", value: "5 Wins" },
   ] as const;
 
   const achievements = [
@@ -141,132 +145,167 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
                   <button
                     type="button"
                     onClick={onCopy}
-                    className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-gray-300 transition hover:border-orange-500/50 hover:bg-white/10"
+                    aria-label={copied ? "Address copied" : "Copy address"}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-gray-300 transition hover:border-orange-500/50 hover:bg-white/10"
                   >
-                    {copied ? "Copied" : "Copy"}
+                    {copied ? (
+                      <>
+                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                        <span>Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-3.5 w-3.5" />
+                        <span>Copy</span>
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
             </div>
-          </div>
 
-          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {stats.map((stat) => (
-              <div
-                key={stat.label}
-                className="rounded-2xl border border-white/10 bg-gray-950/60 p-6 hover:border-orange-500/50 transition-colors"
-              >
-                <p className="text-sm text-gray-400">{stat.label}</p>
-                <p className="mt-2 text-2xl font-bold text-orange-400">
-                  {stat.value}
-                </p>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="mt-10 grid gap-6 lg:grid-cols-2">
-          <div className="rounded-[2rem] border border-white/10 bg-gray-950/60 p-8 backdrop-blur sm:p-10">
-            <h2 className="text-2xl font-semibold">Achievement Badges</h2>
-            <p className="mt-2 text-sm text-gray-400">
-              Unlocked achievements show progress and community participation.
-            </p>
-            <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3">
-              {achievements.map((achievement) => (
-                <div
-                  key={achievement.label}
-                  className={[
-                    "rounded-2xl border p-4 text-center text-sm font-semibold transition-colors",
-                    achievement.unlocked
-                      ? "border-orange-500/30 bg-orange-500/10 text-orange-400"
-                      : "border-white/10 bg-white/5 text-gray-500",
-                  ].join(" ")}
-                >
-                  {achievement.label}
-                </div>
-              ))}
+            <div className="flex items-center gap-3 self-start sm:self-auto">
+              <ShareButton
+                title={`Profile: ${displayName}`}
+                description={`Check out ${displayName}'s predictions on InsightArena.`}
+                ariaLabel="Share profile"
+              />
             </div>
           </div>
 
-          <div className="rounded-[2rem] border border-white/10 bg-gray-950/60 p-8 backdrop-blur sm:p-10">
-            <h2 className="text-2xl font-semibold">Markets Created</h2>
-            <p className="mt-2 text-sm text-gray-400">
-              Public markets created by this address (placeholder data).
-            </p>
-
-            <div className="mt-6 space-y-3">
-              {marketsCreated.map((market) => (
+          {!isPrivate && (
+            <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4" data-testid="public-stats-card">
+              {stats.map((stat) => (
                 <div
-                  key={market.id}
-                  className="flex flex-col gap-2 rounded-2xl border border-white/10 bg-gray-950/60 p-4 hover:border-orange-500/50 transition-colors sm:flex-row sm:items-center sm:justify-between"
+                  key={stat.label}
+                  className="rounded-2xl border border-white/10 bg-gray-950/60 p-6 hover:border-orange-500/50 transition-colors"
                 >
-                  <p className="text-sm font-medium text-white">
-                    {market.title}
+                  <p className="text-sm text-gray-400">{stat.label}</p>
+                  <p className="mt-2 text-2xl font-bold text-orange-400">
+                    {stat.value}
                   </p>
-                  <span
-                    className={[
-                      "inline-flex w-fit rounded-xl border px-2.5 py-1 text-xs font-semibold",
-                      statusStyles[market.status],
-                    ].join(" ")}
-                  >
-                    {market.status}
-                  </span>
                 </div>
               ))}
             </div>
-          </div>
+          )}
         </section>
 
-        <section className="mt-10 rounded-[2rem] border border-white/10 bg-gray-950/60 p-8 backdrop-blur sm:p-10">
-          <h2 className="text-2xl font-semibold">Recent Predictions</h2>
-          <p className="mt-2 text-sm text-gray-400">
-            The latest 10 public predictions (showing sample rows).
-          </p>
-
-          <div className="mt-6 overflow-x-auto rounded-2xl border border-white/10">
-            <table className="min-w-full divide-y divide-white/10 text-left text-sm">
-              <thead className="bg-gray-950/60 text-xs uppercase tracking-wide text-gray-400">
-                <tr>
-                  <th scope="col" className="px-5 py-4">
-                    Market
-                  </th>
-                  <th scope="col" className="px-5 py-4">
-                    Outcome
-                  </th>
-                  <th scope="col" className="px-5 py-4">
-                    Stake
-                  </th>
-                  <th scope="col" className="px-5 py-4">
-                    Result
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/10 bg-gray-950/40">
-                {predictions.map((prediction) => (
-                  <tr key={prediction.id} className="hover:bg-white/5">
-                    <td className="px-5 py-4 text-white">
-                      {prediction.market}
-                    </td>
-                    <td className="px-5 py-4 text-gray-300">
-                      {prediction.outcome}
-                    </td>
-                    <td className="px-5 py-4 text-gray-300">
-                      {prediction.stake}
-                    </td>
-                    <td
+        {isPrivate ? (
+          <section className="mt-10 rounded-[2rem] border border-white/10 bg-gray-950/60 p-8 text-center backdrop-blur sm:p-12" data-testid="private-profile-fallback">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-gray-400">
+              <Lock className="h-6 w-6 text-gray-400" />
+            </div>
+            <h2 className="text-2xl font-bold text-white">This profile is private</h2>
+            <p className="mt-2 text-sm text-gray-400 max-w-md mx-auto">
+              User performance stats are hidden. This user has configured their profile to be private.
+            </p>
+          </section>
+        ) : (
+          <>
+            <section className="mt-10 grid gap-6 lg:grid-cols-2">
+              <div className="rounded-[2rem] border border-white/10 bg-gray-950/60 p-8 backdrop-blur sm:p-10">
+                <h2 className="text-2xl font-semibold">Achievement Badges</h2>
+                <p className="mt-2 text-sm text-gray-400">
+                  Unlocked achievements show progress and community participation.
+                </p>
+                <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3">
+                  {achievements.map((achievement) => (
+                    <div
+                      key={achievement.label}
                       className={[
-                        "px-5 py-4 font-semibold",
-                        predictionResultStyles[prediction.result],
+                        "rounded-2xl border p-4 text-center text-sm font-semibold transition-colors",
+                        achievement.unlocked
+                          ? "border-orange-500/30 bg-orange-500/10 text-orange-400"
+                          : "border-white/10 bg-white/5 text-gray-500",
                       ].join(" ")}
                     >
-                      {prediction.result}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
+                      {achievement.label}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-[2rem] border border-white/10 bg-gray-950/60 p-8 backdrop-blur sm:p-10">
+                <h2 className="text-2xl font-semibold">Markets Created</h2>
+                <p className="mt-2 text-sm text-gray-400">
+                  Public markets created by this address.
+                </p>
+
+                <div className="mt-6 space-y-3">
+                  {marketsCreated.map((market) => (
+                    <div
+                      key={market.id}
+                      className="flex flex-col gap-2 rounded-2xl border border-white/10 bg-gray-950/60 p-4 hover:border-orange-500/50 transition-colors sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <p className="text-sm font-medium text-white">
+                        {market.title}
+                      </p>
+                      <span
+                        className={[
+                          "inline-flex w-fit rounded-xl border px-2.5 py-1 text-xs font-semibold",
+                          statusStyles[market.status],
+                        ].join(" ")}
+                      >
+                        {market.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </section>
+
+            <section className="mt-10 rounded-[2rem] border border-white/10 bg-gray-950/60 p-8 backdrop-blur sm:p-10">
+              <h2 className="text-2xl font-semibold">Recent Predictions</h2>
+              <p className="mt-2 text-sm text-gray-400">
+                The latest public predictions.
+              </p>
+
+              <div className="mt-6 overflow-x-auto rounded-2xl border border-white/10">
+                <table className="min-w-full divide-y divide-white/10 text-left text-sm">
+                  <thead className="bg-gray-950/60 text-xs uppercase tracking-wide text-gray-400">
+                    <tr>
+                      <th scope="col" className="px-5 py-4">
+                        Market
+                      </th>
+                      <th scope="col" className="px-5 py-4">
+                        Outcome
+                      </th>
+                      <th scope="col" className="px-5 py-4">
+                        Stake
+                      </th>
+                      <th scope="col" className="px-5 py-4">
+                        Result
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/10 bg-gray-950/40">
+                    {predictions.map((prediction) => (
+                      <tr key={prediction.id} className="hover:bg-white/5">
+                        <td className="px-5 py-4 text-white">
+                          {prediction.market}
+                        </td>
+                        <td className="px-5 py-4 text-gray-300">
+                          {prediction.outcome}
+                        </td>
+                        <td className="px-5 py-4 text-gray-300">
+                          {prediction.stake}
+                        </td>
+                        <td
+                          className={[
+                            "px-5 py-4 font-semibold",
+                            predictionResultStyles[prediction.result],
+                          ].join(" ")}
+                        >
+                          {prediction.result}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </>
+        )}
       </main>
 
       <Footer />
