@@ -7,7 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Repository, Not, IsNull } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import {
@@ -447,6 +447,20 @@ export class DisputesService {
     }
 
     return dispute;
+  }
+
+  /**
+   * Find all breached disputes for admin attention
+   */
+  async findBreachedDisputes(): Promise<Dispute[]> {
+    return this.disputesRepository.find({
+      where: {
+        slaBreachedAt: Not(IsNull()),
+        status: DisputeStatus.PENDING,
+      },
+      relations: ['market', 'disputant', 'assignedArbiter'],
+      order: { slaBreachedAt: 'DESC' },
+    });
   }
 
   /**

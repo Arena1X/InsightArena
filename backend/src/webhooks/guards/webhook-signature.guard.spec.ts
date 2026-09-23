@@ -20,7 +20,7 @@ describe('WebhookSignatureGuard', () => {
 
   const buildRequest = (overrides: Record<string, any> = {}) => ({
     params: { source: 'provider-x' },
-    headers: { 
+    headers: {
       'x-webhook-signature': 'abc123',
       'x-webhook-timestamp': Math.floor(Date.now() / 1000).toString(),
     },
@@ -66,7 +66,11 @@ describe('WebhookSignatureGuard', () => {
 
   it('rejects with 401 when the signature header is missing', async () => {
     signatureService.verifySignature.mockReturnValue(false);
-    const request = buildRequest({ headers: { 'x-webhook-timestamp': Math.floor(Date.now() / 1000).toString() } });
+    const request = buildRequest({
+      headers: {
+        'x-webhook-timestamp': Math.floor(Date.now() / 1000).toString(),
+      },
+    });
     const context = buildContext(request);
 
     await expect(guard.canActivate(context)).rejects.toThrow(
@@ -106,9 +110,7 @@ describe('WebhookSignatureGuard', () => {
     signatureService.isReplay.mockResolvedValue(true);
     const context = buildContext(buildRequest());
 
-    await expect(guard.canActivate(context)).rejects.toThrow(
-      ConflictException,
-    );
+    await expect(guard.canActivate(context)).rejects.toThrow(ConflictException);
     expect(signatureService.recordProcessed).not.toHaveBeenCalled();
   });
 

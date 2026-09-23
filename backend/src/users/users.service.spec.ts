@@ -896,12 +896,20 @@ describe('UsersService', () => {
       const followedUser = makeAuthor('followed-1');
       const unfollowedUser = makeAuthor('not-followed');
 
-      jest.spyOn(followRepository, 'find').mockResolvedValue([
-        { following_id: followedUser.id } as UserFollow,
-      ]);
+      jest
+        .spyOn(followRepository, 'find')
+        .mockResolvedValue([{ following_id: followedUser.id } as UserFollow]);
 
-      const older = makePrediction('pred-old', followedUser, new Date('2025-01-01'));
-      const newer = makePrediction('pred-new', followedUser, new Date('2025-06-01'));
+      const older = makePrediction(
+        'pred-old',
+        followedUser,
+        new Date('2025-01-01'),
+      );
+      const newer = makePrediction(
+        'pred-new',
+        followedUser,
+        new Date('2025-06-01'),
+      );
 
       // getManyAndCount returns already-ordered results (DB handles ORDER BY)
       const qb = {
@@ -913,30 +921,43 @@ describe('UsersService', () => {
         take: jest.fn().mockReturnThis(),
         getManyAndCount: jest.fn().mockResolvedValue([[newer, older], 2]),
       };
-      jest.spyOn(predictionsRepo, 'createQueryBuilder').mockReturnValue(qb as any);
+      jest
+        .spyOn(predictionsRepo, 'createQueryBuilder')
+        .mockReturnValue(qb as any);
 
       const result = await service.getFeed(mockUser.id, { page: 1, limit: 20 });
 
       expect(result.total).toBe(2);
       expect(result.data[0].id).toBe('pred-new');
       expect(result.data[1].id).toBe('pred-old');
-      expect(qb.orderBy).toHaveBeenCalledWith('prediction.submitted_at', 'DESC');
+      expect(qb.orderBy).toHaveBeenCalledWith(
+        'prediction.submitted_at',
+        'DESC',
+      );
       // author should be mapped
-      expect(result.data[0].author.stellar_address).toBe(followedUser.stellar_address);
+      expect(result.data[0].author.stellar_address).toBe(
+        followedUser.stellar_address,
+      );
     });
 
     it('excludes activity from soft-deleted followed users', async () => {
       const activeUser = makeAuthor('active-1');
       const deletedUser = makeAuthor('deleted-1', { deleted_at: new Date() });
 
-      jest.spyOn(followRepository, 'find').mockResolvedValue([
-        { following_id: activeUser.id } as UserFollow,
-        { following_id: deletedUser.id } as UserFollow,
-      ]);
+      jest
+        .spyOn(followRepository, 'find')
+        .mockResolvedValue([
+          { following_id: activeUser.id } as UserFollow,
+          { following_id: deletedUser.id } as UserFollow,
+        ]);
 
       // The query should apply the deleted_at IS NULL filter — simulate DB
       // returning only the active user's prediction
-      const predFromActive = makePrediction('pred-active', activeUser, new Date('2025-05-01'));
+      const predFromActive = makePrediction(
+        'pred-active',
+        activeUser,
+        new Date('2025-05-01'),
+      );
 
       const qb = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -947,7 +968,9 @@ describe('UsersService', () => {
         take: jest.fn().mockReturnThis(),
         getManyAndCount: jest.fn().mockResolvedValue([[predFromActive], 1]),
       };
-      jest.spyOn(predictionsRepo, 'createQueryBuilder').mockReturnValue(qb as any);
+      jest
+        .spyOn(predictionsRepo, 'createQueryBuilder')
+        .mockReturnValue(qb as any);
 
       const result = await service.getFeed(mockUser.id, { page: 1, limit: 20 });
 
@@ -960,12 +983,20 @@ describe('UsersService', () => {
     it('pagination returns the correct slice and does not leak items across pages', async () => {
       const followedUser = makeAuthor('paged-user');
 
-      jest.spyOn(followRepository, 'find').mockResolvedValue([
-        { following_id: followedUser.id } as UserFollow,
-      ]);
+      jest
+        .spyOn(followRepository, 'find')
+        .mockResolvedValue([{ following_id: followedUser.id } as UserFollow]);
 
-      const page1Pred = makePrediction('pred-p1', followedUser, new Date('2025-06-01'));
-      const page2Pred = makePrediction('pred-p2', followedUser, new Date('2025-05-01'));
+      const page1Pred = makePrediction(
+        'pred-p1',
+        followedUser,
+        new Date('2025-06-01'),
+      );
+      const page2Pred = makePrediction(
+        'pred-p2',
+        followedUser,
+        new Date('2025-05-01'),
+      );
 
       const qbPage1 = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
@@ -991,8 +1022,14 @@ describe('UsersService', () => {
         .mockReturnValueOnce(qbPage1 as any)
         .mockReturnValueOnce(qbPage2 as any);
 
-      const resultP1 = await service.getFeed(mockUser.id, { page: 1, limit: 1 });
-      const resultP2 = await service.getFeed(mockUser.id, { page: 2, limit: 1 });
+      const resultP1 = await service.getFeed(mockUser.id, {
+        page: 1,
+        limit: 1,
+      });
+      const resultP2 = await service.getFeed(mockUser.id, {
+        page: 2,
+        limit: 1,
+      });
 
       expect(resultP1.data).toHaveLength(1);
       expect(resultP1.data[0].id).toBe('pred-p1');

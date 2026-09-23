@@ -1,5 +1,6 @@
 import {
   Controller,
+  Get,
   Post,
   Patch,
   Body,
@@ -32,6 +33,18 @@ import { Role } from '../common/enums/role.enum';
 @ApiBearerAuth()
 export class AdminDisputesController {
   constructor(private readonly disputesService: DisputesService) {}
+
+  @Get('breached')
+  @Roles(Role.Admin)
+  @ApiOperation({ summary: 'Get breached disputes (Admin only)' })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'List of breached disputes',
+    type: [Dispute],
+  })
+  async getBreachedDisputes(): Promise<Dispute[]> {
+    return this.disputesService.findBreachedDisputes();
+  }
 
   @Post(':id/resolve')
   @HttpCode(HttpStatus.OK)
