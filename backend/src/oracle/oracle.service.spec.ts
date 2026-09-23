@@ -141,9 +141,7 @@ describe('OracleService', () => {
     }).compile();
 
     service = module.get<OracleService>(OracleService);
-    reliabilityService = module.get(
-      OracleReliabilityService,
-    ) as jest.Mocked<OracleReliabilityService>;
+    reliabilityService = module.get(OracleReliabilityService);
     eventRepo.find.mockResolvedValue([mockEvent]);
   });
 
@@ -687,12 +685,14 @@ describe('OracleService', () => {
       ]);
 
       // High-reliability oracle has weight 0.9
-      reliabilityService.getWeight.mockImplementation(async (source: string) => {
-        if (source === 'oracle-high') return 0.9;
-        if (source === 'oracle-low') return 0.2;
-        if (source === 'oracle-new') return 1.0; // default neutral weight
-        return 1.0;
-      });
+      reliabilityService.getWeight.mockImplementation(
+        async (source: string) => {
+          if (source === 'oracle-high') return 0.9;
+          if (source === 'oracle-low') return 0.2;
+          if (source === 'oracle-new') return 1.0; // default neutral weight
+          return 1.0;
+        },
+      );
 
       const result = await service.getMatchConsensus('match-123');
 
@@ -725,11 +725,13 @@ describe('OracleService', () => {
 
       submissionRepo.find.mockResolvedValue([perfect, unreliable]);
 
-      reliabilityService.getWeight.mockImplementation(async (source: string) => {
-        if (source === 'oracle-perfect') return 1.0; // perfect history
-        if (source === 'oracle-unreliable') return 0.5; // mediocre
-        return 1.0;
-      });
+      reliabilityService.getWeight.mockImplementation(
+        async (source: string) => {
+          if (source === 'oracle-perfect') return 1.0; // perfect history
+          if (source === 'oracle-unreliable') return 0.5; // mediocre
+          return 1.0;
+        },
+      );
 
       const result = await service.getMatchConsensus('match-456');
 

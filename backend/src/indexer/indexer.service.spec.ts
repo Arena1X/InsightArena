@@ -752,9 +752,9 @@ describe('IndexerService', () => {
 
       // Re-indexing resumed from the fork point and processed the canonical
       // event the reorged chain now reports.
-      expect(
-        (service as any).storeAndProcessEvent,
-      ).toHaveBeenCalledWith(expect.objectContaining({ ledger: 95 }));
+      expect((service as any).storeAndProcessEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ ledger: 95 }),
+      );
 
       // The working checkpoint lands on the newly re-indexed ledger (95),
       // never on the pre-reorg position it was rewound from.

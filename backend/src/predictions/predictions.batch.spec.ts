@@ -460,7 +460,14 @@ describe('PredictionsService - submitBatch', () => {
     }));
 
     await expect(
-      service.submitBatch({ atomic: true, clientIdempotencyKey: makeIdempotencyKey(8), predictions: items }, user),
+      service.submitBatch(
+        {
+          atomic: true,
+          clientIdempotencyKey: makeIdempotencyKey(8),
+          predictions: items,
+        },
+        user,
+      ),
     ).rejects.toThrow(BatchSizeExceededException);
 
     expect(mockMarketsRepo.find).not.toHaveBeenCalled();

@@ -563,9 +563,7 @@ describe('AnalyticsService', () => {
     it('uses a distinct cache entry for a different user', async () => {
       const otherUser = { ...baseUser, id: 'user-id-2' } as User;
       usersRepository.findOne.mockImplementation((opts: any) =>
-        Promise.resolve(
-          opts.where.id === otherUser.id ? otherUser : baseUser,
-        ),
+        Promise.resolve(opts.where.id === otherUser.id ? otherUser : baseUser),
       );
       leaderboardRepository.createQueryBuilder.mockReturnValue(
         mockLeaderboardQb(null) as any,
@@ -606,9 +604,9 @@ describe('AnalyticsService', () => {
 
       expect(second).toEqual(first);
       expect(marketsRepository.findOne).toHaveBeenCalledTimes(1);
-      expect(
-        marketHistoryRepository.createQueryBuilder,
-      ).toHaveBeenCalledTimes(1);
+      expect(marketHistoryRepository.createQueryBuilder).toHaveBeenCalledTimes(
+        1,
+      );
     });
 
     it('uses a distinct cache entry when the date range differs', async () => {
@@ -629,9 +627,9 @@ describe('AnalyticsService', () => {
         new Date('2026-07-01T00:00:00.000Z'),
       );
 
-      expect(
-        marketHistoryRepository.createQueryBuilder,
-      ).toHaveBeenCalledTimes(2);
+      expect(marketHistoryRepository.createQueryBuilder).toHaveBeenCalledTimes(
+        2,
+      );
     });
 
     it('uses a distinct cache entry for a different market id', async () => {
@@ -648,9 +646,9 @@ describe('AnalyticsService', () => {
       await service.getMarketHistory('market-1', from, to);
       await service.getMarketHistory('market-2', from, to);
 
-      expect(
-        marketHistoryRepository.createQueryBuilder,
-      ).toHaveBeenCalledTimes(2);
+      expect(marketHistoryRepository.createQueryBuilder).toHaveBeenCalledTimes(
+        2,
+      );
     });
   });
 
@@ -677,10 +675,8 @@ describe('AnalyticsService', () => {
         Promise.resolve('dash-2'),
       );
       // Left alone: keyed by an unbounded parameter space, expires on its own TTL.
-      await cacheService.getOrSet(
-        'analytics:user-trends',
-        'GADDR:30',
-        () => Promise.resolve('trends'),
+      await cacheService.getOrSet('analytics:user-trends', 'GADDR:30', () =>
+        Promise.resolve('trends'),
       );
 
       await service.invalidateMarketResolutionCaches('market-1', 'chain-1', [
@@ -694,9 +690,7 @@ describe('AnalyticsService', () => {
       expect(
         await cacheManager.get('analytics:market:chain-1'),
       ).toBeUndefined();
-      expect(
-        await cacheManager.get('analytics:category:all'),
-      ).toBeUndefined();
+      expect(await cacheManager.get('analytics:category:all')).toBeUndefined();
       expect(
         await cacheManager.get('analytics:platform-stats:all'),
       ).toBeUndefined();
@@ -722,9 +716,7 @@ describe('AnalyticsService', () => {
       expect(
         await cacheManager.get('analytics:market:market-1'),
       ).toBeUndefined();
-      expect(
-        await cacheManager.get('analytics:category:all'),
-      ).toBeUndefined();
+      expect(await cacheManager.get('analytics:category:all')).toBeUndefined();
     });
 
     it('logs a warning instead of throwing when a cache backend call fails', async () => {

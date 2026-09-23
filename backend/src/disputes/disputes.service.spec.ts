@@ -1244,4 +1244,28 @@ describe('DisputesService', () => {
       ).rejects.toThrow(ConflictException);
     });
   });
+
+  describe('findBreachedDisputes', () => {
+    it('returns pending disputes where slaBreachedAt is set', async () => {
+      const breachedDispute = {
+        id: 'dispute-breached-1',
+        slaBreachedAt: new Date(),
+        status: DisputeStatus.PENDING,
+      } as Dispute;
+
+      jest
+        .spyOn(disputesRepository, 'find')
+        .mockResolvedValue([breachedDispute]);
+
+      const result = await service.findBreachedDisputes();
+      expect(result).toEqual([breachedDispute]);
+      expect(disputesRepository.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: DisputeStatus.PENDING,
+          }),
+        }),
+      );
+    });
+  });
 });

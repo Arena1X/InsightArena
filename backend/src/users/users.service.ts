@@ -58,10 +58,7 @@ import {
   predictorTierFromReputation,
 } from '../analytics/analytics.service';
 import { GetFeedQueryDto } from './dto/get-feed-query.dto';
-import {
-  FeedItemDto,
-  FeedResponseDto,
-} from './dto/feed-response.dto';
+import { FeedItemDto, FeedResponseDto } from './dto/feed-response.dto';
 
 @Injectable()
 export class UsersService {
@@ -725,7 +722,10 @@ export class UsersService {
    * activity/event entity. Broader activity types are out of scope for this
    * iteration.
    */
-  async getFeed(userId: string, dto: GetFeedQueryDto): Promise<FeedResponseDto> {
+  async getFeed(
+    userId: string,
+    dto: GetFeedQueryDto,
+  ): Promise<FeedResponseDto> {
     const page = dto.page ?? 1;
     const limit = Math.min(dto.limit ?? 20, 50);
     const skip = (page - 1) * limit;
