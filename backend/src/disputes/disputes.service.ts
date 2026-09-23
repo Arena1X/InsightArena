@@ -367,14 +367,10 @@ export class DisputesService {
     const nextTier = dto?.target_tier ?? (dispute.tier + 1);
     this.validateTierTransition(dispute.tier, nextTier);
 
-    if (
-      dispute.status !== DisputeStatus.RESOLVED &&
-      dispute.status !== DisputeStatus.REVIEW &&
-      dispute.status !== DisputeStatus.OPEN &&
-      dispute.status !== DisputeStatus.PENDING
-    ) {
+    if (dispute.status !== DisputeStatus.RESOLVED) {
       this.validateStatusTransition(dispute.status, DisputeStatus.ESCALATED);
     }
+
 
     if (dispute.status === DisputeStatus.RESOLVED) {
       if (!dispute.resolvedAt) {
