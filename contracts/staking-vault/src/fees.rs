@@ -43,6 +43,17 @@ pub fn deposit_fees(env: &Env, from: Address, amount: i128) -> Result<(), Stakin
 }
 
 /// Route early-exit penalty into the reward pool using checked arithmetic.
+///
+/// The accounting is delegated to [`pool::distribute`], so a penalty follows
+/// exactly the same rule as any other reward inflow:
+///
+/// - `total_shares > 0` — folded into `acc_reward_per_share` and shared by the
+///   remaining positions in proportion to their shares.
+/// - `total_shares == 0` — parked in `pending_rewards`, no divide-by-zero.
+///   This is the state `withdraw` leaves behind when the last staker exits
+///   early, because it burns the shares before routing the penalty. The parked
+///   amount becomes claimable once a new staker joins the pool and a later
+///   distribution folds it in.
 pub fn route_penalty_to_pool(env: &Env, penalty_amount: i128) -> Result<(), StakingError> {
     if penalty_amount <= 0 {
         return Ok(());

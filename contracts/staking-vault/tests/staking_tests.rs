@@ -1135,3 +1135,122 @@ fn test_large_amounts_no_overflow() {
     let balance = token.balance(&staker);
     assert_eq!(balance, large_amount + 1_000_000);
 }
+
+// ---------------------------------------------------------------------------
+// #1809 — Penalty routing when the pool has zero total shares
+// ---------------------------------------------------------------------------
+
+/// The last staker exits early, so `withdraw` burns every share *before* it
+/// routes the penalty. This is the only path that reaches
+/// `route_penalty_to_pool` with `total_shares == 0`; the penalty must be
+/// parked in `pending_rewards` rather than hitting a divide-by-zero.
+#[test]
+fn test_route_penalty_to_pool_with_zero_shares_does_not_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _fee_source, token, asset) = setup(&env);
+
+    let staker = Address::generate(&env);
+    asset.mint(&staker, &1_000_000);
+
+    client.stake(&staker, &1_000, &(30 * 86_400));
+    assert_eq!(client.get_pool().total_shares, 1_000);
+
+    let position = client.get_position(&staker).unwrap();
+    env.ledger().with_mut(|l| l.timestamp = position.unlock_at);
+    client.request_unlock(&staker, &1_000);
+
+    // Still inside the 7-day cooldown, so the 5% penalty applies.
+    let result = client.try_withdraw(&staker);
+    assert!(
+        result.is_ok(),
+        "withdraw must succeed with zero total shares, got {:?}",
+        result
+    );
+
+    let pool = client.get_pool();
+    assert_eq!(pool.total_shares, 0);
+    assert_eq!(pool.acc_reward_per_share, 0);
+    // 5% of 1_000 is parked, not dropped and not divided by zero.
+    assert_eq!(pool.pending_rewards, 50);
+
+    // The staker still receives the principal net of the penalty.
+    assert_eq!(token.balance(&staker), 999_000 + 950);
+}
+
+/// The parked penalty is not lost: joining the pool alone does not move the
+/// accumulator, but the next distribution folds the parked amount in and makes
+/// it claimable by the new staker.
+#[test]
+fn test_penalty_parked_with_zero_shares_is_recoverable_by_new_staker() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, fee_source, _token, asset) = setup(&env);
+
+    let exiting = Address::generate(&env);
+    asset.mint(&exiting, &1_000_000);
+    client.stake(&exiting, &1_000, &(30 * 86_400));
+
+    let position = client.get_position(&exiting).unwrap();
+    env.ledger().with_mut(|l| l.timestamp = position.unlock_at);
+    client.request_unlock(&exiting, &1_000);
+    client.withdraw(&exiting);
+
+    assert_eq!(client.get_pool().total_shares, 0);
+    assert_eq!(client.get_pool().pending_rewards, 50);
+
+    // A new staker joins while the penalty is still parked.
+    let late = Address::generate(&env);
+    asset.mint(&late, &1_000_000);
+    client.stake(&late, &1_000, &(30 * 86_400));
+
+    // Staking alone does not distribute the parked penalty.
+    assert_eq!(client.pending_rewards(&late), 0);
+    assert_eq!(client.get_pool().pending_rewards, 50);
+
+    // The next distribution folds parked + new together.
+    asset.mint(&fee_source, &1_000_000);
+    client.deposit_fees(&fee_source, &250);
+
+    let pool = client.get_pool();
+    assert_eq!(pool.pending_rewards, 0);
+    assert_eq!(pool.total_shares, 1_000);
+    assert_eq!(client.pending_rewards(&late), 300); // 50 parked + 250 new
+
+    // And the amount is actually claimable, not just visible in the view.
+    assert_eq!(client.claim_rewards(&late), 300);
+    assert_eq!(client.pending_rewards(&late), 0);
+}
+
+/// With a non-zero `total_shares`, the penalty is folded into the accumulator
+/// and shared by the remaining positions in proportion to their shares.
+#[test]
+fn test_route_penalty_with_nonzero_shares_distributes_proportionally() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _fee_source, _token, asset) = setup(&env);
+
+    let exiting = Address::generate(&env);
+    let big = Address::generate(&env);
+    let small = Address::generate(&env);
+    for staker in [&exiting, &big, &small] {
+        asset.mint(staker, &1_000_000);
+    }
+
+    client.stake(&exiting, &1_000, &(30 * 86_400));
+    client.stake(&big, &4_000, &(30 * 86_400));
+    client.stake(&small, &1_000, &(30 * 86_400));
+    assert_eq!(client.get_pool().total_shares, 6_000);
+
+    let position = client.get_position(&exiting).unwrap();
+    env.ledger().with_mut(|l| l.timestamp = position.unlock_at);
+    client.request_unlock(&exiting, &1_000);
+    client.withdraw(&exiting);
+
+    // 5% of 1_000 = 50, split 4:1 across the remaining 4_000 and 1_000 shares.
+    let pool = client.get_pool();
+    assert_eq!(pool.total_shares, 5_000);
+    assert_eq!(pool.pending_rewards, 0); // nothing parked, all distributed
+    assert_eq!(client.pending_rewards(&big), 40);
+    assert_eq!(client.pending_rewards(&small), 10);
+}
