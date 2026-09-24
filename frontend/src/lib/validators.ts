@@ -137,6 +137,28 @@ export const validators = {
     },
 } as const;
 
+/** Maximum platform fee accepted by the protocol, expressed in basis points. */
+export const MAX_PLATFORM_FEE_BPS = 500;
+
+/** Validate a fee percentage against the platform's basis-point limit. */
+export function validatePlatformFee(value: unknown): string | undefined {
+  if (value === "" || value === null || value === undefined) {
+    return "Platform fee is required.";
+  }
+
+  const percentage = Number(value);
+  if (!Number.isFinite(percentage)) {
+    return "Platform fee must be a valid number.";
+  }
+  if (percentage < 0) {
+    return "Platform fee cannot be negative.";
+  }
+  if (percentage * 100 > MAX_PLATFORM_FEE_BPS) {
+    return `Platform fee cannot exceed ${MAX_PLATFORM_FEE_BPS} bps (5%).`;
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Async validators
 // ---------------------------------------------------------------------------
