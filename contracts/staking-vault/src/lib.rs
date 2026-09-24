@@ -165,6 +165,32 @@ impl StakingVault {
         Ok(())
     }
 
+    // ── Queries ─────────────────────────────────────────────────────────────────
+
+    /// Return the current pool state. Reverts with `NotInitialized` when the
+    /// vault has not been configured yet, rather than panicking on missing
+    /// storage.
+    pub fn get_pool(env: Env) -> Result<PoolState, StakingError> {
+        get_pool_state(&env)
+    }
+
+    /// Return the configured unbonding parameters. Reverts with
+    /// `NotInitialized` when the vault has not been configured yet, rather
+    /// than panicking on missing storage.
+    pub fn get_unbonding_config(env: Env) -> Result<UnbondingConfig, StakingError> {
+        env.storage()
+            .instance()
+            .get::<DataKey, UnbondingConfig>(&DataKey::UnbondingConfig)
+            .ok_or(StakingError::NotInitialized)
+    }
+
+    /// Return the staker's position, or `None` when the vault has not been
+    /// configured or the staker has never staked. Never panics on missing
+    /// storage.
+    pub fn get_position(env: Env, staker: Address) -> Option<Position> {
+        get_position_raw(&env, &staker)
+    }
+
     // ── Staking ─────────────────────────────────────────────────────────────────
 
     /// Stake `amount` of the token, locking it for `lock_duration` seconds in
@@ -246,39 +272,24 @@ impl StakingVault {
             return Err(StakingError::InvalidAmount);
         }
 
-        let mut position =
-            get_position_raw(&env, &staker).ok_or(StakingError::PositionNotFound)?;
+        let mut position = get_position_raw(&env, &staker).ok_or(StakingError::NoPosition)?;
 
         if amount > position.amount {
             return Err(StakingError::InsufficientStake);
         }
 
-        // Check if lock period has elapsed
         if env.ledger().timestamp() < position.unlock_at {
-            return Err(StakingError::LockNotElapsed);
+            return Err(StakingError::StillLocked);
         }
 
-        // Record the unlock request
         position.unlock_requested_at = env.ledger().timestamp();
-        position.pending_unlock_amount = amount;
+        position.pending_unlock_amount = position
+            .pending_unlock_amount
+            .checked_add(amount)
+            .ok_or(StakingError::Overflow)?;
 
         set_position(&env, &staker, &position);
 
         Ok(())
     }
-
-    /// Withdraw unlocked tokens after the cooldown period.
-    /// If withdrawn before cooldown ends, an early-exit penalty is applied.
-    /// Pending rewards are auto-claimed as part of withdrawal.
-    pub fn withdraw(env: Env, staker: Address) -> Result<(), StakingError> {
-        staker.require_auth();
-        require_not_paused(&env)?;
-
-        let config = get_config(&env)?;
-        let unbonding_config = env
-            .storage()
-            .instance()
-            .get::<DataKey, UnbondingConfig>(&DataKey::UnbondingConfig)
-
-
-/* … truncated 7517 chars — edit only what you need near the top … */
+}
