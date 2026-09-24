@@ -48,13 +48,23 @@ export class CacheWarmingService {
     const result: CacheWarmResult = { warmed: [], failed: [] };
 
     const [, trendingEvents] = await Promise.all([
-      this.warmActiveEvents(result),
-      this.warmTrendingEvents(result),
-      this.warmPlatformStatistics(result),
-      this.warmLeaderboard(result),
+      this.runSubWarmer('warmActiveEvents', () =>
+        this.warmActiveEvents(result),
+      ),
+      this.runSubWarmer('warmTrendingEvents', () =>
+        this.warmTrendingEvents(result),
+      ),
+      this.runSubWarmer('warmPlatformStatistics', () =>
+        this.warmPlatformStatistics(result),
+      ),
+      this.runSubWarmer('warmLeaderboard', () =>
+        this.warmLeaderboard(result),
+      ),
     ]);
 
-    await this.warmPopularEventDetails(result, trendingEvents?.data ?? []);
+    await this.runSubWarmer('warmPopularEventDetails', () =>
+      this.warmPopularEventDetails(result, trendingEvents?.data ?? []),
+    );
 
     const duration_ms = Date.now() - start;
     this.logger.log(
@@ -62,6 +72,24 @@ export class CacheWarmingService {
     );
 
     return result;
+  }
+
+  /**
+   * Runs a single sub-warming task in isolation so that a thrown error from
+   * one task cannot abort the remaining sub-warming tasks. The failing
+   * sub-warmer is recorded in the job result and logged by name.
+   */
+  private async runSubWarmer<T>(
+    name: string,
+    task: () => Promise<T>,
+  ): Promise<T | null> {
+    try {
+      return await task();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Cache warming sub-warmer ${name} failed: ${reason}`);
+      return null;
+    }
   }
 
   /** Warm leaderboard top-N slices for all configured seasons. */
