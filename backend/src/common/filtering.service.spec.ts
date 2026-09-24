@@ -290,4 +290,101 @@ describe('FilteringService', () => {
       }),
     ).toThrow(BadRequestException);
   });
+
+  it('rejects an unknown filter field name with a validation error', () => {
+    expect(() =>
+      service.buildFilterPlan(creatorEventFilterConfig, {
+        dateRanges: {
+          unknown_field: {
+            from: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      }),
+    ).toThrow(BadRequestException);
+
+    expect(() =>
+      service.buildFilterPlan(creatorEventFilterConfig, {
+        numericRanges: {
+          unknown_field: {
+            min: 1,
+          },
+        },
+      }),
+    ).toThrow(BadRequestException);
+
+    expect(() =>
+      service.buildFilterPlan(creatorEventFilterConfig, {
+        addresses: {
+          unknown_field: 'GABC',
+        },
+      }),
+    ).toThrow(BadRequestException);
+
+    expect(() =>
+      service.buildFilterPlan(creatorEventFilterConfig, {
+        booleans: {
+          unknown_field: true,
+        },
+      }),
+    ).toThrow(BadRequestException);
+  });
+
+  it('builds the expected query plan when only whitelisted fields are used', () => {
+    const plan = service.buildFilterPlan(creatorEventFilterConfig, {
+      statuses: 'active',
+      booleans: {
+        is_active: true,
+      },
+      sort: {
+        field: 'created_at',
+        direction: 'ASC',
+      },
+    });
+
+    expect(plan.combination).toBe(FilterCombination.And);
+    expect(plan.sort).toEqual({
+      column: 'creatorEvent.created_at',
+      direction: 'ASC',
+    });
+    expect(plan.clauses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sql: '((creatorEvent.is_active = :filter_0 AND creatorEvent.is_cancelled = :filter_1))',
+        }),
+        expect.objectContaining({
+          sql: 'creatorEvent.is_active = :filter_2',
+          parameters: { filter_2: true },
+        }),
+      ]),
+    );
+  });
+
+  it('rejects the entire call when a mix of valid and invalid fields is provided', () => {
+    expect(() =>
+      service.buildFilterPlan(creatorEventFilterConfig, {
+        statuses: 'active',
+        booleans: {
+          is_active: true,
+        },
+        numericRanges: {
+          unknown_field: {
+            min: 1,
+          },
+        },
+      }),
+    ).toThrow(BadRequestException);
+
+    expect(() =>
+      service.buildFilterPlan(creatorEventFilterConfig, {
+        dateRanges: {
+          created_at: {
+            from: '2026-01-01T00:00:00.000Z',
+          },
+        },
+        addresses: {
+          unknown_field: 'GABC',
+        },
+      }),
+    ).toThrow(BadRequestException);
+  });
 });
