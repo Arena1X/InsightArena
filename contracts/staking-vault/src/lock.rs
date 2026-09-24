@@ -11,6 +11,29 @@ pub const BPS_DENOMINATOR: u32 = 10_000;
 /// Maximum allowed penalty in basis points (100%).
 pub const MAX_PENALTY_BPS: u32 = 10_000;
 
+/// Validate a tier configuration before it is persisted.
+///
+/// Rejects an empty tier vector and any tiers whose durations are not in
+/// strictly ascending order, so that `tier_for` can never silently resolve
+/// the wrong boundary for a misconfigured contract.
+pub fn validate_tiers(tiers: &Vec<LockTier>) -> Result<(), StakingError> {
+    if tiers.is_empty() {
+        return Err(StakingError::InvalidTierConfig);
+    }
+
+    let mut prev: Option<u64> = None;
+    for tier in tiers.iter() {
+        if let Some(prev_duration) = prev {
+            if tier.duration <= prev_duration {
+                return Err(StakingError::InvalidTierConfig);
+            }
+        }
+        prev = Some(tier.duration);
+    }
+
+    Ok(())
+}
+
 /// Look up the [`LockTier`] matching `duration`, or error if none is configured.
 pub fn tier_for(tiers: &Vec<LockTier>, duration: u64) -> Result<LockTier, StakingError> {
     for tier in tiers.iter() {
