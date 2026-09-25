@@ -133,3 +133,6 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 <!-- handsoff-issue-1811 -->
 - #1811: [Contract] — open-market: `cast_arbiter_vote` by an Unassigned Arbiter
+
+<!-- handsoff-issue-1812 -->
+- #1812: [Contract] — open-market: `veto_proposal` by a Non-Veto-Authorized Caller
