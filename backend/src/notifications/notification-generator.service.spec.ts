@@ -457,4 +457,443 @@ describe('NotificationGeneratorService', () => {
       expect(notificationsRepository.create).toHaveBeenCalled();
     });
   });
+
+  describe('Category Preference Enforcement', () => {
+    let categoryPreferencesRepository: Repository<NotificationCategoryPreference>;
+
+    beforeEach(() => {
+      categoryPreferencesRepository = module.get<
+        Repository<NotificationCategoryPreference>
+      >(getRepositoryToken(NotificationCategoryPreference));
+    });
+
+    describe('shouldQueueNotification', () => {
+      it('should return true when user has no category preference (default opt-in)', async () => {
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(mockUser as any);
+        jest
+          .spyOn(categoryPreferencesRepository, 'findOne')
+          .mockResolvedValue(null);
+
+        const result = await service['shouldQueueNotification'](
+          'GABC123',
+          NotificationType.EventCreated,
+        );
+
+        expect(result).toBe(true);
+      });
+
+      it('should return true when category is enabled', async () => {
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(mockUser as any);
+        jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
+          id: 'pref-1',
+          userId: 'user-1',
+          category: 'event_created' as any,
+          in_app: true,
+          email: true,
+          push: false,
+        } as any);
+
+        const result = await service['shouldQueueNotification'](
+          'GABC123',
+          NotificationType.EventCreated,
+        );
+
+        expect(result).toBe(true);
+      });
+
+      it('should return false when category is disabled (in_app: false)', async () => {
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(mockUser as any);
+        jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
+          id: 'pref-1',
+          userId: 'user-1',
+          category: 'event_created' as any,
+          in_app: false,
+          email: true,
+          push: false,
+        } as any);
+
+        const result = await service['shouldQueueNotification'](
+          'GABC123',
+          NotificationType.EventCreated,
+        );
+
+        expect(result).toBe(false);
+      });
+
+      it('should return true when user is not found (safe fallback)', async () => {
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(null);
+
+        const result = await service['shouldQueueNotification'](
+          'GABC123',
+          NotificationType.EventCreated,
+        );
+
+        expect(result).toBe(true);
+      });
+
+      it('should return true for notification types without category mapping', async () => {
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(mockUser as any);
+
+        const result = await service['shouldQueueNotification'](
+          'GABC123',
+          'UnknownType' as any,
+        );
+
+        expect(result).toBe(true);
+      });
+
+      it('should return true on error (safe fallback)', async () => {
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockRejectedValue(new Error('Database error'));
+
+        const result = await service['shouldQueueNotification'](
+          'GABC123',
+          NotificationType.EventCreated,
+        );
+
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('filterNotificationsByPreferences', () => {
+      it('should filter out notifications for disabled categories', async () => {
+        const notifications = [
+          {
+            userAddress: 'GABC123',
+            type: NotificationType.EventCreated,
+            title: 'Event Created',
+            message: 'Message',
+          },
+          {
+            userAddress: 'GABC123',
+            type: NotificationType.MatchAdded,
+            title: 'Match Added',
+            message: 'Message',
+          },
+        ];
+
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(mockUser as any);
+        jest
+          .spyOn(categoryPreferencesRepository, 'findOne')
+          .mockImplementation((query: any) => {
+            if (query.where.category === 'event_created') {
+              return Promise.resolve({
+                id: 'pref-1',
+                userId: 'user-1',
+                category: 'event_created',
+                in_app: false,
+                email: true,
+                push: false,
+              } as any);
+            }
+            if (query.where.category === 'match_added') {
+              return Promise.resolve({
+                id: 'pref-2',
+                userId: 'user-1',
+                category: 'match_added',
+                in_app: true,
+                email: true,
+                push: false,
+              } as any);
+            }
+            return Promise.resolve(null);
+          });
+
+        const result =
+          await service['filterNotificationsByPreferences'](notifications);
+
+        expect(result).toHaveLength(1);
+        expect(result[0].type).toBe(NotificationType.MatchAdded);
+      });
+
+      it('should return all notifications when all categories are enabled', async () => {
+        const notifications = [
+          {
+            userAddress: 'GABC123',
+            type: NotificationType.EventCreated,
+            title: 'Event Created',
+            message: 'Message',
+          },
+          {
+            userAddress: 'GABC123',
+            type: NotificationType.MatchAdded,
+            title: 'Match Added',
+            message: 'Message',
+          },
+        ];
+
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(mockUser as any);
+        jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
+          id: 'pref-1',
+          userId: 'user-1',
+          category: 'event_created' as any,
+          in_app: true,
+          email: true,
+          push: false,
+        } as any);
+
+        const result =
+          await service['filterNotificationsByPreferences'](notifications);
+
+        expect(result).toHaveLength(2);
+      });
+
+      it('should return empty array when all notifications are filtered', async () => {
+        const notifications = [
+          {
+            userAddress: 'GABC123',
+            type: NotificationType.EventCreated,
+            title: 'Event Created',
+            message: 'Message',
+          },
+        ];
+
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(mockUser as any);
+        jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
+          id: 'pref-1',
+          userId: 'user-1',
+          category: 'event_created' as any,
+          in_app: false,
+          email: true,
+          push: false,
+        } as any);
+
+        const result =
+          await service['filterNotificationsByPreferences'](notifications);
+
+        expect(result).toHaveLength(0);
+      });
+    });
+
+    describe('queueNotification with category filtering', () => {
+      it('should not queue notification when category is disabled', async () => {
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(mockUser as any);
+        jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
+          id: 'pref-1',
+          userId: 'user-1',
+          category: 'event_created' as any,
+          in_app: false,
+          email: true,
+          push: false,
+        } as any);
+
+        await service['queueNotification']({
+          userAddress: 'GABC123',
+          type: NotificationType.EventCreated,
+          title: 'Test',
+          message: 'Test message',
+        });
+
+        jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
+        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+
+        await service.flushQueue();
+
+        expect(notificationsRepository.create).not.toHaveBeenCalled();
+      });
+
+      it('should queue notification when category is enabled', async () => {
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(mockUser as any);
+        jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
+          id: 'pref-1',
+          userId: 'user-1',
+          category: 'event_created' as any,
+          in_app: true,
+          email: true,
+          push: false,
+        } as any);
+
+        await service['queueNotification']({
+          userAddress: 'GABC123',
+          type: NotificationType.EventCreated,
+          title: 'Test',
+          message: 'Test message',
+        });
+
+        jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
+        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+
+        await service.flushQueue();
+
+        expect(notificationsRepository.create).toHaveBeenCalled();
+      });
+    });
+
+    describe('queueBatchNotifications with category filtering', () => {
+      it('should filter batch notifications based on category preferences', async () => {
+        const notifications = [
+          {
+            userAddress: 'GABC123',
+            type: NotificationType.EventCreated,
+            title: 'Event Created',
+            message: 'Message 1',
+          },
+          {
+            userAddress: 'GABC123',
+            type: NotificationType.MatchAdded,
+            title: 'Match Added',
+            message: 'Message 2',
+          },
+          {
+            userAddress: 'GABC123',
+            type: NotificationType.PredictionSubmitted,
+            title: 'Prediction Submitted',
+            message: 'Message 3',
+          },
+        ];
+
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(mockUser as any);
+        jest
+          .spyOn(categoryPreferencesRepository, 'findOne')
+          .mockImplementation((query: any) => {
+            const category = query.where.category;
+            return Promise.resolve({
+              id: 'pref-1',
+              userId: 'user-1',
+              category,
+              in_app: category !== 'event_created', // Disable only EventCreated
+              email: true,
+              push: false,
+            } as any);
+          });
+
+        const createSpy = jest
+          .spyOn(notificationsRepository, 'create')
+          .mockReturnValue({} as any);
+        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+
+        await service['queueBatchNotifications'](notifications);
+        await service.flushQueue();
+
+        // Should create only 2 notifications (MatchAdded and PredictionSubmitted)
+        expect(createSpy).toHaveBeenCalledTimes(2);
+      });
+
+      it('should not queue any notifications when all are filtered out', async () => {
+        const notifications = [
+          {
+            userAddress: 'GABC123',
+            type: NotificationType.EventCreated,
+            title: 'Event Created',
+            message: 'Message',
+          },
+        ];
+
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(mockUser as any);
+        jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
+          id: 'pref-1',
+          userId: 'user-1',
+          category: 'event_created' as any,
+          in_app: false,
+          email: true,
+          push: false,
+        } as any);
+
+        jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
+        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+
+        await service['queueBatchNotifications'](notifications);
+        await service.flushQueue();
+
+        expect(notificationsRepository.create).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('Integration with handler methods', () => {
+      it('should respect category preferences in handleEventCreated', async () => {
+        const data = {
+          event_id: 1,
+          creator: 'GABC123',
+          title: 'Test Event',
+        };
+
+        const userWithPrefs = {
+          ...mockUser,
+          id: 'user-1',
+        };
+
+        jest
+          .spyOn(userRepository, 'findOne')
+          .mockResolvedValue(userWithPrefs as any);
+        jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
+          id: 'pref-1',
+          userId: 'user-1',
+          category: 'event_created' as any,
+          in_app: false,
+          email: true,
+          push: false,
+        } as any);
+
+        jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
+        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+
+        await service.handleEventCreated(data);
+        await service.flushQueue();
+
+        expect(notificationsRepository.create).not.toHaveBeenCalled();
+      });
+
+      it('should respect category preferences in handleMatchAdded', async () => {
+        const data = {
+          match_id: 1,
+          event_id: 1,
+          team_a: 'Team A',
+          team_b: 'Team B',
+        };
+
+        jest
+          .spyOn(creatorEventRepository, 'findOne')
+          .mockResolvedValue(mockCreatorEvent as any);
+        jest
+          .spyOn(service as any, 'getEventParticipants')
+          .mockResolvedValue(['GABC123', 'GDEF456']);
+
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue({
+          id: 'user-1',
+          stellar_address: 'GABC123',
+        } as any);
+
+        jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
+          id: 'pref-1',
+          userId: 'user-1',
+          category: 'match_added' as any,
+          in_app: false,
+          email: true,
+          push: false,
+        } as any);
+
+        jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
+        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+
+        await service.handleMatchAdded(data);
+        await service.flushQueue();
+
+        // No notifications should be created since category is disabled for both users
+        expect(notificationsRepository.create).not.toHaveBeenCalled();
+      });
+    });
+  });
 });
