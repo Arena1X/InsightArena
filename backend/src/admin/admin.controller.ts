@@ -35,6 +35,7 @@ import { ListCreatorEventsQueryDto } from './dto/list-creator-events-query.dto';
 import { ModerateCommentDto } from './dto/moderate-comment.dto';
 import { ReportQueryDto, ReportFormat } from './dto/report-query.dto';
 import { ResolveMarketDto } from './dto/resolve-market.dto';
+import { SetFeaturedMarketDto } from './dto/set-featured-market.dto';
 import { StatsResponseDto } from './dto/stats-response.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 
@@ -263,44 +264,24 @@ export class AdminController {
   }
 
   @Patch('markets/:id/feature')
-  async featureMarket(@Param('id') id: string, @Request() req: any) {
-    return this.adminService.featureMarket(
-      id,
-      (req as { user: { id: string } }).user.id,
-    );
-  }
-
-  @Patch('markets/:id/unfeature')
-  async unfeatureMarket(@Param('id') id: string, @Request() req: any) {
-    return this.adminService.unfeatureMarket(
-      id,
-      (req as { user: { id: string } }).user.id,
-    );
-  }
-
-  @Get('reports/activity')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get activity report for platform monitoring' })
-  @ApiResponse({
-    status: 200,
-    description: 'Activity report in JSON or CSV format',
+  @ApiOperation({
+    summary:
+      'Set or clear a market\'s featured flag, featured order, and featured ' +
+      'expiry. Order and expiry are bounds-checked; past expiry is rejected.',
   })
-  @ApiResponse({ status: 400, description: 'Invalid date range' })
-  async getActivityReport(
-    @Query() query: ReportQueryDto,
-    @Res() res: Response,
-  ): Promise<void> {
-    const result = await this.adminService.getActivityReport(query);
-
-    if (query.format === ReportFormat.CSV) {
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader(
-        'Content-Disposition',
-        'attachment; filename="activity-report.csv"',
-      );
-      res.send(result);
-    } else {
-      res.json(result);
-    }
+  @ApiResponse({ status: 200, description: 'Market featured fields updated' })
+  @ApiResponse({ status: 400, description: 'Invalid featured fields' })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  async featureMarket(
+    @Param('id') id: string,
+    @Body() dto: SetFeaturedMarketDto,
+    @Request() req: any,
+  ) {
+    return this.adminService.setMarketFeatured(
+      id,
+      dto,
+      (req as { user: { id: string } }).user.id,
+    );
   }
 }
