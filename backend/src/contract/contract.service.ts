@@ -112,6 +112,21 @@ export interface ContractConfig {
   paused: boolean;
 }
 
+/**
+ * Maximum age (in milliseconds) that a cached verification result may be
+ * served before it is considered stale and re-fetched from the chain.
+ *
+ * This is the documented staleness bound for `isVerified`: a revocation
+ * (`unverify_address`) or a fresh verification is reflected within this
+ * window, never indefinitely.
+ */
+export const VERIFICATION_CACHE_TTL_MS = 30_000;
+
+interface VerificationCacheEntry {
+  value: boolean;
+  fetchedAt: number;
+}
+
 @Injectable()
 export class ContractService {
   private readonly logger = new Logger(ContractService.name);
@@ -120,6 +135,11 @@ export class ContractService {
   private readonly rpcUrl: string;
   private readonly rpcServer: SorobanRpc.Server;
   private readonly networkPassphrase: string;
+
+  private readonly verificationCache = new Map<
+    string,
+    VerificationCacheEntry
+  >();
 
   constructor(private readonly configService: ConfigService) {
     this.contractId =
@@ -229,11 +249,37 @@ export class ContractService {
     return result ?? '0';
   }
 
+  /**
+   * Returns whether `address` is currently verified on-chain.
+   *
+   * Results are cached for at most {@link VERIFICATION_CACHE_TTL_MS} so that a
+   * recent `unverify_address` (or a fresh verification) is reflected within the
+   * documented staleness bound rather than serving a stale `true` indefinitely.
+   * An address that was never verified resolves to `false` and never throws.
+   */
   async isVerified(address: string): Promise<boolean> {
-    const result = await this.viewCall<boolean>('is_verified', [
-      new Address(address).toScVal(),
-    ]);
-    return result ?? false;
+    const cached = this.verificationCache.get(address);
+    if (cached && Date.now() - cached.fetchedAt < VERIFICATION_CACHE_TTL_MS) {
+      return cached.value;
+    }
+
+    let value = false;
+    try {
+      const result = await this.viewCall<boolean>('is_verified', [
+        new Address(address).toScVal(),
+      ]);
+      value = result ?? false;
+    } catch (error) {
+      this.logger.warn(
+        `ContractService.isVerified failed for ${address}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      value = false;
+    }
+
+    this.verificationCache.set(address, { value, fetchedAt: Date.now() });
+    return value;
   }
 
   async getEventStatistics(
@@ -293,7 +339,7 @@ export class ContractService {
       [nativeToScVal(numericId, { type: 'u64' })],
     );
 
-    if (!result || !Array.isArray(result) || result.length < 3) {
+    if (!result || !Array.isArray(result)) {
       return { teamA: 0, teamB: 0, draw: 0 };
     }
 
@@ -304,80 +350,56 @@ export class ContractService {
     };
   }
 
-  private async viewCall<T>(fn: string, args: xdr.ScVal[]): Promise<T | null> {
+  private async viewCall<T>(
+    method: string,
+    params: xdr.ScVal[],
+  ): Promise<T | null> {
     if (!this.contractId) {
       this.logger.warn(
-        `viewCall(${fn}): contract ID not configured, returning null`,
+        `ContractService.viewCall(${method}): contract id not configured`,
       );
       return null;
     }
 
-    let attempt = 0;
-    const maxAttempts = 3;
+    try {
+      const contract = new Contract(this.contractId);
+      const operation = contract.call(method, ...params);
 
-    while (attempt < maxAttempts) {
-      try {
-        this.logger.debug(`viewCall(${fn}) attempt=${attempt + 1}`);
+      const source = Keypair.random();
+      const account = new SorobanRpc.Account(source.publicKey(), '0');
 
-        // Use a throwaway keypair — view calls don't need a real signer
-        const keypair = Keypair.random();
-        const account = await this.rpcServer
-          .getAccount(keypair.publicKey())
-          .catch(() => {
-            // If account doesn't exist on network, create a minimal source account object
-            return new SorobanRpc.Server(this.rpcUrl, {
-              allowHttp: this.rpcUrl.startsWith('http://'),
-            })
-              .getAccount(keypair.publicKey())
-              .catch(() => null);
-          });
+      const transaction = new TransactionBuilder(account, {
+        fee: '100',
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(operation)
+        .setTimeout(30)
+        .build();
 
-        if (!account) {
-          this.logger.warn(
-            `viewCall(${fn}): could not load source account, using stub`,
-          );
-          return null;
-        }
+      const simulation = await this.rpcServer.simulateTransaction(transaction);
 
-        const contract = new Contract(this.contractId);
-        const tx = new TransactionBuilder(account, {
-          fee: '100',
-          networkPassphrase: this.networkPassphrase,
-        })
-          .addOperation(contract.call(fn, ...args))
-          .setTimeout(30)
-          .build();
-
-        const simulation = await this.rpcServer.simulateTransaction(tx);
-
-        if (SorobanRpc.Api.isSimulationError(simulation)) {
-          this.logger.error(
-            `viewCall(${fn}) simulation error: ${simulation.error}`,
-          );
-          return null;
-        }
-
-        const successResult =
-          simulation as SorobanRpc.Api.SimulateTransactionSuccessResponse;
-        if (!successResult.result?.retval) {
-          return null;
-        }
-
-        return scValToNative(successResult.result.retval) as T;
-      } catch (err) {
-        attempt++;
-        const message = err instanceof Error ? err.message : String(err);
+      if (SorobanRpc.Api.isSimulationError(simulation)) {
         this.logger.warn(
-          `viewCall(${fn}) attempt ${attempt} failed: ${message}`,
+          `ContractService.viewCall(${method}) simulation error: ${simulation.error}`,
         );
-        if (attempt >= maxAttempts) {
-          this.logger.error(`viewCall(${fn}) exhausted retries`);
-          return null;
-        }
-        await new Promise((r) => setTimeout(r, 500 * attempt));
+        return null;
       }
-    }
 
-    return null;
+      const returnValue = (simulation as SorobanRpc.Api.SimulateTransactionSuccessResponse)
+        .result?.retval;
+
+      if (!returnValue) {
+        return null;
+      }
+
+      return scValToNative(returnValue) as T;
+    } catch (error) {
+      this.logger.error(
+        `ContractService.viewCall(${method}) failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
   }
 }

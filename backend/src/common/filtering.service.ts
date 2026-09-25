@@ -85,6 +85,7 @@ export class FilteringService {
     let parameterIndex = 0;
 
     this.assertCombination(combination);
+    this.assertKnownFilterFields(config, request);
 
     for (const [field, range] of Object.entries(request.dateRanges ?? {})) {
       const fieldConfig = this.getField(config, field, FilterFieldType.Date);
@@ -220,6 +221,28 @@ export class FilteringService {
     return queryBuilder;
   }
 
+  private assertKnownFilterFields(
+    config: EntityFilterConfig,
+    request: FilteringRequest,
+  ): void {
+    const requestedFields = [
+      ...Object.keys(request.dateRanges ?? {}),
+      ...Object.keys(request.numericRanges ?? {}),
+      ...Object.keys(request.addresses ?? {}),
+      ...Object.keys(request.booleans ?? {}),
+    ];
+
+    const unknownFields = requestedFields.filter(
+      (field) => !Object.prototype.hasOwnProperty.call(config.fields, field),
+    );
+
+    if (unknownFields.length > 0) {
+      throw new BadRequestException(
+        `Unsupported filter field(s): ${unknownFields.join(', ')}`,
+      );
+    }
+  }
+
   private buildStatusClause(
     config: EntityFilterConfig,
     statuses: string[],
@@ -285,27 +308,36 @@ export class FilteringService {
   ): FilterFieldConfig {
     const fieldConfig = config.fields[field];
 
-    if (!fieldConfig || fieldConfig.type !== expectedType) {
+    if (!fieldConfig) {
+      throw new BadRequestException(`Unsupported filter field: ${field}`);
+    }
+
+    if (fieldConfig.type !== expectedType) {
       throw new BadRequestException(
-        `Unsupported ${expectedType} filter: ${field}`,
+        `Filter field ${field} does not support ${expectedType} filters`,
       );
     }
 
     return fieldConfig;
   }
 
-  private normalizeArray(value: string | string[] | undefined): string[] {
+  private assertCombination(combination: FilterCombination): void {
+    if (
+      combination !== FilterCombination.And &&
+      combination !== FilterCombination.Or
+    ) {
+      throw new BadRequestException(
+        `Unsupported filter combination: ${combination}`,
+      );
+    }
+  }
+
+  private normalizeArray(value?: string | string[]): string[] {
     if (value === undefined) {
       return [];
     }
 
-    const values = Array.isArray(value) ? value : [value];
-    return values.flatMap((item) =>
-      item
-        .split(',')
-        .map((part) => part.trim())
-        .filter(Boolean),
-    );
+    return Array.isArray(value) ? value : [value];
   }
 
   private parseOptionalDate(
@@ -316,12 +348,13 @@ export class FilteringService {
       return undefined;
     }
 
-    const date = value instanceof Date ? value : new Date(value);
-    if (Number.isNaN(date.getTime())) {
+    const parsed = value instanceof Date ? value : new Date(value);
+
+    if (Number.isNaN(parsed.getTime())) {
       throw new BadRequestException(`${label} must be a valid date`);
     }
 
-    return date;
+    return parsed;
   }
 
   private parseOptionalNumber(
@@ -332,136 +365,30 @@ export class FilteringService {
       return undefined;
     }
 
-    const numberValue = Number(value);
-    if (!Number.isFinite(numberValue)) {
+    const parsed = typeof value === 'number' ? value : Number(value);
+
+    if (Number.isNaN(parsed)) {
       throw new BadRequestException(`${label} must be a valid number`);
     }
 
-    return numberValue;
+    return parsed;
   }
 
-  private parseBoolean(value: boolean | string, label: string): boolean {
+  private parseBoolean(value: boolean | string, field: string): boolean {
     if (typeof value === 'boolean') {
       return value;
     }
 
-    if (value === 'true') {
+    const normalized = value.trim().toLowerCase();
+
+    if (normalized === 'true') {
       return true;
     }
 
-    if (value === 'false') {
+    if (normalized === 'false') {
       return false;
     }
 
-    throw new BadRequestException(`${label} must be true or false`);
-  }
-
-  private assertCombination(combination: FilterCombination): void {
-    if (!Object.values(FilterCombination).includes(combination)) {
-      throw new BadRequestException(
-        `Unsupported filter combination: ${combination}`,
-      );
-    }
+    throw new BadRequestException(`${field} must be a boolean`);
   }
 }
-
-export const creatorEventFilterConfig: EntityFilterConfig = {
-  fields: {
-    created_at: {
-      column: 'creatorEvent.created_at',
-      type: FilterFieldType.Date,
-    },
-    on_chain_created_at: {
-      column: 'creatorEvent.on_chain_created_at',
-      type: FilterFieldType.Date,
-    },
-    participant_count: {
-      column: 'creatorEvent.participant_count',
-      type: FilterFieldType.Number,
-    },
-    match_count: {
-      column: 'creatorEvent.match_count',
-      type: FilterFieldType.Number,
-    },
-    creator: {
-      column: 'creatorEvent.creator_address',
-      type: FilterFieldType.Address,
-      sortable: false,
-    },
-    is_active: {
-      column: 'creatorEvent.is_active',
-      type: FilterFieldType.Boolean,
-    },
-    is_cancelled: {
-      column: 'creatorEvent.is_cancelled',
-      type: FilterFieldType.Boolean,
-    },
-  },
-  statuses: {
-    active: [
-      { field: 'creatorEvent.is_active', value: true },
-      { field: 'creatorEvent.is_cancelled', value: false },
-    ],
-    completed: [
-      { field: 'creatorEvent.is_active', value: false },
-      { field: 'creatorEvent.is_cancelled', value: false },
-    ],
-    cancelled: [{ field: 'creatorEvent.is_cancelled', value: true }],
-  },
-};
-
-export const matchFilterConfig: EntityFilterConfig = {
-  fields: {
-    created_at: {
-      column: 'match.created_at',
-      type: FilterFieldType.Date,
-    },
-    match_time: {
-      column: 'match.match_time',
-      type: FilterFieldType.Date,
-    },
-    submitted_at: {
-      column: 'match.submitted_at',
-      type: FilterFieldType.Date,
-    },
-    submitted_by: {
-      column: 'match.submitted_by',
-      type: FilterFieldType.Address,
-      sortable: false,
-    },
-    result_submitted: {
-      column: 'match.result_submitted',
-      type: FilterFieldType.Boolean,
-    },
-  },
-  statuses: {
-    active: [{ field: 'match.result_submitted', value: false }],
-    completed: [{ field: 'match.result_submitted', value: true }],
-  },
-};
-
-export const predictionFilterConfig: EntityFilterConfig = {
-  fields: {
-    submitted_at: {
-      column: 'prediction.submitted_at',
-      type: FilterFieldType.Date,
-    },
-    stake_amount_stroops: {
-      column: 'prediction.stake_amount_stroops',
-      type: FilterFieldType.Number,
-    },
-    participant: {
-      column: 'user.stellar_address',
-      type: FilterFieldType.Address,
-      sortable: false,
-    },
-    payout_claimed: {
-      column: 'prediction.payout_claimed',
-      type: FilterFieldType.Boolean,
-    },
-  },
-  statuses: {
-    active: [{ field: 'prediction.payout_claimed', value: false }],
-    completed: [{ field: 'prediction.payout_claimed', value: true }],
-  },
-};

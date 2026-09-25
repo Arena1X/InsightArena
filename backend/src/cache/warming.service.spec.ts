@@ -125,6 +125,35 @@ describe('CacheWarmingService', () => {
     expect(result.warmed).toContain(CACHE_WARMING_KEYS.platformStatistics);
   });
 
+  it('continues running remaining sub-warmers when a sub-warmer throws', async () => {
+    marketsService.getTrendingMarkets.mockRejectedValueOnce(
+      new Error('trending db down'),
+    );
+
+    const result = await service.warmFrequentlyAccessedData();
+
+    // The failing sub-warmer is identifiable in the result, not swallowed.
+    expect(result.failed).toEqual(
+      expect.arrayContaining([
+        { key: CACHE_WARMING_KEYS.trendingEvents, reason: 'trending db down' },
+      ]),
+    );
+    // Remaining sub-warmers still ran despite the thrown error.
+    expect(result.warmed).toContain(CACHE_WARMING_KEYS.activeEvents);
+    expect(result.warmed).toContain(CACHE_WARMING_KEYS.platformStatistics);
+    expect(result.warmed).toContain(
+      CACHE_WARMING_KEYS.popularEventDetail('popular-1'),
+    );
+    expect(result.warmed).toContain(CACHE_WARMING_KEYS.leaderboardTopN(10, null));
+  });
+
+  it('reports no failures when all sub-warmers succeed', async () => {
+    const result = await service.warmFrequentlyAccessedData();
+
+    expect(result.failed).toEqual([]);
+    expect(result.warmed.length).toBeGreaterThan(0);
+  });
+
   it('skips warming when disabled by config', async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
