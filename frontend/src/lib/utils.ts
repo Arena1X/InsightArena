@@ -5,6 +5,39 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+export interface PoolStats {
+  poolXlm: number;
+  contributorCount: number;
+  averageStakeXlm: number;
+}
+
+/** Calculates the mean stake without allowing an empty pool to produce NaN. */
+export function calculateAverageStake(
+  poolXlm: number,
+  contributorCount: number,
+): number {
+  if (!Number.isFinite(poolXlm) || !Number.isFinite(contributorCount) || contributorCount <= 0) {
+    return 0;
+  }
+  return poolXlm / contributorCount;
+}
+
+export function calculatePoolStats(
+  poolXlm: number,
+  contributorCount: number,
+): PoolStats {
+  const safePoolXlm = Number.isFinite(poolXlm) ? Math.max(0, poolXlm) : 0;
+  const safeContributorCount = Number.isFinite(contributorCount)
+    ? Math.max(0, Math.floor(contributorCount))
+    : 0;
+
+  return {
+    poolXlm: safePoolXlm,
+    contributorCount: safeContributorCount,
+    averageStakeXlm: calculateAverageStake(safePoolXlm, safeContributorCount),
+  };
+}
+
 /** Minimal shape a documentation section must satisfy to be searchable/TOC-able. */
 export interface DocSearchable {
   id: string;
