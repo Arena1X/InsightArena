@@ -450,3 +450,255 @@ export const SIDEBAR_AUTO_COLLAPSE_BREAKPOINT_PX = 1024;
 export function shouldAutoCollapseSidebar(viewportWidth: number): boolean {
   return viewportWidth < SIDEBAR_AUTO_COLLAPSE_BREAKPOINT_PX;
 }
+
+// ── Portfolio P/L History Utilities (#1581) ────────────────────────────────
+
+export interface PnlDataPoint {
+  date: string;
+  timestamp: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+}
+
+/**
+ * Fills gaps in sparse P/L history data by forward-filling values.
+ * If there's no data for a given date, uses the most recent available value.
+ * This ensures a smooth chart even when there are days with no trading activity.
+ */
+export function fillSparseHistory(
+  data: PnlDataPoint[],
+  range: "7d" | "30d" | "all",
+): PnlDataPoint[] {
+  if (data.length === 0) return [];
+  if (data.length === 1) return data;
+
+  // Sort by timestamp to ensure chronological order
+  const sorted = [...data].sort((a, b) => a.timestamp - b.timestamp);
+
+  // Determine the date range
+  const endDate = new Date();
+  const startDate = new Date();
+
+  if (range === "7d") {
+    startDate.setDate(endDate.getDate() - 7);
+  } else if (range === "30d") {
+    startDate.setDate(endDate.getDate() - 30);
+  } else {
+    // "all" - use the earliest data point
+    return sorted; // No need to fill for "all" range
+  }
+
+  const filled: PnlDataPoint[] = [];
+  const dataByDate = new Map(sorted.map((d) => [d.date, d]));
+
+  let lastKnownValues: PnlDataPoint | null = null;
+
+  // Iterate through each day in the range
+  for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split("T")[0];
+    const existing = dataByDate.get(dateStr);
+
+    if (existing) {
+      filled.push(existing);
+      lastKnownValues = existing;
+    } else if (lastKnownValues) {
+      // Forward-fill with last known values
+      filled.push({
+        date: dateStr,
+        timestamp: d.getTime() / 1000,
+        realized_pnl: lastKnownValues.realized_pnl,
+        unrealized_pnl: lastKnownValues.unrealized_pnl,
+        total_pnl: lastKnownValues.total_pnl,
+      });
+    } else {
+      // No prior data yet - use zeros
+      filled.push({
+        date: dateStr,
+        timestamp: d.getTime() / 1000,
+        realized_pnl: 0,
+        unrealized_pnl: 0,
+        total_pnl: 0,
+      });
+    }
+  }
+
+  return filled;
+}
+
+/**
+ * Aggregates P/L data into larger time buckets to reduce chart noise
+ * for longer time ranges. For "all" range with many data points, groups
+ * by week instead of day.
+ */
+export function aggregatePnlByPeriod(
+  data: PnlDataPoint[],
+  periodDays: number,
+): PnlDataPoint[] {
+  if (data.length === 0 || periodDays <= 1) return data;
+
+  const aggregated: PnlDataPoint[] = [];
+  const sorted = [...data].sort((a, b) => a.timestamp - b.timestamp);
+
+  for (let i = 0; i < sorted.length; i += periodDays) {
+    const chunk = sorted.slice(i, i + periodDays);
+    if (chunk.length === 0) continue;
+
+    // Use the last point in the period for values (most recent)
+    const lastPoint = chunk[chunk.length - 1];
+
+    aggregated.push({
+      date: lastPoint.date,
+      timestamp: lastPoint.timestamp,
+      realized_pnl: lastPoint.realized_pnl,
+      unrealized_pnl: lastPoint.unrealized_pnl,
+      total_pnl: lastPoint.total_pnl,
+    });
+  }
+
+  return aggregated;
+}
+
+/**
+ * Formats P/L value for chart display, handling positive/negative values
+ * and converting from stroops to XLM.
+ */
+export function formatPnlForChart(stroops: number): string {
+  const xlm = stroops / 10_000_000;
+  if (xlm === 0) return "0.00 XLM";
+  const sign = xlm > 0 ? "+" : "";
+  return `${sign}${xlm.toFixed(2)} XLM`;
+}
+
+/**
+ * Calculates summary statistics from P/L history data.
+ * Returns totals and percentages for realized, unrealized, and total P/L.
+ */
+export function calculatePnlSummary(data: PnlDataPoint[]): {
+  totalRealized: number;
+  totalUnrealized: number;
+  totalPnl: number;
+  realizedPercentage: number;
+  unrealizedPercentage: number;
+} {
+  if (data.length === 0) {
+    return {
+      totalRealized: 0,
+      totalUnrealized: 0,
+      totalPnl: 0,
+      realizedPercentage: 0,
+      unrealizedPercentage: 0,
+    };
+  }
+
+  // Use the most recent data point for totals
+  const latest = data[data.length - 1];
+
+  const totalRealized = latest.realized_pnl;
+  const totalUnrealized = latest.unrealized_pnl;
+  const totalPnl = latest.total_pnl;
+
+  const realizedPercentage =
+    totalPnl !== 0 ? (Math.abs(totalRealized) / Math.abs(totalPnl)) * 100 : 0;
+  const unrealizedPercentage =
+    totalPnl !== 0 ? (Math.abs(totalUnrealized) / Math.abs(totalPnl)) * 100 : 0;
+
+  return {
+    totalRealized,
+    totalUnrealized,
+    totalPnl,
+    realizedPercentage,
+    unrealizedPercentage,
+  };
+}
+
+// ── Event Leaderboard Tie-Break Utilities (#1549) ───────────────────────────
+
+/**
+ * Minimal shape needed for event leaderboard tie-break sorting.
+ * Follows the documented tie-break order from the smart contract (#1343):
+ * 1. Higher points (descending)
+ * 2. Higher exact_scores (descending)
+ * 3. Earlier earliestPredictionTime (ascending) — ties broken by who predicted first
+ * 4. Smaller address (ascending, final deterministic tiebreaker)
+ */
+export interface LeaderboardEntryForTieBreak {
+  address: string;
+  points: number;
+  exactScores: number;
+  earliestPredictionTime?: number; // Unix timestamp in seconds; undefined means no predictions yet
+}
+
+/**
+ * Comparator function implementing the documented tie-break order.
+ * Returns negative if `a` outranks `b`, positive if `b` outranks `a`, zero if identical.
+ */
+function compareLeaderboardEntries(
+  a: LeaderboardEntryForTieBreak,
+  b: LeaderboardEntryForTieBreak,
+): number {
+  // 1. Higher points wins
+  if (b.points !== a.points) {
+    return b.points - a.points;
+  }
+
+  // 2. Higher exact_scores wins
+  if (b.exactScores !== a.exactScores) {
+    return b.exactScores - a.exactScores;
+  }
+
+  // 3. Earlier prediction time wins (lower timestamp = earlier = better)
+  const aTime = a.earliestPredictionTime ?? Number.MAX_SAFE_INTEGER;
+  const bTime = b.earliestPredictionTime ?? Number.MAX_SAFE_INTEGER;
+  if (aTime !== bTime) {
+    return aTime - bTime;
+  }
+
+  // 4. Smaller address wins (lexicographic comparison for determinism)
+  return a.address.localeCompare(b.address);
+}
+
+/**
+ * Sorts leaderboard entries according to the documented tie-break order.
+ * Returns a new sorted array without mutating the input.
+ */
+export function sortLeaderboardWithTieBreak<T extends LeaderboardEntryForTieBreak>(
+  entries: T[],
+): T[] {
+  return [...entries].sort(compareLeaderboardEntries);
+}
+
+/**
+ * Detects which entries are tied based on points and exact_scores.
+ * Two entries are considered tied if they have identical points AND exact_scores.
+ * Returns a Set of addresses that are involved in ties (2+ participants with same points + exact_scores).
+ */
+export function detectTies<T extends LeaderboardEntryForTieBreak>(
+  sortedEntries: T[],
+): Set<string> {
+  const tiedAddresses = new Set<string>();
+  const groupKey = (e: T) => `${e.points}-${e.exactScores}`;
+  const groups = new Map<string, T[]>();
+
+  // Group entries by points + exact_scores
+  for (const entry of sortedEntries) {
+    const key = groupKey(entry);
+    const group = groups.get(key);
+    if (group) {
+      group.push(entry);
+    } else {
+      groups.set(key, [entry]);
+    }
+  }
+
+  // Mark all addresses in groups with 2+ participants as tied
+  for (const group of groups.values()) {
+    if (group.length >= 2) {
+      for (const entry of group) {
+        tiedAddresses.add(entry.address);
+      }
+    }
+  }
+
+  return tiedAddresses;
+}
