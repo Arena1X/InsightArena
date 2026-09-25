@@ -153,3 +153,25 @@ export function AuthenticatedPageLoadingSkeleton() {
     </div>
   );
 }
+
+export function LeaderboardTailSkeleton({ rows = 3 }: { rows?: number }) {
+  return (
+    <div
+      className="space-y-2 pt-2"
+      role="status"
+      aria-label="Loading more rankings"
+    >
+      {Array.from({ length: rows }).map((_, idx) => (
+        <div
+          key={idx}
+          className="flex items-center gap-4 rounded-xl border border-white/5 bg-white/5 px-4 py-3"
+        >
+          <Skeleton className="h-7 w-7 rounded-full bg-white/15 motion-reduce:animate-none" />
+          <Skeleton className="h-4 w-32 bg-white/15 motion-reduce:animate-none" />
+          <Skeleton className="ml-auto h-4 w-16 bg-white/10 motion-reduce:animate-none" />
+        </div>
+      ))}
+      <span className="sr-only">Loading more rankings...</span>
+    </div>
+  );
+}

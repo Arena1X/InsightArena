@@ -751,3 +751,53 @@ export async function updateNotificationPreferences(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Watchlist bookmarks (#1550)
+// ---------------------------------------------------------------------------
+
+export interface UserBookmarkItem {
+  id: string;
+  market: { id: string };
+  created_at?: string;
+}
+
+export interface PaginatedUserBookmarksResponse {
+  data: UserBookmarkItem[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+/** `GET /api/users/me/bookmarks` */
+export function getFavoriteBookmarks(
+  options?: ApiOptions,
+): Promise<PaginatedUserBookmarksResponse> {
+  return apiClient.get<PaginatedUserBookmarksResponse>(
+    '/api/users/me/bookmarks?limit=50',
+    options,
+  );
+}
+
+/** `POST /api/users/me/bookmarks` */
+export function addFavoriteBookmark(
+  marketId: string,
+  options?: ApiOptions,
+): Promise<UserBookmarkItem> {
+  return apiClient.post<UserBookmarkItem>(
+    '/api/users/me/bookmarks',
+    { market_id: marketId },
+    options,
+  );
+}
+
+/** `DELETE /api/users/me/bookmarks/:id` */
+export function removeFavoriteBookmark(
+  bookmarkId: string,
+  options?: ApiOptions,
+): Promise<{ success: true }> {
+  return apiClient.delete<{ success: true }>(
+    `/api/users/me/bookmarks/${bookmarkId}`,
+    options,
+  );
+}
+
