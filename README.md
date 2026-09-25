@@ -133,3 +133,6 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 <!-- handsoff-issue-1814 -->
 - #1814: [Contract] — open-market: `get_remaining_outcome_capacity` at the Exact Cap
+
+<!-- handsoff-issue-1817 -->
+- #1817: [Contract] — open-market: `get_open_dispute_count` Consistency After Resolution
