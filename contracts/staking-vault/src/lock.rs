@@ -22,9 +22,17 @@ pub fn tier_for(tiers: &Vec<LockTier>, duration: u64) -> Result<LockTier, Stakin
 }
 
 /// Apply a tier's boost to a raw staked amount to produce effective shares.
+///
+/// Uses checked arithmetic so that a near-`i128::MAX` amount combined with a
+/// non-trivial `boost_bps` returns [`StakingError::Overflow`] instead of
+/// panicking or wrapping. A `boost_bps` of `0` yields the original amount.
 pub fn boosted_shares(amount: i128, boost_bps: u32) -> Result<i128, StakingError> {
     if amount <= 0 {
         return Err(StakingError::InvalidAmount);
+    }
+
+    if boost_bps == 0 {
+        return Ok(amount);
     }
 
     amount
