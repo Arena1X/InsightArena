@@ -128,11 +128,5 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 ## Handsoff notes
 
-<!-- handsoff-issue-1810 -->
-- #1810: [Contract] — open-market: `appeal_dispute` After the Appeal Window Has Closed
-
-<!-- handsoff-issue-1811 -->
-- #1811: [Contract] — open-market: `cast_arbiter_vote` by an Unassigned Arbiter
-
-<!-- handsoff-issue-1812 -->
-- #1812: [Contract] — open-market: `veto_proposal` by a Non-Veto-Authorized Caller
+<!-- handsoff-issue-1821 -->
+- #1821: [Contract] — creator-event-manager: `batch_verify_addresses` With Duplicate Entries

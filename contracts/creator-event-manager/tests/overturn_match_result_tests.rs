@@ -219,56 +219,65 @@ fn test_overturn_unknown_match_rejected() {
     client.overturn_match_result(&admin, &999u64, &0u32, &3u32);
 }
 
+// ---------------------------------------------------------------------------
+// overturn_match_result: rejected after the parent event is finalized
+// ---------------------------------------------------------------------------
+
 #[test]
 #[should_panic(expected = "event_already_finalized")]
 fn test_overturn_after_event_finalized_rejected() {
     let (env, client, contract_id, admin, ai_agent, xlm_token) = setup();
     let creator = Address::generate(&env);
-    fund(&env, &xlm_token, &creator, FEE);
+    let (event_id, _invite, match_id) =
+        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1_000);
 
-    let start_time = env.ledger().timestamp() + 100;
-    let end_time = env.ledger().timestamp() + 1_000;
-    let (event_id, _invite_code) = client.create_event(
-        &creator,
-        &title(&env),
-        &desc(&env),
-        &10u32,
-        &start_time,
-        &end_time,
-        &0i128,
-        &Vec::new(&env),
-        &0i128,
-    );
-
-    let match_id = env.as_contract(&contract_id, || {
-        let match_id = storage::next_match_id(&env);
-        let match_record = Match::new(
-            match_id,
-            event_id,
-            String::from_str(&env, "Team A"),
-            String::from_str(&env, "Team B"),
-            env.ledger().timestamp() + 200,
-            1u32,
-            0,
-        );
-        storage::set_match(&env, match_id, &match_record);
-        storage::add_event_match(&env, event_id, match_id);
-
-        let mut event = storage::get_event(&env, event_id).expect("event exists");
-        event.add_match();
-        storage::set_event(&env, event_id, &event);
-        match_id
-    });
-
-    env.ledger().with_mut(|l| l.timestamp += 300);
+    env.ledger().with_mut(|l| l.timestamp += 2_000);
     client.submit_match_result(&ai_agent, &match_id, &2u32, &1u32);
 
-    // Move past end_time and finalize.
-    env.ledger().with_mut(|l| l.timestamp += 1_000);
-    let finalizer = Address::generate(&env);
-    fund(&env, &xlm_token, &finalizer, FINALIZATION_BOND_STROOPS);
-    client.finalize_event(&finalizer, &event_id);
+    // Finalize the parent event (payouts are now locked to the 2-1 result).
+    fund(&env, &xlm_token, &creator, FINALIZATION_BOND_STROOPS);
+    client.finalize_event(&creator, &event_id);
 
-    // Once finalized, the result is immutable — even to the admin.
+    // Correcting the scoreline after payouts have been made must be rejected.
     client.overturn_match_result(&admin, &match_id, &0u32, &3u32);
+}
+
+#[test]
+fn test_payouts_consistent_when_overturn_rejected_post_finalization() {
+    let (env, client, contract_id, admin, ai_agent, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let predictor = Address::generate(&env);
+    let (event_id, invite_code, match_id) =
+        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 10_000);
+
+    client.join_event(&predictor, &invite_code);
+    // Predictor picks TeamA (2-1); the initial result agrees.
+    let prediction_id = client.submit_prediction(&predictor, &match_id, &2u32, &1u32);
+
+    env.ledger().with_mut(|l| l.timestamp += 10_000);
+    client.submit_match_result(&ai_agent, &match_id, &2u32, &1u32);
+
+    // Finalize the event so payouts are computed from the 2-1 result.
+    fund(&env, &xlm_token, &creator, FINALIZATION_BOND_STROOPS);
+    client.finalize_event(&creator, &event_id);
+
+    let payouts_before = client.get_event_payouts(&event_id);
+
+    // The post-finalization overturn is rejected; payouts must stay unchanged.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.overturn_match_result(&admin, &match_id, &0u32, &3u32);
+    }));
+    assert!(result.is_err(), "overturn must be rejected post-finalization");
+
+    let payouts_after = client.get_event_payouts(&event_id);
+    assert_eq!(payouts_before, payouts_after);
+
+    // The stored match result and prediction grading remain the original ones.
+    let m = read_match(&env, &contract_id, match_id);
+    assert_eq!(m.home_score, Some(2));
+    assert_eq!(m.away_score, Some(1));
+
+    let prediction = client.get_prediction(&prediction_id);
+    assert_eq!(prediction.points_earned, Some(4));
+    assert_eq!(prediction.is_correct, Some(true));
 }

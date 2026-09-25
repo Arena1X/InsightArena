@@ -21,7 +21,7 @@ import {
   type Participant,
   useCreatorEvents,
 } from "@/hooks/useCreatorEvents";
-import { cn } from "@/lib/utils";
+import { cn, sortLeaderboardWithTieBreak } from "@/lib/utils";
 
 const fallbackParticipants: Record<string, Participant[]> = {
   "event-002": [
@@ -118,21 +118,25 @@ function buildLeaderboardEntries(
       points = correctResults * 100 + exactScores * 10;
     }
 
+    // Extract earliestPredictionTime if available from participant data
+    // For now, we'll use a placeholder since the backend doesn't provide this yet
+    // TODO: Once backend provides tie_break_key, map it here
+    const earliestPredictionTime = undefined;
+
     return {
       address: p.address,
       points,
       correctResults,
       exactScores,
       matchesPlayed,
+      earliestPredictionTime,
     };
   });
 
-  const sortedEntries = [...entries].sort((a, b) => {
-    if (b.points !== a.points) return b.points - a.points;
-    if (b.correctResults !== a.correctResults) return b.correctResults - a.correctResults;
-    return b.exactScores - a.exactScores;
-  });
+  // Use the documented tie-break sorting function
+  const sortedEntries = sortLeaderboardWithTieBreak(entries);
 
+  // Assign ranks: participants with identical points get the same rank
   let currentRank = 1;
   return sortedEntries.map((entry, index) => {
     if (index > 0 && sortedEntries[index - 1].points > entry.points) {

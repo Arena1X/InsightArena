@@ -1,6 +1,7 @@
 import React from "react";
 import { Heart } from "lucide-react";
 import Link from "next/link";
+import { Sparkline } from "./Sparkline";
 
 type Market = {
   id: string;
@@ -18,6 +19,7 @@ export default function MarketCard({
   isFavorite = false,
   onFavoriteToggle,
   preview = false,
+  sparklineData,
 }: {
   market: Market;
   onPredict: () => void;
@@ -25,6 +27,7 @@ export default function MarketCard({
   onFavoriteToggle?: () => void;
   /** Renders a static, non-navigating preview (e.g. in the create-market form). */
   preview?: boolean;
+  sparklineData?: number[];
 }) {
   const probabilityPct = Math.round((market.probability || 0) * 100);
 
@@ -95,10 +98,13 @@ export default function MarketCard({
                   {probabilityPct}%
                 </div>
               </div>
-              <div className="text-right text-sm text-gray-400">
-                <div>{market.totalStaked.toFixed(2)} XLM</div>
-                <div className="mt-1 text-xs">
-                  {timeRemaining(market.closeAt)}
+              <div className="flex flex-col items-end gap-1">
+                {sparklineData && <Sparkline data={sparklineData} />}
+                <div className="text-right text-sm text-gray-400">
+                  <div>{market.totalStaked.toFixed(2)} XLM</div>
+                  <div className="mt-1 text-xs">
+                    {timeRemaining(market.closeAt)}
+                  </div>
                 </div>
               </div>
             </div>

@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useWallet } from "@/context/WalletContext";
 import { apiClient, ApiError } from "@/lib/api";
 import { useToast } from "./useToast";
+import { useTransactionTracker } from "./useTransactionTracker";
 
 export interface WalletBalance {
     address: string;
@@ -14,6 +15,7 @@ interface UseWalletBalanceReturn {
     loading: boolean;
     error: string | null;
     refetch: () => Promise<void>;
+    isRefreshing: boolean; // New: indicates background refresh in progress
 }
 
 const REFRESH_INTERVAL = 30000; // 30 seconds
@@ -22,19 +24,27 @@ const API_TIMEOUT = 5000;
 export function useWalletBalance(): UseWalletBalanceReturn {
     const { address, isAuthenticated } = useWallet();
     const toast = useToast();
+    const { transactions } = useTransactionTracker();
     const [balance, setBalance] = useState<WalletBalance | null>(null);
     const [loading, setLoading] = useState(false);
+    const [isRefreshing, setIsRefreshing] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const previousAddressRef = useRef<string | null>(null);
+    const previousConfirmedCountRef = useRef(0);
 
-    const fetchBalance = useCallback(async () => {
+    const fetchBalance = useCallback(async (isBackgroundRefresh = false) => {
         if (!address || !isAuthenticated) {
             setBalance(null);
             setError(null);
             return;
         }
 
-        setLoading(true);
+        // Use isRefreshing for background updates, loading for initial fetch
+        if (isBackgroundRefresh) {
+            setIsRefreshing(true);
+        } else {
+            setLoading(true);
+        }
         setError(null);
 
         const controller = new AbortController();
@@ -53,12 +63,17 @@ export function useWalletBalance(): UseWalletBalanceReturn {
 
             setError(errorMessage);
             // Only show error toast if it's not a network timeout on initial load
-            if (balance !== null && !(err instanceof Error && err.message.includes("aborted"))) {
+            // and not during a background refresh
+            if (balance !== null && !isBackgroundRefresh && !(err instanceof Error && err.message.includes("aborted"))) {
                 toast.error(errorMessage);
             }
         } finally {
             clearTimeout(timeoutId);
-            setLoading(false);
+            if (isBackgroundRefresh) {
+                setIsRefreshing(false);
+            } else {
+                setLoading(false);
+            }
         }
     }, [address, isAuthenticated, balance, toast]);
 
@@ -74,10 +89,27 @@ export function useWalletBalance(): UseWalletBalanceReturn {
         }
     }, [address]);
 
+    // Listen for confirmed transactions and refresh balance (#1579)
+    useEffect(() => {
+        if (!isAuthenticated) return;
+
+        const confirmedCount = transactions.filter(
+            (tx) => tx.status === "confirmed"
+        ).length;
+
+        // Only refresh if we have a new confirmation (not on initial mount)
+        if (confirmedCount > previousConfirmedCountRef.current && previousConfirmedCountRef.current > 0) {
+            // Background refresh without showing main loading state
+            fetchBalance(true);
+        }
+
+        previousConfirmedCountRef.current = confirmedCount;
+    }, [transactions, isAuthenticated, fetchBalance]);
+
     // Initial fetch and interval refresh
     useEffect(() => {
         fetchBalance();
-        const intervalId = setInterval(fetchBalance, REFRESH_INTERVAL);
+        const intervalId = setInterval(() => fetchBalance(true), REFRESH_INTERVAL);
         return () => clearInterval(intervalId);
     }, [fetchBalance]);
 
@@ -85,6 +117,7 @@ export function useWalletBalance(): UseWalletBalanceReturn {
         balance,
         loading,
         error,
-        refetch: fetchBalance,
+        refetch: () => fetchBalance(false),
+        isRefreshing,
     };
 }
