@@ -124,4 +124,9 @@ make test    # run unit tests
 
 InsightArena aims to redefine decentralized prediction markets by combining transparent smart contract infrastructure with competitive gamification. Built exclusively on Stellar's fast and low-cost network, the platform enables global users to participate, compete, and earn in a secure and trust-minimized environment.
 
-InsightArena is not just about predicting outcomes, it's about proving insight.  
+InsightArena is not just about predicting outcomes, it's about proving insight.
+
+## Handsoff notes
+
+<!-- handsoff-issue-1813 -->
+- #1813: [Contract] — open-market: `compute_ema` at Extreme `alpha_bps` Values
