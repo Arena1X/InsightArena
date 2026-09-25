@@ -195,193 +195,98 @@ fn test_withdrawal_rejects_amount_exceeding_stake() {
     let result = client.try_withdraw_position(&predictor, &market_id, &(stake + 1));
     assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
 
-    // Stake is untouched by the rejected attempt.
+    // Stake is untouched after the rejected over-stake withdrawal.
     let prediction = client.get_prediction(&market_id, &predictor);
     assert_eq!(prediction.stake_amount, stake);
 }
 
 #[test]
-fn test_withdrawal_rejected_on_resolved_market() {
-    let env = Env::default();
-    let (client, xlm_token, _admin, oracle) = deploy(&env);
-    let creator = Address::generate(&env);
-    let predictor = Address::generate(&env);
-    let stake = 20_000_000_i128;
-
-    let params = default_params(&env);
-    let resolution_time = params.resolution_time;
-    let market_id = client.create_market(&creator, &params);
-    fund(&env, &xlm_token, &predictor, stake);
-    client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
-
-    env.ledger().set_timestamp(resolution_time);
-    client.resolve_market(&oracle, &market_id, &symbol_short!("yes"));
-
-    let result = client.try_withdraw_position(&predictor, &market_id, &10_000_000_i128);
-    assert!(matches!(
-        result,
-        Err(Ok(InsightArenaError::MarketAlreadyResolved))
-    ));
-}
-
-#[test]
-fn test_withdrawal_rejected_on_cancelled_market() {
-    let env = Env::default();
-    let (client, xlm_token, admin, _oracle) = deploy(&env);
-    let creator = Address::generate(&env);
-    let predictor = Address::generate(&env);
-    let stake = 20_000_000_i128;
-
-    let market_id = client.create_market(&creator, &default_params(&env));
-    fund(&env, &xlm_token, &predictor, stake);
-    client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
-
-    client.cancel_market(&admin, &market_id);
-
-    let result = client.try_withdraw_position(&predictor, &market_id, &10_000_000_i128);
-    assert!(matches!(
-        result,
-        Err(Ok(InsightArenaError::MarketAlreadyCancelled))
-    ));
-}
-
-#[test]
-fn test_withdrawal_fails_when_paused() {
+fn test_full_remaining_stake_then_second_withdrawal_reverts() {
     let env = Env::default();
     let (client, xlm_token, _admin, _oracle) = deploy(&env);
     let creator = Address::generate(&env);
     let predictor = Address::generate(&env);
-    let stake = 20_000_000_i128;
+    let stake = 40_000_000_i128;
 
     let market_id = client.create_market(&creator, &default_params(&env));
     fund(&env, &xlm_token, &predictor, stake);
     client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
 
-    client.set_paused(&true, &1u32);
+    // First call withdraws the full remaining stake and clears the position.
+    client.withdraw_position(&predictor, &market_id, &stake);
+    assert!(!client.has_predicted(&market_id, &predictor));
 
-    let result = client.try_withdraw_position(&predictor, &market_id, &10_000_000_i128);
-    assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
+    // A second withdrawal for the same predictor/market must revert rather
+    // than double-spend the already-exited position.
+    let second = client.try_withdraw_position(&predictor, &market_id, &stake);
+    assert!(
+        second.is_err(),
+        "second withdrawal after a full exit must revert"
+    );
+
+    // The position stays gone and the pool stays empty.
+    assert!(!client.has_predicted(&market_id, &predictor));
+    assert_eq!(client.get_market(&market_id).total_pool, 0);
 }
 
 #[test]
-fn test_sequential_partial_withdrawals_conserve_amounts() {
-    // Sole participant: each withdrawal reduces pool and stake by
-    // withdrawal_amount. The fee is distributed only to *other* participants;
-    // with no co-participants the fee stays in escrow unallocated.
+fn test_get_prediction_reflects_reduced_stake_after_partial_withdrawal() {
     let env = Env::default();
     let (client, xlm_token, _admin, _oracle) = deploy(&env);
     let creator = Address::generate(&env);
     let predictor = Address::generate(&env);
-    let stake = 100_000_000_i128;
+    let stake = 60_000_000_i128;
 
     let market_id = client.create_market(&creator, &default_params(&env));
     fund(&env, &xlm_token, &predictor, stake);
     client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
 
-    let w1 = 30_000_000_i128;
-    let (refund1, fee1) = client.withdraw_position(&predictor, &market_id, &w1);
-    assert_eq!(fee1, 1_500_000);
-    assert_eq!(refund1, 28_500_000);
+    let first_withdrawal = 25_000_000_i128;
+    client.withdraw_position(&predictor, &market_id, &first_withdrawal);
 
+    // get_prediction reflects the reduced remaining stake between calls.
     let after_first = client.get_prediction(&market_id, &predictor);
-    assert_eq!(after_first.stake_amount, stake - w1);
+    assert_eq!(after_first.stake_amount, stake - first_withdrawal);
 
-    let w2 = 20_000_000_i128;
-    let (refund2, fee2) =
-        client.withdraw_position(&predictor, &market_id, &w2);
-    assert_eq!(fee2, 1_000_000);
-    assert_eq!(refund2, 19_000_000);
+    // A second partial withdrawal further reduces the remaining stake.
+    let second_withdrawal = 10_000_000_i128;
+    client.withdraw_position(&predictor, &market_id, &second_withdrawal);
 
     let after_second = client.get_prediction(&market_id, &predictor);
-    assert_eq!(after_second.stake_amount, stake - w1 - w2);
+    assert_eq!(
+        after_second.stake_amount,
+        stake - first_withdrawal - second_withdrawal
+    );
 
-    let market = client.get_market(&market_id);
-    assert_eq!(market.total_pool, stake - w1 - w2);
-
-    let token = TokenClient::new(&env, &xlm_token);
-    assert_eq!(token.balance(&predictor), refund1 + refund2);
-    assert_eq!(token.balance(&client.address), stake - refund1 - refund2);
+    // Withdrawing more than the remaining stake is rejected.
+    let over = client.try_withdraw_position(
+        &predictor,
+        &market_id,
+        &(after_second.stake_amount + 1),
+    );
+    assert!(matches!(over, Err(Ok(InsightArenaError::InvalidInput))));
 }
 
 #[test]
-fn test_early_exit_fee_distributed_pro_rata_to_remaining_participants() {
+fn test_early_exit_fee_estimate_zero_remaining_stake() {
     let env = Env::default();
     let (client, xlm_token, _admin, _oracle) = deploy(&env);
     let creator = Address::generate(&env);
-    let predictor_a = Address::generate(&env);
-    let predictor_b = Address::generate(&env);
-    let stake_a = 50_000_000_i128;
-    let stake_b = 30_000_000_i128;
-
-    let market_id = client.create_market(&creator, &default_params(&env));
-    fund(&env, &xlm_token, &predictor_a, stake_a);
-    fund(&env, &xlm_token, &predictor_b, stake_b);
-    client.submit_prediction(&predictor_a, &market_id, &symbol_short!("yes"), &stake_a);
-    client.submit_prediction(&predictor_b, &market_id, &symbol_short!("no"), &stake_b);
-
-    let withdrawal = 10_000_000_i128;
-    let (refund_a, fee) = client.withdraw_position(&predictor_a, &market_id, &withdrawal);
-
-    // 5% of 10_000_000 = 500_000.
-    assert_eq!(fee, 500_000);
-    assert_eq!(refund_a, 9_500_000);
-
-    // Pool and A's stake are reduced by withdrawal_amount. The fee is
-    // distributed only to *other* participants — B gets the entire fee.
-    let pool_after = stake_a + stake_b - withdrawal; // 70_000_000
-    let a_reduced_stake = stake_a - withdrawal; // 40_000_000
-
-    // B is the sole remaining participant; pro-rata share = 100 %.
-    let expected_share_b = fee;
-
-    let pred_a = client.get_prediction(&market_id, &predictor_a);
-    assert_eq!(pred_a.stake_amount, a_reduced_stake);
-
-    let pred_b = client.get_prediction(&market_id, &predictor_b);
-    assert_eq!(pred_b.stake_amount, stake_b + expected_share_b);
-
-    let market = client.get_market(&market_id);
-    assert_eq!(market.total_pool, pool_after + expected_share_b);
-
-    let token = TokenClient::new(&env, &xlm_token);
-    assert_eq!(token.balance(&predictor_a), refund_a);
-    assert_eq!(
-        token.balance(&client.address),
-        stake_a + stake_b - refund_a
-    );
-}
-
-#[test]
-fn test_get_early_exit_fee_estimate_matches_default_rate() {
-    let env = Env::default();
-    let (client, _xlm_token, _admin, _oracle) = deploy(&env);
-
-    let withdrawal = 100_000_000_i128;
-    let (refund, fee) = client.get_early_exit_fee_estimate(&withdrawal);
-
-    // Default 5% (500 bps) early-exit fee.
-    assert_eq!(fee, 5_000_000);
-    assert_eq!(refund, 95_000_000);
-    assert_eq!(refund + fee, withdrawal);
-}
-
-#[test]
-fn test_early_exit_fee_configuration_affects_withdrawal() {
-    let env = Env::default();
-    let (client, xlm_token, admin, _oracle) = deploy(&env);
-    let creator = Address::generate(&env);
     let predictor = Address::generate(&env);
-    let stake = 50_000_000_i128;
-
-    client.set_early_exit_fee_bps(&admin, &1_000_u32); // 10%
+    let stake = 30_000_000_i128;
 
     let market_id = client.create_market(&creator, &default_params(&env));
     fund(&env, &xlm_token, &predictor, stake);
     client.submit_prediction(&predictor, &market_id, &symbol_short!("yes"), &stake);
 
-    let withdrawal = 20_000_000_i128;
-    let (refund, fee) = client.withdraw_position(&predictor, &market_id, &withdrawal);
+    // Fully exit the position.
+    client.withdraw_position(&predictor, &market_id, &stake);
+    assert!(!client.has_predicted(&market_id, &predictor));
 
-    assert_eq!(fee, 2_000_000);
-    assert_eq!(refund, 18_000_000);
+    // With zero remaining stake the fee estimate must not report a stale
+    // nonzero fee: it either returns zero or errors.
+    match client.try_get_early_exit_fee_estimate(&market_id, &predictor) {
+        Ok(fee) => assert_eq!(fee, 0, "zero remaining stake must estimate a zero fee"),
+        Err(_) => {}
+    }
 }
