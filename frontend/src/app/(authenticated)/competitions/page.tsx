@@ -481,6 +481,8 @@ export default function CompetitionsPage() {
                     <PrizePoolSummary
                       prizePoolXlm={competition.prizePoolXlm}
                       rewardBreakdown={competition.rewardBreakdown}
+                      marketId={competition.id}
+                      contributorCount={competition.participants}
                     />
                   </div>
 

@@ -1,12 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
   buildTableOfContents,
+  calculateAverageStake,
+  calculatePoolStats,
   computePositionPnl,
   filterDocSections,
   positionsToCsv,
   sumPnlBreakdown,
   type PortfolioCsvPosition,
 } from "./utils";
+
+describe("pool statistics", () => {
+  it("recomputes the average stake when the pool changes", () => {
+    expect(calculateAverageStake(100, 4)).toBe(25);
+    expect(calculateAverageStake(150, 5)).toBe(30);
+  });
+
+  it("returns a stable zero average for an empty pool", () => {
+    expect(calculatePoolStats(100, 0)).toEqual({
+      poolXlm: 100,
+      contributorCount: 0,
+      averageStakeXlm: 0,
+    });
+  });
+});
 
 describe("computePositionPnl", () => {
   it("treats a settled winning position's P&L as fully realized", () => {
