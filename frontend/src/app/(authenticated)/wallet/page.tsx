@@ -30,6 +30,11 @@ const PLACEHOLDER_ADDRESS =
 
 const baseSeed = getSeedFromAddress(PLACEHOLDER_ADDRESS);
 
+// Simple asset data with mock prices
+const ASSETS = [
+  { symbol: "XLM", name: "Stellar", priceUSD: 0.12 },
+];
+
 const marketPool = [
   "Will XLM close above $0.25?",
   "BTC above $80k — YES won",
@@ -91,9 +96,19 @@ export default function WalletPage() {
   const [isExporting, setIsExporting] = useState(false);
 
   // Dynamically calculate individual card summary strings based on the wallet seed
-  const dynamicAvailable = `${(1000 + (baseSeed % 850) + 0.5).toLocaleString(undefined, { minimumFractionDigits: 2 })} XLM`;
-  const dynamicStaked = `${(50 + (baseSeed % 200)).toFixed(2)} XLM`;
-  const dynamicWinnings = `${(100 + (baseSeed % 500)).toFixed(2)} XLM`;
+  const availableXLM = 1000 + (baseSeed % 850) + 0.5;
+  const stakedXLM = 50 + (baseSeed % 200);
+  const winningsXLM = 100 + (baseSeed % 500);
+
+  // Calculate fiat values
+  const xlmPrice = ASSETS[0].priceUSD;
+  const totalXLM = availableXLM + stakedXLM + winningsXLM;
+  const totalPortfolioUSD = totalXLM * xlmPrice;
+
+  const dynamicAvailable = `${availableXLM.toLocaleString(undefined, { minimumFractionDigits: 2 })} XLM`;
+  const dynamicStaked = `${stakedXLM.toFixed(2)} XLM`;
+  const dynamicWinnings = `${winningsXLM.toFixed(2)} XLM`;
+  const totalPortfolio = `$${totalPortfolioUSD.toFixed(2)} USD`;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(PLACEHOLDER_ADDRESS).catch(() => {});
@@ -176,6 +191,13 @@ export default function WalletPage() {
         >
           Disconnect Wallet
         </button>
+      </div>
+
+      {/* Portfolio Summary */}
+      <div className="rounded-xl border border-white/10 bg-white/5 p-5 space-y-3">
+        <p className="text-xs text-gray-400">Total Portfolio Value</p>
+        <p className="text-3xl font-bold text-blue-400">{totalPortfolio}</p>
+        <p className="text-sm text-gray-400">{totalXLM.toFixed(2)} XLM @ ${xlmPrice}/XLM</p>
       </div>
 
       {/* Balance Cards */}
