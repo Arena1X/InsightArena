@@ -130,3 +130,6 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 <!-- handsoff-issue-1813 -->
 - #1813: [Contract] — open-market: `compute_ema` at Extreme `alpha_bps` Values
+
+<!-- handsoff-issue-1814 -->
+- #1814: [Contract] — open-market: `get_remaining_outcome_capacity` at the Exact Cap
