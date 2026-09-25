@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { X, Check, AlertCircle, ExternalLink } from "lucide-react";
+import { useModalA11y } from "@/hooks/useModalA11y";
 
 type ModalStep = "idle" | "connecting" | "success" | "error";
 
@@ -31,6 +32,7 @@ export default function ConnectWalletModal({
   onClose,
   onSuccess,
 }: ConnectWalletModalProps) {
+  const { containerRef, titleId } = useModalA11y({ isOpen, onClose });
   const [step, setStep] = useState<ModalStep>("idle");
   const [wallets, setWallets] = useState<WalletOption[]>([]);
   const [error, setError] = useState("");
@@ -159,7 +161,13 @@ export default function ConnectWalletModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="relative w-full max-w-[480px] mx-4 rounded-2xl border border-white/10 bg-[#111726] p-8">
+      <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="relative w-full max-w-[480px] mx-4 rounded-2xl border border-white/10 bg-[#111726] p-8"
+      >
         {step !== "success" && (
           <button
             onClick={handleClose}
@@ -174,7 +182,7 @@ export default function ConnectWalletModal({
         {step === "idle" && (
           <div className="space-y-6">
             <div>
-              <h2 className="text-2xl font-semibold text-white">
+              <h2 id={titleId} className="text-2xl font-semibold text-white">
                 Connect Your Wallet
               </h2>
               <p className="mt-2 text-sm text-[#9aa4bc]">

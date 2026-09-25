@@ -1,5 +1,5 @@
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{symbol_short, Address, BytesN, Env, IntoVal, Map, Symbol, Vec};
+use soroban_sdk::{symbol_short, token, Address, BytesN, Env, IntoVal, Map, Symbol, Vec};
 
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
@@ -825,6 +825,24 @@ fn do_submit_prediction_via_allowance(
     let prediction_key = DataKey::Prediction(market_id, predictor.clone());
     if env.storage().persistent().has(&prediction_key) {
         return Err(InsightArenaError::AlreadyPredicted);
+    }
+
+    // ── Guard 7: allowance must cover the full stake before any state is written ──
+    // Read the current allowance the predictor has granted to this contract and
+    // fail fast with InsufficientFunds if it is smaller than the requested stake.
+    // This must come before every state mutation (Prediction record, pool totals,
+    // participant count, UserProfile) so that a reverted call leaves no partial
+    // state behind. The error enum is at its 50-case XDR cap; InsufficientFunds
+    // is the canonical reuse for insufficient-balance/allowance situations (see
+    // errors.rs). escrow::lock_stake_via_allowance carries the same check as
+    // defense-in-depth, but having it here makes the contract's intent explicit.
+    {
+        let cfg = config::get_config(env)?;
+        let contract = env.current_contract_address();
+        let token_client = token::Client::new(env, &cfg.xlm_token);
+        if token_client.allowance(&predictor, &contract) < stake_amount {
+            return Err(InsightArenaError::InsufficientFunds);
+        }
     }
 
     escrow::lock_stake_via_allowance(env, &predictor, stake_amount)?;

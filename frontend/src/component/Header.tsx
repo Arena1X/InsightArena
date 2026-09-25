@@ -19,7 +19,7 @@ export default function Header() {
   const pathname = usePathname();
   const { address, isAuthenticated, isRestoring, logout, openConnectModal } =
     useWallet();
-  const { theme, toggleTheme } = useTheme();
+  const { mode, toggleTheme } = useTheme();
   const confirm = useConfirm();
   const toast = useToast();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -135,19 +135,42 @@ export default function Header() {
             <NavLinks isActive={isActive} />
             <div className="flex items-center gap-3">
               <WalletBalanceDisplay />
+              {/* Theme toggle — cycles: light → dark → system → light */}
               <button
                 type="button"
                 onClick={toggleTheme}
-                aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+                aria-label={
+                  mode === "light"
+                    ? "Switch to dark mode"
+                    : mode === "dark"
+                      ? "Switch to system mode"
+                      : "Switch to light mode"
+                }
+                title={
+                  mode === "light"
+                    ? "Light mode"
+                    : mode === "dark"
+                      ? "Dark mode"
+                      : "System mode"
+                }
                 className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-gray-700 text-gray-300 hover:bg-gray-900 hover:text-white transition-colors"
               >
-                {theme === "dark" ? (
-                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                {mode === "light" && (
+                  // Sun icon — currently light
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
                   </svg>
-                ) : (
-                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                )}
+                {mode === "dark" && (
+                  // Moon icon — currently dark
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" />
+                  </svg>
+                )}
+                {mode === "system" && (
+                  // Monitor icon — currently following OS
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 0 1-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0 1 15 18.257V17.25m6-12V15a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 15V5.25m18 0A2.25 2.25 0 0 0 18.75 3H5.25A2.25 2.25 0 0 0 3 5.25m18 0H3" />
                   </svg>
                 )}
               </button>

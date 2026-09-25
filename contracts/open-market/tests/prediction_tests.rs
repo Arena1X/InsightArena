@@ -1575,3 +1575,155 @@ fn test_submit_prediction_via_allowance_enforces_global_bounds_when_market_inher
         20_000_000_i128
     );
 }
+
+// ── submit_prediction_via_allowance – allowance sufficiency guard (AC-1/2/3) ─
+
+/// AC-1: An allowance smaller than the requested stake causes the call to
+/// revert with InsufficientFunds.
+/// AC-2: No Prediction record is created — has_predicted stays false after the
+/// reverted attempt, and pool totals / participant count are unchanged.
+#[test]
+fn test_submit_prediction_via_allowance_insufficient_allowance_reverts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, _) = deploy(&env);
+    let predictor = Address::generate(&env);
+
+    let params = default_params(&env);
+    let market_id = client.create_market(&Address::generate(&env), &params);
+
+    let stake = params.min_stake; // 10_000_000 — valid amount
+
+    // Fund the predictor so balance is not the limiting factor.
+    fund(&env, &xlm_token, &predictor, stake);
+
+    // Approve one stroop less than the stake — insufficient.
+    TokenClient::new(&env, &xlm_token).approve(
+        &predictor,
+        &client.address,
+        &(stake - 1),
+        &9999,
+    );
+
+    // The call must revert with InsufficientFunds.
+    let result = client.try_submit_prediction_via_allowance(
+        &predictor,
+        &market_id,
+        &symbol_short!("yes"),
+        &stake,
+    );
+    assert!(
+        matches!(result, Err(Ok(InsightArenaError::InsufficientFunds))),
+        "expected InsufficientFunds, got {:?}",
+        result,
+    );
+
+    // AC-2: no Prediction record written.
+    assert!(
+        !client.has_predicted(&market_id, &predictor),
+        "has_predicted must be false after a reverted allowance submission",
+    );
+
+    // The predictor's token balance must be untouched — no transfer occurred.
+    assert_eq!(
+        TokenClient::new(&env, &xlm_token).balance(&predictor),
+        stake,
+        "predictor balance must be unchanged after a reverted allowance submission",
+    );
+
+    // The contract escrow must be empty — nothing was deposited.
+    assert_eq!(
+        TokenClient::new(&env, &xlm_token).balance(&client.address),
+        0,
+        "contract escrow must be unchanged after a reverted allowance submission",
+    );
+}
+
+/// AC-2 (reinforced): after a failed allowance submission the predictor can
+/// fix their approval and successfully submit — confirming the contract state
+/// was fully clean after the earlier revert.
+#[test]
+fn test_submit_prediction_via_allowance_no_record_after_revert_then_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, _) = deploy(&env);
+    let predictor = Address::generate(&env);
+
+    let params = default_params(&env);
+    let market_id = client.create_market(&Address::generate(&env), &params);
+
+    let stake = params.min_stake;
+    fund(&env, &xlm_token, &predictor, stake);
+
+    // First attempt: allowance is 0 — must revert.
+    let result = client.try_submit_prediction_via_allowance(
+        &predictor,
+        &market_id,
+        &symbol_short!("yes"),
+        &stake,
+    );
+    assert!(matches!(result, Err(Ok(InsightArenaError::InsufficientFunds))));
+    assert!(!client.has_predicted(&market_id, &predictor));
+
+    // Correct the approval and retry — must succeed.
+    TokenClient::new(&env, &xlm_token).approve(
+        &predictor,
+        &client.address,
+        &stake,
+        &9999,
+    );
+    client.submit_prediction_via_allowance(
+        &predictor,
+        &market_id,
+        &symbol_short!("yes"),
+        &stake,
+    );
+    assert!(
+        client.has_predicted(&market_id, &predictor),
+        "has_predicted must be true after successful retry",
+    );
+}
+
+/// AC-3: An allowance exactly equal to the stake succeeds — the guard must not
+/// be overly strict (boundary case: allowance == stake_amount is sufficient).
+#[test]
+fn test_submit_prediction_via_allowance_exact_allowance_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, xlm_token, _, _) = deploy(&env);
+    let predictor = Address::generate(&env);
+
+    let params = default_params(&env);
+    let market_id = client.create_market(&Address::generate(&env), &params);
+
+    let stake = params.min_stake;
+    fund(&env, &xlm_token, &predictor, stake);
+
+    // Approve exactly the stake — no more, no less.
+    TokenClient::new(&env, &xlm_token).approve(
+        &predictor,
+        &client.address,
+        &stake,
+        &9999,
+    );
+
+    // Must succeed without error.
+    client.submit_prediction_via_allowance(
+        &predictor,
+        &market_id,
+        &symbol_short!("yes"),
+        &stake,
+    );
+
+    assert!(
+        client.has_predicted(&market_id, &predictor),
+        "exact allowance == stake must succeed",
+    );
+
+    // Token balance transferred to contract escrow.
+    assert_eq!(
+        TokenClient::new(&env, &xlm_token).balance(&client.address),
+        stake,
+        "contract escrow must hold the staked amount",
+    );
+}

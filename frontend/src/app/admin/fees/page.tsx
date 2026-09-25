@@ -2,6 +2,15 @@
 
 import { useMemo, useState } from "react";
 
+import { ConfirmDialog } from "@/component/ui/confirm-dialog";
+import {
+  MAX_PLATFORM_FEE_BPS,
+  validatePlatformFee,
+  validators,
+} from "@/lib/validators";
+
+const SAMPLE_STAKE = 100;
+
 const initialHistory = [
   {
     id: 1,
@@ -30,14 +39,41 @@ export default function AdminFeesPage() {
   const [platformFee, setPlatformFee] = useState("2.5");
   const [creatorFee, setCreatorFee] = useState("1.2");
   const [history] = useState(initialHistory);
+  const [isConfirmOpen, setIsConfirmOpen] = useState(false);
+
+  const platformFeeError = validatePlatformFee(platformFee);
+  const creatorFeeError = validators.compose(
+    validators.number("Creator fee"),
+    validators.minValue(0, "Creator fee"),
+    validators.maxValue(20, "Creator fee"),
+  )(creatorFee);
 
   const feeSummary = useMemo(
     () => `Platform: ${platformFee}% | Creator: ${creatorFee}%`,
     [creatorFee, platformFee],
   );
 
+  const feePreview = useMemo(() => {
+    const platformAmount = SAMPLE_STAKE * (Number(platformFee) / 100);
+    const creatorAmount = SAMPLE_STAKE * (Number(creatorFee) / 100);
+    const totalFees = platformAmount + creatorAmount;
+
+    return {
+      platformAmount: Number.isFinite(platformAmount) ? platformAmount : 0,
+      creatorAmount: Number.isFinite(creatorAmount) ? creatorAmount : 0,
+      totalFees: Number.isFinite(totalFees) ? totalFees : 0,
+      netStake: Number.isFinite(totalFees) ? SAMPLE_STAKE - totalFees : SAMPLE_STAKE,
+    };
+  }, [creatorFee, platformFee]);
+
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (platformFeeError || creatorFeeError) return;
+    setIsConfirmOpen(true);
+  };
+
+  const handleConfirm = () => {
+    setIsConfirmOpen(false);
     alert(`Fees saved: ${feeSummary}`);
   };
 
@@ -65,12 +101,20 @@ export default function AdminFeesPage() {
                 type="number"
                 step="0.1"
                 min="0"
-                max="20"
+                max="5"
                 value={platformFee}
                 onChange={(event) => setPlatformFee(event.target.value)}
                 className="w-full rounded-3xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-400/20"
                 placeholder="2.5"
+                aria-invalid={Boolean(platformFeeError)}
+                aria-describedby={platformFeeError ? "platform-fee-error" : undefined}
               />
+              {platformFeeError && (
+                <p id="platform-fee-error" className="text-sm text-red-400" role="alert">
+                  {platformFeeError}
+                </p>
+              )}
+              <p className="text-xs text-gray-500">Maximum: {MAX_PLATFORM_FEE_BPS} bps (5%).</p>
             </div>
 
             <div className="space-y-2">
@@ -87,11 +131,44 @@ export default function AdminFeesPage() {
                 onChange={(event) => setCreatorFee(event.target.value)}
                 className="w-full rounded-3xl border border-white/10 bg-slate-950/80 px-4 py-3 text-white outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-400/20"
                 placeholder="1.2"
+                aria-invalid={Boolean(creatorFeeError)}
+                aria-describedby={creatorFeeError ? "creator-fee-error" : undefined}
               />
+              {creatorFeeError && (
+                <p id="creator-fee-error" className="text-sm text-red-400" role="alert">
+                  {creatorFeeError}
+                </p>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-orange-400/20 bg-orange-400/5 p-4" aria-live="polite">
+              <div className="flex items-center justify-between gap-4">
+                <h3 className="font-semibold text-white">Sample trade preview</h3>
+                <span className="text-sm text-gray-400">Stake: ${SAMPLE_STAKE.toFixed(2)}</span>
+              </div>
+              <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="text-gray-400">Platform fee</dt>
+                  <dd data-testid="preview-platform-fee" className="text-white">${feePreview.platformAmount.toFixed(2)}</dd>
+                </div>
+                <div>
+                  <dt className="text-gray-400">Creator fee</dt>
+                  <dd data-testid="preview-creator-fee" className="text-white">${feePreview.creatorAmount.toFixed(2)}</dd>
+                </div>
+                <div>
+                  <dt className="text-gray-400">Total fees</dt>
+                  <dd data-testid="preview-total-fees" className="text-white">${feePreview.totalFees.toFixed(2)}</dd>
+                </div>
+                <div>
+                  <dt className="text-gray-400">Stake after fees</dt>
+                  <dd data-testid="preview-net-stake" className="font-semibold text-orange-300">${feePreview.netStake.toFixed(2)}</dd>
+                </div>
+              </dl>
             </div>
 
             <button
               type="submit"
+              disabled={Boolean(platformFeeError || creatorFeeError)}
               className="inline-flex items-center justify-center rounded-3xl bg-orange-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-orange-400"
             >
               Save fee schedule
@@ -129,6 +206,15 @@ export default function AdminFeesPage() {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={isConfirmOpen}
+        title="Confirm fee schedule change"
+        description={`Platform fee: ${platformFee}% | Creator fee: ${creatorFee}% | On a $${SAMPLE_STAKE.toFixed(2)} stake, total fees will be $${feePreview.totalFees.toFixed(2)} and $${feePreview.netStake.toFixed(2)} will remain.`}
+        confirmLabel="Save fee schedule"
+        onConfirm={handleConfirm}
+        onCancel={() => setIsConfirmOpen(false)}
+      />
     </section>
   );
 }

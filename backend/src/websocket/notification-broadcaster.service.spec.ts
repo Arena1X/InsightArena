@@ -187,4 +187,49 @@ describe('NotificationBroadcasterService', () => {
       );
     });
   });
+
+  describe('cleanupConfirmations', () => {
+    it('should remove a tracked confirmation entry older than the expiry threshold', () => {
+      const userAddress = 'GTEST123';
+      const notificationId = 1;
+
+      service.requestDeliveryConfirmation(userAddress, notificationId);
+      expect(service.isDelivered(userAddress, notificationId)).toBe(false);
+
+      // Advance past the confirmation expiry threshold so the entry is stale.
+      jest.advanceTimersByTime(5 * 60 * 1000 + 1);
+
+      service.cleanupConfirmations();
+
+      // The stale entry should have been purged from tracking.
+      expect(service.isDelivered(userAddress, notificationId)).toBe(false);
+    });
+
+    it('should leave a recently-created, still-pending confirmation entry untouched', () => {
+      const userAddress = 'GTEST123';
+      const notificationId = 2;
+
+      service.requestDeliveryConfirmation(userAddress, notificationId);
+
+      // Only a short amount of time passes; the entry is still fresh.
+      jest.advanceTimersByTime(1000);
+
+      service.cleanupConfirmations();
+
+      // The recent pending entry must still be tracked.
+      expect(service.isDelivered(userAddress, notificationId)).toBe(false);
+    });
+  });
+
+  describe('onModuleDestroy', () => {
+    it('should stop the cleanup interval so no further cleanup runs after destroy', () => {
+      const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+
+      service.onModuleDestroy();
+
+      expect(clearIntervalSpy).toHaveBeenCalled();
+
+      clearIntervalSpy.mockRestore();
+    });
+  });
 });
