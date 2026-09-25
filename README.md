@@ -130,3 +130,6 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 <!-- handsoff-issue-1810 -->
 - #1810: [Contract] — open-market: `appeal_dispute` After the Appeal Window Has Closed
+
+<!-- handsoff-issue-1811 -->
+- #1811: [Contract] — open-market: `cast_arbiter_vote` by an Unassigned Arbiter
