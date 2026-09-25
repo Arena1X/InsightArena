@@ -416,3 +416,115 @@ describe("ConnectWalletModal", () => {
         expect(mockOnClose).toHaveBeenCalled();
     });
 });
+
+// ---------------------------------------------------------------------------
+// A11y smoke tests (Issue #1564)
+// Confirms useModalA11y is correctly wired into ConnectWalletModal.
+// ---------------------------------------------------------------------------
+
+describe("ConnectWalletModal — accessibility (issue #1564)", () => {
+    afterEach(() => {
+        document.body.innerHTML = "";
+        document.body.removeAttribute("data-modal-count");
+        document.body.classList.remove("overflow-hidden");
+    });
+
+    it("renders nothing (no dialog) when isOpen is false", () => {
+        render(
+            <ConnectWalletModal isOpen={false} onClose={vi.fn()} onSuccess={vi.fn()} />,
+        );
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("renders a dialog element when isOpen is true", async () => {
+        render(
+            <ConnectWalletModal isOpen={true} onClose={vi.fn()} onSuccess={vi.fn()} />,
+        );
+        await waitFor(() => {
+            expect(screen.getByRole("dialog")).toBeInTheDocument();
+        });
+    });
+
+    it("dialog has aria-modal='true'", async () => {
+        render(
+            <ConnectWalletModal isOpen={true} onClose={vi.fn()} onSuccess={vi.fn()} />,
+        );
+        await waitFor(() => {
+            expect(screen.getByRole("dialog")).toHaveAttribute("aria-modal", "true");
+        });
+    });
+
+    it("dialog has aria-labelledby pointing to 'Connect Your Wallet' heading", async () => {
+        render(
+            <ConnectWalletModal isOpen={true} onClose={vi.fn()} onSuccess={vi.fn()} />,
+        );
+        await waitFor(() => {
+            const dialog = screen.getByRole("dialog");
+            const labelledById = dialog.getAttribute("aria-labelledby");
+            expect(labelledById).toBeTruthy();
+
+            const heading = document.getElementById(labelledById!);
+            expect(heading).not.toBeNull();
+            expect(heading!.textContent).toMatch(/Connect Your Wallet/i);
+        });
+    });
+
+    it("calls onClose when Escape is pressed while open", async () => {
+        const onClose = vi.fn();
+        render(
+            <ConnectWalletModal isOpen={true} onClose={onClose} onSuccess={vi.fn()} />,
+        );
+        await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+
+        fireEvent.keyDown(document, { key: "Escape" });
+        expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not call onClose on Escape when modal is closed", () => {
+        const onClose = vi.fn();
+        render(
+            <ConnectWalletModal isOpen={false} onClose={onClose} onSuccess={vi.fn()} />,
+        );
+        fireEvent.keyDown(document, { key: "Escape" });
+        expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("locks body scroll while open and unlocks on close", async () => {
+        const { rerender } = render(
+            <ConnectWalletModal isOpen={true} onClose={vi.fn()} onSuccess={vi.fn()} />,
+        );
+        await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+        expect(document.body.classList.contains("overflow-hidden")).toBe(true);
+
+        rerender(
+            <ConnectWalletModal isOpen={false} onClose={vi.fn()} onSuccess={vi.fn()} />,
+        );
+        expect(document.body.classList.contains("overflow-hidden")).toBe(false);
+    });
+
+    it("restores focus to the triggering element after the modal closes", async () => {
+        vi.useFakeTimers();
+
+        const triggerButton = document.createElement("button");
+        triggerButton.textContent = "Open wallet";
+        document.body.appendChild(triggerButton);
+        triggerButton.focus();
+        expect(document.activeElement).toBe(triggerButton);
+
+        const { rerender } = render(
+            <ConnectWalletModal isOpen={true} onClose={vi.fn()} onSuccess={vi.fn()} />,
+        );
+        await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+
+        rerender(
+            <ConnectWalletModal isOpen={false} onClose={vi.fn()} onSuccess={vi.fn()} />,
+        );
+
+        // Flush the deferred focus restoration setTimeout(0) inside the hook.
+        vi.runAllTimers();
+
+        expect(document.activeElement).toBe(triggerButton);
+
+        vi.useRealTimers();
+    });
+});
