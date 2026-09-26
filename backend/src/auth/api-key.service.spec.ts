@@ -321,4 +321,81 @@ describe('ApiKeyService', () => {
       expect(validated.scopes).toEqual(existing.scopes);
     });
   });
+
+  describe('touchLastUsed', () => {
+    const makeKey = (overrides: Partial<ApiKey> = {}): ApiKey =>
+      ({
+        id: 'key123',
+        last_used_at: null,
+        revoked_at: null,
+        ...overrides,
+      }) as ApiKey;
+
+    it('completes without throwing when called concurrently for the same key', async () => {
+      repository.update.mockResolvedValue({ affected: 1 });
+      const apiKey = makeKey();
+
+      // touchLastUsed is fire-and-forget (returns void, not a Promise), so
+      // "doesn't throw" means the synchronous call itself never throws even
+      // when several land back-to-back for the same row.
+      expect(() => {
+        service.touchLastUsed(apiKey);
+        service.touchLastUsed(apiKey);
+        service.touchLastUsed(apiKey);
+      }).not.toThrow();
+
+      // Let the fire-and-forget update() promises settle.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    it('does not propagate a rejected update() as an unhandled/thrown error', async () => {
+      repository.update.mockRejectedValue(
+        new Error('could not obtain lock on row'),
+      );
+      const apiKey = makeKey();
+
+      expect(() => service.touchLastUsed(apiKey)).not.toThrow();
+
+      // Flush the microtask queue so the .catch() handler in touchLastUsed
+      // has a chance to run; if it were missing, this rejection would
+      // surface as an unhandled promise rejection instead.
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+
+    it('writes a valid, non-null last_used_at timestamp for the key being touched', () => {
+      repository.update.mockResolvedValue({ affected: 1 });
+      const apiKey = makeKey();
+
+      service.touchLastUsed(apiKey);
+
+      expect(repository.update).toHaveBeenCalledWith(
+        apiKey.id,
+        expect.objectContaining({ last_used_at: expect.any(Date) }),
+      );
+      const [, patch] = repository.update.mock.calls[0];
+      expect(patch.last_used_at).toBeInstanceOf(Date);
+      expect(Number.isNaN(patch.last_used_at.getTime())).toBe(false);
+    });
+
+    it('only ever writes last_used_at — never touches revoked_at, so a revoked key cannot be resurrected via this path', () => {
+      repository.update.mockResolvedValue({ affected: 1 });
+      const revokedKey = makeKey({ revoked_at: new Date() });
+
+      service.touchLastUsed(revokedKey);
+
+      const [, patch] = repository.update.mock.calls[0];
+      expect(Object.keys(patch)).toEqual(['last_used_at']);
+      expect(patch).not.toHaveProperty('revoked_at');
+    });
+
+    it('skips the write entirely when called again within the throttle window', () => {
+      repository.update.mockResolvedValue({ affected: 1 });
+      const apiKey = makeKey({ last_used_at: new Date() });
+
+      service.touchLastUsed(apiKey);
+
+      expect(repository.update).not.toHaveBeenCalled();
+    });
+  });
 });
