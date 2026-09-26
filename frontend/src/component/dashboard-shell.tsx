@@ -7,6 +7,7 @@ import { useWallet } from "@/context/WalletContext";
 import { useTheme } from "@/context/ThemeContext";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useToast } from "@/hooks/useToast";
+import { useOnboardingTour, type UseOnboardingTourResult } from "@/hooks/useOnboardingTour";
 import { shouldAutoCollapseSidebar } from "@/lib/utils";
 
 import Link from "next/link";
@@ -28,6 +29,7 @@ import {
   Wallet,
   X,
   Home,
+  Compass,
 } from "lucide-react";
 
 function truncateAddress(address: string): string {
@@ -207,7 +209,62 @@ function SidebarContent({ onNavigate, collapsed = false }: SidebarContentProps) 
   );
 }
 
-function TopNavigation() {
+function OnboardingTourCard({ tour }: { tour: UseOnboardingTourResult }) {
+  const step = tour.currentStep;
+  if (!step) return null;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="onboarding-tour-title"
+      aria-describedby="onboarding-tour-description"
+      className="fixed bottom-6 right-6 z-40 w-[340px] rounded-2xl border border-orange-500/30 bg-gray-900/95 p-5 text-white shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur"
+    >
+      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-orange-400">
+        Step {tour.currentStepIndex + 1} of {tour.totalSteps}
+      </p>
+      <h2 id="onboarding-tour-title" className="mt-2 text-lg font-semibold">
+        {step.title}
+      </h2>
+      <p id="onboarding-tour-description" className="mt-2 text-sm leading-6 text-gray-300">
+        {step.description}
+      </p>
+      <div className="mt-5 flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={tour.skip}
+          className="text-sm font-medium text-gray-400 transition hover:text-white"
+        >
+          Skip tour
+        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={tour.prev}
+            disabled={!tour.canGoBack}
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-sm font-medium text-gray-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Back
+          </button>
+          <button
+            type="button"
+            onClick={tour.next}
+            className="rounded-lg bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-orange-400"
+          >
+            {tour.isLastStep ? "Finish" : "Next"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type TopNavigationProps = {
+  onRestartTour?: () => void;
+};
+
+function TopNavigation({ onRestartTour }: TopNavigationProps) {
   const { address, user } = useWallet();
 
   const displayName = user?.username ?? "Alex";
@@ -232,6 +289,18 @@ function TopNavigation() {
 
         {/* Actions */}
         <div className="flex items-center gap-3">
+          {onRestartTour && (
+            <button
+              type="button"
+              onClick={onRestartTour}
+              aria-label="Restart onboarding tour"
+              title="Restart tour"
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-transparent px-3 py-2.5 text-sm font-medium text-gray-400 transition hover:bg-white/5 hover:text-white"
+            >
+              <Compass className="h-4 w-4" />
+              <span className="hidden lg:inline">Restart tour</span>
+            </button>
+          )}
           <button
             type="button"
             aria-label="Make a prediction"
@@ -263,6 +332,8 @@ export function DashboardShell({ children }: DashboardShellProps) {
   const pathname = usePathname();
   const { sidebarCollapsed, toggleSidebarCollapsed } = useTheme();
   const collapseButtonRef = useRef<HTMLButtonElement>(null);
+  const { address } = useWallet();
+  const tour = useOnboardingTour(address);
 
   useEffect(() => {
     setMobileOpen(false);
@@ -381,7 +452,9 @@ export function DashboardShell({ children }: DashboardShellProps) {
           </header>
 
           <div className="sticky top-[72px] z-20 bg-gray-900/80 backdrop-blur md:top-0">
-            <TopNavigation />
+            <TopNavigation
+              onRestartTour={tour.isSupported && !tour.isActive ? tour.restart : undefined}
+            />
           </div>
 
           <div className="flex gap-6 p-6">
@@ -399,6 +472,8 @@ export function DashboardShell({ children }: DashboardShellProps) {
           </div>
         </div>
       </div>
+
+      <OnboardingTourCard tour={tour} />
 
       <div
         className={`fixed inset-0 z-50 md:hidden transition-[visibility] duration-300 ${
