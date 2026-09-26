@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Header from "@/component/Header";
 import Footer from "@/component/Footer";
 import PageBackground from "@/component/PageBackground";
@@ -8,6 +8,7 @@ import TradingTabs from "@/component/trading/TradingTabs";
 import MarketSearchBar from "@/component/trading/MarketSearchBar";
 import MarketList from "@/component/trading/MarketList";
 import Image from "next/image";
+import { cacheMarkets, getCachedMarkets } from "@/lib/marketsCache";
 
 // Icons for each coin
 const icons: Record<string, React.ReactNode> = {
@@ -48,6 +49,57 @@ export default function TradingPage() {
   const [activeTab, setActiveTab] = useState("Live market");
   const [search, setSearch] = useState("");
   const [markets, setMarkets] = useState(initialMarkets);
+  // Mirrors navigator.onLine, with the same event-listener pattern
+  // PwaManager already uses, so both stay in agreement about connectivity.
+  const [isOnline, setIsOnline] = useState(
+    typeof navigator === "undefined" ? true : navigator.onLine
+  );
+  const [showingCached, setShowingCached] = useState(false);
+
+  // Cache the live markets list on every change so it's available to serve
+  // (read-only) the next time this page loads offline.
+  useEffect(() => {
+    if (isOnline) {
+      cacheMarkets(markets);
+    }
+  }, [markets, isOnline]);
+
+  useEffect(() => {
+    // On mount, if we're already offline, serve whatever was last cached
+    // instead of the placeholder markets list.
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      const cached = getCachedMarkets();
+      if (cached.length > 0) {
+        setMarkets(cached);
+        setShowingCached(true);
+      }
+    }
+
+    const handleOnline = () => {
+      setIsOnline(true);
+      // Re-sync: drop the cached snapshot and clear the banner. A real
+      // fetch would run here once markets have a live data source; today
+      // that source is the same placeholder list, so resetting to it is
+      // the closest correct behavior available.
+      setMarkets(initialMarkets);
+      setShowingCached(false);
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      const cached = getCachedMarkets();
+      if (cached.length > 0) {
+        setMarkets(cached);
+        setShowingCached(true);
+      }
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
 
   // Stats placeholder
   const stats = {
@@ -62,11 +114,15 @@ export default function TradingPage() {
     m.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  // Handlers
+  // Handlers — trading and favoriting both require the network, so they're
+  // disabled (not just cosmetically dimmed) while offline; see the
+  // `disabled` prop threaded into MarketList below.
   const handleTrade = (name: string) => {
+    if (!isOnline) return;
     alert(`Trade clicked for ${name}`);
   };
   const handleFavorite = (name: string) => {
+    if (!isOnline) return;
     setMarkets((prev) =>
       prev.map((m) =>
         m.name === name ? { ...m, isFavorite: !m.isFavorite } : m
@@ -91,6 +147,15 @@ export default function TradingPage() {
           </p>
           <StatsCards {...stats} />
           <TradingTabs activeTab={activeTab} onTabChange={setActiveTab} />
+          {!isOnline && showingCached && (
+            <div
+              role="status"
+              className="mb-4 rounded-xl border border-yellow-500/20 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300"
+            >
+              Offline — showing cached data. Trading and favoriting are
+              disabled until you&apos;re back online.
+            </div>
+          )}
           {activeTab === "Live market" && (
             <>
               <MarketSearchBar
@@ -102,6 +167,7 @@ export default function TradingPage() {
                 Live Cryptocurrency Markets
               </h2>
               <MarketList
+                disabled={!isOnline}
                 markets={filteredMarkets.map((m) => ({
                   ...m,
                   icon: icons[m.name],

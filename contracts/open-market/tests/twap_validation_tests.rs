@@ -38,24 +38,17 @@ fn register_token(env: &Env) -> Address {
         .address()
 }
 
-fn deploy_with_token(
-    env: &Env,
-) -> (
-    InsightArenaContractClient<'_>,
-    Address,
-    Address,
-    Address,
-) {
+fn deploy_with_token(env: &Env) -> (InsightArenaContractClient<'_>, Address, Address, Address) {
     let id = env.register(InsightArenaContract, ());
     let client = InsightArenaContractClient::new(env, &id);
     let admin = Address::generate(env);
     let oracle = Address::generate(env);
     let xlm_token = register_token(env);
     client.initialize(&admin, &oracle, &200_u32, &xlm_token);
-    
+
     // Add the "test" category to the whitelist
     client.add_category(&admin, &symbol_short!("test"));
-    
+
     (client, admin, oracle, xlm_token)
 }
 
@@ -231,7 +224,12 @@ fn test_ring_buffer_wraparound_rejects_oversized_window() {
     let num_swaps: u32 = TWAP_RING_BUFFER_CAPACITY + 20;
     let swap_amount = 1_000_i128;
     sa.mint(&trader, &(swap_amount * num_swaps as i128));
-    token.approve(&trader, &client.address, &(swap_amount * num_swaps as i128), &9999);
+    token.approve(
+        &trader,
+        &client.address,
+        &(swap_amount * num_swaps as i128),
+        &9999,
+    );
 
     for _ in 0..num_swaps {
         env.ledger().with_mut(|l| l.timestamp += 50);
@@ -242,6 +240,7 @@ fn test_ring_buffer_wraparound_rejects_oversized_window() {
             &symbol_short!("no"),
             &swap_amount,
             &0_i128,
+            &None::<u64>,
         );
     }
 
@@ -265,7 +264,10 @@ fn test_ring_buffer_wraparound_rejects_oversized_window() {
     let recent_window: u64 = (TWAP_RING_BUFFER_CAPACITY as u64 / 2) * 50;
     let twap = client.get_twap(&market_id, &symbol_short!("yes"), &recent_window);
 
-    assert!(twap > 0, "TWAP should succeed for window within retained history");
+    assert!(
+        twap > 0,
+        "TWAP should succeed for window within retained history"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -424,6 +426,7 @@ fn test_valid_twap_query_succeeds() {
             &symbol_short!("no"),
             &swap_amount,
             &0_i128,
+            &None::<u64>,
         );
     }
 
@@ -477,8 +480,3 @@ fn test_single_observation_twap_succeeds() {
         "TWAP should succeed with single observation and valid window"
     );
 }
-
-
-
-
-

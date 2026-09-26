@@ -14,6 +14,59 @@ export type ClaimRewardsResult = {
 /** A single reward tied to one prediction — either claimable now or still vesting. */
 export type RewardItemStatus = "claimable" | "vesting";
 
+// ── Reward type display config ────────────────────────────────────────────
+//
+// The single source of truth for how a reward *type* (as opposed to a
+// reward *status*, see RewardStatusBadge, which is a separate concept with
+// its own values) maps to a label and color. RewardTypeBadge is the only
+// consumer today; centralized here per this issue's own naming of this file
+// as the target, so a second consumer (e.g. RewardSourceRow, if it's ever
+// wired up to render reward-type-colored bars instead of taking a raw
+// barColor prop from its caller) has one place to read the same mapping
+// from instead of re-declaring it.
+
+export type RewardType =
+  | "competition"
+  | "prediction"
+  | "referral"
+  | "airdrop"
+  | "bonus";
+
+export interface RewardTypeDisplay {
+  label: string;
+  className: string;
+}
+
+const NEUTRAL_BADGE_CLASSNAME = "bg-white/5 text-gray-300 border border-white/10";
+
+export const rewardTypeConfig: Record<RewardType, RewardTypeDisplay> = {
+  competition: { label: "Competition", className: NEUTRAL_BADGE_CLASSNAME },
+  prediction: {
+    label: "Prediction",
+    className: "bg-orange-500/10 text-orange-400 border border-orange-500/20",
+  },
+  referral: { label: "Referral", className: NEUTRAL_BADGE_CLASSNAME },
+  airdrop: {
+    label: "Airdrop",
+    className: "bg-yellow-500/10 text-yellow-400 border border-yellow-500/20",
+  },
+  bonus: { label: "Bonus", className: NEUTRAL_BADGE_CLASSNAME },
+};
+
+/** Fallback for a reward type that isn't (or isn't yet) in `rewardTypeConfig`,
+ * e.g. a value newly added on the backend before the frontend map catches up. */
+export const unknownRewardTypeDisplay: RewardTypeDisplay = {
+  label: "Other",
+  className: NEUTRAL_BADGE_CLASSNAME,
+};
+
+/** Looks up a reward type's display config, falling back to
+ * `unknownRewardTypeDisplay` for any value outside the known `RewardType`
+ * union rather than throwing. */
+export function getRewardTypeDisplay(type: string): RewardTypeDisplay {
+  return rewardTypeConfig[type as RewardType] ?? unknownRewardTypeDisplay;
+}
+
 export type RewardItem = {
   id: string;
   marketId: string;

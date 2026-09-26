@@ -9,7 +9,7 @@ use soroban_sdk::testutils::{
     Address as _, Ledger as _,
 };
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
-use soroban_sdk::{symbol_short, vec, Address, Env, String, Symbol, BytesN};
+use soroban_sdk::{symbol_short, vec, Address, BytesN, Env, String, Symbol};
 
 use insightarena_contract::market::CreateMarketParams;
 
@@ -249,6 +249,7 @@ fn market_with_pool_and_swap(env: &Env, client: &InsightArenaContractClient<'_>)
         &symbol_short!("no"),
         &swap_amount,
         &0_i128,
+        &None::<u64>,
     );
 
     market_id
@@ -376,10 +377,7 @@ fn bump_market_ttl_unknown_market_returns_not_found() {
     let client = deploy(&env);
 
     let result = client.try_bump_market_ttl(&999_u64);
-    assert!(matches!(
-        result,
-        Err(Ok(InsightArenaError::MarketNotFound))
-    ));
+    assert!(matches!(result, Err(Ok(InsightArenaError::MarketNotFound))));
 }
 
 /// Documents the expired-without-bump path: absent any TTL extension, an active

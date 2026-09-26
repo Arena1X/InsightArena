@@ -145,10 +145,7 @@ pub fn fee_bps_for_tier(tier: &FeeTier, cfg: &FeeTierConfig) -> u32 {
 /// Select the volume-based fee tier for a market given its cumulative volume.
 /// Returns the index into `VolumeFeeConfig::tiers` and the corresponding fee bps.
 /// The last tier whose threshold is ≤ `cumulative_volume` is chosen.
-pub fn select_volume_fee_tier(
-    cumulative_volume: i128,
-    config: &VolumeFeeConfig,
-) -> (u32, u32) {
+pub fn select_volume_fee_tier(cumulative_volume: i128, config: &VolumeFeeConfig) -> (u32, u32) {
     let mut active_idx: u32 = 0;
     let mut active_fee_bps = config.tiers.get(0).map(|t| t.fee_bps).unwrap_or(30);
 
@@ -812,10 +809,7 @@ pub fn calculate_lp_tokens(
 /// `Market::outcome_liquidity_cap` override takes precedence over the global
 /// `Config::max_liquidity_per_outcome`. Returns `None` when neither is set
 /// (unlimited).
-fn effective_outcome_cap(
-    env: &Env,
-    market: &Market,
-) -> Result<Option<i128>, InsightArenaError> {
+fn effective_outcome_cap(env: &Env, market: &Market) -> Result<Option<i128>, InsightArenaError> {
     if market.outcome_liquidity_cap > 0 {
         return Ok(Some(market.outcome_liquidity_cap));
     }
@@ -1097,6 +1091,16 @@ pub fn remove_liquidity(
 // ── Trading Functions ─────────────────────────────────────────────────────────
 
 /// Swap from one outcome position to another
+///
+/// `deadline`, if supplied, is a ledger timestamp: the swap reverts with
+/// `MarketExpired` if `env.ledger().timestamp()` is already past it. This
+/// bounds how long a signed transaction can sit unconfirmed (e.g. in a
+/// mempool or awaiting a slow relay) before its slippage guarantee -- based
+/// on reserves at signing time -- becomes stale. Reuses `MarketExpired`
+/// rather than adding a new variant: `#[contracterror]` enums are hard-capped
+/// at 50 XDR cases and this enum is already at that limit (see
+/// `ZeroShareTransfer = 112` in errors.rs) -- both cases represent the same
+/// underlying fact, that the window this trade was valid for has closed.
 pub fn swap_outcome(
     env: &Env,
     trader: Address,
@@ -1105,11 +1109,18 @@ pub fn swap_outcome(
     to_outcome: Symbol,
     amount_in: i128,
     min_amount_out: i128,
+    deadline: Option<u64>,
 ) -> Result<i128, InsightArenaError> {
     config::ensure_not_paused(env)?;
 
     if amount_in <= 0 || from_outcome == to_outcome {
         return Err(InsightArenaError::InvalidInput);
+    }
+
+    if let Some(deadline) = deadline {
+        if env.ledger().timestamp() > deadline {
+            return Err(InsightArenaError::MarketExpired);
+        }
     }
 
     let mkt = market::get_market(env, market_id)?;
@@ -1179,7 +1190,8 @@ pub fn swap_outcome(
 
     pool.outcome_reserves
         .set(from_outcome.clone(), new_from_reserve);
-    pool.outcome_reserves.set(to_outcome.clone(), new_to_reserve);
+    pool.outcome_reserves
+        .set(to_outcome.clone(), new_to_reserve);
     pool.fee_bps = effective_fee_bps;
 
     record_price_observation(env, &mut pool, from_outcome.clone(), new_from_reserve)?;
@@ -1233,11 +1245,16 @@ pub fn swap_outcome(
         .checked_add(amount_in)
         .ok_or(InsightArenaError::Overflow)?;
 
-    let (volume_tier_after, _) =
-        select_volume_fee_tier(new_volume, &cfg.volume_fee_config);
+    let (volume_tier_after, _) = select_volume_fee_tier(new_volume, &cfg.volume_fee_config);
 
     if volume_tier_after > volume_tier_before {
-        emit_volume_tier_crossed(env, market_id, volume_tier_before, volume_tier_after, new_volume);
+        emit_volume_tier_crossed(
+            env,
+            market_id,
+            volume_tier_before,
+            volume_tier_after,
+            new_volume,
+        );
     }
 
     let mut mkt = mkt;
