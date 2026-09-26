@@ -62,6 +62,22 @@ pub fn pending(pool: &PoolState, position: &Position) -> Result<i128, StakingErr
         .ok_or(StakingError::Overflow)
 }
 
+/// Compute the rewards currently claimable by a staker, erroring with a
+/// defined `StakingError` when the staker has no open position.
+///
+/// This is the single source of truth for the "no position" path so that
+/// `claim_rewards` and `get_position` agree: a missing position is reported
+/// as `StakingError::NoPosition` here and as `None` by `get_position`.
+pub fn pending_for_staker(
+    pool: &PoolState,
+    position: Option<&Position>,
+) -> Result<i128, StakingError> {
+    match position {
+        Some(position) => pending(pool, position),
+        None => Err(StakingError::NoPosition),
+    }
+}
+
 /// Reset a position's `reward_debt` to the current accumulator checkpoint.
 pub fn settle_debt(pool: &PoolState, position: &mut Position) {
     // shares * acc_reward_per_share cannot realistically overflow i128 for
