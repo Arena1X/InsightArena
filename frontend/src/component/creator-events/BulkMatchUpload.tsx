@@ -82,6 +82,19 @@ export default function BulkMatchUpload({
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
+  function updateRow(
+    index: number,
+    field: keyof Pick<BulkMatchRowResult, "teamA" | "teamB" | "matchTime">,
+    value: string,
+  ) {
+    setPreview((current) => {
+      if (!current) return current;
+      const next = [...current];
+      next[index] = { ...next[index], [field]: value };
+      return validateBulkMatchRows(next);
+    });
+  }
+
   function removeRow(index: number) {
     setPreview((current) => {
       if (!current) return current;
@@ -98,17 +111,9 @@ export default function BulkMatchUpload({
     });
   }
 
-  async function handleImportAll() {
-    if (!preview) return;
-
-    const invalid = preview.filter((row) => row.errors.length > 0);
-    if (invalid.length > 0) {
-      setImportError("Remove or fix invalid rows before importing.");
-      return;
-    }
-
+  async function submitRows(rows: BulkMatchRowResult[]) {
     const remaining = maxMatches - currentMatchCount;
-    if (preview.length > remaining) {
+    if (rows.length > remaining) {
       setImportError(
         `Only ${remaining} more match(es) can be added (limit: ${maxMatches}).`,
       );
@@ -120,14 +125,19 @@ export default function BulkMatchUpload({
 
     try {
       await onImport(
-        preview.map((row) => ({
+        rows.map((row) => ({
           teamA: row.teamA,
           teamB: row.teamB,
           matchTime: row.matchTime,
         })),
       );
       setImportSuccess(true);
-      handleClear();
+      const remaining_rows = preview?.filter((r) => !rows.includes(r)) ?? [];
+      if (remaining_rows.length === 0) {
+        handleClear();
+      } else {
+        setPreview(validateBulkMatchRows(remaining_rows));
+      }
     } catch {
       setImportError("Import failed. Please try again.");
     } finally {
@@ -135,9 +145,27 @@ export default function BulkMatchUpload({
     }
   }
 
+  async function handleImportAll() {
+    if (!preview) return;
+    const invalid = preview.filter((row) => row.errors.length > 0);
+    if (invalid.length > 0) {
+      setImportError("Remove or fix invalid rows before importing.");
+      return;
+    }
+    await submitRows(preview);
+  }
+
+  async function handleImportValidOnly() {
+    if (!preview) return;
+    const valid = preview.filter((row) => row.errors.length === 0);
+    if (valid.length === 0) return;
+    await submitRows(valid);
+  }
+
   const validCount = preview?.filter((row) => row.errors.length === 0).length ?? 0;
   const invalidCount = preview?.filter((row) => row.errors.length > 0).length ?? 0;
   const canSubmit = Boolean(preview?.length) && invalidCount === 0 && validCount > 0;
+  const canSubmitValidOnly = invalidCount > 0 && validCount > 0;
 
   const summary = useMemo(() => {
     if (!preview) return null;
@@ -267,49 +295,106 @@ export default function BulkMatchUpload({
                 </tr>
               </thead>
               <tbody>
-                {preview.map((row, idx) => (
-                  <tr
-                    key={`${row.teamA}-${row.teamB}-${row.matchTime}-${idx}`}
-                    className={`border-b border-white/5 ${
-                      row.errors.length > 0 ? "bg-rose-500/5" : ""
-                    }`}
-                  >
-                    <td className="px-4 py-2 text-white">
-                      {row.teamA || <span className="text-slate-500">—</span>}
-                    </td>
-                    <td className="px-4 py-2 text-white">
-                      {row.teamB || <span className="text-slate-500">—</span>}
-                    </td>
-                    <td className="px-4 py-2 font-mono text-xs text-slate-300">
-                      {row.matchTime || <span className="text-slate-500">—</span>}
-                    </td>
-                    <td className="px-4 py-2">
-                      {row.errors.length > 0 ? (
-                        <div className="space-y-1">
-                          {row.errors.map((error) => (
-                            <p key={error} className="text-xs text-rose-400">
-                              {error}
-                            </p>
-                          ))}
-                          <button
-                            type="button"
-                            onClick={() => removeRow(idx)}
-                            className="text-[11px] text-slate-400 underline hover:text-white"
-                          >
-                            Remove row
-                          </button>
-                        </div>
-                      ) : (
-                        <span className="text-xs text-emerald-400">Valid</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {preview.map((row, idx) => {
+                  const hasErrors = row.errors.length > 0;
+                  return (
+                    <tr
+                      key={`row-${idx}`}
+                      data-testid={`bulk-row-${idx}`}
+                      className={`border-b border-white/5 ${
+                        hasErrors ? "bg-rose-500/5" : ""
+                      }`}
+                    >
+                      <td className="px-4 py-2">
+                        {hasErrors ? (
+                          <input
+                            type="text"
+                            value={row.teamA}
+                            onChange={(e) => updateRow(idx, "teamA", e.target.value)}
+                            aria-label={`Row ${idx + 1} Team A`}
+                            className="w-full rounded border border-white/10 bg-slate-950 px-2 py-1 text-sm text-white outline-none focus:border-amber-400"
+                          />
+                        ) : (
+                          <span className="text-white">
+                            {row.teamA || <span className="text-slate-500">—</span>}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2">
+                        {hasErrors ? (
+                          <input
+                            type="text"
+                            value={row.teamB}
+                            onChange={(e) => updateRow(idx, "teamB", e.target.value)}
+                            aria-label={`Row ${idx + 1} Team B`}
+                            className="w-full rounded border border-white/10 bg-slate-950 px-2 py-1 text-sm text-white outline-none focus:border-amber-400"
+                          />
+                        ) : (
+                          <span className="text-white">
+                            {row.teamB || <span className="text-slate-500">—</span>}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2">
+                        {hasErrors ? (
+                          <input
+                            type="text"
+                            value={row.matchTime}
+                            onChange={(e) => updateRow(idx, "matchTime", e.target.value)}
+                            aria-label={`Row ${idx + 1} Match Time`}
+                            placeholder="YYYY-MM-DDTHH:MM"
+                            className="w-full rounded border border-white/10 bg-slate-950 px-2 py-1 font-mono text-xs text-white outline-none focus:border-amber-400"
+                          />
+                        ) : (
+                          <span className="font-mono text-xs text-slate-300">
+                            {row.matchTime || <span className="text-slate-500">—</span>}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2">
+                        {hasErrors ? (
+                          <div className="space-y-1">
+                            {row.errors.map((error) => (
+                              <p key={error} className="text-xs text-rose-400">
+                                {error}
+                              </p>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() => removeRow(idx)}
+                              className="text-[11px] text-slate-400 underline hover:text-white"
+                            >
+                              Remove row
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-emerald-400">Valid</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
 
-          <div className="flex justify-end">
+          <div className="flex flex-wrap justify-end gap-2">
+            {canSubmitValidOnly && (
+              <Button
+                type="button"
+                onClick={handleImportValidOnly}
+                disabled={isImporting}
+                data-testid="submit-valid-only"
+                className="rounded-full border border-amber-400/40 bg-transparent px-6 text-amber-300 hover:bg-amber-400/10 disabled:opacity-60"
+              >
+                {isImporting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Check className="h-4 w-4" />
+                )}
+                Submit {validCount} valid only
+              </Button>
+            )}
             <Button
               type="button"
               onClick={handleImportAll}

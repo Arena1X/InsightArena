@@ -1,7 +1,9 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 
+const THROTTLE_MS = 300;
+
 interface UseInfiniteScrollOptions {
-    onLoadMore: () => Promise<void>;
+    onLoadMore: () => Promise<number | void>;
     enabled?: boolean;
     threshold?: number;
 }
@@ -33,6 +35,9 @@ interface UseInfiniteScrollReturn {
     isLoading: boolean;
     hasMore: boolean;
     setHasMore: (hasMore: boolean) => void;
+    loadMore: () => void;
+    lastLoadedCount: number;
+    announcement: string;
 }
 
 export function useInfiniteScroll({
@@ -43,16 +48,28 @@ export function useInfiniteScroll({
     const observerTarget = useRef<HTMLDivElement>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [hasMore, setHasMore] = useState(true);
+    const [lastLoadedCount, setLastLoadedCount] = useState(0);
+    const [announcement, setAnnouncement] = useState("");
     const isLoadingRef = useRef(false);
+    const lastLoadTimeRef = useRef(0);
 
     const handleLoadMore = useCallback(async () => {
         if (!enabled || isLoadingRef.current || !hasMore) return;
+
+        const now = Date.now();
+        if (now - lastLoadTimeRef.current < THROTTLE_MS) return;
 
         isLoadingRef.current = true;
         setIsLoading(true);
 
         try {
-            await onLoadMore();
+            const count = await onLoadMore();
+            lastLoadTimeRef.current = Date.now();
+            const loaded = typeof count === "number" ? count : 0;
+            setLastLoadedCount(loaded);
+            if (loaded > 0) {
+                setAnnouncement(`Loaded ${loaded} more item${loaded !== 1 ? "s" : ""}`);
+            }
         } catch (error) {
             console.error("Error loading more items:", error);
         } finally {
@@ -60,6 +77,10 @@ export function useInfiniteScroll({
             setIsLoading(false);
         }
     }, [enabled, hasMore, onLoadMore]);
+
+    const loadMore = useCallback(() => {
+        handleLoadMore();
+    }, [handleLoadMore]);
 
     useEffect(() => {
         if (!enabled) return;
@@ -91,5 +112,8 @@ export function useInfiniteScroll({
         isLoading,
         hasMore,
         setHasMore,
+        loadMore,
+        lastLoadedCount,
+        announcement,
     };
 }

@@ -12,6 +12,7 @@ vi.mock("@/hooks/useLiveOdds", () => ({
     pool: livePool,
     status: "connected",
     lastUpdatedAt: Date.now(),
+    isStale: false,
   }),
 }));
 

@@ -22,12 +22,15 @@ export interface UseLiveOddsResult {
   pool: PoolStats | null;
   status: ConnectionStatus;
   lastUpdatedAt: number | null;
+  isStale: boolean;
 }
 
 const BASE_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 const POLL_INTERVAL_MS = 10_000;
 const POOL_UPDATE_DEBOUNCE_MS = 150;
+export const STALE_THRESHOLD_MS = 30_000;
+const STALE_CHECK_INTERVAL_MS = 5_000;
 
 type RawOddsUpdate = Partial<OddsUpdate> & {
   market_id?: string;
@@ -99,6 +102,7 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
   const [pool, setPool] = useState<PoolStats | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+  const [isStale, setIsStale] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -199,5 +203,22 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
     };
   }, [marketId, token, connect, clearTimers]);
 
-  return { odds, pool, status, lastUpdatedAt };
+  useEffect(() => {
+    if (status === "disconnected" || status === "connecting") {
+      setIsStale(true);
+      return;
+    }
+    const check = () => {
+      if (lastUpdatedAt === null) {
+        setIsStale(false);
+        return;
+      }
+      setIsStale(Date.now() - lastUpdatedAt > STALE_THRESHOLD_MS);
+    };
+    check();
+    const id = setInterval(check, STALE_CHECK_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [status, lastUpdatedAt]);
+
+  return { odds, pool, status, lastUpdatedAt, isStale };
 }
