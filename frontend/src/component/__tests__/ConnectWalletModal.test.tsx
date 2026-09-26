@@ -266,6 +266,68 @@ describe("ConnectWalletModal", () => {
         });
     });
 
+    it("should show specific error for a network failure (issue #1544)", async () => {
+        mockFetchAddress.mockRejectedValue(new TypeError("Failed to fetch"));
+
+        render(
+            <ConnectWalletModal
+                isOpen={true}
+                onClose={mockOnClose}
+                onSuccess={mockOnSuccess}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByText("Freighter")).toBeInTheDocument();
+        });
+
+        const freighterButton = screen.getByText("Freighter").closest("button");
+        fireEvent.click(freighterButton!);
+
+        await waitFor(() => {
+            expect(screen.getByText("Network Error")).toBeInTheDocument();
+            expect(
+                screen.getByText("Network error. Please check your connection and try again.")
+            ).toBeInTheDocument();
+        });
+
+        expect(screen.getByText("Retry Connection")).toBeInTheDocument();
+    });
+
+    it("should show a timeout error and offer retry when the wallet never responds (issue #1544)", async () => {
+        mockFetchAddress.mockImplementation(() => new Promise(() => {}));
+
+        render(
+            <ConnectWalletModal
+                isOpen={true}
+                onClose={mockOnClose}
+                onSuccess={mockOnSuccess}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByText("Freighter")).toBeInTheDocument();
+        });
+
+        const freighterButton = screen.getByText("Freighter").closest("button");
+        fireEvent.click(freighterButton!);
+
+        await waitFor(() => {
+            expect(screen.getByText("Connecting wallet...")).toBeInTheDocument();
+        });
+
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        await waitFor(() => {
+            expect(screen.getByText("Connection Timed Out")).toBeInTheDocument();
+            expect(
+                screen.getByText("Approve or dismiss any pending prompt in your wallet, then retry")
+            ).toBeInTheDocument();
+        });
+
+        expect(screen.getByText("Retry Connection")).toBeInTheDocument();
+    });
+
     it("should retry connection on retry button click", async () => {
         mockFetchAddress
             .mockRejectedValueOnce(new Error("Wallet is locked"))

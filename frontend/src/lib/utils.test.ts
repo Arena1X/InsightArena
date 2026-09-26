@@ -13,6 +13,7 @@ import {
   aggregatePnlByPeriod,
   formatPnlForChart,
   calculatePnlSummary,
+  formatPnlXlm,
   type PortfolioCsvPosition,
   type LeaderboardEntryForTieBreak,
 } from "./utils";
@@ -758,5 +759,24 @@ describe("detectTies", () => {
     const ties = detectTies(entries);
 
     expect(ties.size).toBe(0);
+  });
+});
+
+describe("formatPnlXlm", () => {
+  it("formats a positive P/L with an explicit plus sign", () => {
+    expect(formatPnlXlm(42.5)).toBe("+42.50 XLM");
+  });
+
+  it("formats a negative P/L with its own minus sign, not a double sign", () => {
+    expect(formatPnlXlm(-12)).toBe("-12.00 XLM");
+  });
+
+  it("formats zero with no sign", () => {
+    expect(formatPnlXlm(0)).toBe("0.00 XLM");
+  });
+
+  it("falls back to an em dash for non-finite input", () => {
+    expect(formatPnlXlm(NaN)).toBe("—");
+    expect(formatPnlXlm(Infinity)).toBe("—");
   });
 });
