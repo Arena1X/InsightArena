@@ -17,12 +17,12 @@ export class OracleReliabilityService {
   private readonly logger = new Logger(OracleReliabilityService.name);
 
   /**
-   * Minimum weight floor: a single oracle with perfect historical accuracy
-   * cannot unilaterally decide consensus. Even a 1.0-reliability oracle
-   * must be one voice in the final outcome. This prevents single-source
-   * centralization.
+   * Minimum weight floor: a source's weight can never drop below this value,
+   * regardless of how poor its accuracy history is. This keeps low-volume or
+   * newly-added sources participating in consensus instead of being excluded
+   * entirely when their reliability score would otherwise be 0.
    */
-  private readonly WEIGHT_FLOOR = 0.0;
+  private readonly WEIGHT_FLOOR = 0.1;
 
   /**
    * Newly-seen oracle sources (no submissions yet) default to this neutral
@@ -133,8 +133,9 @@ export class OracleReliabilityService {
    * - No history: DEFAULT_WEIGHT (neutral, equally weighted)
    * - With history: reliability_score (bounded in [0, 1])
    *
-   * Weights are normalized by consumers to ensure one oracle cannot
-   * unilaterally decide an outcome when weight_floor is applied.
+   * The result is always clamped to at least WEIGHT_FLOOR, so a source with a
+   * poor accuracy history (or a zero reliability score) still participates in
+   * consensus rather than being excluded entirely.
    *
    * @param dataSource The oracle source identifier
    * @returns Weight in the range [WEIGHT_FLOOR, 1.0]

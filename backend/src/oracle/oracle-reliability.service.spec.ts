@@ -133,6 +133,30 @@ describe('OracleReliabilityService', () => {
         expect.objectContaining({ reliability_score: 1 }),
       );
     });
+
+    it('gradually raises weight as accuracy improves, still bounded below by the floor', async () => {
+      const existing = {
+        data_source: 'src-low',
+        total_submissions: 1,
+        correct_submissions: 0,
+        reliability_score: 0,
+      };
+      reliabilityRepo.findOne.mockResolvedValue(existing);
+      reliabilityRepo.save.mockImplementation(async (r: any) => ({
+        ...r,
+        updated_at: new Date(),
+      }));
+      historyRepo.create.mockImplementation((data: any) => data);
+      historyRepo.save.mockImplementation(async (r: any) => r);
+
+      await service.recordOutcome('src-low', 'match-1', true);
+
+      const saved = reliabilityRepo.save.mock.calls[0][0];
+      expect(saved.reliability_score).toBeGreaterThanOrEqual(
+        service.getWeightFloor(),
+      );
+      expect(saved.reliability_score).toBeGreaterThan(0);
+    });
   });
 
   describe('getScores', () => {
@@ -182,6 +206,23 @@ describe('OracleReliabilityService', () => {
     it('clamps weights to [0.0, 1.0]', async () => {
       reliabilityRepo.findOne.mockResolvedValue({ reliability_score: 1.2 }); // Over max
       expect(await service.getWeight('src-over')).toBe(1.0);
+    });
+
+    it('never returns below the weight floor for a poor accuracy history', async () => {
+      reliabilityRepo.findOne.mockResolvedValue({ reliability_score: 0.05 });
+      const weight = await service.getWeight('src-poor');
+      expect(weight).toBeGreaterThanOrEqual(service.getWeightFloor());
+    });
+
+    it('returns the documented default weight for a source with zero recorded outcomes', async () => {
+      reliabilityRepo.findOne.mockResolvedValue({
+        total_submissions: 0,
+        correct_submissions: 0,
+        reliability_score: null,
+      });
+      expect(await service.getWeight('src-new')).toBe(
+        service.getDefaultWeight(),
+      );
     });
   });
 
