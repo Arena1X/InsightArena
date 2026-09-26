@@ -383,3 +383,160 @@ describe('CreatorEventsService getPayoutByAddress', () => {
     );
   });
 });
+
+describe('CreatorEventsService getLeaderboard', () => {
+  let service: CreatorEventsService;
+  let contractService: { getEventLeaderboard: jest.Mock };
+  let creatorEventRepository: { findOne: jest.Mock };
+  let leaderboardEntryRepository: { findAndCount: jest.Mock };
+
+  // A fixed, unchanging on-chain leaderboard (#1851's "static leaderboard"
+  // scenario): each page request re-fetches this same array from
+  // getEventLeaderboard, since that's how the live (non-finalized) path
+  // actually works - it has no server-side cursor of its own.
+  const STATIC_CONTRACT_LEADERBOARD = Array.from({ length: 25 }, (_, i) => ({
+    rank: i + 1,
+    address: `G_ADDRESS_${i + 1}`,
+    total_predictions: 10,
+    correct_predictions: 10 - i,
+    accuracy_percentage: 100 - i,
+    is_winner: i === 0,
+    completion_time: null,
+  }));
+
+  beforeEach(async () => {
+    contractService = {
+      getEventLeaderboard: jest
+        .fn()
+        .mockResolvedValue(STATIC_CONTRACT_LEADERBOARD),
+    };
+    creatorEventRepository = {
+      // is_finalized: false routes getLeaderboard through the live/contract
+      // path rather than the DB-cached path.
+      findOne: jest.fn().mockResolvedValue({ is_finalized: false }),
+    };
+    leaderboardEntryRepository = {
+      findAndCount: jest.fn(),
+    };
+
+    const module = await Test.createTestingModule({
+      providers: [
+        CreatorEventsService,
+        { provide: ContractService, useValue: contractService },
+        {
+          provide: SearchService,
+          useValue: { searchCreatorEvents: jest.fn() },
+        },
+        {
+          provide: getRepositoryToken(CreatorEvent),
+          useValue: creatorEventRepository,
+        },
+        { provide: getRepositoryToken(Match), useValue: {} },
+        { provide: getRepositoryToken(MatchPrediction), useValue: {} },
+        { provide: getRepositoryToken(User), useValue: {} },
+        {
+          provide: getRepositoryToken(CreatorEventLeaderboardEntry),
+          useValue: leaderboardEntryRepository,
+        },
+        { provide: getRepositoryToken(CreatorEventPayout), useValue: {} },
+        {
+          provide: CACHE_MANAGER,
+          useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
+        },
+      ],
+    }).compile();
+
+    service = module.get(CreatorEventsService);
+  });
+
+  it('does not repeat any entry already returned on page 1 when fetching page 2 of a static leaderboard', async () => {
+    const page1 = await service.getLeaderboard('42', { page: 1, limit: 10 });
+    const page2 = await service.getLeaderboard('42', { page: 2, limit: 10 });
+
+    const page1Addresses = new Set(page1.data.map((e) => e.user_address));
+    const overlap = page2.data.filter((e) =>
+      page1Addresses.has(e.user_address),
+    );
+
+    expect(overlap).toHaveLength(0);
+    expect(page1.data).toHaveLength(10);
+    expect(page2.data).toHaveLength(10);
+  });
+
+  it('does not skip any entry between consecutive pages of a static leaderboard', async () => {
+    const page1 = await service.getLeaderboard('42', { page: 1, limit: 10 });
+    const page2 = await service.getLeaderboard('42', { page: 2, limit: 10 });
+    const page3 = await service.getLeaderboard('42', { page: 3, limit: 10 });
+
+    const allReturnedRanks = [...page1.data, ...page2.data, ...page3.data].map(
+      (e) => e.rank,
+    );
+    const expectedRanks = STATIC_CONTRACT_LEADERBOARD.map((e) => e.rank);
+
+    expect(allReturnedRanks.sort((a, b) => a - b)).toEqual(expectedRanks);
+  });
+
+  it('indicates no further pages are available on the last page', async () => {
+    // 25 entries at 10/page: page 3 is the last (21-25), so page >= totalPages.
+    const lastPage = await service.getLeaderboard('42', {
+      page: 3,
+      limit: 10,
+    });
+
+    expect(lastPage.data).toHaveLength(5);
+    expect(lastPage.page).toBeGreaterThanOrEqual(lastPage.totalPages);
+
+    // A page past the end returns no data and still reports the same total,
+    // rather than an ambiguous state indistinguishable from "has more pages".
+    const pastLastPage = await service.getLeaderboard('42', {
+      page: 4,
+      limit: 10,
+    });
+    expect(pastLastPage.data).toHaveLength(0);
+    expect(pastLastPage.total).toBe(25);
+    expect(pastLastPage.page).toBeGreaterThan(pastLastPage.totalPages);
+  });
+
+  it('returns all entries on the first page when the event has fewer entries than the page size', async () => {
+    contractService.getEventLeaderboard.mockResolvedValue(
+      STATIC_CONTRACT_LEADERBOARD.slice(0, 3),
+    );
+
+    const result = await service.getLeaderboard('42', { page: 1, limit: 10 });
+
+    expect(result.data).toHaveLength(3);
+    expect(result.total).toBe(3);
+    expect(result.totalPages).toBe(1);
+    expect(result.page).toBeGreaterThanOrEqual(result.totalPages);
+  });
+
+  it('paginates finalized events from the DB cache using a stable rank-ordered cursor, not a re-fetched array slice', async () => {
+    creatorEventRepository.findOne.mockResolvedValue({ is_finalized: true });
+    leaderboardEntryRepository.findAndCount.mockResolvedValue([
+      [
+        {
+          rank: 11,
+          user_address: 'G_11',
+          total_predictions: 5,
+          correct_predictions: 4,
+          accuracy_percentage: 80,
+          is_winner: false,
+          completion_time: null,
+        },
+      ],
+      25,
+    ]);
+
+    const result = await service.getLeaderboard('42', { page: 2, limit: 10 });
+
+    expect(leaderboardEntryRepository.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        order: { rank: 'ASC' },
+        skip: 10,
+        take: 10,
+      }),
+    );
+    expect(result.source).toBe('cache');
+    expect(contractService.getEventLeaderboard).not.toHaveBeenCalled();
+  });
+});

@@ -137,5 +137,14 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 <!-- handsoff-issue-1847 -->
 - #1847: [Backend] — Trending Markets Computation Tie-Breaking
 
-<!-- handsoff-issue-1840 -->
-- #1840: [Backend] — Leaderboard Coach Insights for Users With No History
+<!-- handsoff-issue-1841 -->
+- #1841: [Backend] — Leaderboard Cache Invalidation on New Snapshot Creation
+
+<!-- handsoff-issue-1844 -->
+- #1844: [Backend] — Search Vector Backfill Batch Resumability
+
+<!-- handsoff-issue-1845 -->
+- #1845: [Backend] — Fuzzy Search Suggestions Deduplication
+
+<!-- handsoff-issue-1848 -->
+- #1848: [Backend] — Market Report Generation for Zero-Activity Markets
