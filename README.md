@@ -145,3 +145,6 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 <!-- handsoff-issue-1845 -->
 - #1845: [Backend] — Fuzzy Search Suggestions Deduplication
+
+<!-- handsoff-issue-1848 -->
+- #1848: [Backend] — Market Report Generation for Zero-Activity Markets
