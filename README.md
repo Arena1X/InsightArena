@@ -130,3 +130,6 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 <!-- handsoff-issue-1821 -->
 - #1821: [Contract] — creator-event-manager: `batch_verify_addresses` With Duplicate Entries
+
+<!-- handsoff-issue-1846 -->
+- #1846: [Backend] — Market Resolution Challenge Window Enforcement
