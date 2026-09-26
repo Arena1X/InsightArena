@@ -12,3 +12,23 @@ export class DateRangeQueryDto {
   @IsString()
   end_date?: string;
 }
+
+export function validateDateRange(
+  startDate?: string,
+  endDate?: string,
+): { start?: Date; end?: Date } {
+  const start = startDate ? new Date(startDate) : undefined;
+  const end = endDate ? new Date(endDate) : undefined;
+
+  if (start && isNaN(start.getTime())) {
+    throw new Error('Invalid start date');
+  }
+  if (end && isNaN(end.getTime())) {
+    throw new Error('Invalid end date');
+  }
+  if (start && end && start.getTime() > end.getTime()) {
+    throw new Error('Start date must not be after end date');
+  }
+
+  return { start, end };
+}

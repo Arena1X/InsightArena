@@ -115,6 +115,61 @@ describe('HealthService - checkDetailed', () => {
   });
 });
 
+describe('HealthService - checkCache', () => {
+  let cacheManager: { set: jest.Mock; get: jest.Mock };
+  let service: HealthService;
+
+  beforeEach(() => {
+    cacheManager = {
+      set: jest.fn().mockResolvedValue(undefined),
+      get: jest.fn().mockResolvedValue('ok'),
+    };
+
+    service = new HealthService(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      cacheManager as never,
+    );
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+    jest.useRealTimers();
+  });
+
+  it('reports up when the cache ping resolves', async () => {
+    const result = await service.checkCache();
+
+    expect(result.status).toBe('up');
+    expect(result.latency_ms).toEqual(expect.any(Number));
+  });
+
+  it('reports unhealthy with a distinct reason when the cache ping hangs past the timeout', async () => {
+    jest.useFakeTimers();
+    cacheManager.get.mockImplementation(() => new Promise(() => undefined));
+
+    const pending = service.checkCache();
+    jest.advanceTimersByTime(5000);
+    const result = await pending;
+
+    expect(result.status).toBe('down');
+    expect(result.error).toMatch(/timed out/i);
+  });
+
+  it('reports unhealthy immediately with a distinct reason when the connection is refused', async () => {
+    cacheManager.get.mockRejectedValue(new Error('connection refused'));
+
+    const result = await service.checkCache();
+
+    expect(result.status).toBe('down');
+    expect(result.error).toMatch(/connection refused/i);
+    expect(result.error).not.toMatch(/timed out/i);
+  });
+});
+
 describe('HealthService - checkLiveness', () => {
   let service: HealthService;
 
