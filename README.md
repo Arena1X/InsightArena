@@ -136,3 +136,6 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 <!-- handsoff-issue-1847 -->
 - #1847: [Backend] — Trending Markets Computation Tie-Breaking
+
+<!-- handsoff-issue-1840 -->
+- #1840: [Backend] — Leaderboard Coach Insights for Users With No History
