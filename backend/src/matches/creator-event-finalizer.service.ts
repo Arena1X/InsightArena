@@ -6,6 +6,15 @@ import { CreatorEvent } from './entities/creator-event.entity';
 import { Match } from './entities/match.entity';
 import { SorobanService } from '../soroban/soroban.service';
 
+export type FinalizationOutcome = 'correct' | 'incorrect';
+
+export interface BondSettlementResult {
+  outcome: FinalizationOutcome;
+  bondReturned: boolean;
+  bondSlashed: boolean;
+  reason: string;
+}
+
 @Injectable()
 export class CreatorEventFinalizerService {
   private readonly logger = new Logger(CreatorEventFinalizerService.name);
@@ -72,8 +81,16 @@ export class CreatorEventFinalizerService {
           event.is_finalized = true;
           await this.creatorEventRepository.save(event);
 
+          // Settle the finalization bond based on the validated outcome
+          const settlement = await this.settleFinalizationBond(
+            event,
+            'correct',
+            'All matches resolved and finalization validated on-chain',
+          );
+
           this.logger.log(
-            `Successfully finalized event ${event.on_chain_event_id}`,
+            `Successfully finalized event ${event.on_chain_event_id} ` +
+              `(bond ${settlement.bondReturned ? 'returned' : 'slashed'}: ${settlement.reason})`,
           );
           finalizedCount++;
         } catch (error) {
@@ -93,6 +110,44 @@ export class CreatorEventFinalizerService {
       const message = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Event finalization check failed: ${message}`);
     }
+  }
+
+  /**
+   * Settle the finalization bond for an event based on the validated outcome.
+   *
+   * - `correct`: the finalization was validated as correct, so the bond is
+   *   returned to the creator.
+   * - `incorrect`: the finalization was proven incorrect, so the bond is
+   *   slashed.
+   *
+   * The settlement outcome and reason are recorded on the event so the
+   * decision is auditable.
+   */
+  async settleFinalizationBond(
+    event: CreatorEvent,
+    outcome: FinalizationOutcome,
+    reason: string,
+  ): Promise<BondSettlementResult> {
+    const bondReturned = outcome === 'correct';
+    const bondSlashed = outcome === 'incorrect';
+
+    if (bondReturned) {
+      await this.sorobanService.returnFinalizationBond(
+        event.on_chain_event_id,
+      );
+    } else {
+      await this.sorobanService.slashFinalizationBond(event.on_chain_event_id);
+    }
+
+    event.bond_settlement_outcome = outcome;
+    event.bond_settlement_reason = reason;
+    await this.creatorEventRepository.save(event);
+
+    this.logger.log(
+      `Bond settlement for event ${event.on_chain_event_id}: ${outcome} (${reason})`,
+    );
+
+    return { outcome, bondReturned, bondSlashed, reason };
   }
 
   private async areAllMatchesResolved(eventId: string): Promise<boolean> {
@@ -143,6 +198,12 @@ export class CreatorEventFinalizerService {
 
         event.is_finalized = true;
         await this.creatorEventRepository.save(event);
+
+        await this.settleFinalizationBond(
+          event,
+          'correct',
+          'Manual finalization validated as correct',
+        );
 
         finalizedCount++;
       } catch (error) {
