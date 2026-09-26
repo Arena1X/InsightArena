@@ -434,7 +434,7 @@ export function formatXlm(amount: number, digits = 2): string {
 export function formatPnlXlm(pnl: number, digits = 2): string {
   if (!Number.isFinite(pnl)) return "—";
   const sign = pnl > 0 ? "+" : "";
-  return `\( {sign} \){pnl.toFixed(digits)} XLM`;
+  return `${sign}${pnl.toFixed(digits)} XLM`;
 }
 
 // ── Dashboard sidebar auto-collapse (#1584) ─────────────────────────────────
