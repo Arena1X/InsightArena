@@ -20,6 +20,7 @@ import { DetailedHealthDto, HealthSummaryDto } from './dto/detailed-health.dto';
 
 const START_TIME = Date.now();
 const CACHE_PROBE_KEY = '__health_check_probe__';
+const CACHE_PROBE_TIMEOUT_MS = 2000;
 
 type DependencyStatus = { status: string; latency_ms: number };
 
@@ -212,18 +213,58 @@ export class HealthService {
     }
   }
 
-  /** Round-trips a probe value through the cache to verify it is reachable. */
+  /**
+   * Round-trips a probe value through the cache to verify it is reachable.
+   * The probe is bounded by CACHE_PROBE_TIMEOUT_MS so a hung connection
+   * cannot stall checkDetailed/checkReadiness indefinitely. A timeout is
+   * reported as unhealthy with a distinct reason from a connection-refused
+   * failure.
+   */
   private async checkCache(): Promise<DependencyStatus> {
     const start = Date.now();
     try {
-      await this.cacheManager.set(CACHE_PROBE_KEY, 'ok', 5000);
+      await this.withTimeout(
+        (async () => {
+          await this.cacheManager.set(CACHE_PROBE_KEY, 'ok', 5000);
+          return this.cacheManager.get(CACHE_PROBE_KEY);
+        })(),
+        CACHE_PROBE_TIMEOUT_MS,
+      );
       const value = await this.cacheManager.get(CACHE_PROBE_KEY);
       return {
         status: value === 'ok' ? 'up' : 'down',
         latency_ms: Date.now() - start,
       };
-    } catch {
-      return { status: 'down', latency_ms: Date.now() - start };
+    } catch (error) {
+      const reason =
+        error instanceof Error && error.message === 'cache probe timed out'
+          ? 'cache probe timed out'
+          : 'cache connection refused';
+      return {
+        status: 'down',
+        latency_ms: Date.now() - start,
+        reason,
+      } as DependencyStatus;
     }
+  }
+
+  /** Rejects with a distinct error if the promise does not settle in time. */
+  private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error('cache probe timed out')),
+        ms,
+      );
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
   }
 }
