@@ -283,10 +283,10 @@ export default function MatchManagementPage() {
                           size="sm"
                           className="border-emerald-500/20 text-emerald-400 hover:border-emerald-500/40 hover:bg-emerald-500/10"
                           onClick={() => setActiveSubmitMatchId(match.id)}
-                          title="Submit result"
+                          title={match.status === "resolved" ? "View result" : "Submit result"}
                         >
                           <CheckCircle className="h-4 w-4" />
-                          Submit Result
+                          {match.status === "resolved" ? "View Result" : "Submit Result"}
                         </Button>
                       )}
                       {match.status === "upcoming" && (
@@ -323,6 +323,7 @@ export default function MatchManagementPage() {
                         teamA={match.teamA}
                         teamB={match.teamB}
                         initialResult={match.result}
+                        isFinalized={match.status === "resolved"}
                         onSubmit={async (homeScore, awayScore) => {
                           await submitMatchResult(
                             match.id,

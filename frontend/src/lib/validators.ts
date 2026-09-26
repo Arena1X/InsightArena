@@ -383,3 +383,34 @@ export function validateBulkMatchRows(
     return { ...row, errors };
   });
 }
+
+// ---------------------------------------------------------------------------
+// Match result scores
+// ---------------------------------------------------------------------------
+
+const MAX_MATCH_SCORE = 20;
+
+/**
+ * Validate a single match result score field (home or away). Empty/blank is
+ * "required", not a format error, matching SubmitResultForm's own existing
+ * per-field error messages.
+ */
+export function validateMatchScore(
+  rawValue: string,
+  fieldLabel: string,
+): string | undefined {
+  if (rawValue.trim() === "") {
+    return `${fieldLabel} is required.`;
+  }
+
+  const parsed = Number(rawValue);
+  if (
+    !Number.isInteger(parsed) ||
+    parsed < 0 ||
+    parsed > MAX_MATCH_SCORE
+  ) {
+    return `Score must be an integer between 0 and ${MAX_MATCH_SCORE}.`;
+  }
+
+  return undefined;
+}
