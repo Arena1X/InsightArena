@@ -142,3 +142,6 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 <!-- handsoff-issue-1844 -->
 - #1844: [Backend] — Search Vector Backfill Batch Resumability
+
+<!-- handsoff-issue-1845 -->
+- #1845: [Backend] — Fuzzy Search Suggestions Deduplication
