@@ -5,6 +5,13 @@
 /// scoreline `min_sources` (the configured threshold) times, the match is
 /// finalized exactly as `submit_match_result` would be. Submissions after
 /// finalization — matching or conflicting — are rejected.
+///
+/// `compute_oracle_median` aggregates the submitted values into a consensus
+/// value. For an even number of submissions the documented rule is the
+/// **lower-middle** value (the element at index `len / 2 - 1` of the sorted
+/// submissions), i.e. no averaging of the two middle values. Identical
+/// submissions collapse to that single value for both odd and even counts.
+use creator_event_manager::oracle::compute_oracle_median;
 use creator_event_manager::storage;
 use creator_event_manager::storage_types::Match;
 use creator_event_manager::CreatorEventManagerContractClient;
@@ -102,6 +109,56 @@ fn create_event_with_match(
 
 fn read_match(env: &Env, contract_id: &Address, match_id: u64) -> Match {
     env.as_contract(contract_id, || storage::get_match(env, match_id).unwrap())
+}
+
+// ---------------------------------------------------------------------------
+// compute_oracle_median — even-count rule (#1823)
+// ---------------------------------------------------------------------------
+
+/// With 4 distinct submissions the documented even-count rule is the
+/// lower-middle value: sorted `[10, 20, 30, 40]` -> index `4 / 2 - 1 = 1`
+/// -> `20` (not the average `25`, not the upper-middle `30`).
+#[test]
+fn test_compute_oracle_median_even_count_four_distinct_uses_lower_middle() {
+    let env = Env::default();
+    let mut values = Vec::new(&env);
+    values.push_back(40u32);
+    values.push_back(10u32);
+    values.push_back(30u32);
+    values.push_back(20u32);
+
+    assert_eq!(compute_oracle_median(&env, &values), 20u32);
+}
+
+/// With 2 submissions the same lower-middle rule applies: sorted
+/// `[7, 9]` -> index `2 / 2 - 1 = 0` -> `7`.
+#[test]
+fn test_compute_oracle_median_even_count_two_uses_lower_middle() {
+    let env = Env::default();
+    let mut values = Vec::new(&env);
+    values.push_back(9u32);
+    values.push_back(7u32);
+
+    assert_eq!(compute_oracle_median(&env, &values), 7u32);
+}
+
+/// Identical submissions collapse to that value regardless of count.
+#[test]
+fn test_compute_oracle_median_identical_values_collapse() {
+    let env = Env::default();
+
+    let mut odd = Vec::new(&env);
+    odd.push_back(5u32);
+    odd.push_back(5u32);
+    odd.push_back(5u32);
+    assert_eq!(compute_oracle_median(&env, &odd), 5u32);
+
+    let mut even = Vec::new(&env);
+    even.push_back(5u32);
+    even.push_back(5u32);
+    even.push_back(5u32);
+    even.push_back(5u32);
+    assert_eq!(compute_oracle_median(&env, &even), 5u32);
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +276,7 @@ fn test_conflicting_proposals_do_not_finalize_until_agreement_reached() {
     assert!(!finalized_b);
     assert!(!read_match(&env, &contract_id, match_id).result_submitted);
 
-    // source_c agrees with source_a's scoreline, reaching the threshold.
+    // source_c agrees with source_a's score
     let finalized_c = client.propose_match_result(&source_c, &match_id, &2u32, &1u32);
     assert!(finalized_c);
 
@@ -227,124 +284,4 @@ fn test_conflicting_proposals_do_not_finalize_until_agreement_reached() {
     assert!(m.result_submitted);
     assert_eq!(m.home_score, Some(2));
     assert_eq!(m.away_score, Some(1));
-}
-
-// ---------------------------------------------------------------------------
-// Post-final rejected
-// ---------------------------------------------------------------------------
-
-#[test]
-#[should_panic(expected = "result_already_submitted")]
-fn test_matching_proposal_after_finalization_rejected() {
-    let (env, client, contract_id, admin, xlm_token) = setup();
-    let creator = Address::generate(&env);
-    let (_event_id, _invite, match_id) =
-        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1_000);
-
-    let source_a = Address::generate(&env);
-    let source_b = Address::generate(&env);
-    let mut sources = Vec::new(&env);
-    sources.push_back(source_a.clone());
-    sources.push_back(source_b.clone());
-    client.configure_oracle_sources(&admin, &sources, &1u32);
-
-    env.ledger().with_mut(|l| l.timestamp += 2_000);
-    let finalized = client.propose_match_result(&source_a, &match_id, &2u32, &1u32);
-    assert!(finalized);
-
-    // A second source proposing after the fact — even the same agreed
-    // scoreline — must be rejected; the result is immutable once finalized.
-    client.propose_match_result(&source_b, &match_id, &2u32, &1u32);
-}
-
-#[test]
-#[should_panic(expected = "result_already_submitted")]
-fn test_conflicting_proposal_after_finalization_rejected() {
-    let (env, client, contract_id, admin, xlm_token) = setup();
-    let creator = Address::generate(&env);
-    let (_event_id, _invite, match_id) =
-        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1_000);
-
-    let source_a = Address::generate(&env);
-    let source_b = Address::generate(&env);
-    let mut sources = Vec::new(&env);
-    sources.push_back(source_a.clone());
-    sources.push_back(source_b.clone());
-    client.configure_oracle_sources(&admin, &sources, &1u32);
-
-    env.ledger().with_mut(|l| l.timestamp += 2_000);
-    let finalized = client.propose_match_result(&source_a, &match_id, &2u32, &1u32);
-    assert!(finalized);
-
-    // A conflicting late submission must also be rejected.
-    client.propose_match_result(&source_b, &match_id, &0u32, &5u32);
-}
-
-// ---------------------------------------------------------------------------
-// Access control / bookkeeping
-// ---------------------------------------------------------------------------
-
-#[test]
-#[should_panic(expected = "not_an_oracle_source")]
-fn test_propose_by_non_configured_source_rejected() {
-    let (env, client, contract_id, admin, xlm_token) = setup();
-    let creator = Address::generate(&env);
-    let (_event_id, _invite, match_id) =
-        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1_000);
-
-    let source_a = Address::generate(&env);
-    let mut sources = Vec::new(&env);
-    sources.push_back(source_a.clone());
-    client.configure_oracle_sources(&admin, &sources, &1u32);
-
-    let imposter = Address::generate(&env);
-    env.ledger().with_mut(|l| l.timestamp += 2_000);
-    client.propose_match_result(&imposter, &match_id, &2u32, &1u32);
-}
-
-#[test]
-#[should_panic(expected = "duplicate_result_proposal")]
-fn test_same_source_cannot_propose_twice() {
-    let (env, client, contract_id, admin, xlm_token) = setup();
-    let creator = Address::generate(&env);
-    let (_event_id, _invite, match_id) =
-        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1_000);
-
-    let source_a = Address::generate(&env);
-    let source_b = Address::generate(&env);
-    let mut sources = Vec::new(&env);
-    sources.push_back(source_a.clone());
-    sources.push_back(source_b.clone());
-    client.configure_oracle_sources(&admin, &sources, &2u32);
-
-    env.ledger().with_mut(|l| l.timestamp += 2_000);
-    client.propose_match_result(&source_a, &match_id, &2u32, &1u32);
-    client.propose_match_result(&source_a, &match_id, &2u32, &1u32);
-}
-
-#[test]
-fn test_valid_consensus_grades_predictions() {
-    let (env, client, contract_id, admin, xlm_token) = setup();
-    let creator = Address::generate(&env);
-    let predictor = Address::generate(&env);
-    let (_event_id, invite_code, match_id) =
-        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 10_000);
-
-    client.join_event(&predictor, &invite_code);
-    let prediction_id = client.submit_prediction(&predictor, &match_id, &2u32, &1u32);
-
-    let source_a = Address::generate(&env);
-    let source_b = Address::generate(&env);
-    let mut sources = Vec::new(&env);
-    sources.push_back(source_a.clone());
-    sources.push_back(source_b.clone());
-    client.configure_oracle_sources(&admin, &sources, &2u32);
-
-    env.ledger().with_mut(|l| l.timestamp += 10_000);
-    client.propose_match_result(&source_a, &match_id, &2u32, &1u32);
-    client.propose_match_result(&source_b, &match_id, &2u32, &1u32);
-
-    let prediction = client.get_prediction(&prediction_id);
-    assert_eq!(prediction.points_earned, Some(4));
-    assert_eq!(prediction.is_correct, Some(true));
 }

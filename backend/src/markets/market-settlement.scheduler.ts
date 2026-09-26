@@ -9,6 +9,7 @@ import {
 } from './entities/settlement-attempt.entity';
 import { SorobanService } from '../soroban/soroban.service';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
+import { canTransition } from './market-settlement-state.util';
 
 export interface SettlementRetryInfo {
   marketId: string;
@@ -231,8 +232,7 @@ export class MarketSettlementScheduler {
       });
       const stillEligible =
         fresh &&
-        (fresh.settlement_state === MarketSettlementState.PROPOSED ||
-          fresh.settlement_state === MarketSettlementState.SETTLING) &&
+        canTransition(fresh.settlement_state, MarketSettlementState.SETTLING) &&
         !!fresh.proposed_outcome;
 
       if (!stillEligible) {

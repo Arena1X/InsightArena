@@ -128,11 +128,5 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 ## Handsoff notes
 
-<!-- handsoff-issue-1813 -->
-- #1813: [Contract] — open-market: `compute_ema` at Extreme `alpha_bps` Values
-
-<!-- handsoff-issue-1814 -->
-- #1814: [Contract] — open-market: `get_remaining_outcome_capacity` at the Exact Cap
-
-<!-- handsoff-issue-1817 -->
-- #1817: [Contract] — open-market: `get_open_dispute_count` Consistency After Resolution
+<!-- handsoff-issue-1821 -->
+- #1821: [Contract] — creator-event-manager: `batch_verify_addresses` With Duplicate Entries

@@ -187,6 +187,8 @@ export default function EventDetailsPage({
           <PrizePoolSummary
             prizePoolXlm={event.prizePoolXlm}
             rewardBreakdown={event.rewardBreakdown}
+            marketId={event.id}
+            contributorCount={event.participants}
           />
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur">

@@ -137,6 +137,28 @@ export const validators = {
     },
 } as const;
 
+/** Maximum platform fee accepted by the protocol, expressed in basis points. */
+export const MAX_PLATFORM_FEE_BPS = 500;
+
+/** Validate a fee percentage against the platform's basis-point limit. */
+export function validatePlatformFee(value: unknown): string | undefined {
+  if (value === "" || value === null || value === undefined) {
+    return "Platform fee is required.";
+  }
+
+  const percentage = Number(value);
+  if (!Number.isFinite(percentage)) {
+    return "Platform fee must be a valid number.";
+  }
+  if (percentage < 0) {
+    return "Platform fee cannot be negative.";
+  }
+  if (percentage * 100 > MAX_PLATFORM_FEE_BPS) {
+    return `Platform fee cannot exceed ${MAX_PLATFORM_FEE_BPS} bps (5%).`;
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Async validators
 // ---------------------------------------------------------------------------
@@ -242,4 +264,122 @@ export function validateOutcomes(outcomes: string[]): string | undefined {
     return "Outcomes must be distinct.";
   }
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Creator-event match validators (#1548)
+// ---------------------------------------------------------------------------
+
+export type BulkMatchRowInput = {
+  teamA: string;
+  teamB: string;
+  matchTime: string;
+};
+
+export type BulkMatchRowResult = BulkMatchRowInput & {
+  errors: string[];
+};
+
+const MAX_TEAM_NAME = 100;
+
+export function validateTeamName(
+  value: string,
+  fieldName: string,
+): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return `${fieldName} is required.`;
+  if (trimmed.length > MAX_TEAM_NAME) {
+    return `${fieldName} must be ${MAX_TEAM_NAME} characters or fewer.`;
+  }
+  return undefined;
+}
+
+export function validateDistinctTeams(
+  teamA: string,
+  teamB: string,
+): string | undefined {
+  const a = teamA.trim();
+  const b = teamB.trim();
+  if (a && b && a.toLowerCase() === b.toLowerCase()) {
+    return "Team names must be different.";
+  }
+  return undefined;
+}
+
+export function validateKickoffTime(
+  matchTime: string,
+  now = new Date(),
+): string | undefined {
+  if (!matchTime.trim()) return "Kickoff time is required.";
+  const dt = new Date(matchTime);
+  if (Number.isNaN(dt.getTime())) return "Kickoff time is invalid.";
+  if (dt <= now) return "Kickoff must be in the future.";
+  return undefined;
+}
+
+export function validateBulkMatchRow(
+  row: BulkMatchRowInput,
+  now = new Date(),
+): string[] {
+  const errors: string[] = [];
+  const teamAError = validateTeamName(row.teamA, "Team A");
+  const teamBError = validateTeamName(row.teamB, "Team B");
+  const distinctError = validateDistinctTeams(row.teamA, row.teamB);
+  const kickoffError = validateKickoffTime(row.matchTime, now);
+
+  if (teamAError) errors.push(teamAError);
+  if (teamBError) errors.push(teamBError);
+  if (distinctError) errors.push(distinctError);
+  if (kickoffError) errors.push(kickoffError);
+  return errors;
+}
+
+export function parseBulkMatchCsv(raw: string): BulkMatchRowInput[] {
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) return [];
+
+  const firstCols = lines[0].split(",").map((col) => col.trim().toLowerCase());
+  const hasHeader =
+    firstCols[0]?.includes("team") && firstCols[1]?.includes("team");
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+
+  return dataLines.map((line) => {
+    const cols = line.split(",").map((col) => col.trim());
+    return {
+      teamA: cols[0] ?? "",
+      teamB: cols[1] ?? "",
+      matchTime: cols[2] ?? "",
+    };
+  });
+}
+
+export function validateBulkMatchRows(
+  rows: BulkMatchRowInput[],
+  now = new Date(),
+): BulkMatchRowResult[] {
+  const seen = new Set<string>();
+
+  return rows.map((row) => {
+    const errors = validateBulkMatchRow(row, now);
+    const key = [
+      row.teamA.trim().toLowerCase(),
+      row.teamB.trim().toLowerCase(),
+      row.matchTime.trim(),
+    ].join("|");
+    const isIdentified = row.teamA.trim() && row.teamB.trim() && row.matchTime.trim();
+
+    if (isIdentified) {
+      if (seen.has(key)) {
+        errors.push("Duplicate match.");
+      } else {
+        seen.add(key);
+      }
+    }
+
+    return { ...row, errors };
+  });
 }

@@ -45,22 +45,36 @@ export interface AchievementProgressPayload {
   progress_percentage: number;
 }
 
+interface DeliveryConfirmationEntry {
+  notificationIds: Set<number>;
+  confirmedAt: number;
+}
+
 @Injectable()
 export class NotificationBroadcasterService implements OnModuleDestroy {
   private readonly logger = new Logger(NotificationBroadcasterService.name);
   private readonly batchQueue = new Map<string, NotificationPayload[]>();
   private readonly batchInterval = 1000; // 1 second
   private readonly maxBatchSize = 10;
-  private deliveryConfirmations = new Map<string, Set<number>>();
+  private readonly confirmationTtlMs = 5 * 60 * 1000; // 5 minutes
+  private readonly confirmationCleanupIntervalMs = 60 * 1000; // 1 minute
+  private deliveryConfirmations = new Map<string, DeliveryConfirmationEntry>();
   private batchProcessorInterval?: NodeJS.Timeout;
+  private confirmationCleanupInterval?: NodeJS.Timeout;
 
   constructor(private readonly gateway: EventsGateway) {
     this.startBatchProcessor();
+    this.startConfirmationCleanup();
   }
 
   onModuleDestroy(): void {
     if (this.batchProcessorInterval) {
       clearInterval(this.batchProcessorInterval);
+      this.batchProcessorInterval = undefined;
+    }
+    if (this.confirmationCleanupInterval) {
+      clearInterval(this.confirmationCleanupInterval);
+      this.confirmationCleanupInterval = undefined;
     }
   }
 
@@ -208,10 +222,16 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
    * Record delivery confirmation
    */
   confirmDelivery(userAddress: string, notificationId: number): void {
-    if (!this.deliveryConfirmations.has(userAddress)) {
-      this.deliveryConfirmations.set(userAddress, new Set());
+    const existing = this.deliveryConfirmations.get(userAddress);
+    if (existing) {
+      existing.notificationIds.add(notificationId);
+      existing.confirmedAt = Date.now();
+    } else {
+      this.deliveryConfirmations.set(userAddress, {
+        notificationIds: new Set([notificationId]),
+        confirmedAt: Date.now(),
+      });
     }
-    this.deliveryConfirmations.get(userAddress)!.add(notificationId);
     this.logger.debug(
       `Delivery confirmed: user=${userAddress}, notification=${notificationId}`,
     );
@@ -222,8 +242,25 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
    */
   isDelivered(userAddress: string, notificationId: number): boolean {
     return (
-      this.deliveryConfirmations.get(userAddress)?.has(notificationId) ?? false
+      this.deliveryConfirmations
+        .get(userAddress)
+        ?.notificationIds.has(notificationId) ?? false
     );
+  }
+
+  /**
+   * Purge delivery confirmation entries that have exceeded the configured age.
+   * Recently-confirmed, still-pending entries are left untouched.
+   */
+  cleanupConfirmations(now: number = Date.now()): void {
+    for (const [userAddress, entry] of this.deliveryConfirmations) {
+      if (now - entry.confirmedAt >= this.confirmationTtlMs) {
+        this.deliveryConfirmations.delete(userAddress);
+        this.logger.debug(
+          `Purged expired delivery confirmations for user=${userAddress}`,
+        );
+      }
+    }
   }
 
   /**
@@ -290,13 +327,11 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
   }
 
   /**
-   * Clean up old confirmations (call periodically)
+   * Periodically purge expired delivery confirmations
    */
-  cleanupConfirmations(): void {
-    // Simple cleanup - in production, track timestamps
-    if (this.deliveryConfirmations.size > 10000) {
-      this.deliveryConfirmations.clear();
-      this.logger.log('Cleared delivery confirmations cache');
-    }
+  private startConfirmationCleanup(): void {
+    this.confirmationCleanupInterval = setInterval(() => {
+      this.cleanupConfirmations();
+    }, this.confirmationCleanupIntervalMs);
   }
 }

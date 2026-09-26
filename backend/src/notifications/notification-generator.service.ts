@@ -360,9 +360,8 @@ export class NotificationGeneratorService implements OnModuleDestroy {
     const title = input.escalated
       ? 'Dispute SLA Breached — Escalated'
       : 'Dispute SLA Breached';
-    const message = `Dispute for market "${input.marketTitle}" missed its SLA deadline (${input.slaDeadline.toISOString()})${
-      input.escalated ? ' and has been escalated' : ''
-    }.`;
+    const message = `Dispute for market "${input.marketTitle}" missed its SLA deadline (${input.slaDeadline.toISOString()})${input.escalated ? ' and has been escalated' : ''
+      }.`;
 
     const notifications = input.recipientAddresses.map((address) => ({
       userAddress: address,
@@ -411,7 +410,10 @@ export class NotificationGeneratorService implements OnModuleDestroy {
     await this.queueBatchNotifications(notifications);
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
+  /**
+   * Queue a notification after checking category preferences.
+   * If the user has disabled this category, the notification is skipped.
+   */
   private async queueNotification(notification: {
     userAddress: string;
     type: NotificationType;
@@ -419,10 +421,26 @@ export class NotificationGeneratorService implements OnModuleDestroy {
     message: string;
     data?: Record<string, unknown>;
   }): Promise<void> {
+    // Check category preference before queuing
+    const shouldQueue = await this.shouldQueueNotification(
+      notification.userAddress,
+      notification.type,
+    );
+
+    if (!shouldQueue) {
+      this.logger.debug(
+        `Notification skipped for ${notification.userAddress}: category disabled for ${notification.type}`,
+      );
+      return;
+    }
+
     this.notificationQueue.push({ notifications: [notification] });
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
+  /**
+   * Queue a batch of notifications after filtering by category preferences.
+   * Only notifications for enabled categories are queued.
+   */
   private async queueBatchNotifications(
     notifications: Array<{
       userAddress: string;
@@ -432,9 +450,19 @@ export class NotificationGeneratorService implements OnModuleDestroy {
       data?: Record<string, unknown>;
     }>,
   ): Promise<void> {
+    // Filter notifications based on category preferences
+    const filteredNotifications = await this.filterNotificationsByPreferences(
+      notifications,
+    );
+
+    if (filteredNotifications.length === 0) {
+      this.logger.debug('All notifications filtered out by category preferences');
+      return;
+    }
+
     // Split into batches
-    for (let i = 0; i < notifications.length; i += this.BATCH_SIZE) {
-      const batch = notifications.slice(i, i + this.BATCH_SIZE);
+    for (let i = 0; i < filteredNotifications.length; i += this.BATCH_SIZE) {
+      const batch = filteredNotifications.slice(i, i + this.BATCH_SIZE);
       this.notificationQueue.push({ notifications: batch });
     }
   }
@@ -560,6 +588,117 @@ export class NotificationGeneratorService implements OnModuleDestroy {
       [NotificationType.EventCancelled]: NotificationCategory.EventCancelled,
     };
     return map[type] ?? null;
+  }
+
+  /**
+   * Helper method to get userId from stellar address.
+   * Returns null if user is not found.
+   */
+  private async getUserIdFromAddress(
+    userAddress: string,
+  ): Promise<string | null> {
+    try {
+      const user = await this.userRepository.findOne({
+        where: { stellar_address: userAddress },
+      });
+      return user?.id ?? null;
+    } catch (error) {
+      this.logger.error(
+        `Error fetching user for address ${userAddress}`,
+        error,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Check if a notification should be queued based on category preferences.
+   * Returns true if the notification should be sent, false if it should be filtered out.
+   * Defaults to true (opt-in) if no preference is found or user doesn't exist.
+   */
+  private async shouldQueueNotification(
+    userAddress: string,
+    notificationType: NotificationType,
+  ): Promise<boolean> {
+    try {
+      const userId = await this.getUserIdFromAddress(userAddress);
+      if (!userId) {
+        // User not found - default to sending notification
+        return true;
+      }
+
+      const category = this.mapTypeToCategory(notificationType);
+      if (!category) {
+        // No category mapping - default to sending notification
+        return true;
+      }
+
+      // Check category preference
+      const catPref = await this.categoryPreferencesRepository.findOne({
+        where: { userId, category },
+      });
+
+      // If no preference exists, default to opt-in (true)
+      if (!catPref) {
+        return true;
+      }
+
+      // Check if in_app channel is enabled
+      return catPref.in_app;
+    } catch (error) {
+      this.logger.error(
+        `Error checking category preference for ${userAddress}`,
+        error,
+      );
+      // On error, default to sending notification (safe fallback)
+      return true;
+    }
+  }
+
+  /**
+   * Filter a batch of notifications based on each user's category preferences.
+   * Returns only notifications that should be sent according to user preferences.
+   */
+  private async filterNotificationsByPreferences(
+    notifications: Array<{
+      userAddress: string;
+      type: NotificationType;
+      title: string;
+      message: string;
+      data?: Record<string, unknown>;
+    }>,
+  ): Promise<
+    Array<{
+      userAddress: string;
+      type: NotificationType;
+      title: string;
+      message: string;
+      data?: Record<string, unknown>;
+    }>
+  > {
+    const filtered: Array<{
+      userAddress: string;
+      type: NotificationType;
+      title: string;
+      message: string;
+      data?: Record<string, unknown>;
+    }> = [];
+
+    for (const notification of notifications) {
+      const shouldQueue = await this.shouldQueueNotification(
+        notification.userAddress,
+        notification.type,
+      );
+      if (shouldQueue) {
+        filtered.push(notification);
+      } else {
+        this.logger.debug(
+          `Notification filtered for ${notification.userAddress}: category disabled for ${notification.type}`,
+        );
+      }
+    }
+
+    return filtered;
   }
 
   private async getEventParticipants(eventId: number): Promise<string[]> {

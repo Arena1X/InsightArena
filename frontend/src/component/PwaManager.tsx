@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, X } from "lucide-react";
+import { Download, X, Wifi, WifiOff } from "lucide-react";
 
 import { registerServiceWorker } from "@/lib/registerServiceWorker";
+import { processQueue } from "@/lib/actionQueue";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -15,9 +16,28 @@ const DISMISS_STORAGE_KEY = "insightarena.installPromptDismissed";
 export function PwaManager() {
   const [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [visible, setVisible] = useState(false);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
 
   useEffect(() => {
     registerServiceWorker();
+  }, []);
+
+  useEffect(() => {
+    const handleOnline = async () => {
+      setIsOnline(true);
+      await processQueue();
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
   }, []);
 
   useEffect(() => {
@@ -67,6 +87,20 @@ export function PwaManager() {
     setVisible(false);
     setInstallEvent(null);
   };
+
+  if (!isOnline) {
+    return (
+      <div className="fixed inset-x-4 bottom-4 z-[200] mx-auto max-w-sm rounded-2xl border border-yellow-500/20 bg-yellow-500/10 p-4 shadow-lg sm:inset-x-auto sm:right-6 sm:bottom-6">
+        <div className="flex items-center gap-3">
+          <WifiOff className="h-5 w-5 shrink-0 text-yellow-400" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-yellow-300">You're offline</p>
+            <p className="text-xs text-yellow-200/70">Actions will sync when online</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!visible || !installEvent) return null;
 

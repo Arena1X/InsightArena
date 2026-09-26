@@ -8,6 +8,7 @@ interface SubmitResultFormProps {
   teamA: string;
   teamB: string;
   initialResult?: string;
+  isOverdue?: boolean;
   onSubmit: (homeScore: number, awayScore: number) => Promise<void>;
   onCancel: () => void;
 }
@@ -16,6 +17,7 @@ export default function SubmitResultForm({
   teamA,
   teamB,
   initialResult,
+  isOverdue = false,
   onSubmit,
   onCancel,
 }: SubmitResultFormProps) {
@@ -87,6 +89,11 @@ export default function SubmitResultForm({
         Enter the final scores for <span className="font-semibold text-white">{teamA}</span> vs{" "}
         <span className="font-semibold text-white">{teamB}</span>.
       </p>
+      {isOverdue && (
+        <p className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-2 text-sm text-rose-300">
+          This submission is overdue. Submit the result as soon as possible.
+        </p>
+      )}
 
       {errors.form && (
         <p className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-2 text-sm text-rose-300">
