@@ -1361,6 +1361,67 @@ describe('PredictionsService', () => {
           expect.objectContaining({ id: 'existing-flag' }),
         );
       });
+
+      it('flags a burst of submissions inside the clustering window above the count threshold', async () => {
+        // Window is 30s, min ratio 0.6. 5 predictions, each 2s apart: every
+        // one of the 4 gaps is well inside the 30s window, so the clustered
+        // ratio is 4/4 = 1.0, clearing the 0.6 threshold decisively.
+        const base = Date.now();
+        mockPredictionsRepo.find.mockResolvedValue([
+          makePrediction(new Date(base)),
+          makePrediction(new Date(base + 2_000)),
+          makePrediction(new Date(base + 4_000)),
+          makePrediction(new Date(base + 6_000)),
+          makePrediction(new Date(base + 8_000)),
+        ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            user_id: 'user-1',
+            signal_type: FraudSignalType.TIMING_CLUSTERING,
+            status: FraudFlagStatus.OPEN,
+            score: 1,
+          }),
+        );
+      });
+
+      it('does not flag predictions submitted just outside the clustering window', async () => {
+        // Window is 30s. Every gap here is 35s — just past the window on
+        // each one — so the clustered ratio is 0/3 = 0, well under the 0.6
+        // threshold. Distinct from the "widely-spaced" case above (hours
+        // apart): this exercises the boundary just past the window itself.
+        const base = Date.now();
+        mockPredictionsRepo.find.mockResolvedValue([
+          makePrediction(new Date(base)),
+          makePrediction(new Date(base + 35_000)),
+          makePrediction(new Date(base + 70_000)),
+          makePrediction(new Date(base + 105_000)),
+        ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.TIMING_CLUSTERING,
+          }),
+        );
+      });
+
+      it('never triggers the clustering signal for a single prediction submission', async () => {
+        mockPredictionsRepo.find.mockResolvedValue([
+          makePrediction(new Date()),
+        ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.TIMING_CLUSTERING,
+          }),
+        );
+      });
     });
 
     describe('counterparty concentration signal', () => {

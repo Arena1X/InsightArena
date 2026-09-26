@@ -5,6 +5,7 @@ import {
   Keypair,
   StrKey,
   SorobanDataBuilder,
+  Transaction,
 } from '@stellar/stellar-sdk';
 import { SorobanService, SorobanUnavailableError } from './soroban.service';
 
@@ -353,20 +354,33 @@ describe('SorobanService', () => {
       expect(getTransactionSpy).not.toHaveBeenCalled();
     });
 
-    it('on an ambiguous failure, retries and eventually succeeds', async () => {
+    it('on an ambiguous failure (network timeout), retries and eventually succeeds', async () => {
+      // A thrown TypeError is how a real fetch-layer timeout/network error
+      // surfaces — isTransientSorobanError classifies it as ambiguous, which
+      // is what actually drives the retry path in sendTransactionWithRetry.
+      // (A resolved `{ status: 'TRY_AGAIN_LATER' }` response, by contrast,
+      // isn't a thrown error at all and never reaches that path.)
       const sendTransactionSpy = jest
         .spyOn(SorobanRpc.Server.prototype, 'sendTransaction')
-        .mockResolvedValueOnce({
-          status: 'TRY_AGAIN_LATER',
-        } as never)
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
         .mockResolvedValueOnce({
           status: 'PENDING',
           hash: mockTxHash,
         } as never);
 
+      // First getTransaction call is findSubmittedTransaction's ambiguous
+      // check (not found -> proceed to resend); every call after that is
+      // refundCompetitionParticipant's own post-send confirmation poll,
+      // which must see SUCCESS or the test would spin through its
+      // NOT_FOUND retry loop for real wall-clock seconds.
       jest
         .spyOn(SorobanRpc.Server.prototype, 'getTransaction')
-        .mockResolvedValue({ status: 'SUCCESS', hash: mockTxHash } as never);
+        .mockResolvedValueOnce({
+          status: SorobanRpc.Api.GetTransactionStatus.NOT_FOUND,
+        } as never)
+        .mockResolvedValue({
+          status: SorobanRpc.Api.GetTransactionStatus.SUCCESS,
+        } as never);
 
       const result = await service.refundCompetitionParticipant(
         testKeypair.publicKey(),
@@ -376,6 +390,114 @@ describe('SorobanService', () => {
 
       expect(result.tx_hash).toBe(mockTxHash);
       expect(sendTransactionSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('recognizes a transaction that was actually received despite a timed-out send, and does not resubmit it (#1861)', async () => {
+      // The send call itself times out (ambiguous — did the RPC node
+      // receive it or not?), but the transaction was in fact accepted:
+      // getTransaction reports a real status for its hash on the very next
+      // check. sendTransactionWithRetry must recognize this via
+      // findSubmittedTransaction and return that outcome directly, rather
+      // than firing a second, duplicate submission of the same transaction.
+      const sendTransactionSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'sendTransaction')
+        .mockRejectedValueOnce(new TypeError('fetch failed'));
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getTransaction')
+        .mockResolvedValue({
+          status: SorobanRpc.Api.GetTransactionStatus.SUCCESS,
+        } as never);
+
+      const result = await service.refundCompetitionParticipant(
+        testKeypair.publicKey(),
+        'comp_123',
+        '1000000',
+      );
+
+      // Exactly one send attempt: the retry loop found the existing
+      // submission via its hash and returned early instead of resending.
+      expect(sendTransactionSpy).toHaveBeenCalledTimes(1);
+      expect(result.tx_hash).toBeDefined();
+    });
+
+    it('never mistakes a different transaction for a previously submitted one', async () => {
+      // Each call's tx.hash() is deterministic from the transaction's own
+      // contents (source, sequence, operations, memo). Two independently
+      // built transactions here naturally hash differently — the retry
+      // path's getTransaction lookup is keyed on the failed call's own
+      // txHash, so a lookup can never cross-match a different transaction's
+      // hash to begin with.
+      let capturedFirstHash: string | undefined;
+      let ambiguousCheckSeen = false;
+      const sendTransactionSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'sendTransaction')
+        .mockImplementationOnce((tx: Transaction) => {
+          capturedFirstHash = tx.hash().toString('hex');
+          throw new TypeError('fetch failed');
+        })
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          hash: mockTxHash,
+        } as never);
+
+      const getTransactionSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'getTransaction')
+        .mockImplementation((hash: string) => {
+          if (!ambiguousCheckSeen) {
+            ambiguousCheckSeen = true;
+            // Confirms the ambiguous-retry lookup is keyed on the *first*
+            // (failed) attempt's own hash, not any other transaction's.
+            expect(hash).toBe(capturedFirstHash);
+            return Promise.resolve({
+              status: SorobanRpc.Api.GetTransactionStatus.NOT_FOUND,
+            } as never);
+          }
+          // Subsequent calls are the post-send confirmation poll for the
+          // transaction that actually got sent (mockTxHash).
+          return Promise.resolve({
+            status: SorobanRpc.Api.GetTransactionStatus.SUCCESS,
+          } as never);
+        });
+
+      await service.refundCompetitionParticipant(
+        testKeypair.publicKey(),
+        'comp_123',
+        '1000000',
+      );
+
+      expect(getTransactionSpy).toHaveBeenCalledWith(capturedFirstHash);
+      expect(sendTransactionSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('findSubmittedTransaction reports not-found (safe to resend) for a transaction genuinely never submitted', async () => {
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'sendTransaction')
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          hash: mockTxHash,
+        } as never);
+
+      const getTransactionSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'getTransaction')
+        .mockResolvedValueOnce({
+          status: SorobanRpc.Api.GetTransactionStatus.NOT_FOUND,
+        } as never)
+        .mockResolvedValue({
+          status: SorobanRpc.Api.GetTransactionStatus.SUCCESS,
+        } as never);
+
+      const result = await service.refundCompetitionParticipant(
+        testKeypair.publicKey(),
+        'comp_123',
+        '1000000',
+      );
+
+      expect(getTransactionSpy).toHaveBeenCalled();
+      // Not found -> the loop proceeded to genuinely resend, not return the
+      // (nonexistent) prior submission.
+      expect(result.tx_hash).toBe(mockTxHash);
     });
   });
 });

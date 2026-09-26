@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -127,6 +128,18 @@ export class FlagsService {
 
     if (flag.status !== FlagStatus.PENDING) {
       throw new ConflictException('Flag has already been resolved');
+    }
+
+    // Defense-in-depth: ResolveFlagDto's @IsEnum only takes effect if a
+    // ValidationPipe is bound at the HTTP layer, which nothing in this
+    // codebase currently wires up for this route. Without this check, an
+    // out-of-enum action string falls through the switch below with no
+    // matching case, and the flag would still be saved as RESOLVED with a
+    // garbage resolution_action.
+    if (!Object.values(FlagResolutionAction).includes(resolveFlagDto.action)) {
+      throw new BadRequestException(
+        `Invalid resolution action: ${String(resolveFlagDto.action)}`,
+      );
     }
 
     flag.status = FlagStatus.RESOLVED;
