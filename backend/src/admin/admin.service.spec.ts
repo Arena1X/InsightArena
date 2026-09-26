@@ -401,4 +401,132 @@ describe('AdminService (Verified Addresses)', () => {
       );
     });
   });
+
+  describe('adminResolveMarket', () => {
+    let marketRepository: any;
+    let predictionRepository: any;
+    let analyticsService: any;
+    let sorobanService: any;
+    let notificationsService: any;
+
+    const makeMarket = (overrides: Record<string, unknown> = {}) => ({
+      id: 'market-1',
+      on_chain_market_id: 'chain-1',
+      title: 'Will it rain tomorrow?',
+      is_resolved: false,
+      is_cancelled: false,
+      resolved_outcome: null,
+      outcome_options: ['Yes', 'No'],
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      marketRepository = service['marketsRepository'];
+      predictionRepository = service['predictionsRepository'];
+      analyticsService = service['analyticsService'];
+      sorobanService = service['sorobanService'];
+      notificationsService = service['notificationsService'];
+
+      marketRepository.save = jest
+        .fn()
+        .mockImplementation((entity: any) => Promise.resolve(entity));
+      predictionRepository.find = jest.fn().mockResolvedValue([]);
+      notificationsService.create.mockResolvedValue(undefined);
+      sorobanService.resolveMarket.mockResolvedValue(undefined);
+      analyticsService.invalidateMarketResolutionCaches.mockResolvedValue(
+        undefined,
+      );
+    });
+
+    it('invalidates the market resolution caches only after the resolution is persisted', async () => {
+      const market = makeMarket();
+      marketRepository.findOne.mockResolvedValue(market);
+
+      const saveOrder: string[] = [];
+      marketRepository.save.mockImplementation(async (entity: any) => {
+        saveOrder.push('save');
+        return entity;
+      });
+      analyticsService.invalidateMarketResolutionCaches.mockImplementation(
+        async () => {
+          saveOrder.push('invalidate');
+        },
+      );
+
+      await service.adminResolveMarket(
+        'market-1',
+        { resolved_outcome: 'Yes' },
+        'admin-1',
+      );
+
+      expect(saveOrder).toEqual(['save', 'invalidate']);
+      expect(
+        analyticsService.invalidateMarketResolutionCaches,
+      ).toHaveBeenCalledWith('market-1', 'chain-1', []);
+    });
+
+    it('passes the affected users from every prediction on the market', async () => {
+      const market = makeMarket();
+      marketRepository.findOne.mockResolvedValue(market);
+      predictionRepository.find.mockResolvedValue([
+        {
+          user: { id: 'user-1', stellar_address: 'GADDR1' },
+          chosen_outcome: 'Yes',
+        },
+        {
+          user: { id: 'user-2', stellar_address: 'GADDR2' },
+          chosen_outcome: 'No',
+        },
+      ]);
+
+      await service.adminResolveMarket(
+        'market-1',
+        { resolved_outcome: 'Yes' },
+        'admin-1',
+      );
+
+      expect(
+        analyticsService.invalidateMarketResolutionCaches,
+      ).toHaveBeenCalledWith('market-1', 'chain-1', ['user-1', 'user-2']);
+    });
+
+    it('does not invalidate caches when the on-chain resolution fails', async () => {
+      const market = makeMarket();
+      marketRepository.findOne.mockResolvedValue(market);
+      sorobanService.resolveMarket.mockRejectedValue(
+        new Error('soroban timeout'),
+      );
+
+      await expect(
+        service.adminResolveMarket(
+          'market-1',
+          { resolved_outcome: 'Yes' },
+          'admin-1',
+        ),
+      ).rejects.toThrow('Failed to resolve market on Soroban');
+
+      expect(marketRepository.save).not.toHaveBeenCalled();
+      expect(
+        analyticsService.invalidateMarketResolutionCaches,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('rejects resolving a market that is already resolved', async () => {
+      marketRepository.findOne.mockResolvedValue(
+        makeMarket({ is_resolved: true }),
+      );
+
+      await expect(
+        service.adminResolveMarket(
+          'market-1',
+          { resolved_outcome: 'Yes' },
+          'admin-1',
+        ),
+      ).rejects.toThrow('Market is already resolved');
+
+      expect(
+        analyticsService.invalidateMarketResolutionCaches,
+      ).not.toHaveBeenCalled();
+    });
+  });
 });

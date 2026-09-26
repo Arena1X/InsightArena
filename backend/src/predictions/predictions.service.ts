@@ -43,6 +43,7 @@ import { SorobanService } from '../soroban/soroban.service';
 import { SlippageCheckerService } from './services/slippage-checker.service';
 import {
   ClaimAllRewardsResponseDto,
+  ClaimResultDto,
   RewardsSummaryDto,
 } from './dto/rewards-summary.dto';
 import {
@@ -799,6 +800,10 @@ export class PredictionsService {
   /**
    * Claim every currently-claimable prediction for a user in sequence, reusing
    * `claim()` for the actual on-chain submission and bookkeeping per prediction.
+   *
+   * Each claim is isolated: a failure on one prediction (e.g. a transient
+   * on-chain error) is recorded in that entry's `results` and does not stop
+   * the remaining claimable predictions from being attempted.
    */
   async claimAllRewards(user: User): Promise<ClaimAllRewardsResponseDto> {
     const predictions = await this.predictionsRepository.find({
@@ -820,18 +825,41 @@ export class PredictionsService {
 
     let claimedStroops = 0n;
     let lastTxHash = '';
+    const results: ClaimResultDto[] = [];
+
     for (const predictionId of claimableIds) {
-      const claimed = await this.claim(predictionId, user);
-      claimedStroops += BigInt(claimed.payout_amount_stroops ?? '0');
-      lastTxHash = claimed.tx_hash ?? lastTxHash;
+      try {
+        const claimed = await this.claim(predictionId, user);
+        claimedStroops += BigInt(claimed.payout_amount_stroops ?? '0');
+        lastTxHash = claimed.tx_hash ?? lastTxHash;
+        results.push({
+          prediction_id: predictionId,
+          status: BATCH_PREDICTION_STATUS.FULFILLED,
+          tx_hash: claimed.tx_hash ?? undefined,
+          payout_amount_stroops: claimed.payout_amount_stroops ?? undefined,
+        });
+      } catch (err) {
+        this.logger.error(
+          `claimAllRewards: claim failed for prediction ${predictionId}`,
+          err,
+        );
+        results.push({
+          prediction_id: predictionId,
+          status: BATCH_PREDICTION_STATUS.REJECTED,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     const summary = await this.getRewardsSummary(user);
 
     return {
       claimed_xlm: stroopsToXlm(claimedStroops),
-      claimed_count: claimableIds.length,
+      claimed_count: results.filter(
+        (r) => r.status === BATCH_PREDICTION_STATUS.FULFILLED,
+      ).length,
       transaction_hash: lastTxHash,
+      results,
       summary,
     };
   }

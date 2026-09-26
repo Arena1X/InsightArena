@@ -269,35 +269,33 @@ describe('CreatorEventsService getPayoutByAddress', () => {
 
   const makeLeaderboardEntry = (
     overrides: Partial<CreatorEventLeaderboardEntry> = {},
-  ): CreatorEventLeaderboardEntry =>
-    ({
-      id: 'leaderboard-entry-1',
-      event_id: 'event-1',
-      user_address: '0xParticipant',
-      rank: 5,
-      total_predictions: 3,
-      correct_predictions: 1,
-      accuracy_percentage: 33.33,
-      is_winner: false,
-      completion_time: null,
-      created_at: new Date('2026-05-01T00:00:00.000Z'),
-      ...overrides,
-    }) as CreatorEventLeaderboardEntry;
+  ): CreatorEventLeaderboardEntry => ({
+    id: 'leaderboard-entry-1',
+    event_id: 'event-1',
+    user_address: '0xParticipant',
+    rank: 5,
+    total_predictions: 3,
+    correct_predictions: 1,
+    accuracy_percentage: 33.33,
+    is_winner: false,
+    completion_time: null,
+    created_at: new Date('2026-05-01T00:00:00.000Z'),
+    ...overrides,
+  });
 
   const makePayout = (
     overrides: Partial<CreatorEventPayout> = {},
-  ): CreatorEventPayout =>
-    ({
-      id: 'payout-1',
-      event_id: 'event-1',
-      user_address: '0xParticipant',
-      payout_amount_stroops: '0',
-      is_claimed: false,
-      leaderboard_entry_id: 'leaderboard-entry-1',
-      leaderboard_entry: makeLeaderboardEntry(),
-      created_at: new Date('2026-05-02T00:00:00.000Z'),
-      ...overrides,
-    }) as CreatorEventPayout;
+  ): CreatorEventPayout => ({
+    id: 'payout-1',
+    event_id: 'event-1',
+    user_address: '0xParticipant',
+    payout_amount_stroops: '0',
+    is_claimed: false,
+    leaderboard_entry_id: 'leaderboard-entry-1',
+    leaderboard_entry: makeLeaderboardEntry(),
+    created_at: new Date('2026-05-02T00:00:00.000Z'),
+    ...overrides,
+  });
 
   beforeEach(async () => {
     creatorEventPayoutRepository = {
@@ -538,5 +536,74 @@ describe('CreatorEventsService getLeaderboard', () => {
     );
     expect(result.source).toBe('cache');
     expect(contractService.getEventLeaderboard).not.toHaveBeenCalled();
+  });
+});
+
+// NOTE: `invalidatePredictionStatsCache` is not currently called from any
+// write path in this codebase (verified via a repo-wide grep for its name) -
+// there is no prediction/match-result mutation flow that invokes it yet, so
+// there is nothing to test for "runs after the write commits" or "a read
+// right after invalidation sees fresh data" (#1825's original ask assumed
+// this wiring already existed). These tests cover the function's own
+// behavior in isolation instead. Wiring it into a mutation flow is a
+// separate, deliberate follow-up for whoever owns that flow's design.
+describe('CreatorEventsService invalidatePredictionStatsCache', () => {
+  let service: CreatorEventsService;
+  let cacheManager: { get: jest.Mock; set: jest.Mock; del: jest.Mock };
+
+  beforeEach(async () => {
+    cacheManager = { get: jest.fn(), set: jest.fn(), del: jest.fn() };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        CreatorEventsService,
+        { provide: ContractService, useValue: {} },
+        { provide: SearchService, useValue: {} },
+        { provide: getRepositoryToken(CreatorEvent), useValue: {} },
+        {
+          provide: getRepositoryToken(CreatorEventLeaderboardEntry),
+          useValue: {},
+        },
+        { provide: getRepositoryToken(Match), useValue: {} },
+        { provide: getRepositoryToken(MatchPrediction), useValue: {} },
+        { provide: getRepositoryToken(User), useValue: {} },
+        { provide: getRepositoryToken(CreatorEventPayout), useValue: {} },
+        { provide: CACHE_MANAGER, useValue: cacheManager },
+      ],
+    }).compile();
+
+    service = module.get<CreatorEventsService>(CreatorEventsService);
+  });
+
+  it('clears the event stats cache key for the given event', async () => {
+    await service.invalidatePredictionStatsCache('event-1');
+
+    expect(cacheManager.del).toHaveBeenCalledWith(
+      '/creator-events/event-1/stats',
+    );
+    expect(cacheManager.del).toHaveBeenCalledTimes(1);
+  });
+
+  it('also clears the per-user score cache key when an address is given', async () => {
+    await service.invalidatePredictionStatsCache('event-1', 'GADDR1');
+
+    expect(cacheManager.del).toHaveBeenCalledWith(
+      '/creator-events/event-1/stats',
+    );
+    expect(cacheManager.del).toHaveBeenCalledWith(
+      '/creator-events/event-1/score/GADDR1',
+    );
+    expect(cacheManager.del).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not throw and settles cleanly when called concurrently for the same event', async () => {
+    await expect(
+      Promise.all([
+        service.invalidatePredictionStatsCache('event-1', 'GADDR1'),
+        service.invalidatePredictionStatsCache('event-1', 'GADDR1'),
+      ]),
+    ).resolves.toEqual([undefined, undefined]);
+
+    expect(cacheManager.del).toHaveBeenCalledTimes(4);
   });
 });
