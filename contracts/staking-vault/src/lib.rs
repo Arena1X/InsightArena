@@ -241,8 +241,8 @@ impl StakingVault {
 
         position.amount += amount;
         position.shares += new_shares;
-        position.reward_debt = pool::reward_debt(&pool_state, position.shares);
         position.unlock_at = env.ledger().timestamp() + lock_duration;
+        position.reward_debt = pool::reward_debt(&pool_state, &position);
 
         pool_state.total_shares += new_shares;
 
@@ -252,33 +252,19 @@ impl StakingVault {
         Ok(())
     }
 
-    /// Claim the caller's accrued share of protocol fees.
+    // ── Admin ───────────────────────────────────────────────────────────────────
+
+    /// Pause or unpause staking. Only the configured admin may call this.
     ///
-    /// Reverts with `NoPosition` when the staker has never staked (or has fully
-    /// withdrawn and closed their position), rather than panicking on a missing
-    /// storage entry or returning stale rewards.
-    pub fn claim_rewards(env: Env, staker: Address) -> Result<i128, StakingError> {
-        staker.require_auth();
-        require_not_paused(&env)?;
-
+    /// The stored admin address must authorize the call before the paused flag
+    /// is mutated, so a non-admin caller is rejected via auth failure and the
+    /// flag is left unchanged.
+    pub fn set_paused(env: Env, paused: bool) -> Result<(), StakingError> {
         let config = get_config(&env)?;
-        let mut pool_state = get_pool_state(&env)?;
+        config.admin.require_auth();
 
-        let mut position = get_position_raw(&env, &staker).ok_or(StakingError::NoPosition)?;
+        env.storage().instance().set(&DataKey::Paused, &paused);
 
-        let owed = pool::pending(&pool_state, &position)?;
-
-        position.reward_debt = pool::reward_debt(&pool_state, position.shares);
-        set_position(&env, &staker, &position);
-
-        if owed > 0 {
-            pool_state.pending_rewards = pool_state.pending_rewards.saturating_sub(owed);
-            set_pool_state(&env, &pool_state);
-
-            let token_client = TokenClient::new(&env, &config.token);
-            token_client.transfer(&env.current_contract_address(), &staker, &owed);
-        }
-
-        Ok(owed)
+        Ok(())
     }
 }
