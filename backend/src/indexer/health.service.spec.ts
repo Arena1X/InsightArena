@@ -170,4 +170,52 @@ describe('IndexerHealthService', () => {
     expect(indexerService.triggerManualSync).toHaveBeenCalled();
     expect(result.message).toContain('triggered');
   });
+
+  it('rejects a second triggerManualSync while a sync is already in progress', async () => {
+    let resolveSync: () => void = () => undefined;
+    indexerService.triggerManualSync.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSync = resolve;
+        }),
+    );
+
+    const first = service.triggerManualSync();
+    await expect(service.triggerManualSync()).rejects.toThrow(
+      /already in progress/i,
+    );
+
+    expect(indexerService.triggerManualSync).toHaveBeenCalledTimes(1);
+
+    resolveSync();
+    await first;
+  });
+
+  it('allows triggerManualSync again once the prior sync run has completed', async () => {
+    indexerService.triggerManualSync.mockResolvedValue(undefined);
+
+    await service.triggerManualSync();
+    await expect(service.triggerManualSync()).resolves.toBeDefined();
+
+    expect(indexerService.triggerManualSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('reflects an in-progress sync state in getHealth while one is running', async () => {
+    mockHealthyMetrics();
+    let resolveSync: () => void = () => undefined;
+    indexerService.triggerManualSync.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSync = resolve;
+        }),
+    );
+
+    const sync = service.triggerManualSync();
+    const health = await service.getHealth();
+
+    expect(health.metrics.is_running).toBe(true);
+
+    resolveSync();
+    await sync;
+  });
 });

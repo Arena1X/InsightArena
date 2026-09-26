@@ -17,6 +17,7 @@ const ERROR_RATE_THRESHOLD = 5;
 @Injectable()
 export class IndexerHealthService {
   private readonly logger = new Logger(IndexerHealthService.name);
+  private manualSyncInProgress = false;
 
   constructor(
     private readonly indexerService: IndexerService,
@@ -98,9 +99,22 @@ export class IndexerHealthService {
   }
 
   async triggerManualSync(): Promise<{ message: string }> {
+    if (this.manualSyncInProgress) {
+      this.logger.warn(
+        'Manual indexer sync ignored: a sync is already in progress',
+      );
+      return { message: 'Indexer sync already in progress' };
+    }
+
+    this.manualSyncInProgress = true;
     this.logger.log('Manual indexer sync triggered');
-    await this.indexerService.triggerManualSync();
-    return { message: 'Indexer sync triggered successfully' };
+
+    try {
+      await this.indexerService.triggerManualSync();
+      return { message: 'Indexer sync triggered successfully' };
+    } finally {
+      this.manualSyncInProgress = false;
+    }
   }
 
   private async buildMetrics(): Promise<IndexerHealthMetricsDto> {
@@ -130,7 +144,7 @@ export class IndexerHealthService {
       failed_event_count: baseMetrics.failed_events + baseMetrics.dlq_events,
       error_rate_percent: errorRate,
       last_successful_sync_at: lastSyncAt.toISOString(),
-      is_running: baseMetrics.is_running,
+      is_running: baseMetrics.is_running || this.manualSyncInProgress,
       uptime_seconds: baseMetrics.uptime_seconds,
       total_events_processed: baseMetrics.total_events_processed,
       pending_events: baseMetrics.pending_events,

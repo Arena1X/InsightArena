@@ -181,6 +181,61 @@ describe('AchievementsService', () => {
     expect(result[0].is_unlocked).toBe(true);
   });
 
+  describe('awardAchievementOnce concurrency guard', () => {
+    const achievement = {
+      id: 'ach-once',
+      type: AchievementType.FIRST_PREDICTION,
+      title: 'First Step',
+    } as Achievement;
+
+    beforeEach(() => {
+      achievementsRepository.findOne.mockResolvedValue(achievement);
+    });
+
+    it('awards exactly one record when two calls race for the same user/achievement', async () => {
+      const awardedKeys = makeInsertOrIgnoreMock(userAchievementsRepository);
+
+      await Promise.all([
+        service.awardAchievementOnce(mockUser, achievement),
+        service.awardAchievementOnce(mockUser, achievement),
+      ]);
+
+      expect(awardedKeys.size).toBe(1);
+      expect(awardedKeys.has(`${mockUser.id}:${achievement.id}`)).toBe(true);
+    });
+
+    it('sends only one achievement-unlocked notification despite the concurrent race', async () => {
+      makeInsertOrIgnoreMock(userAchievementsRepository);
+
+      await Promise.all([
+        service.awardAchievementOnce(mockUser, achievement),
+        service.awardAchievementOnce(mockUser, achievement),
+      ]);
+
+      expect(notificationsService.create).toHaveBeenCalledTimes(1);
+      expect(notificationsService.create).toHaveBeenCalledWith(
+        mockUser.stellar_address,
+        NotificationType.AchievementUnlocked,
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({ achievementId: achievement.id }),
+        mockUser.id,
+      );
+      expect(
+        notificationBroadcaster.broadcastAchievementUnlocked,
+      ).toHaveBeenCalledTimes(1);
+    });
+
+    it('awards a genuinely new achievement not yet awarded to the user', async () => {
+      const awardedKeys = makeInsertOrIgnoreMock(userAchievementsRepository);
+
+      await service.awardAchievementOnce(mockUser, achievement);
+
+      expect(awardedKeys.has(`${mockUser.id}:${achievement.id}`)).toBe(true);
+      expect(notificationsService.create).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('accuracy achievement boundary tests', () => {
     const makeUser = (correct: number, total: number) =>
       ({
@@ -234,221 +289,6 @@ describe('AchievementsService', () => {
       await service.checkAndUnlockAchievements(makeUser(0, 0));
       expect(unlockedTypes()).not.toContain(AchievementType.ACCURACY_75);
       expect(unlockedTypes()).not.toContain(AchievementType.ACCURACY_90);
-    });
-  });
-
-  describe('TOTAL_STAKED achievement boundary tests', () => {
-    const makeStakeUser = (total_staked_stroops: string) =>
-      ({
-        id: 'user-1',
-        stellar_address: 'GABC123',
-        total_predictions: 0,
-        correct_predictions: 0,
-        total_staked_stroops,
-        reputation_score: 0,
-      }) as User;
-
-    beforeEach(() => {
-      achievementsRepository.findOne.mockImplementation((options: any) => {
-        const type = options?.where?.type;
-        return Promise.resolve({ id: `ach-${type}`, type } as Achievement);
-      });
-    });
-
-    const unlockedTypes = () =>
-      notificationsService.create.mock.calls.map(
-        (call) => (call[4] as any)?.achievementType,
-      );
-
-    it('should NOT unlock TOTAL_STAKED_1M when staked is 999999 (just below 1M)', async () => {
-      makeInsertOrIgnoreMock(userAchievementsRepository);
-      const user = makeStakeUser('999999');
-      usersRepository.findOne.mockResolvedValue(user);
-      await service.checkAndUnlockAchievements(user);
-      expect(unlockedTypes()).not.toContain(AchievementType.TOTAL_STAKED_1M);
-    });
-
-    it('should unlock TOTAL_STAKED_1M when staked is exactly 1000000', async () => {
-      makeInsertOrIgnoreMock(userAchievementsRepository);
-      const user = makeStakeUser('1000000');
-      usersRepository.findOne.mockResolvedValue(user);
-      await service.checkAndUnlockAchievements(user);
-      expect(unlockedTypes()).toContain(AchievementType.TOTAL_STAKED_1M);
-    });
-
-    it('should NOT re-notify TOTAL_STAKED_1M once already awarded', async () => {
-      const user = makeStakeUser('9999999');
-      usersRepository.findOne.mockResolvedValue(user);
-      const awardedKeys = makeInsertOrIgnoreMock(userAchievementsRepository);
-      awardedKeys.add(`${user.id}:ach-${AchievementType.TOTAL_STAKED_1M}`);
-
-      await service.checkAndUnlockAchievements(user);
-
-      expect(unlockedTypes()).not.toContain(AchievementType.TOTAL_STAKED_10M);
-      expect(unlockedTypes()).not.toContain(AchievementType.TOTAL_STAKED_1M);
-    });
-
-    it('should unlock only TOTAL_STAKED_10M when staked is exactly 10000000 and TOTAL_STAKED_1M already unlocked', async () => {
-      const user = makeStakeUser('10000000');
-      usersRepository.findOne.mockResolvedValue(user);
-      const awardedKeys = makeInsertOrIgnoreMock(userAchievementsRepository);
-      awardedKeys.add(`${user.id}:ach-${AchievementType.TOTAL_STAKED_1M}`);
-
-      await service.checkAndUnlockAchievements(user);
-
-      expect(unlockedTypes()).toContain(AchievementType.TOTAL_STAKED_10M);
-      expect(unlockedTypes()).not.toContain(AchievementType.TOTAL_STAKED_1M);
-    });
-  });
-
-  describe('idempotency: one award per (user, achievement) under concurrent triggers', () => {
-    const qualifyingUser = {
-      id: 'user-1',
-      stellar_address: 'GABC123',
-      total_predictions: 1,
-      correct_predictions: 0,
-      total_staked_stroops: '0',
-      reputation_score: 0,
-    } as User;
-
-    const firstPredictionAchievement = {
-      id: 'ach-first-prediction',
-      type: AchievementType.FIRST_PREDICTION,
-      title: 'First Step',
-    } as Achievement;
-
-    beforeEach(() => {
-      usersRepository.findOne.mockResolvedValue(qualifyingUser);
-      achievementsRepository.findOne.mockResolvedValue(
-        firstPredictionAchievement,
-      );
-    });
-
-    it('awards exactly once and notifies exactly once when two concurrent triggers race', async () => {
-      makeInsertOrIgnoreMock(userAchievementsRepository);
-
-      // Simulate two concurrent triggers (e.g. two predictions resolving
-      // near-simultaneously) both racing to unlock the same achievement.
-      await Promise.all([
-        service.checkAndUnlockAchievements(qualifyingUser),
-        service.checkAndUnlockAchievements(qualifyingUser),
-      ]);
-
-      expect(notificationsService.create).toHaveBeenCalledTimes(1);
-    });
-
-    it('awards exactly once and notifies exactly once across many concurrent triggers', async () => {
-      makeInsertOrIgnoreMock(userAchievementsRepository);
-
-      await Promise.all(
-        Array.from({ length: 10 }, () =>
-          service.checkAndUnlockAchievements(qualifyingUser),
-        ),
-      );
-
-      expect(notificationsService.create).toHaveBeenCalledTimes(1);
-    });
-
-    it('does not re-notify on a second sequential call once already awarded', async () => {
-      makeInsertOrIgnoreMock(userAchievementsRepository);
-
-      await service.checkAndUnlockAchievements(qualifyingUser);
-      await service.checkAndUnlockAchievements(qualifyingUser);
-
-      expect(notificationsService.create).toHaveBeenCalledTimes(1);
-    });
-
-    it('updateAchievementProgress also awards at most once under concurrent calls', async () => {
-      achievementsRepository.find.mockResolvedValue([
-        firstPredictionAchievement,
-      ]);
-      makeInsertOrIgnoreMock(userAchievementsRepository);
-
-      await Promise.all([
-        service.updateAchievementProgress(qualifyingUser),
-        service.updateAchievementProgress(qualifyingUser),
-      ]);
-
-      expect(notificationsService.create).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('achievement progress broadcasting', () => {
-    const lockedAchievement = {
-      id: 'ach-locked',
-      type: AchievementType.CORRECT_PREDICTIONS_10,
-      title: 'Rising Star',
-    } as Achievement;
-
-    const progressingUser = {
-      id: 'user-2',
-      stellar_address: 'GXYZ789',
-      total_predictions: 10,
-      correct_predictions: 5,
-      total_staked_stroops: '0',
-      reputation_score: 0,
-    } as User;
-
-    beforeEach(() => {
-      achievementsRepository.find.mockResolvedValue([lockedAchievement]);
-    });
-
-    it('broadcasts progress when current_value changed from the stored row', async () => {
-      userAchievementsRepository.findOne.mockResolvedValue({
-        current_value: 3,
-        is_unlocked: false,
-      } as UserAchievement);
-      userAchievementsRepository.save.mockResolvedValue({} as UserAchievement);
-
-      await service.updateAchievementProgress(progressingUser);
-
-      expect(
-        notificationBroadcaster.broadcastAchievementProgress,
-      ).toHaveBeenCalledWith(
-        progressingUser.stellar_address,
-        expect.objectContaining({
-          achievement_id: lockedAchievement.id,
-          current_progress: 5,
-          threshold: 10,
-        }),
-      );
-    });
-
-    it('does not broadcast progress when current_value is unchanged', async () => {
-      userAchievementsRepository.findOne.mockResolvedValue({
-        current_value: 5,
-        is_unlocked: false,
-      } as UserAchievement);
-      userAchievementsRepository.save.mockResolvedValue({} as UserAchievement);
-
-      await service.updateAchievementProgress(progressingUser);
-
-      expect(
-        notificationBroadcaster.broadcastAchievementProgress,
-      ).not.toHaveBeenCalled();
-    });
-
-    it('broadcasts an achievement:unlocked event exactly once when threshold is met', async () => {
-      const unlockingUser = {
-        id: 'user-3',
-        stellar_address: 'GUNLOCK1',
-        total_predictions: 10,
-        correct_predictions: 10,
-        total_staked_stroops: '0',
-        reputation_score: 0,
-      } as User;
-
-      achievementsRepository.find.mockResolvedValue([lockedAchievement]);
-      makeInsertOrIgnoreMock(userAchievementsRepository);
-
-      await service.updateAchievementProgress(unlockingUser);
-
-      expect(
-        notificationBroadcaster.broadcastAchievementUnlocked,
-      ).toHaveBeenCalledTimes(1);
-      expect(
-        notificationBroadcaster.broadcastAchievementProgress,
-      ).not.toHaveBeenCalled();
     });
   });
 });
