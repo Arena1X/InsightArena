@@ -241,18 +241,29 @@ export default function LeaderboardPage() {
     [entries, filters]
   );
 
-  const loadMore = useCallback(async () => {
+  const loadMore = useCallback(async (): Promise<number> => {
     await new Promise((resolve) => window.setTimeout(resolve, 120));
+    let loaded = 0;
     setLoadedEntries((current) => {
       const nextPage = filteredEntries.slice(
         current.length,
         current.length + LEADERBOARD_PAGE_SIZE,
       );
-      return appendUniqueByKey(current, nextPage, leaderboardEntryKey);
+      const merged = appendUniqueByKey(current, nextPage, leaderboardEntryKey);
+      loaded = merged.length - current.length;
+      return merged;
     });
+    return loaded;
   }, [filteredEntries]);
 
-  const { observerTarget, isLoading, hasMore, setHasMore } = useInfiniteScroll({
+  const {
+    observerTarget,
+    isLoading,
+    hasMore,
+    setHasMore,
+    loadMore: triggerLoadMore,
+    announcement,
+  } = useInfiniteScroll({
     onLoadMore: loadMore,
     enabled: filteredEntries.length > LEADERBOARD_PAGE_SIZE,
   });
@@ -350,12 +361,28 @@ export default function LeaderboardPage() {
                     />
                     {isLoading && <LeaderboardTailSkeleton />}
                     {hasMore && (
-                      <div
-                        ref={observerTarget}
-                        className="h-6"
-                        aria-hidden="true"
-                      />
+                      <>
+                        <div
+                          ref={observerTarget}
+                          className="h-6"
+                          aria-hidden="true"
+                        />
+                        {!isLoading && (
+                          <div className="mt-4 flex justify-center">
+                            <button
+                              type="button"
+                              onClick={triggerLoadMore}
+                              className="rounded-lg border border-white/10 bg-white/5 px-6 py-2.5 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-[#A78BFA]/50"
+                            >
+                              Load more entries
+                            </button>
+                          </div>
+                        )}
+                      </>
                     )}
+                    <div aria-live="polite" aria-atomic="true" className="sr-only">
+                      {announcement}
+                    </div>
                   </div>
 
                   <aside className="h-fit space-y-4 rounded-[1.75rem] border border-white/10 bg-[#111726]/92 p-6 backdrop-blur">

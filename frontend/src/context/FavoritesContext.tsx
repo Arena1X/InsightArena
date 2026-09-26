@@ -104,7 +104,7 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
             headers: { Authorization: `Bearer ${token}` },
           });
           if (abortController.signal.aborted) return;
-          const next = new Set(
+          const serverIds = new Set(
             (response.data ?? [])
               .map((item) => item.market?.id)
               .filter(Boolean),
@@ -114,9 +114,26 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
               .filter((item) => item.market?.id)
               .map((item) => [item.market.id, item.id]),
           );
-          confirmedRef.current = next;
-          setFavoriteIds(next);
-          writeStoredFavorites(storageKey, next);
+
+          const merged = new Set([...stored, ...serverIds]);
+          confirmedRef.current = new Set(serverIds);
+          setFavoriteIds(merged);
+          writeStoredFavorites(storageKey, merged);
+
+          const localOnly = [...stored].filter((id) => !serverIds.has(id));
+          for (const id of localOnly) {
+            if (abortController.signal.aborted) break;
+            try {
+              const created = await addFavoriteBookmark(id, {
+                headers: { Authorization: `Bearer ${token}` },
+                signal: abortController.signal,
+              });
+              bookmarkIdsRef.current.set(id, created.id);
+              confirmedRef.current.add(id);
+            } catch {
+              // Best-effort: stays in UI but not server-confirmed yet
+            }
+          }
         } catch {
           // Keep the local cache when the API is unreachable.
         }

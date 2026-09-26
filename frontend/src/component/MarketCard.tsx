@@ -1,8 +1,9 @@
 import React from "react";
-import { Heart } from "lucide-react";
+import { Heart, WifiOff } from "lucide-react";
 import Link from "next/link";
 import { Sparkline } from "./Sparkline";
 import { useCountdown } from "../hooks/useCountdown";
+import type { ConnectionStatus } from "../hooks/useLiveOdds";
 
 type Market = {
   id: string;
@@ -21,6 +22,8 @@ export default function MarketCard({
   onFavoriteToggle,
   preview = false,
   sparklineData,
+  connectionStatus,
+  isStale = false,
 }: {
   market: Market;
   onPredict: () => void;
@@ -29,6 +32,8 @@ export default function MarketCard({
   /** Renders a static, non-navigating preview (e.g. in the create-market form). */
   preview?: boolean;
   sparklineData?: number[];
+  connectionStatus?: ConnectionStatus;
+  isStale?: boolean;
 }) {
   const probabilityPct = Math.round((market.probability || 0) * 100);
 
@@ -60,11 +65,28 @@ export default function MarketCard({
     return "bg-blue-500/10 text-blue-300 border-blue-700/30";
   }
 
+  const showStaleBadge =
+    !preview &&
+    (isStale || connectionStatus === "disconnected" || connectionStatus === "connecting");
+  const staleBadgeLabel =
+    connectionStatus === "disconnected" || connectionStatus === "connecting"
+      ? "Reconnecting"
+      : "Stale";
+
   const cardContent = (
     <>
       {preview && (
         <span className="absolute right-3 top-3 rounded-full bg-orange-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-300">
           Preview
+        </span>
+      )}
+      {showStaleBadge && (
+        <span
+          data-testid="stale-odds-badge"
+          className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full border border-yellow-600/40 bg-yellow-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-yellow-300"
+        >
+          <WifiOff size={10} />
+          {staleBadgeLabel}
         </span>
       )}
       <div className="flex items-start justify-between gap-3">

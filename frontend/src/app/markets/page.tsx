@@ -147,7 +147,12 @@ export default function MarketsPage() {
     await fetchMarketsPage(nextPage);
   }, [page, fetchMarketsPage]);
 
-  const { observerTarget, isLoading: isLoadingMore } = useInfiniteScroll({
+  const {
+    observerTarget,
+    isLoading: isLoadingMore,
+    loadMore,
+    announcement,
+  } = useInfiniteScroll({
     onLoadMore: handleLoadMore,
     enabled: viewMode === "all" && hasMore && !loading,
   });
@@ -486,7 +491,7 @@ export default function MarketsPage() {
               ))}
             </div>
 
-            {/* Infinite scroll trigger and loading state */}
+            {/* Infinite scroll trigger, load-more button, and ARIA announcement */}
             {viewMode === "all" && (
               <>
                 <div
@@ -501,6 +506,18 @@ export default function MarketsPage() {
                   </div>
                 )}
 
+                {hasMore && !isLoadingMore && (
+                  <div className="mt-6 flex justify-center">
+                    <button
+                      type="button"
+                      onClick={loadMore}
+                      className="rounded-lg border border-white/10 bg-white/5 px-6 py-2.5 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-orange-400/50"
+                    >
+                      Load more markets
+                    </button>
+                  </div>
+                )}
+
                 {!hasMore && markets.length > 0 && (
                   <div className="mt-8 text-center">
                     <p className="text-sm text-slate-400">
@@ -508,6 +525,10 @@ export default function MarketsPage() {
                     </p>
                   </div>
                 )}
+
+                <div aria-live="polite" aria-atomic="true" className="sr-only">
+                  {announcement}
+                </div>
               </>
             )}
           </>
