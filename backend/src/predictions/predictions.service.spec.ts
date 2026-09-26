@@ -1447,6 +1447,104 @@ describe('PredictionsService', () => {
           }),
         );
       });
+
+      it('does not flag a user whose concentration sits just under the HHI threshold', async () => {
+        mockPredictionsRepo.find.mockResolvedValue([]);
+
+        const qb = mockPredictionsRepo.createQueryBuilder(
+          'prediction',
+        ) as unknown as {
+          getRawMany: jest.Mock;
+        };
+
+        // 10 markets total; top counterparty shares 6 (share 0.6) and a
+        // second shares 3 (share 0.3): HHI = 0.6^2 + 0.3^2 = 0.45, safely
+        // under the configured 0.5 threshold (not exactly at the boundary,
+        // to avoid floating-point-equality flakiness on `hhi < threshold`).
+        const marketIds = Array.from({ length: 10 }, (_, i) => `m${i + 1}`);
+        qb.getRawMany
+          .mockResolvedValueOnce(marketIds.map((marketId) => ({ marketId })))
+          .mockResolvedValueOnce([
+            ...marketIds
+              .slice(0, 6)
+              .map((marketId) => ({ counterpartyId: 'top', marketId })),
+            ...marketIds
+              .slice(6, 9)
+              .map((marketId) => ({ counterpartyId: 'second', marketId })),
+          ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.COUNTERPARTY_CONCENTRATION,
+          }),
+        );
+      });
+
+      it('flags a user whose concentration crosses the HHI threshold, and never a user with a broad, diverse counterparty set regardless of volume', async () => {
+        mockPredictionsRepo.find.mockResolvedValue([]);
+
+        const qb = mockPredictionsRepo.createQueryBuilder(
+          'prediction',
+        ) as unknown as {
+          getRawMany: jest.Mock;
+        };
+
+        // Same 10-market volume as the "just under" case above, but the top
+        // counterparty now shares 8 markets (share 0.8, HHI = 0.64), well
+        // past the 0.5 threshold — isolates that it's concentration, not
+        // volume, that triggers the signal.
+        const marketIds = Array.from({ length: 10 }, (_, i) => `m${i + 1}`);
+        qb.getRawMany
+          .mockResolvedValueOnce(marketIds.map((marketId) => ({ marketId })))
+          .mockResolvedValueOnce(
+            marketIds
+              .slice(0, 8)
+              .map((marketId) => ({ counterpartyId: 'top', marketId })),
+          );
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            user_id: 'user-1',
+            signal_type: FraudSignalType.COUNTERPARTY_CONCENTRATION,
+            status: FraudFlagStatus.OPEN,
+          }),
+        );
+      });
+
+      it('never flags a large volume of predictions spread across a broad, diverse set of counterparties', async () => {
+        mockPredictionsRepo.find.mockResolvedValue([]);
+
+        const qb = mockPredictionsRepo.createQueryBuilder(
+          'prediction',
+        ) as unknown as {
+          getRawMany: jest.Mock;
+        };
+
+        // 50 markets, each with a distinct counterparty — high volume, but
+        // maximally diverse (HHI = 50 * (1/50)^2 = 0.02), nowhere near the
+        // 0.5 threshold regardless of how much volume is behind it.
+        const marketIds = Array.from({ length: 50 }, (_, i) => `m${i + 1}`);
+        qb.getRawMany
+          .mockResolvedValueOnce(marketIds.map((marketId) => ({ marketId })))
+          .mockResolvedValueOnce(
+            marketIds.map((marketId, i) => ({
+              counterpartyId: `counterparty-${i}`,
+              marketId,
+            })),
+          );
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.COUNTERPARTY_CONCENTRATION,
+          }),
+        );
+      });
     });
 
     it('returns the created flags without throwing or banning the user', async () => {

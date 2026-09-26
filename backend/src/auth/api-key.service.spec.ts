@@ -208,5 +208,117 @@ describe('ApiKeyService', () => {
         ForbiddenException,
       );
     });
+
+    /**
+     * Note on issue #1849's premise: the old key is NOT rejected immediately
+     * by default — rotate() defaults graceMs to a 24h grace window
+     * (DEFAULT_ROTATION_GRACE_MS), and validateKey() deliberately keeps a
+     * rotated key valid until grace_expires_at (mirrors RefreshToken's
+     * rotation-chain pattern; see the JSDoc above `rotate()`). Immediate
+     * invalidation only happens when the caller explicitly passes
+     * `graceMs: 0`. These tests cover the actual, documented default and
+     * the explicit-opt-in immediate case — see PR description for the
+     * discrepancy between this issue's premise and the code's actual
+     * intended design.
+     */
+    it('immediately invalidates the old key when rotate() is called with graceMs: 0', async () => {
+      const rawKey = 'ia_oldkey12345';
+      const existing = {
+        id: 'key123',
+        userId: 'user123',
+        name: 'My Key',
+        scopes: ['read:markets'],
+        expires_at: null,
+        revoked_at: null,
+        rotated_at: null,
+        grace_expires_at: null,
+        replaced_by_id: null,
+        key_hash: 'hashed',
+      };
+      const replacement = {
+        id: 'key456',
+        name: existing.name,
+        key_prefix: 'ia_newpre',
+        scopes: existing.scopes,
+        expires_at: null,
+        created_at: new Date(),
+      };
+
+      repository.findOne.mockResolvedValue(existing);
+      repository.create.mockReturnValue(replacement);
+      let rotatedOldRow: typeof existing & {
+        rotated_at: Date;
+        grace_expires_at: Date;
+      };
+      repository.save.mockImplementation((row: any) => {
+        if (row === replacement) return Promise.resolve(replacement);
+        rotatedOldRow = row;
+        return Promise.resolve(row);
+      });
+
+      await service.rotate('key123', 'user123', 0);
+
+      // grace_expires_at was set to "now" at rotation time (graceMs: 0).
+      // Force it unambiguously into the past for validateKey's own `new
+      // Date()` check, rather than relying on however many real
+      // milliseconds elapse between the two calls above (which can be too
+      // few to make grace_expires_at < new Date() true).
+      rotatedOldRow!.grace_expires_at = new Date(
+        rotatedOldRow!.grace_expires_at.getTime() - 1,
+      );
+
+      repository.find.mockResolvedValue([rotatedOldRow!]);
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      await expect(service.validateKey(rawKey)).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('the newly rotated key validates immediately with the same scopes/owner as the key it replaced', async () => {
+      const existing = {
+        id: 'key123',
+        userId: 'user123',
+        name: 'My Key',
+        scopes: ['read:markets', 'write:predictions'],
+        expires_at: null,
+        revoked_at: null,
+        rotated_at: null,
+        grace_expires_at: null,
+        replaced_by_id: null,
+      };
+      const newKeyRow = {
+        id: 'key456',
+        userId: existing.userId,
+        name: existing.name,
+        key_prefix: 'ia_newpre',
+        key_hash: 'new-hash',
+        scopes: existing.scopes,
+        expires_at: null,
+        revoked_at: null,
+        rotated_at: null,
+        grace_expires_at: null,
+        created_at: new Date(),
+      };
+
+      repository.findOne.mockResolvedValue(existing);
+      repository.create.mockReturnValue(newKeyRow);
+      repository.save
+        .mockResolvedValueOnce(newKeyRow)
+        .mockResolvedValueOnce({ ...existing, rotated_at: new Date() });
+
+      const rotateResult = await service.rotate('key123', 'user123');
+
+      expect(rotateResult.scopes).toEqual(existing.scopes);
+
+      // The freshly issued raw key validates immediately: no rotated_at of
+      // its own, so validateKey's grace-window check never applies to it.
+      repository.find.mockResolvedValue([newKeyRow]);
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      const validated = await service.validateKey(rotateResult.key);
+      expect(validated.userId).toBe(existing.userId);
+      expect(validated.scopes).toEqual(existing.scopes);
+    });
   });
 });

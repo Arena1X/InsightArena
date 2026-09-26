@@ -262,3 +262,124 @@ describe('CreatorEventsService getUpcomingMatches', () => {
     );
   });
 });
+
+describe('CreatorEventsService getPayoutByAddress', () => {
+  let service: CreatorEventsService;
+  let creatorEventPayoutRepository: { findOne: jest.Mock };
+
+  const makeLeaderboardEntry = (
+    overrides: Partial<CreatorEventLeaderboardEntry> = {},
+  ): CreatorEventLeaderboardEntry =>
+    ({
+      id: 'leaderboard-entry-1',
+      event_id: 'event-1',
+      user_address: '0xParticipant',
+      rank: 5,
+      total_predictions: 3,
+      correct_predictions: 1,
+      accuracy_percentage: 33.33,
+      is_winner: false,
+      completion_time: null,
+      created_at: new Date('2026-05-01T00:00:00.000Z'),
+      ...overrides,
+    }) as CreatorEventLeaderboardEntry;
+
+  const makePayout = (
+    overrides: Partial<CreatorEventPayout> = {},
+  ): CreatorEventPayout =>
+    ({
+      id: 'payout-1',
+      event_id: 'event-1',
+      user_address: '0xParticipant',
+      payout_amount_stroops: '0',
+      is_claimed: false,
+      leaderboard_entry_id: 'leaderboard-entry-1',
+      leaderboard_entry: makeLeaderboardEntry(),
+      created_at: new Date('2026-05-02T00:00:00.000Z'),
+      ...overrides,
+    }) as CreatorEventPayout;
+
+  beforeEach(async () => {
+    creatorEventPayoutRepository = {
+      findOne: jest.fn(),
+    };
+
+    const module = await Test.createTestingModule({
+      providers: [
+        CreatorEventsService,
+        { provide: ContractService, useValue: {} },
+        {
+          provide: SearchService,
+          useValue: { searchCreatorEvents: jest.fn() },
+        },
+        { provide: getRepositoryToken(CreatorEvent), useValue: {} },
+        { provide: getRepositoryToken(Match), useValue: {} },
+        { provide: getRepositoryToken(MatchPrediction), useValue: {} },
+        { provide: getRepositoryToken(User), useValue: {} },
+        {
+          provide: getRepositoryToken(CreatorEventLeaderboardEntry),
+          useValue: {},
+        },
+        {
+          provide: getRepositoryToken(CreatorEventPayout),
+          useValue: creatorEventPayoutRepository,
+        },
+        {
+          provide: CACHE_MANAGER,
+          useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
+        },
+      ],
+    }).compile();
+
+    service = module.get(CreatorEventsService);
+  });
+
+  it('returns a zero-amount payout for a participant who received no prize, not a not-found', async () => {
+    creatorEventPayoutRepository.findOne.mockResolvedValue(
+      makePayout({ payout_amount_stroops: '0' }),
+    );
+
+    const result = await service.getPayoutByAddress('event-1', '0xParticipant');
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        user_address: '0xParticipant',
+        payout_amount_stroops: '0',
+        is_winner: false,
+      }),
+    );
+  });
+
+  it('throws a distinct NotFoundException for an address that never joined the event', async () => {
+    creatorEventPayoutRepository.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.getPayoutByAddress('event-1', '0xNeverJoined'),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('returns the correct nonzero amount for a confirmed winner', async () => {
+    creatorEventPayoutRepository.findOne.mockResolvedValue(
+      makePayout({
+        user_address: '0xWinner',
+        payout_amount_stroops: '50000000',
+        leaderboard_entry: makeLeaderboardEntry({
+          user_address: '0xWinner',
+          rank: 1,
+          is_winner: true,
+        }),
+      }),
+    );
+
+    const result = await service.getPayoutByAddress('event-1', '0xWinner');
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        user_address: '0xWinner',
+        payout_amount_stroops: '50000000',
+        rank: 1,
+        is_winner: true,
+      }),
+    );
+  });
+});
