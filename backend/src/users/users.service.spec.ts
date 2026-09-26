@@ -483,7 +483,7 @@ describe('UsersService', () => {
 
       await service.findMarketsByAddress(mockUser.stellar_address, {
         status: UserMarketFilterStatus.Active,
-      } as ListUserMarketsDto);
+      });
 
       expect(queryBuilder.andWhere).toHaveBeenCalledWith(
         'market.is_resolved = false AND market.is_cancelled = false',
@@ -503,7 +503,7 @@ describe('UsersService', () => {
 
       await service.findMarketsByAddress(mockUser.stellar_address, {
         status: UserMarketFilterStatus.Resolved,
-      } as ListUserMarketsDto);
+      });
 
       expect(queryBuilder.andWhere).toHaveBeenCalledWith(
         'market.is_resolved = true',
@@ -523,7 +523,7 @@ describe('UsersService', () => {
 
       await service.findMarketsByAddress(mockUser.stellar_address, {
         status: UserMarketFilterStatus.Cancelled,
-      } as ListUserMarketsDto);
+      });
 
       expect(queryBuilder.andWhere).toHaveBeenCalledWith(
         'market.is_cancelled = true',
@@ -544,7 +544,7 @@ describe('UsersService', () => {
       await service.findMarketsByAddress(mockUser.stellar_address, {
         sort_by: UserMarketsSortBy.ParticipantCount,
         order: UserMarketsSortOrder.Asc,
-      } as ListUserMarketsDto);
+      });
 
       expect(queryBuilder.orderBy).toHaveBeenCalledWith(
         'market.participant_count',
@@ -625,7 +625,7 @@ describe('UsersService', () => {
         ...mockUser,
         id: 'user-uuid-2',
         stellar_address: 'G_ANOTHER',
-      } as User;
+      };
       jest
         .spyOn(repository, 'findOne')
         .mockImplementation(async (criteria: any) => {
@@ -657,6 +657,87 @@ describe('UsersService', () => {
         follower_id: mockUser.id,
         following_id: mockUserB.id,
       });
+    });
+
+    it('is reflected in both getFollowers (for the followed user) and getFollowing (for the follower) after a successful follow between two distinct users', async () => {
+      const mockUserB = {
+        ...mockUser,
+        id: 'user-uuid-2',
+        stellar_address: 'G_ANOTHER',
+      };
+
+      jest
+        .spyOn(repository, 'findOne')
+        .mockImplementation(async (criteria: any) => {
+          if (
+            criteria?.where?.id === mockUser.id ||
+            criteria?.id === mockUser.id
+          )
+            return mockUser;
+          if (
+            criteria?.where?.stellar_address === mockUser.stellar_address ||
+            criteria?.stellar_address === mockUser.stellar_address
+          )
+            return mockUser;
+          if (
+            criteria?.where?.stellar_address === mockUserB.stellar_address ||
+            criteria?.stellar_address === mockUserB.stellar_address
+          )
+            return mockUserB;
+          return null;
+        });
+
+      const followRepository = module.get<Repository<UserFollow>>(
+        getRepositoryToken(UserFollow),
+      );
+      jest.spyOn(followRepository, 'findOne').mockResolvedValue(null);
+      jest.spyOn(followRepository, 'save').mockResolvedValue({} as any);
+
+      await service.followUser(mockUser.id, mockUserB.stellar_address);
+
+      // getFollowers(userB) should now include userA as a follower.
+      const followersQueryBuilder = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest
+          .fn()
+          .mockResolvedValue([[{ follower: mockUser }], 1]),
+      };
+      jest
+        .spyOn(followRepository, 'createQueryBuilder')
+        .mockReturnValue(followersQueryBuilder as any);
+
+      const followers = await service.getFollowers(
+        mockUserB.stellar_address,
+        {},
+      );
+      expect(followers.total).toBe(1);
+      expect(followers.data[0].stellar_address).toBe(mockUser.stellar_address);
+
+      // getFollowing(userA) should now include userB as someone they follow.
+      const followingQueryBuilder = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest
+          .fn()
+          .mockResolvedValue([[{ following: mockUserB }], 1]),
+      };
+      jest
+        .spyOn(followRepository, 'createQueryBuilder')
+        .mockReturnValue(followingQueryBuilder as any);
+
+      const following = await service.getFollowing(
+        mockUser.stellar_address,
+        {},
+      );
+      expect(following.total).toBe(1);
+      expect(following.data[0].stellar_address).toBe(mockUserB.stellar_address);
     });
   });
 
@@ -736,6 +817,53 @@ describe('UsersService', () => {
       expect(result).toEqual({
         followers_count: 0,
         following_count: 0,
+      });
+    });
+
+    it('shows unchanged counts for a user who attempted (and was rejected from) a self-follow', async () => {
+      const followRepository = module.get<Repository<UserFollow>>(
+        getRepositoryToken(UserFollow),
+      );
+      jest
+        .spyOn(repository, 'findOne')
+        .mockImplementation(async (criteria: any) => {
+          if (
+            criteria?.where?.id === mockUser.id ||
+            criteria?.id === mockUser.id
+          )
+            return mockUser;
+          if (
+            criteria?.where?.stellar_address === mockUser.stellar_address ||
+            criteria?.stellar_address === mockUser.stellar_address
+          )
+            return mockUser;
+          return null;
+        });
+
+      // The self-follow attempt must be rejected before touching the follow
+      // repository at all.
+      const saveSpy = jest.spyOn(followRepository, 'save');
+      await expect(
+        service.followUser(mockUser.id, mockUser.stellar_address),
+      ).rejects.toThrow(BadRequestException);
+      expect(saveSpy).not.toHaveBeenCalled();
+
+      const mockQueryBuilder = {
+        where: jest.fn().mockReturnThis(),
+        getManyAndCount: jest
+          .fn()
+          .mockResolvedValueOnce([[], 3]) // followers, unaffected by the attempt
+          .mockResolvedValueOnce([[], 2]), // following, unaffected by the attempt
+      };
+      jest
+        .spyOn(followRepository, 'createQueryBuilder')
+        .mockReturnValue(mockQueryBuilder as any);
+
+      const result = await service.getFollowStats(mockUser.stellar_address);
+
+      expect(result).toEqual({
+        followers_count: 3,
+        following_count: 2,
       });
     });
   });
@@ -852,15 +980,14 @@ describe('UsersService', () => {
       );
     });
 
-    const makeAuthor = (id: string, extra: Partial<User> = {}): User =>
-      ({
-        ...mockUser,
-        id,
-        stellar_address: `G_USER_${id}`,
-        username: `user_${id}`,
-        deleted_at: null,
-        ...extra,
-      }) as User;
+    const makeAuthor = (id: string, extra: Partial<User> = {}): User => ({
+      ...mockUser,
+      id,
+      stellar_address: `G_USER_${id}`,
+      username: `user_${id}`,
+      deleted_at: null,
+      ...extra,
+    });
 
     const makePrediction = (id: string, author: User, submittedAt: Date) => ({
       id,
