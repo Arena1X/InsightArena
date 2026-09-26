@@ -78,29 +78,6 @@ fn require_not_paused(env: &Env) -> Result<(), StakingError> {
     Ok(())
 }
 
-/// Validate the lock-tier configuration supplied to `initialize`.
-///
-/// Rejects an empty tier vector and any tiers that are not strictly ordered by
-/// ascending `min_lock_duration`, so `lock::tier_for` can never silently resolve
-/// the wrong boundary. Returns `InvalidLockTiers` on any violation.
-fn validate_lock_tiers(tiers: &Vec<LockTier>) -> Result<(), StakingError> {
-    if tiers.is_empty() {
-        return Err(StakingError::InvalidLockTiers);
-    }
-
-    let mut prev: Option<u64> = None;
-    for tier in tiers.iter() {
-        if let Some(prev_duration) = prev {
-            if tier.min_lock_duration <= prev_duration {
-                return Err(StakingError::InvalidLockTiers);
-            }
-        }
-        prev = Some(tier.min_lock_duration);
-    }
-
-    Ok(())
-}
-
 #[contractimpl]
 impl StakingVault {
     // ── Initialisation ──────────────────────────────────────────────────────────
@@ -135,7 +112,7 @@ impl StakingVault {
 
         // Reject empty or out-of-order tier configurations up front so `stake`
         // can never silently apply the wrong boost.
-        validate_lock_tiers(&lock_tiers)?;
+        lock::validate_tiers(&lock_tiers)?;
 
         let config = Config {
             admin,
@@ -272,14 +249,14 @@ impl StakingVault {
             return Err(StakingError::InvalidAmount);
         }
 
-        let mut position = get_position_raw(&env, &staker).ok_or(StakingError::NoPosition)?;
+        let mut position = get_position_raw(&env, &staker).ok_or(StakingError::PositionNotFound)?;
 
         if amount > position.amount {
             return Err(StakingError::InsufficientStake);
         }
 
         if env.ledger().timestamp() < position.unlock_at {
-            return Err(StakingError::StillLocked);
+            return Err(StakingError::LockNotElapsed);
         }
 
         position.unlock_requested_at = env.ledger().timestamp();

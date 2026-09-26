@@ -28,6 +28,9 @@ pub enum StakingError {
     LockNotElapsed = 13,
     /// The supplied lock duration is not one of the configured tiers.
     InvalidLockPeriod = 14,
+    /// The lock-tier configuration supplied to `initialize` is empty or not
+    /// strictly ordered by ascending duration.
+    InvalidTierConfig = 15,
 
     // ── Rewards / fees ────────────────────────────────────────────────────────
     /// There are no rewards available to claim for this position.

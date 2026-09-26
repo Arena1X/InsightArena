@@ -561,7 +561,7 @@ describe('AnalyticsService', () => {
     });
 
     it('uses a distinct cache entry for a different user', async () => {
-      const otherUser = { ...baseUser, id: 'user-id-2' } as User;
+      const otherUser = { ...baseUser, id: 'user-id-2' };
       usersRepository.findOne.mockImplementation((opts: any) =>
         Promise.resolve(opts.where.id === otherUser.id ? otherUser : baseUser),
       );
@@ -733,6 +733,70 @@ describe('AnalyticsService', () => {
       ).resolves.toBeUndefined();
 
       expect(warnSpy).toHaveBeenCalled();
+    });
+
+    it('getMarketAnalytics read right after invalidation reflects post-resolution predictions, not the cached pre-resolution value', async () => {
+      const predictionsRepo = module.get(getRepositoryToken(Prediction));
+      const market = {
+        id: 'market-1',
+        on_chain_market_id: 'chain-1',
+        title: 'Will it rain tomorrow?',
+        outcome_options: ['Yes', 'No'],
+        total_pool_stroops: '1000',
+        participant_count: 1,
+        end_time: new Date(Date.now() + 60_000),
+      } as Market;
+
+      marketsRepository.findOne.mockResolvedValue(market);
+      predictionsRepo.find = jest
+        .fn()
+        .mockResolvedValueOnce([]) // pre-resolution: no predictions counted yet
+        .mockResolvedValueOnce([{ chosen_outcome: 'Yes' }]); // post-resolution: the settled prediction now counts
+
+      const beforeResolution = await service.getMarketAnalytics('market-1');
+      expect(
+        beforeResolution.outcome_distribution.find((o) => o.outcome === 'Yes')
+          ?.count,
+      ).toBe(0);
+
+      await service.invalidateMarketResolutionCaches('market-1', 'chain-1', []);
+
+      const afterResolution = await service.getMarketAnalytics('market-1');
+      expect(
+        afterResolution.outcome_distribution.find((o) => o.outcome === 'Yes')
+          ?.count,
+      ).toBe(1);
+      expect(marketsRepository.findOne).toHaveBeenCalledTimes(2);
+    });
+
+    it('getCategoryAnalytics read right after invalidation reflects the resolved market, not the cached pre-resolution active count', async () => {
+      const market = {
+        id: 'market-1',
+        category: 'Weather',
+        is_resolved: false,
+        is_cancelled: false,
+        total_pool_stroops: '1000',
+        participant_count: 1,
+      } as Market;
+
+      marketsRepository.find
+        .mockResolvedValueOnce([market]) // pre-resolution: still active
+        .mockResolvedValueOnce([{ ...market, is_resolved: true }]); // post-resolution
+
+      const beforeResolution = await service.getCategoryAnalytics();
+      const weatherBefore = beforeResolution.categories.find(
+        (c) => c.name === 'Weather',
+      );
+      expect(weatherBefore?.active_markets).toBe(1);
+
+      await service.invalidateMarketResolutionCaches('market-1', null, []);
+
+      const afterResolution = await service.getCategoryAnalytics();
+      const weatherAfter = afterResolution.categories.find(
+        (c) => c.name === 'Weather',
+      );
+      expect(weatherAfter?.active_markets).toBe(0);
+      expect(marketsRepository.find).toHaveBeenCalledTimes(2);
     });
   });
 });

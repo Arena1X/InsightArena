@@ -33,6 +33,7 @@ import { UsersService } from '../users/users.service';
 import { SorobanService } from '../soroban/soroban.service';
 import { SlippageCheckerService } from './services/slippage-checker.service';
 import { SlippageExceededException } from './exceptions/slippage-exceeded.exception';
+import { BATCH_PREDICTION_STATUS } from './dto/batch-submit-response.dto';
 
 type MockRepo<T extends ObjectLiteral> = jest.Mocked<
   Pick<
@@ -128,7 +129,7 @@ describe('PredictionsService', () => {
       findAndCount: jest.fn(),
       find: jest.fn().mockResolvedValue([]),
       createQueryBuilder: jest.fn().mockReturnValue(fraudQbMock),
-    } as unknown as MockRepo<Prediction>;
+    };
 
     mockMarketsRepo = {
       findOne: jest.fn(),
@@ -811,6 +812,20 @@ describe('PredictionsService', () => {
       expect(result.claimed_xlm).toBe(1.5);
       expect(result.transaction_hash).toBe('tx-2');
       expect(mockSoroban.claimPayout).toHaveBeenCalledTimes(2);
+      expect(result.results).toEqual([
+        {
+          prediction_id: 'p-1',
+          status: BATCH_PREDICTION_STATUS.FULFILLED,
+          tx_hash: 'tx-1',
+          payout_amount_stroops: '10000000',
+        },
+        {
+          prediction_id: 'p-2',
+          status: BATCH_PREDICTION_STATUS.FULFILLED,
+          tx_hash: 'tx-2',
+          payout_amount_stroops: '5000000',
+        },
+      ]);
     });
 
     it('throws NoClaimableRewardsException when there is nothing to claim', async () => {
@@ -819,6 +834,107 @@ describe('PredictionsService', () => {
       await expect(service.claimAllRewards(makeUser())).rejects.toThrow(
         NoClaimableRewardsException,
       );
+    });
+
+    it('isolates a failing claim so the other claimable predictions still succeed', async () => {
+      const user = makeUser();
+      const resolvedWon = makeMarket({
+        id: 'm-won',
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+
+      const claimablePredictions = [
+        {
+          id: 'p-1',
+          user,
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '10000000',
+        },
+        {
+          id: 'p-2',
+          user,
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '2000000',
+        },
+        {
+          id: 'p-3',
+          user,
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '3000000',
+        },
+      ] as Prediction[];
+
+      mockPredictionsRepo.find
+        .mockResolvedValueOnce(claimablePredictions)
+        .mockResolvedValueOnce([
+          {
+            ...claimablePredictions[0],
+            payout_claimed: true,
+            payout_amount_stroops: '10000000',
+          },
+          claimablePredictions[1],
+          {
+            ...claimablePredictions[2],
+            payout_claimed: true,
+            payout_amount_stroops: '3000000',
+          },
+        ] as Prediction[]);
+
+      // findOne() is used internally by claim() for each prediction.
+      mockPredictionsRepo.findOne
+        .mockResolvedValueOnce(claimablePredictions[0])
+        .mockResolvedValueOnce(claimablePredictions[1])
+        .mockResolvedValueOnce(claimablePredictions[2]);
+
+      mockSoroban.claimPayout
+        .mockResolvedValueOnce({
+          tx_hash: 'tx-1',
+          payout_amount_stroops: '10000000',
+        })
+        .mockRejectedValueOnce(new Error('Soroban claimPayout failed'))
+        .mockResolvedValueOnce({
+          tx_hash: 'tx-3',
+          payout_amount_stroops: '3000000',
+        });
+
+      mockPredictionsRepo.save = jest
+        .fn()
+        .mockImplementation((entity: Prediction) => Promise.resolve(entity));
+
+      const result = await service.claimAllRewards(user);
+
+      // The middle claim failed, but both the first and third were still
+      // attempted and succeeded, rather than the batch aborting after p-2.
+      expect(mockSoroban.claimPayout).toHaveBeenCalledTimes(3);
+      expect(result.claimed_count).toBe(2);
+      expect(result.claimed_xlm).toBe(1.3);
+      expect(result.transaction_hash).toBe('tx-3');
+      expect(result.results).toEqual([
+        {
+          prediction_id: 'p-1',
+          status: BATCH_PREDICTION_STATUS.FULFILLED,
+          tx_hash: 'tx-1',
+          payout_amount_stroops: '10000000',
+        },
+        {
+          prediction_id: 'p-2',
+          status: BATCH_PREDICTION_STATUS.REJECTED,
+          error: 'Soroban claimPayout failed',
+        },
+        {
+          prediction_id: 'p-3',
+          status: BATCH_PREDICTION_STATUS.FULFILLED,
+          tx_hash: 'tx-3',
+          payout_amount_stroops: '3000000',
+        },
+      ]);
     });
   });
 
@@ -838,7 +954,7 @@ describe('PredictionsService', () => {
       mockPredictionsRepo.save.mockResolvedValue({
         ...prediction,
         note: 'My analysis note',
-      } as Prediction);
+      });
 
       const result = await service.updateNote(
         'pred-1',
