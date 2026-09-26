@@ -1,9 +1,16 @@
 import { ReactNode } from "react";
+import { useCountdown } from "@/hooks/useCountdown";
 
 export interface UpcomingRewardCardProps {
   category: string;
   amount: string;
-  settlementLabel: string;
+  /**
+   * The reward's settlement date/time. Drives a live-ticking countdown via
+   * useCountdown rather than a pre-formatted string computed once on render
+   * (#1577) - once this passes, the card shows a "Processing" state instead
+   * of a stale or negative countdown.
+   */
+  settlementDate: string | Date | number;
   icon?: ReactNode;
 }
 
@@ -22,12 +29,27 @@ function ClockIcon() {
   );
 }
 
+function formatSettlement(settlementDate: string | Date | number): string {
+  const date =
+    typeof settlementDate === "string" || typeof settlementDate === "number"
+      ? new Date(settlementDate)
+      : settlementDate;
+
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 export default function UpcomingRewardCard({
   category,
   amount,
-  settlementLabel,
+  settlementDate,
   icon,
 }: UpcomingRewardCardProps) {
+  const countdown = useCountdown(settlementDate);
+
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-5 flex flex-col justify-between min-h-[140px] hover:border-white/20 transition-colors">
       {/* Category */}
@@ -44,7 +66,16 @@ export default function UpcomingRewardCard({
       {/* Settlement */}
       <div className="flex items-center gap-1.5 text-gray-500 text-xs">
         <ClockIcon />
-        <span>{settlementLabel}</span>
+        {countdown.isExpired ? (
+          <span
+            role="status"
+            className="text-amber-400 font-medium uppercase tracking-wide"
+          >
+            Processing
+          </span>
+        ) : (
+          <span>Settles on {formatSettlement(settlementDate)}</span>
+        )}
       </div>
     </div>
   );

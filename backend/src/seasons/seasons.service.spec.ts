@@ -523,6 +523,16 @@ describe('SeasonsService', () => {
           ok: true,
           season: 13,
         },
+        {
+          // #1853: one unit before the existing range's end (199 < 200) must
+          // be flagged as overlapping, distinguishing this from the adjacent
+          // start-at-end case directly above it.
+          label: '[199, 300] starts one unit before existing end => reject',
+          start: 199,
+          end: 300,
+          ok: false,
+          season: 14,
+        },
       ] as const;
 
       for (const a of attempts) {
@@ -532,6 +542,7 @@ describe('SeasonsService', () => {
           getCount: jest.fn().mockResolvedValue(overlapFor(a.start, a.end)),
         } as never;
         seasonsRepository.createQueryBuilder.mockReturnValue(qb);
+        seasonsRepository.save.mockClear();
 
         if (!a.ok) {
           await expect(
