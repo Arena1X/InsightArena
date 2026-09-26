@@ -239,22 +239,12 @@ impl StakingVault {
         let token_client = TokenClient::new(&env, &config.token);
         token_client.transfer(&staker, &env.current_contract_address(), &amount);
 
-        position.amount = position
-            .amount
-            .checked_add(amount)
-            .ok_or(StakingError::Overflow)?;
-        position.shares = position
-            .shares
-            .checked_add(new_shares)
-            .ok_or(StakingError::Overflow)?;
-        position.unlock_at = lock::unlock_at(&env, lock_duration);
+        position.amount += amount;
+        position.shares += new_shares;
+        position.unlock_at = env.ledger().timestamp() + lock_duration;
+        position.reward_debt = pool::reward_debt(&pool_state, &position);
 
-        pool_state.total_shares = pool_state
-            .total_shares
-            .checked_add(new_shares)
-            .ok_or(StakingError::Overflow)?;
-
-        pool::settle_debt(&pool_state, &mut position);
+        pool_state.total_shares += new_shares;
 
         set_position(&env, &staker, &position);
         set_pool_state(&env, &pool_state);
@@ -262,33 +252,18 @@ impl StakingVault {
         Ok(())
     }
 
-    /// Request to unlock `amount` of staked tokens once the lock period has elapsed.
-    /// This starts the unbonding cooldown period.
-    pub fn request_unlock(env: Env, staker: Address, amount: i128) -> Result<(), StakingError> {
-        staker.require_auth();
-        require_not_paused(&env)?;
+    // ── Admin ───────────────────────────────────────────────────────────────────
 
-        if amount <= 0 {
-            return Err(StakingError::InvalidAmount);
-        }
+    /// Pause or unpause staking. Only the configured admin may call this.
+    ///
+    /// The stored admin address must authorize the call before the paused flag
+    /// is mutated, so a non-admin caller is rejected via auth failure and the
+    /// flag is left unchanged.
+    pub fn set_paused(env: Env, paused: bool) -> Result<(), StakingError> {
+        let config = get_config(&env)?;
+        config.admin.require_auth();
 
-        let mut position = get_position_raw(&env, &staker).ok_or(StakingError::NoPosition)?;
-
-        if amount > position.amount {
-            return Err(StakingError::InsufficientStake);
-        }
-
-        if env.ledger().timestamp() < position.unlock_at {
-            return Err(StakingError::StillLocked);
-        }
-
-        position.unlock_requested_at = env.ledger().timestamp();
-        position.pending_unlock_amount = position
-            .pending_unlock_amount
-            .checked_add(amount)
-            .ok_or(StakingError::Overflow)?;
-
-        set_position(&env, &staker, &position);
+        env.storage().instance().set(&DataKey::Paused, &paused);
 
         Ok(())
     }
