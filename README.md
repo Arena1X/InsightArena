@@ -136,3 +136,6 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 <!-- handsoff-issue-1847 -->
 - #1847: [Backend] — Trending Markets Computation Tie-Breaking
+
+<!-- handsoff-issue-1841 -->
+- #1841: [Backend] — Leaderboard Cache Invalidation on New Snapshot Creation
