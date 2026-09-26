@@ -133,3 +133,6 @@ InsightArena is not just about predicting outcomes, it's about proving insight.
 
 <!-- handsoff-issue-1846 -->
 - #1846: [Backend] — Market Resolution Challenge Window Enforcement
+
+<!-- handsoff-issue-1847 -->
+- #1847: [Backend] — Trending Markets Computation Tie-Breaking
