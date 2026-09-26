@@ -166,8 +166,8 @@ export default function PublicProfilePage({ params }: ProfilePageProps) {
 
             <div className="flex items-center gap-3 self-start sm:self-auto">
               <ShareButton
-                title={`Profile: ${displayName}`}
-                description={`Check out ${displayName}'s predictions on InsightArena.`}
+                title={displayName}
+                entity="profile"
                 ariaLabel="Share profile"
               />
             </div>

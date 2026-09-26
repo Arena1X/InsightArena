@@ -702,3 +702,62 @@ export function detectTies<T extends LeaderboardEntryForTieBreak>(
 
   return tiedAddresses;
 }
+
+// ── Share deep links (#1567) ────────────────────────────────────────────────
+
+export type ShareEntityType = "market" | "event" | "profile";
+
+/** Where a share was initiated from, recorded as `utm_source`. */
+export type ShareChannel = "copy" | "native" | "twitter";
+
+/**
+ * Adds attribution params to a share URL. Relative URLs are resolved against
+ * `origin`. Existing query params and hash are preserved; UTM params already
+ * on the URL are overwritten so repeated shares don't stack attribution.
+ */
+export function buildShareUrl(
+  url: string,
+  { entity, channel, origin }: { entity: ShareEntityType; channel: ShareChannel; origin: string },
+): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url, origin || undefined);
+  } catch {
+    return url;
+  }
+  parsed.searchParams.set("utm_source", channel);
+  parsed.searchParams.set("utm_medium", "share");
+  parsed.searchParams.set("utm_campaign", `${entity}_share`);
+  return parsed.toString();
+}
+
+/** Share copy tailored to the kind of page being shared. */
+export function getShareText(entity: ShareEntityType, title: string): string {
+  switch (entity) {
+    case "market":
+      return `What's your call on "${title}"? Make your prediction on InsightArena.`;
+    case "event":
+      return `Join "${title}" and compete on InsightArena.`;
+    case "profile":
+      return `Check out ${title}'s predictions on InsightArena.`;
+  }
+}
+
+// ── Onboarding tour (#1568) ─────────────────────────────────────────────────
+
+/**
+ * Minimum viewport width (px) for the onboarding tour. Below Tailwind's `md`
+ * breakpoint the sidebar the tour points at is hidden behind the mobile menu.
+ */
+export const ONBOARDING_TOUR_MIN_VIEWPORT_PX = 768;
+
+export function isOnboardingTourSupported(viewportWidth: number): boolean {
+  return viewportWidth >= ONBOARDING_TOUR_MIN_VIEWPORT_PX;
+}
+
+const ONBOARDING_STORAGE_PREFIX = "insightarena.onboarding.v2";
+
+/** Per-user storage key so each wallet keeps its own tour progress. */
+export function getOnboardingStorageKey(userId?: string | null): string {
+  return `${ONBOARDING_STORAGE_PREFIX}:${userId || "anonymous"}`;
+}

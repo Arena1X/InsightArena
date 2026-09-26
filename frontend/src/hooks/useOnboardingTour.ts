@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-const STORAGE_KEY = "insightarena.onboarding.v1";
+import { getOnboardingStorageKey, isOnboardingTourSupported } from "@/lib/utils";
 
 export interface TourStep {
   id: string;
@@ -44,34 +44,54 @@ export const ONBOARDING_STEPS: TourStep[] = [
 ];
 
 interface TourState {
+  /** Step the user was last on; the tour resumes here. */
+  stepIndex: number;
   completed: boolean;
   dismissed: boolean;
 }
 
-function readState(): TourState {
+const INITIAL_STATE: TourState = { stepIndex: 0, completed: false, dismissed: false };
+
+function clampStep(index: unknown): number {
+  if (typeof index !== "number" || !Number.isInteger(index)) return 0;
+  return Math.min(Math.max(index, 0), ONBOARDING_STEPS.length - 1);
+}
+
+function readState(key: string): TourState {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { completed: false, dismissed: false };
-    return JSON.parse(raw) as TourState;
+    const raw = localStorage.getItem(key);
+    if (!raw) return INITIAL_STATE;
+    const parsed = JSON.parse(raw) as Partial<TourState>;
+    return {
+      stepIndex: clampStep(parsed.stepIndex),
+      completed: parsed.completed === true,
+      dismissed: parsed.dismissed === true,
+    };
   } catch {
-    return { completed: false, dismissed: false };
+    return INITIAL_STATE;
   }
 }
 
-function writeState(state: TourState): void {
+function writeState(key: string, state: TourState): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(key, JSON.stringify(state));
   } catch {
     // storage unavailable — silently ignore
   }
 }
 
 export interface UseOnboardingTourResult {
+  /** True when the tour is open and the viewport can display it. */
   isActive: boolean;
+  /** False on viewports too small to show the tour. */
+  isSupported: boolean;
   currentStepIndex: number;
   currentStep: TourStep | null;
   totalSteps: number;
+  /** Opens the tour at the saved step. */
   start: () => void;
+  /** Opens the tour from step one, clearing any skip or completion. */
+  restart: () => void;
   next: () => void;
   prev: () => void;
   skip: () => void;
@@ -84,61 +104,90 @@ export interface UseOnboardingTourResult {
 /**
  * Manages the new-user onboarding tour.
  *
- * Automatically starts for first-time visitors. Persists completion/dismissal
- * to localStorage so the tour never reappears unless re-launched via `start()`.
+ * Progress is persisted per user (keyed by `userId`, e.g. the wallet address)
+ * so an interrupted tour resumes at the step the user left. Skipping or
+ * completing suppresses future auto-starts until `restart()` is called. The
+ * tour never shows on viewports narrower than ONBOARDING_TOUR_MIN_VIEWPORT_PX.
  * Keyboard-accessible: consumers should wire `next` to Enter/ArrowRight and
  * `prev` to ArrowLeft, and `skip` to Escape.
  */
-export function useOnboardingTour(): UseOnboardingTourResult {
-  const [isActive, setIsActive] = useState(false);
+export function useOnboardingTour(userId?: string | null): UseOnboardingTourResult {
+  const storageKey = getOnboardingStorageKey(userId);
+  const [isOpen, setIsOpen] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
+  const [isSupported, setIsSupported] = useState(false);
 
-  // Auto-start for new users after hydration
   useEffect(() => {
-    const state = readState();
-    if (!state.completed && !state.dismissed) {
-      setIsActive(true);
+    function evaluate() {
+      setIsSupported(isOnboardingTourSupported(window.innerWidth));
     }
+    evaluate();
+    window.addEventListener("resize", evaluate);
+    return () => window.removeEventListener("resize", evaluate);
   }, []);
+
+  // Load this user's progress after hydration and auto-resume unfinished tours.
+  useEffect(() => {
+    const state = readState(storageKey);
+    setStepIndex(state.stepIndex);
+    setIsOpen(!state.completed && !state.dismissed);
+  }, [storageKey]);
+
+  const goTo = useCallback(
+    (index: number) => {
+      setStepIndex(index);
+      writeState(storageKey, { ...readState(storageKey), stepIndex: index });
+    },
+    [storageKey],
+  );
 
   const start = useCallback(() => {
+    const state = readState(storageKey);
+    writeState(storageKey, { ...state, dismissed: false });
+    setStepIndex(state.completed ? 0 : state.stepIndex);
+    setIsOpen(true);
+  }, [storageKey]);
+
+  const restart = useCallback(() => {
+    writeState(storageKey, INITIAL_STATE);
     setStepIndex(0);
-    setIsActive(true);
-  }, []);
+    setIsOpen(true);
+  }, [storageKey]);
 
   const skip = useCallback(() => {
-    setIsActive(false);
-    writeState({ completed: false, dismissed: true });
-  }, []);
+    setIsOpen(false);
+    writeState(storageKey, { ...readState(storageKey), dismissed: true });
+  }, [storageKey]);
 
   const complete = useCallback(() => {
-    setIsActive(false);
-    writeState({ completed: true, dismissed: false });
-  }, []);
+    setIsOpen(false);
+    setStepIndex(0);
+    writeState(storageKey, { stepIndex: 0, completed: true, dismissed: false });
+  }, [storageKey]);
 
   const next = useCallback(() => {
-    setStepIndex((i) => {
-      const next = i + 1;
-      if (next >= ONBOARDING_STEPS.length) {
-        complete();
-        return i;
-      }
-      return next;
-    });
-  }, [complete]);
+    if (stepIndex + 1 >= ONBOARDING_STEPS.length) {
+      complete();
+      return;
+    }
+    goTo(stepIndex + 1);
+  }, [complete, goTo, stepIndex]);
 
   const prev = useCallback(() => {
-    setStepIndex((i) => Math.max(0, i - 1));
-  }, []);
+    goTo(Math.max(0, stepIndex - 1));
+  }, [goTo, stepIndex]);
 
+  const isActive = isOpen && isSupported;
   const currentStep = isActive ? (ONBOARDING_STEPS[stepIndex] ?? null) : null;
 
   return {
     isActive,
+    isSupported,
     currentStepIndex: stepIndex,
     currentStep,
     totalSteps: ONBOARDING_STEPS.length,
     start,
+    restart,
     next,
     prev,
     skip,

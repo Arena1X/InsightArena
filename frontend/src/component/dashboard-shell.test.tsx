@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardShell } from "./dashboard-shell";
 import { usePathname } from "next/navigation";
@@ -79,5 +79,52 @@ describe("DashboardShell", () => {
 
     expect(screen.queryByTestId("coach-card")).not.toBeInTheDocument();
     expect(screen.queryByTestId("rewards-card")).not.toBeInTheDocument();
+  });
+
+  describe("onboarding tour", () => {
+    beforeEach(() => {
+      localStorage.clear();
+      Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 1280 });
+    });
+
+    function renderShell() {
+      return render(
+        <DashboardShell>
+          <div>page content</div>
+        </DashboardShell>,
+      );
+    }
+
+    it("shows the tour with skip controls and resumes where the user left off", () => {
+      const first = renderShell();
+      const tour = screen.getByRole("dialog", { name: "Connect your wallet" });
+      expect(tour).toHaveTextContent("Step 1 of 4");
+
+      fireEvent.click(screen.getByRole("button", { name: "Next" }));
+      expect(screen.getByRole("dialog", { name: "Explore markets" })).toBeInTheDocument();
+      first.unmount();
+
+      renderShell();
+      expect(screen.getByRole("dialog", { name: "Explore markets" })).toHaveTextContent("Step 2 of 4");
+    });
+
+    it("skip hides the tour and restart brings it back from step one", () => {
+      renderShell();
+      fireEvent.click(screen.getByRole("button", { name: "Next" }));
+      fireEvent.click(screen.getByRole("button", { name: "Skip tour" }));
+
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: /restart onboarding tour/i }));
+      expect(screen.getByRole("dialog", { name: "Connect your wallet" })).toHaveTextContent("Step 1 of 4");
+    });
+
+    it("hides the tour and restart control on small viewports", () => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 375 });
+      renderShell();
+
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /restart onboarding tour/i })).not.toBeInTheDocument();
+    });
   });
 });

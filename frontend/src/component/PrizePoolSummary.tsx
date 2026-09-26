@@ -14,7 +14,7 @@ type PrizePoolSummaryProps = {
   contributorCount?: number;
 };
 
-function formatXlm(amount: number) {
+export function formatXlm(amount: number) {
   return `${amount.toLocaleString(undefined, { maximumFractionDigits: 2 })} XLM`;
 }
 

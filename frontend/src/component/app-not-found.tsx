@@ -5,6 +5,21 @@ import { AlertTriangle } from "lucide-react";
 
 import { Button } from "@/component/ui/button";
 
+const NOT_FOUND_DIGEST = "NEXT_HTTP_ERROR_FALLBACK;404";
+
+/**
+ * True when an error reaching a route error boundary represents a missing
+ * resource (Next's `notFound()` or an HTTP 404 from a loader) rather than a
+ * runtime failure.
+ */
+export function isNotFoundError(
+  error: (Error & { digest?: string; status?: number | null }) | null | undefined,
+): boolean {
+  if (!error) return false;
+  if (error.digest === NOT_FOUND_DIGEST) return true;
+  return error.status === 404;
+}
+
 type AppNotFoundProps = {
   compact?: boolean;
 };

@@ -801,3 +801,120 @@ export function removeFavoriteBookmark(
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// Creator market analytics (#1557)
+// ---------------------------------------------------------------------------
+
+/** Mirrors the market rows returned by `GET /api/users/:address/markets`. */
+export interface CreatorMarketResponse {
+  id: string;
+  title: string;
+  category?: string;
+  total_pool_stroops: string;
+  participant_count: number;
+  is_resolved: boolean;
+  is_cancelled: boolean;
+  created_at: string;
+  /** Not persisted on the market entity today; falls back to the default. */
+  creator_fee_bps?: number;
+}
+
+export interface PaginatedCreatorMarketsResponse {
+  data: CreatorMarketResponse[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export type CreatorMarketResolution = 'open' | 'resolved' | 'cancelled';
+
+export interface CreatorMarketMetrics {
+  id: string;
+  title: string;
+  volumeXlm: number;
+  participants: number;
+  feesEarnedXlm: number;
+  resolutionStatus: CreatorMarketResolution;
+  createdAt: string;
+}
+
+export interface CreatorMarketTotals {
+  marketCount: number;
+  volumeXlm: number;
+  participants: number;
+  feesEarnedXlm: number;
+  resolvedCount: number;
+}
+
+export type CreatorMarketSortKey = 'volume' | 'recent';
+
+/** Default creator fee applied at market creation (1%). */
+export const DEFAULT_CREATOR_FEE_BPS = 100;
+
+const STROOPS_PER_XLM = 10_000_000;
+
+function getCreatorMarketResolution(market: CreatorMarketResponse): CreatorMarketResolution {
+  if (market.is_cancelled) return 'cancelled';
+  if (market.is_resolved) return 'resolved';
+  return 'open';
+}
+
+/**
+ * Derives per-market creator metrics. Fees are only counted as earned once a
+ * market resolves — open markets have not paid out and cancelled markets are
+ * refunded in full.
+ */
+export function toCreatorMarketMetrics(market: CreatorMarketResponse): CreatorMarketMetrics {
+  const volumeXlm = Number(market.total_pool_stroops) / STROOPS_PER_XLM || 0;
+  const resolutionStatus = getCreatorMarketResolution(market);
+  const feeBps = market.creator_fee_bps ?? DEFAULT_CREATOR_FEE_BPS;
+  return {
+    id: market.id,
+    title: market.title,
+    volumeXlm,
+    participants: market.participant_count,
+    feesEarnedXlm: resolutionStatus === 'resolved' ? (volumeXlm * feeBps) / 10_000 : 0,
+    resolutionStatus,
+    createdAt: market.created_at,
+  };
+}
+
+/** Sums per-market metrics into the header totals. */
+export function aggregateCreatorMetrics(markets: CreatorMarketMetrics[]): CreatorMarketTotals {
+  return markets.reduce<CreatorMarketTotals>(
+    (totals, market) => ({
+      marketCount: totals.marketCount + 1,
+      volumeXlm: totals.volumeXlm + market.volumeXlm,
+      participants: totals.participants + market.participants,
+      feesEarnedXlm: totals.feesEarnedXlm + market.feesEarnedXlm,
+      resolvedCount: totals.resolvedCount + (market.resolutionStatus === 'resolved' ? 1 : 0),
+    }),
+    { marketCount: 0, volumeXlm: 0, participants: 0, feesEarnedXlm: 0, resolvedCount: 0 },
+  );
+}
+
+/** Sorts creator markets by volume or recency. Returns a new array. */
+export function sortCreatorMarkets(
+  markets: CreatorMarketMetrics[],
+  sortKey: CreatorMarketSortKey,
+): CreatorMarketMetrics[] {
+  const sorted = [...markets];
+  if (sortKey === 'volume') {
+    sorted.sort((a, b) => b.volumeXlm - a.volumeXlm);
+  } else {
+    sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+  return sorted;
+}
+
+/** `GET /api/users/:address/markets` — markets created by `address`. */
+export function getCreatorMarkets(
+  address: string,
+  options?: ApiOptions,
+): Promise<PaginatedCreatorMarketsResponse> {
+  return apiClient.get<PaginatedCreatorMarketsResponse>(
+    `/api/users/${encodeURIComponent(address)}/markets?limit=50`,
+    options,
+  );
+}
