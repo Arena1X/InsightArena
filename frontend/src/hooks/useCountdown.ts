@@ -65,15 +65,25 @@ export function calculateCountdown(
  * Hook to calculate countdown time from a target date.
  * Avoids unnecessary re-renders by only updating when the time actually changes.
  * Returns isExpired=true when target date has passed.
+ *
+ * When `frozen` is true (e.g. the market has resolved), the countdown stops
+ * ticking and is pinned to the expired state so the UI can render a stable
+ * "Resolved" view instead of a live timer.
  */
 export function useCountdown(
   targetDate: string | Date | number,
+  frozen = false,
 ): CountdownTime {
   const [time, setTime] = useState<CountdownTime>(() =>
     calculateCountdown(targetDate),
   );
 
   useEffect(() => {
+    if (frozen) {
+      setTime(EMPTY_COUNTDOWN);
+      return;
+    }
+
     const calculateTime = () => {
       setTime(calculateCountdown(targetDate));
     };
@@ -83,7 +93,7 @@ export function useCountdown(
     const interval = setInterval(calculateTime, 1000);
 
     return () => clearInterval(interval);
-  }, [targetDate]);
+  }, [targetDate, frozen]);
 
   return time;
 }
