@@ -41,6 +41,7 @@ import { MarketsService } from '../markets/markets.service';
 import {
   BulkUserAction,
   BulkUserActionDto,
+  BulkUserActionErrorCode,
   BulkUserActionResponseDto,
   BulkUserActionResultDto,
 } from './dto/bulk-user-action.dto';
@@ -56,6 +57,15 @@ import {
 import { ResolveMarketDto } from './dto/resolve-market.dto';
 import { StatsResponseDto } from './dto/stats-response.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
+
+class BulkUserActionItemError extends Error {
+  constructor(
+    readonly code: BulkUserActionErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 @Injectable()
 export class AdminService {
@@ -349,85 +359,134 @@ export class AdminService {
   ): Promise<BulkUserActionResponseDto> {
     const results: BulkUserActionResultDto[] = [];
 
+    // Each user is processed in its own transaction so a failure (validation,
+    // constraint violation, lock timeout, etc.) only rolls back that user's
+    // changes and never aborts or leaks into the rest of the batch.
     for (const userId of dto.user_ids) {
-      try {
-        await this.usersRepository.manager.transaction(async (manager) => {
-          const user = await manager.findOne(User, { where: { id: userId } });
-          if (!user) {
-            throw new NotFoundException(`User "${userId}" not found`);
-          }
-
-          switch (dto.action) {
-            case BulkUserAction.Ban:
-              if (user.is_banned) {
-                throw new ConflictException('User is already banned');
-              }
-              user.is_banned = true;
-              user.ban_reason = dto.reason ?? null;
-              user.banned_at = new Date();
-              user.banned_by = adminId;
-              await manager.save(user);
-              break;
-
-            case BulkUserAction.Unban:
-              if (!user.is_banned) {
-                throw new BadRequestException('User is not banned');
-              }
-              user.is_banned = false;
-              user.ban_reason = null;
-              user.banned_at = null;
-              user.banned_by = null;
-              await manager.save(user);
-              break;
-
-            case BulkUserAction.Flag:
-              await manager.save(
-                UserFlag,
-                manager.create(UserFlag, {
-                  user_id: user.id,
-                  reason: dto.reason ?? null,
-                  flagged_by: adminId,
-                }),
-              );
-              break;
-          }
-
-          await manager.save(
-            ActivityLog,
-            manager.create(ActivityLog, {
-              userId: user.id,
-              actionType: `USER_BULK_${dto.action.toUpperCase()}`,
-              actionDetails: {
-                admin_id: adminId,
-                reason: dto.reason ?? null,
-              },
-            }),
-          );
-        });
-
-        results.push({ user_id: userId, success: true });
-      } catch (err) {
-        results.push({
-          user_id: userId,
-          success: false,
-          error: err instanceof Error ? err.message : 'Unknown error',
-        });
-      }
+      results.push(await this.applyBulkUserActionItem(userId, dto, adminId));
     }
 
     const succeeded = results.filter((r) => r.success).length;
+    const failed = results.length - succeeded;
 
     this.logger.log(
-      `Admin ${adminId} performed bulk "${dto.action}" on ${dto.user_ids.length} users: ${succeeded} succeeded, ${
-        results.length - succeeded
-      } failed`,
+      `Admin ${adminId} performed bulk "${dto.action}" on ${dto.user_ids.length} users: ${succeeded} succeeded, ${failed} failed`,
     );
 
     return {
+      action: dto.action,
+      total: results.length,
       results,
       succeeded,
-      failed: results.length - succeeded,
+      failed,
     };
+  }
+
+  private async applyBulkUserActionItem(
+    userId: string,
+    dto: BulkUserActionDto,
+    adminId: string,
+  ): Promise<BulkUserActionResultDto> {
+    try {
+      if (userId === adminId && dto.action !== BulkUserAction.Unban) {
+        throw new BulkUserActionItemError(
+          BulkUserActionErrorCode.SelfActionNotAllowed,
+          `Admins cannot ${dto.action} themselves`,
+        );
+      }
+
+      await this.usersRepository.manager.transaction(async (manager) => {
+        const user = await manager.findOne(User, {
+          where: { id: userId },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!user) {
+          throw new BulkUserActionItemError(
+            BulkUserActionErrorCode.UserNotFound,
+            `User "${userId}" not found`,
+          );
+        }
+
+        switch (dto.action) {
+          case BulkUserAction.Ban:
+            if (user.is_banned) {
+              throw new BulkUserActionItemError(
+                BulkUserActionErrorCode.AlreadyBanned,
+                'User is already banned',
+              );
+            }
+            user.is_banned = true;
+            user.ban_reason = dto.reason ?? null;
+            user.banned_at = new Date();
+            user.banned_by = adminId;
+            await manager.save(user);
+            break;
+
+          case BulkUserAction.Unban:
+            if (!user.is_banned) {
+              throw new BulkUserActionItemError(
+                BulkUserActionErrorCode.NotBanned,
+                'User is not banned',
+              );
+            }
+            user.is_banned = false;
+            user.ban_reason = null;
+            user.banned_at = null;
+            user.banned_by = null;
+            await manager.save(user);
+            break;
+
+          case BulkUserAction.Flag:
+            await manager.save(
+              UserFlag,
+              manager.create(UserFlag, {
+                user_id: user.id,
+                reason: dto.reason ?? null,
+                flagged_by: adminId,
+              }),
+            );
+            break;
+        }
+
+        await manager.save(
+          ActivityLog,
+          manager.create(ActivityLog, {
+            userId: user.id,
+            actionType: `USER_BULK_${dto.action.toUpperCase()}`,
+            actionDetails: {
+              admin_id: adminId,
+              reason: dto.reason ?? null,
+            },
+          }),
+        );
+      });
+
+      return { user_id: userId, success: true };
+    } catch (err) {
+      if (err instanceof BulkUserActionItemError) {
+        return {
+          user_id: userId,
+          success: false,
+          error: err.message,
+          error_code: err.code,
+        };
+      }
+
+      // Unexpected errors (DB/driver failures) are logged in full but not
+      // surfaced to the client, so internal details don't leak.
+      this.logger.error(
+        `Bulk "${dto.action}" failed for user ${userId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        err instanceof Error ? err.stack : undefined,
+      );
+      return {
+        user_id: userId,
+        success: false,
+        error: 'Unexpected error while processing user',
+        error_code: BulkUserActionErrorCode.InternalError,
+      };
+    }
   }
 
   async updateUserRole(

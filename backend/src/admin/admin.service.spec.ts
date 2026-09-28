@@ -6,7 +6,10 @@ import { AdminService } from './admin.service';
 import { VerifiedAddress } from './entities/verified-address.entity';
 import { UserFlag } from './entities/user-flag.entity';
 import { ListVerifiedAddressesQueryDto } from './dto/list-verified-addresses-query.dto';
-import { BulkUserAction } from './dto/bulk-user-action.dto';
+import {
+  BulkUserAction,
+  BulkUserActionErrorCode,
+} from './dto/bulk-user-action.dto';
 
 describe('AdminService (Verified Addresses)', () => {
   let service: AdminService;
@@ -344,6 +347,7 @@ describe('AdminService (Verified Addresses)', () => {
           user_id: 'missing',
           success: false,
           error: 'User "missing" not found',
+          error_code: BulkUserActionErrorCode.UserNotFound,
         },
       ]);
     });
@@ -360,6 +364,7 @@ describe('AdminService (Verified Addresses)', () => {
         user_id: 'u1',
         success: false,
         error: 'User is already banned',
+        error_code: BulkUserActionErrorCode.AlreadyBanned,
       });
     });
 
@@ -375,7 +380,63 @@ describe('AdminService (Verified Addresses)', () => {
         user_id: 'u1',
         success: false,
         error: 'User is not banned',
+        error_code: BulkUserActionErrorCode.NotBanned,
       });
+    });
+
+    it('isolates unexpected errors to the failing user and masks details', async () => {
+      mockManager.findOne.mockImplementation((_entity: any, opts: any) =>
+        Promise.resolve({ id: opts.where.id, is_banned: false }),
+      );
+      mockManager.save.mockImplementation((a: any, b: any) => {
+        const entity = b ?? a;
+        if (entity?.id === 'u2') {
+          return Promise.reject(new Error('deadlock detected on relation'));
+        }
+        return Promise.resolve(entity);
+      });
+
+      const result = await service.bulkUserAction(
+        {
+          user_ids: ['u1', 'u2', 'u3'],
+          action: BulkUserAction.Ban,
+          reason: 'spam',
+        },
+        'admin-1',
+      );
+
+      expect(result.total).toBe(3);
+      expect(result.succeeded).toBe(2);
+      expect(result.failed).toBe(1);
+      expect(result.results[1]).toEqual({
+        user_id: 'u2',
+        success: false,
+        error: 'Unexpected error while processing user',
+        error_code: BulkUserActionErrorCode.InternalError,
+      });
+      expect(userRepository.manager.transaction).toHaveBeenCalledTimes(3);
+    });
+
+    it('rejects banning yourself without affecting other users', async () => {
+      mockManager.findOne.mockImplementation((_entity: any, opts: any) =>
+        Promise.resolve({ id: opts.where.id, is_banned: false }),
+      );
+
+      const result = await service.bulkUserAction(
+        { user_ids: ['admin-1', 'u1'], action: BulkUserAction.Ban },
+        'admin-1',
+      );
+
+      expect(result.results).toEqual([
+        {
+          user_id: 'admin-1',
+          success: false,
+          error: 'Admins cannot ban themselves',
+          error_code: BulkUserActionErrorCode.SelfActionNotAllowed,
+        },
+        { user_id: 'u1', success: true },
+      ]);
+      expect(userRepository.manager.transaction).toHaveBeenCalledTimes(1);
     });
 
     it('creates a UserFlag record for the flag action', async () => {
