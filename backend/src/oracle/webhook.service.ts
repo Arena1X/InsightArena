@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CreatorEventMatch } from '../creator-events/entities/creator-event-match.entity';
@@ -25,6 +26,16 @@ import {
   ReviewDecision,
   ReviewResultResponse,
 } from './dto/anomaly-detection.dto';
+
+const POSTGRES_UNIQUE_VIOLATION = '23505';
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === 'object' &&
+    (error as { code?: string }).code === POSTGRES_UNIQUE_VIOLATION
+  );
+}
 
 interface QueuedSubmission {
   id: string;
@@ -61,6 +72,17 @@ export class WebhookService {
   async processMatchResult(
     dto: WebhookMatchResultDto,
   ): Promise<WebhookResponseDto> {
+    // A duplicate delivery of a result we already accepted is answered with
+    // the original job, before the resolved-match check, so an oracle retrying
+    // after a successful submission gets the same answer instead of a 409.
+    const idempotencyKey = this.resolveIdempotencyKey(dto);
+    const existing = await this.submissionRepository.findOne({
+      where: { idempotency_key: idempotencyKey },
+    });
+    if (existing) {
+      return this.replayDuplicate(existing, dto);
+    }
+
     const jobId = this.generateJobId();
 
     // Validate match exists
@@ -103,13 +125,30 @@ export class WebhookService {
       nextRetryAt: new Date(),
     };
 
-    this.submissionQueue.set(jobId, submission);
+    // Save to database for history tracking. The unique idempotency key makes
+    // this the serialization point for concurrent duplicate calls: only one
+    // insert wins, the others replay the winner.
+    let savedSubmission: OracleSubmission | null;
+    try {
+      savedSubmission = await this.saveSubmissionToDatabase(
+        submission,
+        match,
+        idempotencyKey,
+      );
+    } catch (error) {
+      if (!isUniqueViolation(error)) {
+        throw error;
+      }
+      const winner = await this.submissionRepository.findOne({
+        where: { idempotency_key: idempotencyKey },
+      });
+      if (!winner) {
+        throw error;
+      }
+      return this.replayDuplicate(winner, dto);
+    }
 
-    // Save to database for history tracking.
-    const savedSubmission = await this.saveSubmissionToDatabase(
-      submission,
-      match,
-    );
+    this.submissionQueue.set(jobId, submission);
 
     // Screen for statistical anomalies before any on-chain use (#1364). A
     // flagged submission is recorded; when holding is enabled it is withheld
@@ -129,6 +168,8 @@ export class WebhookService {
           status: 'held',
           message:
             'Submission flagged as a statistical anomaly and held for manual review',
+          duplicate: false,
+          submission_id: savedSubmission.id,
         };
       }
     }
@@ -144,7 +185,89 @@ export class WebhookService {
       job_id: jobId,
       status: 'accepted',
       message: 'Match result queued for submission',
+      duplicate: false,
+      submission_id: savedSubmission?.id,
     };
+  }
+
+  /**
+   * Key identifying one result delivery. An oracle-supplied key is scoped to
+   * its data source so two oracles cannot collide; otherwise the key is
+   * derived from the fields that define the result, so a byte-identical
+   * re-delivery maps to the same key. Both are hashed to a fixed length.
+   */
+  private resolveIdempotencyKey(dto: WebhookMatchResultDto): string {
+    const hash = (parts: unknown[]): string =>
+      createHash('sha256').update(JSON.stringify(parts)).digest('hex');
+
+    if (dto.idempotency_key) {
+      return `key:${hash([dto.data_source, dto.idempotency_key])}`;
+    }
+
+    const parsed = new Date(dto.timestamp);
+    const timestamp = Number.isNaN(parsed.getTime())
+      ? dto.timestamp
+      : parsed.toISOString();
+
+    return `payload:${hash([
+      dto.match_id,
+      dto.data_source,
+      dto.winning_team,
+      dto.confidence_score,
+      timestamp,
+    ])}`;
+  }
+
+  /**
+   * Answer a duplicate call with the original submission's state. Nothing is
+   * saved, queued, or submitted. Reusing an oracle-supplied key for a
+   * different result is a client error, not a duplicate.
+   */
+  private replayDuplicate(
+    existing: OracleSubmission,
+    dto: WebhookMatchResultDto,
+  ): WebhookResponseDto {
+    const samePayload =
+      existing.match_id === dto.match_id &&
+      existing.data_source === dto.data_source &&
+      existing.winning_team === (dto.winning_team as string) &&
+      existing.confidence_score === dto.confidence_score;
+
+    if (!samePayload) {
+      throw new ConflictException(
+        `Idempotency key already used for a different result on match ${existing.match_id}`,
+      );
+    }
+
+    this.logger.log(
+      `Duplicate match result ignored: match_id=${dto.match_id}, submission_id=${existing.id}, job_id=${existing.job_id ?? 'unknown'}`,
+    );
+
+    return {
+      job_id: existing.job_id ?? existing.id,
+      status: this.describeSubmissionState(existing),
+      message:
+        'Duplicate result delivery; returning the original submission without resubmitting',
+      duplicate: true,
+      submission_id: existing.id,
+    };
+  }
+
+  private describeSubmissionState(submission: OracleSubmission): string {
+    if (submission.review_status === SubmissionReviewStatus.HELD) {
+      return 'held';
+    }
+    if (submission.review_status === SubmissionReviewStatus.REJECTED) {
+      return 'rejected';
+    }
+    switch (submission.status) {
+      case SubmissionStatus.SUBMITTED:
+        return 'submitted';
+      case SubmissionStatus.FAILED:
+        return 'failed';
+      default:
+        return 'accepted';
+    }
   }
 
   private async submitToOracle(submission: QueuedSubmission): Promise<void> {
@@ -275,12 +398,20 @@ export class WebhookService {
     this.logger.log('Webhook retry processor started');
   }
 
+  /**
+   * Persist the submission. Storage failures are logged and swallowed so the
+   * result is still attempted, except a unique violation on the idempotency
+   * key, which is rethrown so the caller can replay the original submission.
+   */
   private async saveSubmissionToDatabase(
     submission: QueuedSubmission,
     match: CreatorEventMatch,
+    idempotencyKey: string,
   ): Promise<OracleSubmission | null> {
     try {
       const dbSubmission = this.submissionRepository.create({
+        job_id: submission.id,
+        idempotency_key: idempotencyKey,
         match_id: submission.matchId,
         team_a: match.team_a,
         team_b: match.team_b,
@@ -297,6 +428,9 @@ export class WebhookService {
       this.logger.log(`Submission saved to database: job_id=${submission.id}`);
       return saved;
     } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw error;
+      }
       this.logger.error(
         `Failed to save submission to database: ${error instanceof Error ? error.message : 'Unknown'}`,
       );
@@ -354,16 +488,20 @@ export class WebhookService {
       };
     }
 
+    // Requeue the approved submission for on-chain use. The record is
+    // re-pointed at the new job so status updates and duplicate replays
+    // track it.
+    const requeuedJobId = this.generateJobId();
     submission.review_status = SubmissionReviewStatus.APPROVED;
+    submission.job_id = requeuedJobId;
     await this.submissionRepository.save(submission);
 
     this.logger.log(
       `Held submission approved: submission_id=${submissionId}, reviewer=${dto.reviewer ?? 'unknown'}`,
     );
 
-    // Requeue the approved submission for on-chain use.
     const requeued: QueuedSubmission = {
-      id: this.generateJobId(),
+      id: requeuedJobId,
       matchId: submission.match_id,
       winningTeam: submission.winning_team,
       confidenceScore: submission.confidence_score,
@@ -391,7 +529,7 @@ export class WebhookService {
   ): Promise<void> {
     try {
       const submission = await this.submissionRepository.findOne({
-        where: { match_id: jobId.replace('job_', '').split('_')[0] },
+        where: { job_id: jobId },
       });
 
       if (submission) {
