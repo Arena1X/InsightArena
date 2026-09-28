@@ -206,10 +206,15 @@ export class AccountService {
 
     await this.dataSource.transaction(async (manager) => {
       const [user] = await manager.query(
-        `SELECT stellar_address FROM users WHERE id = $1`,
+        `SELECT stellar_address, deleted_at FROM users WHERE id = $1`,
         [userId],
       );
       if (!user) throw new NotFoundException('User not found');
+
+      // Idempotent: if already deleted, return without error
+      if (user.deleted_at) {
+        return;
+      }
 
       // Collect export file paths before deleting job rows
       const jobs: { file_path: string | null }[] = await manager.query(
@@ -219,6 +224,28 @@ export class AccountService {
       for (const j of jobs) {
         if (j.file_path) filePaths.push(j.file_path);
       }
+
+      // Delete dependent records within the same transaction
+      // Bookmarks
+      await manager.query(`DELETE FROM user_bookmarks WHERE user_id = $1`, [
+        userId,
+      ]);
+
+      // Follows (both as follower and following)
+      await manager.query(`DELETE FROM user_follows WHERE follower_id = $1`, [
+        userId,
+      ]);
+      await manager.query(`DELETE FROM user_follows WHERE following_id = $1`, [
+        userId,
+      ]);
+
+      // API keys
+      await manager.query(`DELETE FROM api_keys WHERE "userId" = $1`, [userId]);
+
+      // Notification preferences
+      await manager.query(`DELETE FROM notification_preferences WHERE "userId" = $1`, [
+        userId,
+      ]);
 
       // Delete address-indexed personal data
       await manager.query(`DELETE FROM notifications WHERE user_address = $1`, [
