@@ -5,12 +5,15 @@ import {
   AlertCircle,
   ArrowDownRight,
   ArrowUpRight,
+  Clock,
   Flame,
   GraduationCap,
   Minus,
+  X,
 } from "lucide-react";
 import { useWallet } from "@/context/WalletContext";
 import { useCoachInsights } from "@/hooks/useCoachInsights";
+import { EmptyState } from "@/component/ui/empty-state";
 import type { CoachInsightPayload } from "@/lib/coach";
 
 function trendMeta(direction: CoachInsightPayload["accuracy_trend"]["direction"]) {
@@ -80,8 +83,16 @@ function CardShell({ children }: { children: React.ReactNode }) {
 
 export default function CoachCard() {
   const { address, openConnectModal } = useWallet();
-  const { insights, isLoading, error, refetch, hasHistory } =
-    useCoachInsights();
+  const {
+    insights,
+    isLoading,
+    error,
+    refetch,
+    hasHistory,
+    isHidden,
+    dismiss,
+    snooze,
+  } = useCoachInsights();
 
   // Not connected — nothing to show yet.
   if (!address) {
@@ -169,6 +180,22 @@ export default function CoachCard() {
     );
   }
 
+  // Dismissed / snoozed — no active insight left for the user to act on.
+  if (isHidden) {
+    return (
+      <CardShell>
+        <div className="mt-5" data-testid="coach-empty-state">
+          <EmptyState
+            icon={<GraduationCap size={22} />}
+            title="No active insights"
+            description="You've cleared this week's coaching insight. A new one will appear once it's ready."
+            variant="empty"
+          />
+        </div>
+      </CardShell>
+    );
+  }
+
   const payload = insights.insights;
   const trend = trendMeta(payload.accuracy_trend.direction);
   const TrendIcon = trend.Icon;
@@ -176,9 +203,35 @@ export default function CoachCard() {
 
   return (
     <CardShell>
+      {/* Lifecycle controls — dismiss permanently or snooze until next week */}
+      <div className="mt-3 flex items-center justify-end gap-3">
+        <button
+          type="button"
+          onClick={snooze}
+          data-testid="coach-snooze"
+          aria-label="Snooze this insight until next week"
+          title="Snooze until next week"
+          className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-orange-300 transition"
+        >
+          <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+          Snooze
+        </button>
+        <button
+          type="button"
+          onClick={dismiss}
+          data-testid="coach-dismiss"
+          aria-label="Dismiss this insight"
+          title="Dismiss"
+          className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-rose-300 transition"
+        >
+          <X className="h-3.5 w-3.5" aria-hidden="true" />
+          Dismiss
+        </button>
+      </div>
+
       {/* Accuracy trend */}
       <div
-        className="mt-5 flex items-center justify-between gap-3 rounded-xl bg-white/5 px-3 py-3"
+        className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-white/5 px-3 py-3"
         data-testid="coach-trend"
       >
         <span
