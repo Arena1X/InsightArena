@@ -508,7 +508,11 @@ export default function CreatorEventDetailPage() {
             />
           </TabsContent>
           <TabsContent value="participants">
-            <ParticipantList participants={participantRows} />
+            <ParticipantList
+              participants={participantRows}
+              creatorAddress={event.creator}
+              currentUserAddress={address}
+            />
           </TabsContent>
           <TabsContent value="leaderboard">
             <EventLeaderboard entries={leaderboardEntries} isFinalized={isFinalized} />
