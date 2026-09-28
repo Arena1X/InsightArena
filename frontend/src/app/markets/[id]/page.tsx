@@ -8,6 +8,7 @@ import { InteractiveChart, type ChartSeries } from "@/component/ui/interactive-c
 import { Button } from "@/component/ui/button";
 import { Badge } from "@/component/ui/badge";
 import { Skeleton } from "@/component/ui/skeleton";
+import MarketDisputePanel from "@/component/markets/MarketDisputePanel";
 import { ArrowLeft, AlertCircle, TrendingUp, Zap } from "lucide-react";
 
 interface MarketDetail {
@@ -20,6 +21,8 @@ interface MarketDetail {
   closeAt: string;
   status: string;
   volume24h: number;
+  /** ISO timestamp the market was resolved at, or null while still open. */
+  resolvedAt: string | null;
 }
 
 interface PricePoint {
@@ -253,6 +256,13 @@ export default function MarketDetailPage() {
               </p>
             </div>
           </div>
+
+          <MarketDisputePanel
+            marketId={market.id}
+            marketTitle={market.title}
+            isResolved={Boolean(market.resolvedAt)}
+            resolvedAt={market.resolvedAt}
+          />
         </div>
 
         <div className="mt-8">
