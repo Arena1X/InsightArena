@@ -53,6 +53,22 @@ export class OracleSubmission {
   @ApiProperty()
   match_id: string;
 
+  /** Queue job ID returned to the oracle; replayed on duplicate calls. */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  @Index()
+  @ApiPropertyOptional()
+  job_id?: string;
+
+  /**
+   * Deduplication key for the webhook call that created this submission —
+   * either supplied by the oracle or derived from the result payload. Unique,
+   * so a duplicate call resolves to this record instead of a new one.
+   */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  @Index({ unique: true, where: '"idempotency_key" IS NOT NULL' })
+  @ApiPropertyOptional()
+  idempotency_key?: string;
+
   @Column({ type: 'varchar', length: 100 })
   @ApiProperty()
   team_a: string;
