@@ -2,8 +2,11 @@
 
 import { EmptyState } from "@/component/ui/empty-state";
 import { Skeleton } from "@/component/ui/skeleton";
-import type { MarketDispute } from "@/hooks/useMarketDisputes";
-import { Inbox } from "lucide-react";
+import {
+  DISPUTE_REASON_CATEGORY_LABELS,
+  type MarketDispute,
+} from "@/hooks/useMarketDisputes";
+import { Inbox, Loader2 } from "lucide-react";
 
 type Props = {
   disputes: MarketDispute[];
@@ -53,18 +56,32 @@ export default function DisputeList({ disputes, loading, error }: Props) {
         <article
           key={dispute.id}
           className="rounded-xl border border-white/10 bg-white/5 p-4"
+          data-testid="dispute-item"
+          aria-busy={dispute.isOptimistic || undefined}
         >
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-sm text-white">{dispute.reason}</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-orange-300/80">
+                {DISPUTE_REASON_CATEGORY_LABELS[dispute.category]}
+              </p>
+              <p className="mt-1 text-sm text-white">{dispute.reason}</p>
               <p className="mt-2 text-xs text-gray-500">
                 Filed {new Date(dispute.createdAt).toLocaleString()}
               </p>
             </div>
             <span
-              className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium capitalize ${STATUS_STYLES[dispute.status]}`}
+              className={`flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium capitalize ${STATUS_STYLES[dispute.status]}`}
             >
-              {dispute.status.replace("_", " ")}
+              {dispute.isOptimistic && (
+                <Loader2
+                  className="h-3 w-3 animate-spin"
+                  aria-hidden="true"
+                  data-testid="dispute-optimistic-spinner"
+                />
+              )}
+              {dispute.isOptimistic
+                ? "Filing…"
+                : dispute.status.replace("_", " ")}
             </span>
           </div>
           {dispute.evidenceUrls.length > 0 && (
