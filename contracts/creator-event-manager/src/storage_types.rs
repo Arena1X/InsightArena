@@ -39,6 +39,11 @@ pub const OUTCOME_TEAM_A: &str = "TEAM_A";
 pub const OUTCOME_TEAM_B: &str = "TEAM_B";
 pub const OUTCOME_DRAW: &str = "DRAW";
 
+/// Default minimum number of oracle submissions required before a match
+/// result can be finalized. Configurable per match via
+/// [`DataKey::MatchQuorum`].
+pub const DEFAULT_ORACLE_QUORUM: u32 = 1;
+
 /// Points awarded for predicting the correct 1X2 result (wrong scoreline)
 pub const POINTS_CORRECT_RESULT: u32 = 1;
 /// Points awarded for predicting the exact scoreline (in addition to result points)
@@ -115,6 +120,94 @@ pub fn weighted_contribution(
         0
     };
     (base, timing, underdog)
+}
+
+// ---------------------------------------------------------------------------
+// Oracle consensus
+// ---------------------------------------------------------------------------
+
+/// A single oracle's submitted outcome for a match.
+///
+/// Submissions are stored in insertion order; the earliest submission is the
+/// first element of the stored vector. This ordering is what makes the
+/// tie-break rule deterministic.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleSubmission {
+    /// Oracle that submitted this outcome.
+    pub oracle: Address,
+    /// The outcome the oracle voted for.
+    pub outcome: MatchResult,
+    /// Ledger timestamp at which the submission was recorded.
+    pub submitted_at: u64,
+}
+
+/// Result of tallying oracle submissions for a match.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsensusTally {
+    /// The winning outcome after applying the deterministic tie-break.
+    pub winning_outcome: MatchResult,
+    /// Number of votes cast for the winning outcome.
+    pub winning_votes: u32,
+    /// Total number of submissions considered.
+    pub total_votes: u32,
+    /// Minimum quorum that was required to finalize.
+    pub quorum: u32,
+}
+
+/// Tally oracle submissions and pick a winner deterministically.
+///
+/// Tie-break rule: when two or more outcomes share the highest vote count,
+/// the outcome whose *earliest* submission (lowest index in `submissions`,
+/// which is insertion order) came first wins. Because `submissions` is stored
+/// in insertion order and never reordered, this is identical across runs.
+///
+/// Returns `None` when `submissions` is empty.
+pub fn tally_submissions(submissions: &Vec<OracleSubmission>) -> Option<ConsensusTally> {
+    let total = submissions.len();
+    if total == 0 {
+        return None;
+    }
+
+    // Count votes per outcome (0 = TeamA, 1 = TeamB, 2 = Draw).
+    let mut counts = [0u32; 3];
+    // Earliest submission index per outcome; u32::MAX means "no vote yet".
+    let mut earliest = [u32::MAX; 3];
+
+    let mut i: u32 = 0;
+    while i < total {
+        let sub = submissions.get(i).unwrap();
+        let idx = sub.outcome.to_u8() as usize;
+        counts[idx] = counts[idx].saturating_add(1);
+        if earliest[idx] == u32::MAX {
+            earliest[idx] = i;
+        }
+        i += 1;
+    }
+
+    // Pick the outcome with the most votes; ties broken by earliest first
+    // submission, then by lowest outcome code for total determinism.
+    let mut best: usize = 0;
+    let mut j: usize = 1;
+    while j < 3 {
+        let better = counts[j] > counts[best]
+            || (counts[j] == counts[best]
+                && counts[j] > 0
+                && earliest[j] < earliest[best]);
+        if better {
+            best = j;
+        }
+        j += 1;
+    }
+
+    let winning_outcome = MatchResult::from_u8(best as u8).unwrap();
+    Some(ConsensusTally {
+        winning_outcome,
+        winning_votes: counts[best],
+        total_votes: total,
+        quorum: 0,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +396,23 @@ pub enum DataKey {
     /// Vec<Address> of distinct verifier signers who have submitted
     /// verification for an event so far  (event_id). Written by
     /// `verification::submit_verification`.
-    EventVerificationSigners(u64),
+    EventVerificati
+
+    // ── Oracle consensus (#oracle-quorum) ────────────────────────────────────
+    /// Minimum number of oracle submissions required before a match may be
+    /// finalized  (match_id) → u32. Falls back to
+    /// [`DEFAULT_ORACLE_QUORUM`] when unset.
+    MatchQuorum(u64),
+
+    /// Recorded oracle submissions for a match  (match_id) →
+    /// Vec<OracleSubmission>. Order of insertion is preserved so the
+    /// deterministic tie-break (earliest submission wins) is stable across
+    /// runs.
+    MatchSubmissions(u64),
+
+    /// Finalized consensus outcome for a match  (match_id) → MatchResult.
+    /// Written once by `finalize`.
+    MatchOutcome(u64),onSigners(u64),
 
     // ── Verifier signature keys (#1705) ──────────────────────────────────────
     /// The raw ed25519 public key (32 bytes) bound to a configured verifier
