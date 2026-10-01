@@ -15,10 +15,39 @@ export interface BondSettlementResult {
   reason: string;
 }
 
+export interface OracleSubmission {
+  outcome: string;
+  submittedAt: number;
+  submitter?: string;
+}
+
+export interface ConsensusResult {
+  winningOutcome: string;
+  tally: Record<string, number>;
+  quorumUsed: number;
+  totalSubmissions: number;
+}
+
+export class QuorumNotMetError extends Error {
+  constructor(public readonly required: number, public readonly received: number) {
+    super(
+      `QuorumNotMet: required at least ${required} oracle submissions, received ${received}`,
+    );
+    this.name = 'QuorumNotMetError';
+  }
+}
+
 @Injectable()
 export class CreatorEventFinalizerService {
   private readonly logger = new Logger(CreatorEventFinalizerService.name);
   private readonly MAX_FINALIZE_PER_TICK = 20;
+
+  /**
+   * Minimum number of oracle submissions required before an event can
+   * be finalized. Configurable via environment variable
+   * `ORACLE_QUORUM_MIN`, defaulting to 3.
+   */
+  private readonly minimumQuorum: number;
 
   constructor(
     @InjectRepository(CreatorEvent)
@@ -26,7 +55,82 @@ export class CreatorEventFinalizerService {
     @InjectRepository(Match)
     private readonly matchRepository: Repository<Match>,
     private readonly sorobanService: SorobanService,
-  ) {}
+  ) {
+    const configured = Number.parseInt(
+      process.env.ORACLE_QUORUM_MIN ?? '3',
+      10,
+    );
+    this.minimumQuorum =
+      Number.isFinite(configured) && configured > 0 ? configured : 3;
+  }
+
+  /**
+   * Resolve the winning outcome from a set of oracle submissions.
+   *
+   * Rules:
+   *  - Requires at least `minimumQuorum` submissions, otherwise reverts
+   *    with `QuorumNotMetError`.
+   *  - Tallies are counted per outcome.
+   *  - Ties are broken deterministically by the earliest-submitted
+   *    outcome among the tied outcomes (compared by iso date string,
+   *    then by outcome label as a final deterministic tiebreak).
+   */
+  resolveConsensus(submissions: OracleSubmission[]): ConsensusResult {
+    const totalSubmissions = submissions.length;
+
+    if (totalSubmissions < this.minimumQuorum) {
+      throw new QuorumNotMetError(this.minimumQuorum, totalSubmissions);
+    }
+
+    const tally: Record<string, number> = {};
+    const earliestSubmittedAt: Record<string, number> = {};
+
+    for (const submission of submissions) {
+      const outcome = submission.outcome;
+      tally[outcome] = (tally[outcome] ?? 0) + 1;
+      const previous = earliestSubmittedAt[outcome];
+      if (previous === undefined || submission.submittedAt < previous) {
+        earliestSubmittedAt[outcome] = submission.submittedAt;
+      }
+    }
+
+    const outcomes = Object.keys(tally).sort();
+    let winningOutcome = outcomes[0];
+    let winningVotes = tally[winningOutcome];
+    let winningEarliest = earliestSubmittedAt[winningOutcome];
+
+    for (const outcome of outcomes) {
+      const votes = tally[outcome];
+      const earliest = earliestSubmittedAt[outcome];
+
+      if (votes > winningVotes) {
+        winningOutcome = outcome;
+        winningVotes = votes;
+        winningEarliest = earliest;
+        continue;
+      }
+
+      if (votes === winningVotes) {
+        // Deterministic tie-break: earliest submitted outcome wins.
+        // If earliest times are equal, fall back to lexicographic
+        // order of the outcome label.
+        if (
+          earliest < winningEarliest ||
+          (earliest === winningEarliest && outcome < winningOutcome)
+        ) {
+          winningOutcome = outcome;
+          winningEarliest = earliest;
+        }
+      }
+    }
+
+    return {
+      winningOutcome,
+      tally,
+      quorumUsed: this.minimumQuorum,
+      totalSubmissions,
+    };
+  }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async finalizePendingEvents(): Promise<void> {
@@ -70,9 +174,15 @@ export class CreatorEventFinalizerService {
             continue;
           }
 
+          // Resolve consensus from oracle submissions. This enforces the
+          // minimum quorum and deterministic tie-break. A `QuorumNotMet`
+          // error will cause the event to be skipped for this tick.
+          const submissions = await this.getOracleSubmissions(event);
+          const consensus = this.resolveConsensus(submissions);
+
           // Call finalize_event on the contract
           this.logger.log(
-            `Finalizing event ${event.on_chain_event_id} (${event.title})`,
+            `Finalizing event ${event.on_chain_event_id} (${event.title}) with outcome '${consensus.winningOutcome}'`,
           );
 
           await this.sorobanService.finalizeEvent(event.on_chain_event_id);
@@ -90,12 +200,18 @@ export class CreatorEventFinalizerService {
 
           this.logger.log(
             `Successfully finalized event ${event.on_chain_event_id} ` +
-              `(bond ${settlement.bondReturned ? 'returned' : 'slashed'}: ${settlement.reason})`,
+              `(winner=${consensus.winningOutcome}, tally=${JSON.stringify(consensus.tally)}, ` +
+              `quorum=${consensus.quorumUsed}, bond ${settlement.bondReturned ? 'returned' : 'slashed'}: ${settlement.reason})`,
           );
           finalizedCount++;
         } catch (error) {
           const message =
             error instanceof Error ? error.message : 'Unknown error';
+          if (error instanceof QuorumNotMetError) {
+            this.logger.warn(`Event ${event.on_chain_event_id} skipped: ${message}`);
+            skippedCount++;
+            continue;
+          }
           this.logger.error(
             `Failed to finalize event ${event.on_chain_event_id}: ${message}`,
           );
@@ -110,6 +226,25 @@ export class CreatorEventFinalizerService {
       const message = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Event finalization check failed: ${message}`);
     }
+  }
+
+  /**
+   * Load oracle submissions for an event from the contract / persisted
+   * store. Submissions are normalized to `OracleSubmission` and sorted
+   * by submission time so downstream consensus resolution is deterministic.
+   */
+  private async getOracleSubmissions(event: CreatorEvent): Promise<OracleSubmission[]> {
+    const raw = await this.sorobanService.getOracleSubmissions(
+      event.on_chain_event_id,
+    );
+
+    const normalized: OracleSubmission[] = (raw ?? []).map((s) => ({
+      outcome: s.outcome,
+      submittedAt: s.submittedAt,
+      submitter: s.submitter,
+    }));
+
+    return normalized.sort((a, b) => a.submittedAt - b.submittedAt);
   }
 
   /**
@@ -194,6 +329,9 @@ export class CreatorEventFinalizerService {
           continue;
         }
 
+        const submissions = await this.getOracleSubmissions(event);
+        const consensus = this.resolveConsensus(submissions);
+
         await this.sorobanService.finalizeEvent(event.on_chain_event_id);
 
         event.is_finalized = true;
@@ -205,8 +343,18 @@ export class CreatorEventFinalizerService {
           'Manual finalization validated as correct',
         );
 
+        this.logger.log(
+          `Manual finalization for ${event.on_chain_event_id}: winner=${consensus.winningOutcome}, ` +
+            `tally=${JSON.stringify(consensus.tally)}, quorum=${consensus.quorumUsed}`,
+        );
+
         finalizedCount++;
       } catch (error) {
+        if (error instanceof QuorumNotMetError) {
+          this.logger.warn(`Event ${event.on_chain_event_id} skipped: ${error.message}`);
+          skippedCount++;
+          continue;
+        }
         this.logger.error(
           `Failed to finalize event ${event.on_chain_event_id}: ${error instanceof Error ? error.message : 'Unknown error'}`,
         );
