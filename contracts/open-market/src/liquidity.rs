@@ -532,6 +532,54 @@ pub fn get_market_twap(
     get_twap(env, market_id, outcome, window_seconds)
 }
 
+/// Settlement guard: return the TWAP of `outcome` over `window` seconds only
+/// if the current spot price is within `Config::twap_max_deviation_bps` of it.
+///
+/// Spot price is the outcome's pool reserve, the same unit `get_twap`
+/// averages. Deviation is `|spot - twap| * 10_000 / twap`.
+///
+/// # Errors
+///
+/// - [`InsightArenaError::TwapInsufficientHistory`] (and the other `get_twap`
+///   errors) when the window is not covered by retained history — the window
+///   is never silently shortened.
+/// - [`InsightArenaError::PriceDeviationTooHigh`] when spot deviates from the
+///   TWAP by more than the configured maximum.
+pub fn validate_settlement_price(
+    env: &Env,
+    market_id: u64,
+    outcome: Symbol,
+    window: u64,
+) -> Result<i128, InsightArenaError> {
+    let twap = get_twap(env, market_id, outcome.clone(), window)?;
+    let spot = get_outcome_price(env, market_id, outcome)?;
+    let max_bps = config::get_twap_max_deviation_bps(env)? as i128;
+
+    let diff = spot
+        .checked_sub(twap)
+        .ok_or(InsightArenaError::Overflow)?
+        .checked_abs()
+        .ok_or(InsightArenaError::Overflow)?;
+    if twap <= 0 {
+        // No meaningful reference price: only an exact match is acceptable.
+        if diff == 0 {
+            return Ok(twap);
+        }
+        return Err(InsightArenaError::PriceDeviationTooHigh);
+    }
+    // diff / twap > max_bps / 10_000  <=>  diff * 10_000 > max_bps * twap
+    let lhs = diff
+        .checked_mul(10_000)
+        .ok_or(InsightArenaError::Overflow)?;
+    let rhs = max_bps
+        .checked_mul(twap)
+        .ok_or(InsightArenaError::Overflow)?;
+    if lhs > rhs {
+        return Err(InsightArenaError::PriceDeviationTooHigh);
+    }
+    Ok(twap)
+}
+
 // ── Impermanent Loss Accounting ───────────────────────────────────────────────
 //
 // Scope: this contract's AMM pool is generalized to N outcomes

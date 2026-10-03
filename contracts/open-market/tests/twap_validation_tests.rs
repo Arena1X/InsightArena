@@ -480,3 +480,137 @@ fn test_single_observation_twap_succeeds() {
         "TWAP should succeed with single observation and valid window"
     );
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Settlement guard: spot vs. TWAP deviation
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Creates a funded pool at t=1000 and returns everything needed to trade on it.
+fn setup_settlement_pool(
+    env: &Env,
+) -> (InsightArenaContractClient<'_>, Address, u64, Address, Address) {
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    env.mock_all_auths();
+    let (client, admin, _oracle, xlm) = deploy_with_token(env);
+    let provider = Address::generate(env);
+    let trader = Address::generate(env);
+    let market_id = client.create_market(&admin, &lp_market_params(env));
+
+    let sa = StellarAssetClient::new(env, &xlm);
+    let token = TokenClient::new(env, &xlm);
+    let liquidity = 100_000_000_i128;
+    sa.mint(&provider, &liquidity);
+    token.approve(&provider, &client.address, &liquidity, &9999);
+    client.add_liquidity(&provider, &market_id, &liquidity);
+
+    sa.mint(&trader, &50_000_000_i128);
+    token.approve(&trader, &client.address, &50_000_000_i128, &9999);
+    (client, admin, market_id, trader, xlm)
+}
+
+fn swap_yes_for_no(
+    env: &Env,
+    client: &InsightArenaContractClient<'_>,
+    trader: &Address,
+    market_id: u64,
+    amount: i128,
+) {
+    let _ = env;
+    client.swap_outcome(
+        trader,
+        &market_id,
+        &symbol_short!("yes"),
+        &symbol_short!("no"),
+        &amount,
+        &0_i128,
+        &None::<u64>,
+    );
+}
+
+#[test]
+fn test_settlement_rejects_manipulated_spot_price() {
+    let env = Env::default();
+    let (client, _admin, market_id, trader, _xlm) = setup_settlement_pool(&env);
+
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    // A single large swap in the settlement ledger moves spot far past the
+    // default 10% band while contributing nothing to the TWAP.
+    swap_yes_for_no(&env, &client, &trader, market_id, 40_000_000);
+
+    let result = client.try_validate_settlement_price(&market_id, &symbol_short!("yes"), &500_u64);
+    assert!(
+        matches!(result, Err(Ok(InsightArenaError::PriceDeviationTooHigh))),
+        "Expected PriceDeviationTooHigh, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_settlement_accepts_price_within_band() {
+    let env = Env::default();
+    let (client, _admin, market_id, _trader, _xlm) = setup_settlement_pool(&env);
+
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    let twap = client.validate_settlement_price(&market_id, &symbol_short!("yes"), &500_u64);
+    assert_eq!(
+        twap,
+        client.get_outcome_price(&market_id, &symbol_short!("yes"))
+    );
+}
+
+#[test]
+fn test_settlement_band_is_configurable() {
+    let env = Env::default();
+    let (client, admin, market_id, trader, _xlm) = setup_settlement_pool(&env);
+
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    // A small swap moves spot a little: inside the default 10% band...
+    swap_yes_for_no(&env, &client, &trader, market_id, 2_000_000);
+    let yes = symbol_short!("yes");
+    assert!(client
+        .try_validate_settlement_price(&market_id, &yes, &500_u64)
+        .is_ok());
+
+    // ...but outside a tightened 1 bps band.
+    client.set_twap_max_deviation_bps(&admin, &1_u32);
+    assert_eq!(client.get_twap_max_deviation_bps(), 1);
+    let result = client.try_validate_settlement_price(&market_id, &yes, &500_u64);
+    assert!(matches!(
+        result,
+        Err(Ok(InsightArenaError::PriceDeviationTooHigh))
+    ));
+}
+
+#[test]
+fn test_settlement_window_not_covered_reverts_insufficient_history() {
+    let env = Env::default();
+    let (client, _admin, market_id, _trader, _xlm) = setup_settlement_pool(&env);
+
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    // History starts at t=1000; a 5000s window reaches back before it.
+    let result =
+        client.try_validate_settlement_price(&market_id, &symbol_short!("yes"), &5_000_u64);
+    assert!(
+        matches!(result, Err(Ok(InsightArenaError::TwapInsufficientHistory))),
+        "Expected TwapInsufficientHistory, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_set_twap_max_deviation_validates_and_requires_admin() {
+    let env = Env::default();
+    let (client, admin, _market_id, _trader, _xlm) = setup_settlement_pool(&env);
+
+    assert_eq!(client.get_twap_max_deviation_bps(), 1_000);
+    assert!(client.try_set_twap_max_deviation_bps(&admin, &0_u32).is_err());
+    assert!(client
+        .try_set_twap_max_deviation_bps(&admin, &10_001_u32)
+        .is_err());
+    let stranger = Address::generate(&env);
+    assert!(client
+        .try_set_twap_max_deviation_bps(&stranger, &500_u32)
+        .is_err());
+    client.set_twap_max_deviation_bps(&admin, &500_u32);
+    assert_eq!(client.get_twap_max_deviation_bps(), 500);
+}

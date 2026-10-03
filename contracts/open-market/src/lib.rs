@@ -1296,6 +1296,34 @@ impl InsightArenaContract {
         liquidity::get_twap(&env, market_id, outcome, window)
     }
 
+    /// Settlement guard: returns the TWAP over `window` seconds if the spot
+    /// price is within the configured max deviation of it; otherwise reverts
+    /// with `PriceDeviationTooHigh` (or `TwapInsufficientHistory` when the
+    /// window is not covered).
+    pub fn validate_settlement_price(
+        env: Env,
+        market_id: u64,
+        outcome: Symbol,
+        window: u64,
+    ) -> Result<i128, InsightArenaError> {
+        liquidity::validate_settlement_price(&env, market_id, outcome, window)
+    }
+
+    /// Set the max spot-vs-TWAP deviation (bps, 1-10000) tolerated at
+    /// settlement. Admin only.
+    pub fn set_twap_max_deviation_bps(
+        env: Env,
+        admin: Address,
+        max_deviation_bps: u32,
+    ) -> Result<(), InsightArenaError> {
+        config::set_twap_max_deviation_bps(&env, admin, max_deviation_bps)
+    }
+
+    /// Current max spot-vs-TWAP deviation (bps) for settlement.
+    pub fn get_twap_max_deviation_bps(env: Env) -> Result<u32, InsightArenaError> {
+        config::get_twap_max_deviation_bps(&env)
+    }
+
     /// Compute the time-weighted average price over the trailing
     /// `window_seconds` for `market_id`'s primary outcome. See
     /// `liquidity::get_market_twap` for details.
