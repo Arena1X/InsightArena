@@ -138,7 +138,7 @@ finalize_season(admin, season_id)
 | `StakeTooHigh` | 23 | Stake above `max_stake` |
 | `PayoutAlreadyClaimed` | 24 | `payout_claimed` is already true |
 | `InsufficientFunds` | 30 | Payout or refund exceeds available escrow balance |
-| `TransferFailed` | 31 | Native XLM transfer via Stellar asset contract failed |
+| `PriceDeviationTooHigh` | 113 | Spot price deviates from TWAP beyond `twap_max_deviation_bps` (replaced unused `TransferFailed`) |
 | `EscrowEmpty` | 32 | Market `total_pool` is zero during resolution or refund |
 | `SeasonNotActive` | 40 | Points award targets a closed season |
 | `SeasonAlreadyFinalized` | 41 | Second finalization attempted |

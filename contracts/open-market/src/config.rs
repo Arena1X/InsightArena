@@ -23,6 +23,8 @@ pub const PERSISTENT_THRESHOLD: u32 = 501_120; // PERSISTENT_BUMP − 1 day
 /// [`set_timelock_delay`].
 pub const DEFAULT_TIMELOCK_DELAY: u64 = 172_800;
 pub const DEFAULT_MAX_OUTCOMES: u32 = 10;
+/// Default max spot-vs-TWAP deviation (bps) tolerated at settlement (10%).
+pub const DEFAULT_TWAP_MAX_DEVIATION_BPS: u32 = 1_000;
 
 // ── Storage-specific TTL constants (merged from ttl.rs) ───────────────────────
 // ~30 days at ~6s/ledger for frequently accessed market state.
@@ -350,6 +352,11 @@ pub struct Config {
     /// to remaining participants. Admin-configurable via `set_early_exit_fee_bps`.
     /// Defaults to `500` (5%) at initialization.
     pub early_exit_fee_bps: u32,
+    /// Maximum allowed deviation (bps, 1-10000) between an outcome's spot
+    /// price and its TWAP for settlement to proceed. See
+    /// `liquidity::validate_settlement_price`. Admin-configurable via
+    /// `set_twap_max_deviation_bps`. Defaults to `1000` (10%).
+    pub twap_max_deviation_bps: u32,
     /// Number of fully-inactive seasons (no market created/resolved/disputed
     /// by the creator) tolerated before season-based reputation decay begins
     /// to apply. `0` means decay starts from the very first inactive season.
@@ -507,6 +514,7 @@ pub fn initialize(
         vesting_interval_seconds: 2_592_000, // ~30 days
         bond_amount: 0, // disabled by default; admin/governance opt in
         early_exit_fee_bps: 500, // 5% default early-exit fee
+        twap_max_deviation_bps: DEFAULT_TWAP_MAX_DEVIATION_BPS,
         reputation_season_decay_grace: 1, // tolerate one inactive season before decaying
         reputation_season_decay_bps: 1000, // 10% compounding decay per inactive season
     };
@@ -1604,4 +1612,46 @@ fn emit_early_exit_fee_updated(env: &Env, old_fee_bps: u32, new_fee_bps: u32) {
 pub fn get_early_exit_fee_bps(env: &Env) -> Result<u32, InsightArenaError> {
     let config = load_config(env)?;
     Ok(config.early_exit_fee_bps)
+}
+
+fn validate_twap_max_deviation_bps(max_deviation_bps: u32) -> Result<(), InsightArenaError> {
+    if max_deviation_bps == 0 || max_deviation_bps > 10_000 {
+        return Err(InsightArenaError::InvalidInput);
+    }
+    Ok(())
+}
+
+/// Set the max allowed spot-vs-TWAP deviation (bps, 1-10000) for settlement.
+/// Caller must be the stored admin.
+pub fn set_twap_max_deviation_bps(
+    env: &Env,
+    admin: Address,
+    max_deviation_bps: u32,
+) -> Result<(), InsightArenaError> {
+    ensure_not_paused(env)?;
+    let mut config = load_config(env)?;
+
+    admin.require_auth();
+    if admin != config.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    validate_twap_max_deviation_bps(max_deviation_bps)?;
+
+    let old = config.twap_max_deviation_bps;
+    config.twap_max_deviation_bps = max_deviation_bps;
+    env.storage().persistent().set(&DataKey::Config, &config);
+    bump_config(env);
+
+    env.events().publish(
+        (symbol_short!("cfg"), symbol_short!("twap_dev")),
+        (old, max_deviation_bps),
+    );
+
+    Ok(())
+}
+
+/// Get the current max spot-vs-TWAP deviation (bps) without extending TTL.
+pub fn get_twap_max_deviation_bps(env: &Env) -> Result<u32, InsightArenaError> {
+    Ok(load_config(env)?.twap_max_deviation_bps)
 }
