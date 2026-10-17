@@ -13,3 +13,4 @@ export * from './batch-validation-failed.exception';
 export * from './batch-chain-submission-failed.exception';
 export * from './slippage-exceeded.exception';
 export * from './note-too-long.exception';
+export * from './fraud-evidence-immutable.exception';

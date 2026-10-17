@@ -45,6 +45,8 @@ import { UsersService } from '../users/users.service';
 import { Market } from '../markets/entities/market.entity';
 import { SorobanService } from '../soroban/soroban.service';
 import { SlippageCheckerService } from './services/slippage-checker.service';
+import { PredictionFraudRulesService } from './services/prediction-fraud-rules.service';
+import { FraudRuleTrigger } from './services/fraud-rules/fraud-rule.interface';
 import {
   ClaimAllRewardsResponseDto,
   ClaimResultDto,
@@ -101,6 +103,7 @@ export class PredictionsService {
     private readonly dataSource: DataSource,
     private readonly configService: ConfigService,
     private readonly usersService: UsersService,
+    private readonly fraudRulesService: PredictionFraudRulesService,
   ) {}
 
   /**
@@ -112,6 +115,7 @@ export class PredictionsService {
   async submit(
     dto: SubmitPredictionDto,
     user: User,
+    deviceFingerprint?: string | null,
   ): Promise<SubmitPredictionResponseDto> {
     const market = await this.marketsRepository.findOne({
       where: { id: dto.market_id },
@@ -195,6 +199,7 @@ export class PredictionsService {
         chosen_outcome: dto.chosen_outcome,
         stake_amount_stroops: dto.stake_amount_stroops,
         clientIdempotencyKey: dto.clientIdempotencyKey,
+        device_fingerprint: deviceFingerprint ?? null,
         tx_hash,
         payout_claimed: false,
         payout_amount_stroops: '0',
@@ -255,6 +260,8 @@ export class PredictionsService {
       );
     });
 
+    this.runFraudRules(prediction, market, user, FraudRuleTrigger.SUBMIT);
+
     // A submitted prediction is this user's qualifying action for referral
     // purposes; no-ops if they weren't referred. Non-blocking for the same
     // reason as fraud signal evaluation above.
@@ -283,6 +290,7 @@ export class PredictionsService {
   async submitBatch(
     dto: SubmitBatchPredictionsDto,
     user: User,
+    deviceFingerprint?: string | null,
   ): Promise<BatchSubmitResponseDto> {
     const atomic = dto.atomic ?? true;
     const items = dto.predictions;
@@ -423,6 +431,7 @@ export class PredictionsService {
             chosen_outcome: item.chosen_outcome,
             stake_amount_stroops: item.stake_amount_stroops,
             clientIdempotencyKey: item.clientIdempotencyKey,
+            device_fingerprint: deviceFingerprint ?? null,
             tx_hash: result.tx_hash,
             payout_claimed: false,
             payout_amount_stroops: '0',
@@ -495,6 +504,14 @@ export class PredictionsService {
         err,
       );
     });
+    for (const [index, { prediction }] of persistedByIndex) {
+      this.runFraudRules(
+        prediction,
+        marketById.get(items[index].market_id) as Market,
+        user,
+        FraudRuleTrigger.SUBMIT,
+      );
+    }
 
     const results: BatchPredictionResultDto[] = items.map((item, index) => {
       const saved = persistedByIndex.get(index);
@@ -736,7 +753,16 @@ export class PredictionsService {
     }
 
     prediction.note = sanitizedNote;
-    return this.predictionsRepository.save(prediction);
+    const saved = await this.predictionsRepository.save(prediction);
+
+    this.runFraudRules(
+      prediction,
+      prediction.market,
+      user,
+      FraudRuleTrigger.UPDATE,
+    );
+
+    return saved;
   }
 
   /**
@@ -1004,6 +1030,26 @@ export class PredictionsService {
     })();
 
     return readable;
+  }
+
+  /**
+   * Run the per-prediction fraud rules (post-deadline edit, duplicate burst).
+   * Advisory-only and non-blocking: failures are logged, never thrown.
+   */
+  private runFraudRules(
+    prediction: Prediction,
+    market: Market,
+    user: User,
+    trigger: FraudRuleTrigger,
+  ): void {
+    this.fraudRulesService
+      .evaluate({ prediction, market, user, trigger, occurredAt: new Date() })
+      .catch((err) => {
+        this.logger.error(
+          `Fraud rule evaluation failed for prediction ${prediction.id}`,
+          err,
+        );
+      });
   }
 
   /**

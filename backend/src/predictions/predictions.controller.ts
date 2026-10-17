@@ -12,6 +12,7 @@ import {
   ParseUUIDPipe,
   Res,
   UseFilters,
+  Headers,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { BanGuard } from '../common/guards/ban.guard';
@@ -90,8 +91,13 @@ export class PredictionsController {
   async submit(
     @Body() dto: SubmitPredictionDto,
     @CurrentUser() user: User,
+    @Headers('x-device-fingerprint') deviceFingerprint?: string,
   ): Promise<SubmitPredictionResponseDto> {
-    return this.predictionsService.submit(dto, user);
+    return this.predictionsService.submit(
+      dto,
+      user,
+      normalizeDeviceFingerprint(deviceFingerprint),
+    );
   }
 
   @Post('batch')
@@ -126,8 +132,13 @@ export class PredictionsController {
   async submitBatch(
     @Body() dto: SubmitBatchPredictionsDto,
     @CurrentUser() user: User,
+    @Headers('x-device-fingerprint') deviceFingerprint?: string,
   ): Promise<BatchSubmitResponseDto> {
-    return this.predictionsService.submitBatch(dto, user);
+    return this.predictionsService.submitBatch(
+      dto,
+      user,
+      normalizeDeviceFingerprint(deviceFingerprint),
+    );
   }
 
   @Get('me')
@@ -307,4 +318,10 @@ export class PredictionsController {
   ): Promise<PaginatedMarketPredictionsResponse> {
     return this.predictionsService.findByMarket(marketId, query);
   }
+}
+
+/** Trim and bound the client-supplied fingerprint to the column length. */
+function normalizeDeviceFingerprint(value?: string): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(0, 128) : null;
 }

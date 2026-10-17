@@ -21,6 +21,7 @@ import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { SorobanService } from '../soroban/soroban.service';
 import { SlippageCheckerService } from './services/slippage-checker.service';
+import { PredictionFraudRulesService } from './services/prediction-fraud-rules.service';
 import { PnlQueryDto } from './dto/pnl-query.dto';
 
 const STROOPS_PER_XLM = 10_000_000;
@@ -174,6 +175,10 @@ describe('PredictionsService.getPnl()', () => {
           useValue: {
             recordQualifyingAction: jest.fn().mockResolvedValue(undefined),
           },
+        },
+        {
+          provide: PredictionFraudRulesService,
+          useValue: { evaluate: jest.fn().mockResolvedValue([]) },
         },
         { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },
         {

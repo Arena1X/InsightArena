@@ -19,6 +19,7 @@ import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { SorobanService } from '../soroban/soroban.service';
 import { SlippageCheckerService } from './services/slippage-checker.service';
+import { PredictionFraudRulesService } from './services/prediction-fraud-rules.service';
 
 type MockRepo<T extends ObjectLiteral> = Record<string, jest.Mock>;
 
@@ -169,6 +170,10 @@ describe('PredictionsService - submitBatch', () => {
           useValue: {
             recordQualifyingAction: jest.fn().mockResolvedValue(undefined),
           },
+        },
+        {
+          provide: PredictionFraudRulesService,
+          useValue: { evaluate: jest.fn().mockResolvedValue([]) },
         },
         { provide: getDataSourceToken(), useValue: mockDataSource },
         {
