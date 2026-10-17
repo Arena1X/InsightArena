@@ -406,3 +406,182 @@ fn test_revoke_invite_code_fails_when_paused() {
     let result = client.try_revoke_invite_code(&creator, &code);
     assert!(matches!(result, Err(Ok(InsightArenaError::Paused))));
 }
+
+fn setup_test_with_token(
+    env: &Env,
+) -> (Address, Address, Address, u64, InsightArenaContractClient<'_>) {
+    env.mock_all_auths();
+    let admin = Address::generate(env);
+    let oracle = Address::generate(env);
+    let creator = Address::generate(env);
+    let xlm_token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+
+    let contract_id = env.register(InsightArenaContract, ());
+    let client = InsightArenaContractClient::new(env, &contract_id);
+    client.initialize(&admin, &oracle, &200, &xlm_token);
+
+    let params = CreateMarketParams {
+        title: String::from_str(env, "Market 1"),
+        description: String::from_str(env, "Description 1"),
+        category: Symbol::new(env, "Sports"),
+        outcomes: vec![env, Symbol::new(env, "TeamA"), Symbol::new(env, "TeamB")],
+        end_time: 200,
+        resolution_time: 300,
+        dispute_window: 86_400,
+        creator_fee_bps: 100,
+        min_stake: 10_000_000,
+        max_stake: 100_000_000,
+        is_public: false,
+        metadata_hash: BytesN::from_array(env, &[0u8; 32]),
+    };
+
+    let market_id = client.create_market(&creator, &params);
+    (creator, oracle, xlm_token, market_id, client)
+}
+
+fn fund(env: &Env, token: &Address, to: &Address, amount: i128) {
+    let client = soroban_sdk::token::StellarAssetClient::new(env, token);
+    client.mint(to, &amount);
+}
+
+#[test]
+fn test_non_invited_address_cannot_participate_in_private_market() {
+    let env = Env::default();
+    let (_creator, _oracle, xlm_token, market_id, client) = setup_test_with_token(&env);
+
+    let non_invited = Address::generate(&env);
+    let stake = 20_000_000_i128;
+    fund(&env, &xlm_token, &non_invited, stake);
+
+    // 1. Participant authorization query should report false
+    assert!(!client.is_participant_authorized(&market_id, &non_invited));
+
+    // 2. Direct market access check must revert with Unauthorized
+    let access_result = client.try_check_market_access(&market_id, &non_invited);
+    assert!(matches!(
+        access_result,
+        Err(Ok(InsightArenaError::Unauthorized))
+    ));
+
+    // 3. Submitting prediction must be rejected with Unauthorized
+    let pred_result = client.try_submit_prediction(
+        &non_invited,
+        &market_id,
+        &Symbol::new(&env, "TeamA"),
+        &stake,
+    );
+    assert!(matches!(
+        pred_result,
+        Err(Ok(InsightArenaError::Unauthorized))
+    ));
+
+    // 4. Verify no prediction record exists
+    assert!(!client.has_predicted(&market_id, &non_invited));
+}
+
+#[test]
+fn test_invited_address_can_participate_in_private_market() {
+    let env = Env::default();
+    let (creator, _oracle, xlm_token, market_id, client) = setup_test_with_token(&env);
+
+    let invited = Address::generate(&env);
+    let stake = 20_000_000_i128;
+    fund(&env, &xlm_token, &invited, stake);
+
+    // Before redeeming invite, cannot participate
+    assert!(!client.is_participant_authorized(&market_id, &invited));
+
+    // Generate and redeem invite code
+    let code = client.generate_invite_code(&creator, &market_id, &5, &3600);
+    let redeemed_market_id = client.redeem_invite_code(&invited, &code);
+    assert_eq!(redeemed_market_id, market_id);
+
+    // After redeeming invite, participant is authorized
+    assert!(client.is_participant_authorized(&market_id, &invited));
+
+    let access_result = client.try_check_market_access(&market_id, &invited);
+    assert!(matches!(access_result, Ok(Ok(()))));
+
+    // Submit prediction succeeds
+    client.submit_prediction(&invited, &market_id, &Symbol::new(&env, "TeamA"), &stake);
+    assert!(client.has_predicted(&market_id, &invited));
+}
+
+#[test]
+fn test_public_market_ignores_invite_gating() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let xlm_token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+
+    let contract_id = env.register(InsightArenaContract, ());
+    let client = InsightArenaContractClient::new(&env, &contract_id);
+    client.initialize(&admin, &oracle, &200, &xlm_token);
+
+    // Create a PUBLIC market
+    let params = CreateMarketParams {
+        title: String::from_str(&env, "Public Market"),
+        description: String::from_str(&env, "Anyone can join"),
+        category: Symbol::new(&env, "Sports"),
+        outcomes: vec![&env, Symbol::new(&env, "TeamA"), Symbol::new(&env, "TeamB")],
+        end_time: 200,
+        resolution_time: 300,
+        dispute_window: 86_400,
+        creator_fee_bps: 100,
+        min_stake: 10_000_000,
+        max_stake: 100_000_000,
+        is_public: true,
+        metadata_hash: BytesN::from_array(&env, &[0u8; 32]),
+    };
+    let market_id = client.create_market(&creator, &params);
+
+    // Any arbitrary address with NO invite code
+    let any_predictor = Address::generate(&env);
+    let stake = 20_000_000_i128;
+    fund(&env, &xlm_token, &any_predictor, stake);
+
+    // Public market authorizes any participant
+    assert!(client.is_participant_authorized(&market_id, &any_predictor));
+    let access_result = client.try_check_market_access(&market_id, &any_predictor);
+    assert!(matches!(access_result, Ok(Ok(()))));
+
+    // Prediction succeeds without any invite
+    client.submit_prediction(
+        &any_predictor,
+        &market_id,
+        &Symbol::new(&env, "TeamA"),
+        &stake,
+    );
+    assert!(client.has_predicted(&market_id, &any_predictor));
+}
+
+#[test]
+fn test_commit_prediction_private_market_access_gating() {
+    let env = Env::default();
+    let (creator, _oracle, _xlm_token, market_id, client) = setup_test_with_token(&env);
+
+    let uninvited = Address::generate(&env);
+    let invited = Address::generate(&env);
+    let hash = BytesN::from_array(&env, &[1u8; 32]);
+
+    // Uninvited cannot commit prediction
+    let uninvited_commit = client.try_commit_prediction(&uninvited, &market_id, &hash, &60);
+    assert!(matches!(
+        uninvited_commit,
+        Err(Ok(InsightArenaError::Unauthorized))
+    ));
+
+    // Invited user redeems code and can commit prediction
+    let code = client.generate_invite_code(&creator, &market_id, &5, &3600);
+    client.redeem_invite_code(&invited, &code);
+
+    let invited_commit = client.try_commit_prediction(&invited, &market_id, &hash, &60);
+    assert!(invited_commit.is_ok());
+}
+
