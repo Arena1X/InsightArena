@@ -171,6 +171,10 @@ describe('PredictionsService - submitBatch', () => {
             recordQualifyingAction: jest.fn().mockResolvedValue(undefined),
           },
         },
+        {
+          provide: PredictionFraudRulesService,
+          useValue: { evaluate: jest.fn().mockResolvedValue([]) },
+        },
         { provide: getDataSourceToken(), useValue: mockDataSource },
         {
           provide: ConfigService,
