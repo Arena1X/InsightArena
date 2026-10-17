@@ -28,6 +28,9 @@ export interface OddsUpdatePayload {
  * 1. If no timer is running for the market, emit immediately and start a timer.
  * 2. If a timer is already running, replace the pending payload so that the
  *    most-recent data is sent when the timer fires.
+ * 3. After a trailing emit a new window is opened, so a market never emits
+ *    more than once per THROTTLE_MS window, and the latest value of every
+ *    window is always delivered.
  * This ensures clients receive odds within THROTTLE_MS of the last change,
  * rather than only on the very first update or on a fixed schedule.
  */
@@ -136,25 +139,35 @@ export class OddsBroadcasterService implements OnModuleDestroy {
     if (!this.throttleTimer.has(marketId)) {
       // Leading edge: emit now and open the throttle window.
       this.emit(marketId, payload);
-
-      const timer = setTimeout(() => {
-        this.throttleTimer.delete(marketId);
-
-        // Trailing edge: if an update arrived during the window, send it now.
-        const pending = this.pendingBroadcast.get(marketId);
-        if (pending) {
-          this.pendingBroadcast.delete(marketId);
-          this.emit(marketId, pending);
-        }
-      }, this.throttleMs);
-
-      // Prevent the timer from keeping the Node.js event loop alive during tests.
-      timer.unref?.();
-      this.throttleTimer.set(marketId, timer);
+      this.startThrottleWindow(marketId);
     } else {
       // Inside the throttle window — queue the latest payload.
       this.pendingBroadcast.set(marketId, payload);
     }
+  }
+
+  /**
+   * Open a throttle window for `marketId`. When it closes, any pending
+   * payload is emitted (trailing edge) and a fresh window is opened, so
+   * consecutive emits for a market are always at least `throttleMs` apart
+   * — i.e. at most one broadcast per market per window.
+   */
+  private startThrottleWindow(marketId: string): void {
+    const timer = setTimeout(() => {
+      this.throttleTimer.delete(marketId);
+
+      // Trailing edge: if an update arrived during the window, send it now.
+      const pending = this.pendingBroadcast.get(marketId);
+      if (pending) {
+        this.pendingBroadcast.delete(marketId);
+        this.emit(marketId, pending);
+        this.startThrottleWindow(marketId);
+      }
+    }, this.throttleMs);
+
+    // Prevent the timer from keeping the Node.js event loop alive during tests.
+    timer.unref?.();
+    this.throttleTimer.set(marketId, timer);
   }
 
   // ---------------------------------------------------------------------------
