@@ -142,14 +142,119 @@ describe("RouteProgress", () => {
       window.history.pushState({}, "", "/c");
     });
 
-    // Reset, not jumped ahead to complete.
-    expect(getProgress()).toBe(0);
+    // Should be hidden immediately after superseding navigation
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
 
+    // After show delay, should start fresh from the beginning
     act(() => {
       vi.advanceTimersByTime(160);
     });
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
     expect(getProgress()).toBeGreaterThan(0);
     expect(getProgress()).toBeLessThan(100);
+  });
+
+  it("handles rapid back-to-back navigations without getting stuck", () => {
+    const { rerender } = render(<RouteProgress />);
+
+    // First navigation
+    act(() => {
+      window.history.pushState({}, "", "/b");
+    });
+    act(() => {
+      vi.advanceTimersByTime(160);
+    });
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+
+    // Second navigation before first completes
+    act(() => {
+      window.history.pushState({}, "", "/c");
+    });
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+
+    // Third navigation before second even shows
+    act(() => {
+      window.history.pushState({}, "", "/d");
+    });
+
+    // Let the third navigation complete
+    act(() => {
+      vi.advanceTimersByTime(160);
+    });
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+
+    mockPathname = "/d";
+    act(() => {
+      rerender(<RouteProgress />);
+    });
+
+    // Should complete to 100% and then hide
+    expect(getProgress()).toBe(100);
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("completes to 100% and then hides after navigation settles", () => {
+    const { rerender } = render(<RouteProgress />);
+
+    act(() => {
+      window.history.pushState({}, "", "/b");
+    });
+    act(() => {
+      vi.advanceTimersByTime(160);
+    });
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    expect(getProgress()).toBeGreaterThan(0);
+    expect(getProgress()).toBeLessThan(100);
+
+    // Route settles
+    mockPathname = "/b";
+    act(() => {
+      rerender(<RouteProgress />);
+    });
+
+    // Should jump to 100%
+    expect(getProgress()).toBe(100);
+
+    // Should hold at 100% then hide
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    expect(getProgress()).toBe(100);
+
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("never shows the bar if navigation resolves before show delay", () => {
+    const { rerender } = render(<RouteProgress />);
+
+    act(() => {
+      window.history.pushState({}, "", "/b");
+    });
+
+    // Route settles almost immediately
+    act(() => {
+      vi.advanceTimersByTime(50);
+    });
+    mockPathname = "/b";
+    act(() => {
+      rerender(<RouteProgress />);
+    });
+
+    // Should never become visible
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+
+    // Even after full show delay
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
   it("jumps straight to 100% and skips the hold when reduced motion is preferred", () => {
