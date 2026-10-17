@@ -493,6 +493,160 @@ describe('PredictionsService.getPnl()', () => {
     });
   });
 
+  // ─── Rounding policy ─────────────────────────────────────────────────────
+
+  describe('rounding policy', () => {
+    // Open markets whose implied odds do not divide evenly, so each
+    // prediction's unrealized P&L has to be rounded to a whole stroop.
+    const buildUnevenFixture = () => {
+      const predictions: Prediction[] = [];
+      const outcomeRows: Array<{
+        marketId: string;
+        outcome: string;
+        total: string;
+      }> = [];
+
+      for (let i = 0; i < 25; i++) {
+        const marketId = `uneven-${i}`;
+        const market = makeMarket({
+          id: marketId,
+          title: `Uneven ${i}`,
+          total_pool_stroops: String(3_000_007 + i),
+        });
+        predictions.push(
+          makePrediction({
+            id: `open-${i}`,
+            market,
+            chosen_outcome: 'Yes',
+            stake_amount_stroops: String(1_000_001 + i),
+          }),
+        );
+        outcomeRows.push({
+          marketId,
+          outcome: 'Yes',
+          total: String(2_000_003 + i),
+        });
+      }
+
+      for (let i = 0; i < 25; i++) {
+        const market = makeMarket({
+          id: `settled-${i}`,
+          title: `Settled ${i}`,
+          is_resolved: true,
+          resolved_outcome: i % 2 === 0 ? 'Yes' : 'No',
+        });
+        predictions.push(
+          makePrediction({
+            id: `settled-${i}`,
+            market,
+            chosen_outcome: 'Yes',
+            stake_amount_stroops: String(1_234_567 + i),
+            payout_amount_stroops: String(3_333_333 + i),
+          }),
+        );
+      }
+
+      return { predictions, outcomeRows };
+    };
+
+    it('sum of per-market P&L equals the reported total exactly', async () => {
+      const { predictions, outcomeRows } = buildUnevenFixture();
+      await setupService(predictions, outcomeRows);
+
+      const result = await service.getPnl(makeUser(), { breakdown: true });
+      const pm = result.per_market!;
+
+      const sum = (key: keyof (typeof pm)[number]) =>
+        pm.reduce((acc, e) => acc + BigInt(e[key] as string), 0n).toString();
+
+      expect(sum('realized_pnl_stroops')).toBe(result.realized_pnl_stroops);
+      expect(sum('unrealized_pnl_stroops')).toBe(
+        result.unrealized_pnl_stroops,
+      );
+      expect(sum('staked_stroops')).toBe(result.total_staked_stroops);
+
+      // XLM totals are converted once from the exact stroop totals, so they
+      // carry no drift from summing many rounded per-market values.
+      expect(result.realized_pnl_xlm).toBe(
+        Number(result.realized_pnl_stroops) / STROOPS_PER_XLM,
+      );
+      expect(result.unrealized_pnl_xlm).toBe(
+        Number(result.unrealized_pnl_stroops) / STROOPS_PER_XLM,
+      );
+      expect(
+        pm.reduce((acc, e) => acc + e.unrealized_pnl_xlm, 0),
+      ).toBeCloseTo(result.unrealized_pnl_xlm, 7);
+    });
+
+    it('rounds each open position once, truncating to a whole stroop', async () => {
+      const market = makeMarket({
+        id: 'one-third',
+        total_pool_stroops: '10',
+      });
+      const prediction = makePrediction({
+        market,
+        stake_amount_stroops: '1',
+      });
+      await setupService(
+        [prediction],
+        [{ marketId: 'one-third', outcome: 'Yes', total: '3' }],
+      );
+
+      const result = await service.getPnl(makeUser(), {});
+
+      // implied value = 1 * 10 / 3 = 3.33… → 3 stroops; P&L = 3 - 1 = 2
+      expect(result.unrealized_pnl_stroops).toBe('2');
+      expect(result.unrealized_pnl_xlm).toBe(0.0000002);
+    });
+
+    it('is stable across repeated computation', async () => {
+      const { predictions, outcomeRows } = buildUnevenFixture();
+      await setupService(predictions, outcomeRows);
+
+      const first = await service.getPnl(makeUser(), { breakdown: true });
+      const second = await service.getPnl(makeUser(), { breakdown: true });
+      const third = await service.getPnl(makeUser(), { breakdown: true });
+
+      expect(second).toEqual(first);
+      expect(third).toEqual(first);
+    });
+
+    it('a zero-P&L set reports exactly zero', async () => {
+      const cancelled = makeMarket({ id: 'cancelled', is_cancelled: true });
+      const breakEven = makeMarket({
+        id: 'break-even',
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+      const predictions = [
+        makePrediction({
+          id: 'p-cancelled',
+          market: cancelled,
+          stake_amount_stroops: '1234567',
+        }),
+        makePrediction({
+          id: 'p-break-even',
+          market: breakEven,
+          chosen_outcome: 'Yes',
+          stake_amount_stroops: '7654321',
+          payout_amount_stroops: '7654321',
+        }),
+      ];
+      await setupService(predictions, []);
+
+      const result = await service.getPnl(makeUser(), { breakdown: true });
+
+      expect(Object.is(result.realized_pnl_xlm, 0)).toBe(true);
+      expect(Object.is(result.unrealized_pnl_xlm, 0)).toBe(true);
+      expect(result.realized_pnl_stroops).toBe('0');
+      expect(result.unrealized_pnl_stroops).toBe('0');
+      for (const entry of result.per_market!) {
+        expect(Object.is(entry.realized_pnl_xlm, 0)).toBe(true);
+        expect(entry.realized_pnl_stroops).toBe('0');
+      }
+    });
+  });
+
   // ─── Time filter ─────────────────────────────────────────────────────────
 
   describe('time filter', () => {

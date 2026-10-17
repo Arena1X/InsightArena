@@ -56,6 +56,8 @@ import {
   ClaimAllRewardsResponseDto,
   ClaimResultDto,
   RewardsSummaryDto,
+  parseStroops,
+  stroopsToXlm,
 } from './dto/rewards-summary.dto';
 import {
   MarketNotFoundException,
@@ -73,22 +75,6 @@ import {
   BatchChainSubmissionFailedException,
   NoteTooLongException,
 } from './exceptions';
-
-const STROOPS_PER_XLM = 10_000_000n;
-
-function stroopsToXlm(stroops: bigint): number {
-  return Number(stroops) / Number(STROOPS_PER_XLM);
-}
-
-/**
- * Same conversion but accepts negative bigint values, preserving the sign.
- */
-function signedStroopsToXlm(stroops: bigint): number {
-  if (stroops < 0n) {
-    return -(Number(-stroops) / Number(STROOPS_PER_XLM));
-  }
-  return Number(stroops) / Number(STROOPS_PER_XLM);
-}
 
 @Injectable()
 export class PredictionsService {
@@ -856,23 +842,23 @@ export class PredictionsService {
 
     for (const prediction of predictions) {
       if (prediction.payout_claimed) {
-        totalEarnedStroops += BigInt(prediction.payout_amount_stroops ?? '0');
+        totalEarnedStroops += parseStroops(prediction.payout_amount_stroops);
         continue;
       }
 
       const market = prediction.market;
       if (!market.is_resolved) {
-        vestingStroops += BigInt(prediction.stake_amount_stroops);
+        vestingStroops += parseStroops(prediction.stake_amount_stroops);
       } else if (market.resolved_outcome === prediction.chosen_outcome) {
-        claimableStroops += BigInt(prediction.stake_amount_stroops);
+        claimableStroops += parseStroops(prediction.stake_amount_stroops);
       }
     }
 
-    return {
-      total_earned_xlm: stroopsToXlm(totalEarnedStroops),
-      claimable_xlm: stroopsToXlm(claimableStroops),
-      vesting_xlm: stroopsToXlm(vestingStroops),
-    };
+    return RewardsSummaryDto.fromStroops({
+      totalEarned: totalEarnedStroops,
+      claimable: claimableStroops,
+      vesting: vestingStroops,
+    });
   }
 
   /**
@@ -908,7 +894,7 @@ export class PredictionsService {
     for (const predictionId of claimableIds) {
       try {
         const claimed = await this.claim(predictionId, user);
-        claimedStroops += BigInt(claimed.payout_amount_stroops ?? '0');
+        claimedStroops += parseStroops(claimed.payout_amount_stroops);
         lastTxHash = claimed.tx_hash ?? lastTxHash;
         results.push({
           prediction_id: predictionId,
@@ -933,6 +919,7 @@ export class PredictionsService {
 
     return {
       claimed_xlm: stroopsToXlm(claimedStroops),
+      claimed_stroops: claimedStroops.toString(),
       claimed_count: results.filter(
         (r) => r.status === BATCH_PREDICTION_STATUS.FULFILLED,
       ).length,
@@ -1309,6 +1296,10 @@ export class PredictionsService {
    * When `breakdown=true` the response also includes a per-market array whose
    * values sum exactly to the aggregate totals (verified by the caller and
    * by our unit tests).
+   *
+   * Rounding follows the single policy documented on PnlResponseDto: P&L is
+   * rounded once per prediction to a whole stroop, all totals are exact
+   * bigint sums, and XLM values are converted once from those exact totals.
    */
   async getPnl(user: User, dto: PnlQueryDto): Promise<PnlResponseDto> {
     const qb = this.predictionsRepository
@@ -1410,11 +1401,9 @@ export class PredictionsService {
 
         if (chosenOutcomeStake > 0n && totalPool > 0n) {
           // implied_value = stake * (total_pool / chosen_outcome_pool)
-          // Using integer arithmetic with a precision multiplier to avoid
-          // floating-point loss before the final XLM conversion.
-          const PRECISION = 1_000_000n;
-          const impliedValueStroops =
-            (stake * totalPool * PRECISION) / chosenOutcomeStake / PRECISION;
+          // Multiply before dividing so the only rounding step is a single
+          // truncation toward zero to a whole stroop for this prediction.
+          const impliedValueStroops = (stake * totalPool) / chosenOutcomeStake;
           unrealizedStroops = impliedValueStroops - stake;
         }
         // else: can't compute odds; leave unrealized at 0
@@ -1442,18 +1431,24 @@ export class PredictionsService {
     }
 
     const result: PnlResponseDto = {
-      realized_pnl_xlm: signedStroopsToXlm(totalRealizedStroops),
-      unrealized_pnl_xlm: signedStroopsToXlm(totalUnrealizedStroops),
+      realized_pnl_xlm: stroopsToXlm(totalRealizedStroops),
+      unrealized_pnl_xlm: stroopsToXlm(totalUnrealizedStroops),
       total_staked_xlm: stroopsToXlm(totalStakedStroops),
+      realized_pnl_stroops: totalRealizedStroops.toString(),
+      unrealized_pnl_stroops: totalUnrealizedStroops.toString(),
+      total_staked_stroops: totalStakedStroops.toString(),
     };
 
     if (dto.breakdown) {
       result.per_market = [...perMarketMap.values()].map((entry) => ({
         market_id: entry.market_id,
         market_title: entry.market_title,
-        realized_pnl_xlm: signedStroopsToXlm(entry.realizedStroops),
-        unrealized_pnl_xlm: signedStroopsToXlm(entry.unrealizedStroops),
+        realized_pnl_xlm: stroopsToXlm(entry.realizedStroops),
+        unrealized_pnl_xlm: stroopsToXlm(entry.unrealizedStroops),
         staked_xlm: stroopsToXlm(entry.stakedStroops),
+        realized_pnl_stroops: entry.realizedStroops.toString(),
+        unrealized_pnl_stroops: entry.unrealizedStroops.toString(),
+        staked_stroops: entry.stakedStroops.toString(),
       }));
     }
 

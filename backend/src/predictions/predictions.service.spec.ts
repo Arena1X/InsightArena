@@ -745,6 +745,9 @@ describe('PredictionsService', () => {
         claimable_xlm: 1,
         vesting_xlm: 2,
         total_earned_xlm: 1.5,
+        claimable_stroops: '10000000',
+        vesting_stroops: '20000000',
+        total_earned_stroops: '15000000',
       });
     });
 
@@ -757,7 +760,72 @@ describe('PredictionsService', () => {
         claimable_xlm: 0,
         vesting_xlm: 0,
         total_earned_xlm: 0,
+        claimable_stroops: '0',
+        vesting_stroops: '0',
+        total_earned_stroops: '0',
       });
+    });
+
+    it('sums reward amounts exactly, without binary float drift', async () => {
+      const resolvedWon = makeMarket({
+        id: 'm-won',
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+      // 0.1 + 0.2 XLM: the classic case that drifts with float addition.
+      mockPredictionsRepo.find.mockResolvedValue([
+        {
+          id: 'p-1',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: true,
+          payout_amount_stroops: '1000000',
+        },
+        {
+          id: 'p-2',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: true,
+          payout_amount_stroops: '2000000',
+        },
+        // Above Number.MAX_SAFE_INTEGER stroops: exact only as an integer.
+        {
+          id: 'p-3',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '9007199254740993',
+        },
+      ] as unknown as Prediction[]);
+
+      const result = await service.getRewardsSummary(makeUser());
+
+      expect(result.total_earned_stroops).toBe('3000000');
+      expect(result.total_earned_xlm).toBe(0.3);
+      expect(result.claimable_stroops).toBe('9007199254740993');
+    });
+
+    it('does not truncate very small reward amounts to zero', async () => {
+      const resolvedWon = makeMarket({
+        id: 'm-won',
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+      mockPredictionsRepo.find.mockResolvedValue([
+        {
+          id: 'p-dust',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '1',
+        },
+      ] as unknown as Prediction[]);
+
+      const result = await service.getRewardsSummary(makeUser());
+
+      expect(result.claimable_stroops).toBe('1');
+      expect(result.claimable_xlm).toBe(0.0000001);
+      expect(result.claimable_xlm).toBeGreaterThan(0);
     });
   });
 
@@ -825,6 +893,7 @@ describe('PredictionsService', () => {
 
       expect(result.claimed_count).toBe(2);
       expect(result.claimed_xlm).toBe(1.5);
+      expect(result.claimed_stroops).toBe('15000000');
       expect(result.transaction_hash).toBe('tx-2');
       expect(mockSoroban.claimPayout).toHaveBeenCalledTimes(2);
       expect(result.results).toEqual([
