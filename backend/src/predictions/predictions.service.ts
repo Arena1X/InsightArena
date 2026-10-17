@@ -13,6 +13,7 @@ import { ListFraudFlagsQueryDto } from './dto/list-fraud-flags-query.dto';
 import { SubmitPredictionDto } from './dto/submit-prediction.dto';
 import { SubmitPredictionResponseDto } from './dto/submit-prediction-response.dto';
 import {
+  BATCH_ROLLED_BACK_REASON,
   BatchPredictionItemDto,
   MAX_BATCH_PREDICTIONS,
   SubmitBatchPredictionsDto,
@@ -25,8 +26,8 @@ import {
 import {
   PREDICTION_NOTE_MAX_LENGTH,
   UpdatePredictionNoteDto,
+  sanitizePredictionNote,
 } from './dto/update-prediction-note.dto';
-import { sanitizePlainText } from '../common/text-sanitizer.util';
 import {
   ListMarketPredictionsDto,
   MarketPredictionResponseDto,
@@ -39,16 +40,24 @@ import {
   PaginatedMyPredictionsResponse,
 } from './dto/list-my-predictions.dto';
 import { PnlQueryDto, PnlResponseDto } from './dto/pnl-query.dto';
-import { ExportPredictionsDto } from './dto/export-predictions.dto';
+import {
+  EXPORT_CSV_HEADER,
+  EXPORT_MAX_ROWS,
+  ExportPredictionsDto,
+} from './dto/export-predictions.dto';
 import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { Market } from '../markets/entities/market.entity';
 import { SorobanService } from '../soroban/soroban.service';
 import { SlippageCheckerService } from './services/slippage-checker.service';
+import { PredictionFraudRulesService } from './services/prediction-fraud-rules.service';
+import { FraudRuleTrigger } from './services/fraud-rules/fraud-rule.interface';
 import {
   ClaimAllRewardsResponseDto,
   ClaimResultDto,
   RewardsSummaryDto,
+  parseStroops,
+  stroopsToXlm,
 } from './dto/rewards-summary.dto';
 import {
   MarketNotFoundException,
@@ -66,22 +75,6 @@ import {
   BatchChainSubmissionFailedException,
   NoteTooLongException,
 } from './exceptions';
-
-const STROOPS_PER_XLM = 10_000_000n;
-
-function stroopsToXlm(stroops: bigint): number {
-  return Number(stroops) / Number(STROOPS_PER_XLM);
-}
-
-/**
- * Same conversion but accepts negative bigint values, preserving the sign.
- */
-function signedStroopsToXlm(stroops: bigint): number {
-  if (stroops < 0n) {
-    return -(Number(-stroops) / Number(STROOPS_PER_XLM));
-  }
-  return Number(stroops) / Number(STROOPS_PER_XLM);
-}
 
 @Injectable()
 export class PredictionsService {
@@ -101,6 +94,7 @@ export class PredictionsService {
     private readonly dataSource: DataSource,
     private readonly configService: ConfigService,
     private readonly usersService: UsersService,
+    private readonly fraudRulesService: PredictionFraudRulesService,
   ) {}
 
   /**
@@ -112,6 +106,7 @@ export class PredictionsService {
   async submit(
     dto: SubmitPredictionDto,
     user: User,
+    deviceFingerprint?: string | null,
   ): Promise<SubmitPredictionResponseDto> {
     const market = await this.marketsRepository.findOne({
       where: { id: dto.market_id },
@@ -195,6 +190,7 @@ export class PredictionsService {
         chosen_outcome: dto.chosen_outcome,
         stake_amount_stroops: dto.stake_amount_stroops,
         clientIdempotencyKey: dto.clientIdempotencyKey,
+        device_fingerprint: deviceFingerprint ?? null,
         tx_hash,
         payout_claimed: false,
         payout_amount_stroops: '0',
@@ -255,6 +251,8 @@ export class PredictionsService {
       );
     });
 
+    this.runFraudRules(prediction, market, user, FraudRuleTrigger.SUBMIT);
+
     // A submitted prediction is this user's qualifying action for referral
     // purposes; no-ops if they weren't referred. Non-blocking for the same
     // reason as fraud signal evaluation above.
@@ -275,14 +273,21 @@ export class PredictionsService {
   /**
    * Submit a batch (slip) of predictions in a single call.
    *
-   * Validation is performed up-front for every item. In atomic mode
-   * (default) any validation or on-chain failure rejects the whole slip
-   * before anything is persisted; in non-atomic mode valid items are still
-   * submitted and failures are reported per item in the response.
+   * Partial-failure policy (see `SubmitBatchPredictionsDto.atomic`):
+   *
+   * - Validation is performed up-front for every item.
+   * - Atomic mode (default, all-or-nothing): any validation or on-chain
+   *   failure rejects the whole slip and nothing is persisted. The thrown
+   *   exception carries a per-item `results` array: failing items report
+   *   their own reason, every other item reports
+   *   `BATCH_ROLLED_BACK_REASON`.
+   * - Non-atomic mode (best-effort): valid items are still submitted and
+   *   persisted; failures are reported per item in the response.
    */
   async submitBatch(
     dto: SubmitBatchPredictionsDto,
     user: User,
+    deviceFingerprint?: string | null,
   ): Promise<BatchSubmitResponseDto> {
     const atomic = dto.atomic ?? true;
     const items = dto.predictions;
@@ -348,6 +353,7 @@ export class PredictionsService {
     if (atomic && failures.size > 0) {
       throw new BatchValidationFailedException(
         [...failures].map(([index, error]) => ({ index, error })),
+        this.buildRolledBackResults(items, failures),
       );
     }
 
@@ -396,6 +402,7 @@ export class PredictionsService {
         if (atomic) {
           throw new BatchChainSubmissionFailedException(
             [...failures].map(([i, error]) => ({ index: i, error })),
+            this.buildRolledBackResults(items, failures),
           );
         }
       }
@@ -423,6 +430,7 @@ export class PredictionsService {
             chosen_outcome: item.chosen_outcome,
             stake_amount_stroops: item.stake_amount_stroops,
             clientIdempotencyKey: item.clientIdempotencyKey,
+            device_fingerprint: deviceFingerprint ?? null,
             tx_hash: result.tx_hash,
             payout_claimed: false,
             payout_amount_stroops: '0',
@@ -495,6 +503,14 @@ export class PredictionsService {
         err,
       );
     });
+    for (const [index, { prediction }] of persistedByIndex) {
+      this.runFraudRules(
+        prediction,
+        marketById.get(items[index].market_id) as Market,
+        user,
+        FraudRuleTrigger.SUBMIT,
+      );
+    }
 
     const results: BatchPredictionResultDto[] = items.map((item, index) => {
       const saved = persistedByIndex.get(index);
@@ -528,6 +544,22 @@ export class PredictionsService {
       ).length,
       atomic,
     };
+  }
+
+  /**
+   * Per-item outcomes for an atomic slip that was rejected: failing items
+   * keep their own reason, every other item is reported as rolled back.
+   */
+  private buildRolledBackResults(
+    items: BatchPredictionItemDto[],
+    failures: Map<number, string>,
+  ): BatchPredictionResultDto[] {
+    return items.map((item, index) => ({
+      index,
+      market_id: item.market_id,
+      status: BATCH_PREDICTION_STATUS.REJECTED,
+      error: failures.get(index) ?? BATCH_ROLLED_BACK_REASON,
+    }));
   }
 
   private getBatchItemFailure(
@@ -704,7 +736,8 @@ export class PredictionsService {
    * Update the personal note on a prediction.
    * Only the prediction owner can update their note.
    *
-   * The note is sanitized (HTML tags and control characters stripped) before
+   * The note is sanitized (HTML tags, dangling tag openers and control
+   * characters stripped - see `sanitizePredictionNote`) before
    * the length check and persistence, so a payload that only exceeds the
    * limit once markup is counted isn't rejected, and so stored-XSS via
    * unsanitized markup is never written to the database. This is
@@ -727,7 +760,7 @@ export class PredictionsService {
       throw new PredictionNotFoundException(predictionId);
     }
 
-    const sanitizedNote = sanitizePlainText(dto.note);
+    const sanitizedNote = sanitizePredictionNote(dto.note);
     if (sanitizedNote.length > PREDICTION_NOTE_MAX_LENGTH) {
       throw new NoteTooLongException(
         sanitizedNote.length,
@@ -736,7 +769,16 @@ export class PredictionsService {
     }
 
     prediction.note = sanitizedNote;
-    return this.predictionsRepository.save(prediction);
+    const saved = await this.predictionsRepository.save(prediction);
+
+    this.runFraudRules(
+      prediction,
+      prediction.market,
+      user,
+      FraudRuleTrigger.UPDATE,
+    );
+
+    return saved;
   }
 
   /**
@@ -800,23 +842,23 @@ export class PredictionsService {
 
     for (const prediction of predictions) {
       if (prediction.payout_claimed) {
-        totalEarnedStroops += BigInt(prediction.payout_amount_stroops ?? '0');
+        totalEarnedStroops += parseStroops(prediction.payout_amount_stroops);
         continue;
       }
 
       const market = prediction.market;
       if (!market.is_resolved) {
-        vestingStroops += BigInt(prediction.stake_amount_stroops);
+        vestingStroops += parseStroops(prediction.stake_amount_stroops);
       } else if (market.resolved_outcome === prediction.chosen_outcome) {
-        claimableStroops += BigInt(prediction.stake_amount_stroops);
+        claimableStroops += parseStroops(prediction.stake_amount_stroops);
       }
     }
 
-    return {
-      total_earned_xlm: stroopsToXlm(totalEarnedStroops),
-      claimable_xlm: stroopsToXlm(claimableStroops),
-      vesting_xlm: stroopsToXlm(vestingStroops),
-    };
+    return RewardsSummaryDto.fromStroops({
+      totalEarned: totalEarnedStroops,
+      claimable: claimableStroops,
+      vesting: vestingStroops,
+    });
   }
 
   /**
@@ -852,7 +894,7 @@ export class PredictionsService {
     for (const predictionId of claimableIds) {
       try {
         const claimed = await this.claim(predictionId, user);
-        claimedStroops += BigInt(claimed.payout_amount_stroops ?? '0');
+        claimedStroops += parseStroops(claimed.payout_amount_stroops);
         lastTxHash = claimed.tx_hash ?? lastTxHash;
         results.push({
           prediction_id: predictionId,
@@ -877,6 +919,7 @@ export class PredictionsService {
 
     return {
       claimed_xlm: stroopsToXlm(claimedStroops),
+      claimed_stroops: claimedStroops.toString(),
       claimed_count: results.filter(
         (r) => r.status === BATCH_PREDICTION_STATUS.FULFILLED,
       ).length,
@@ -932,7 +975,11 @@ export class PredictionsService {
 
   /**
    * Stream the user's predictions as a CSV without loading all rows into memory.
-   * Returns a Readable stream that pipes CSV rows as they are fetched.
+   *
+   * Rows are pulled from a database cursor one at a time and only as fast as
+   * the consumer reads them (the returned stream honours backpressure), so
+   * memory use is bounded regardless of account size. At most
+   * `EXPORT_MAX_ROWS` (most recent first) are exported.
    */
   exportCsv(user: User, dto: ExportPredictionsDto): Readable {
     const qb = this.predictionsRepository
@@ -952,7 +999,8 @@ export class PredictionsService {
         'market.resolved_outcome',
         'market.is_resolved',
         'market.is_cancelled',
-      ]);
+      ])
+      .limit(EXPORT_MAX_ROWS);
 
     if (dto.start_date) {
       qb.andWhere('prediction.submitted_at >= :startDate', {
@@ -965,45 +1013,50 @@ export class PredictionsService {
       });
     }
 
-    const readable = new Readable({ read() {} });
+    async function* generateCsv(): AsyncGenerator<string> {
+      yield EXPORT_CSV_HEADER;
 
-    // Start streaming asynchronously
-    (async () => {
+      const rows = await qb.stream();
+      let completed = false;
       try {
-        readable.push(
-          'id,market_title,chosen_outcome,stake_stroops,status,payout_stroops,note,submitted_at\n',
-        );
-
-        const stream = await qb.stream();
-
-        for await (const prediction of stream) {
-          const market = prediction.market ?? {};
-          const status = computeExportStatus(prediction, market);
-          const note = (prediction.note ?? '').replace(/"/g, '""');
-          const title = (market.title ?? '').replace(/"/g, '""');
-          const row = [
-            prediction.id,
-            `"${title}"`,
-            `"${prediction.chosen_outcome}"`,
-            prediction.stake_amount_stroops,
-            status,
-            prediction.payout_amount_stroops ?? '0',
-            `"${note}"`,
-            prediction.submitted_at instanceof Date
-              ? prediction.submitted_at.toISOString()
-              : String(prediction.submitted_at),
-          ].join(',');
-
-          readable.push(row + '\n');
+        let count = 0;
+        for await (const raw of rows) {
+          if (count >= EXPORT_MAX_ROWS) break;
+          count++;
+          yield formatExportCsvRow(raw as ExportCsvRawRow);
         }
-
-        readable.push(null);
-      } catch (err) {
-        readable.destroy(err instanceof Error ? err : new Error(String(err)));
+        completed = true;
+      } finally {
+        // TypeORM only releases the query runner on 'end'/'error', so a
+        // stream abandoned early (client disconnect, row cap) is destroyed
+        // with an error to free the connection.
+        if (!completed && typeof rows.destroy === 'function') {
+          rows.destroy(new Error('Prediction CSV export ended early'));
+        }
       }
-    })();
+    }
 
-    return readable;
+    return Readable.from(generateCsv(), { objectMode: false });
+  }
+
+  /**
+   * Run the per-prediction fraud rules (post-deadline edit, duplicate burst).
+   * Advisory-only and non-blocking: failures are logged, never thrown.
+   */
+  private runFraudRules(
+    prediction: Prediction,
+    market: Market,
+    user: User,
+    trigger: FraudRuleTrigger,
+  ): void {
+    this.fraudRulesService
+      .evaluate({ prediction, market, user, trigger, occurredAt: new Date() })
+      .catch((err) => {
+        this.logger.error(
+          `Fraud rule evaluation failed for prediction ${prediction.id}`,
+          err,
+        );
+      });
   }
 
   /**
@@ -1243,6 +1296,10 @@ export class PredictionsService {
    * When `breakdown=true` the response also includes a per-market array whose
    * values sum exactly to the aggregate totals (verified by the caller and
    * by our unit tests).
+   *
+   * Rounding follows the single policy documented on PnlResponseDto: P&L is
+   * rounded once per prediction to a whole stroop, all totals are exact
+   * bigint sums, and XLM values are converted once from those exact totals.
    */
   async getPnl(user: User, dto: PnlQueryDto): Promise<PnlResponseDto> {
     const qb = this.predictionsRepository
@@ -1344,11 +1401,9 @@ export class PredictionsService {
 
         if (chosenOutcomeStake > 0n && totalPool > 0n) {
           // implied_value = stake * (total_pool / chosen_outcome_pool)
-          // Using integer arithmetic with a precision multiplier to avoid
-          // floating-point loss before the final XLM conversion.
-          const PRECISION = 1_000_000n;
-          const impliedValueStroops =
-            (stake * totalPool * PRECISION) / chosenOutcomeStake / PRECISION;
+          // Multiply before dividing so the only rounding step is a single
+          // truncation toward zero to a whole stroop for this prediction.
+          const impliedValueStroops = (stake * totalPool) / chosenOutcomeStake;
           unrealizedStroops = impliedValueStroops - stake;
         }
         // else: can't compute odds; leave unrealized at 0
@@ -1376,18 +1431,24 @@ export class PredictionsService {
     }
 
     const result: PnlResponseDto = {
-      realized_pnl_xlm: signedStroopsToXlm(totalRealizedStroops),
-      unrealized_pnl_xlm: signedStroopsToXlm(totalUnrealizedStroops),
+      realized_pnl_xlm: stroopsToXlm(totalRealizedStroops),
+      unrealized_pnl_xlm: stroopsToXlm(totalUnrealizedStroops),
       total_staked_xlm: stroopsToXlm(totalStakedStroops),
+      realized_pnl_stroops: totalRealizedStroops.toString(),
+      unrealized_pnl_stroops: totalUnrealizedStroops.toString(),
+      total_staked_stroops: totalStakedStroops.toString(),
     };
 
     if (dto.breakdown) {
       result.per_market = [...perMarketMap.values()].map((entry) => ({
         market_id: entry.market_id,
         market_title: entry.market_title,
-        realized_pnl_xlm: signedStroopsToXlm(entry.realizedStroops),
-        unrealized_pnl_xlm: signedStroopsToXlm(entry.unrealizedStroops),
+        realized_pnl_xlm: stroopsToXlm(entry.realizedStroops),
+        unrealized_pnl_xlm: stroopsToXlm(entry.unrealizedStroops),
         staked_xlm: stroopsToXlm(entry.stakedStroops),
+        realized_pnl_stroops: entry.realizedStroops.toString(),
+        unrealized_pnl_stroops: entry.unrealizedStroops.toString(),
+        staked_stroops: entry.stakedStroops.toString(),
       }));
     }
 
@@ -1457,6 +1518,54 @@ interface FraudSignalResult {
   score: number;
   threshold: number;
   details: Record<string, unknown>;
+}
+
+/**
+ * Raw row produced by `exportCsv`'s query stream. TypeORM's `stream()`
+ * yields un-hydrated rows keyed `<alias>_<column>`, not entities.
+ */
+export interface ExportCsvRawRow {
+  prediction_id: string;
+  prediction_chosen_outcome: string;
+  prediction_stake_amount_stroops: string;
+  prediction_payout_amount_stroops?: string | null;
+  prediction_submitted_at: Date | string;
+  prediction_note?: string | null;
+  market_title?: string | null;
+  market_resolved_outcome?: string | null;
+  market_is_resolved?: boolean | null;
+  market_is_cancelled?: boolean | null;
+}
+
+/** Format a single export row as a CSV line (including trailing newline). */
+export function formatExportCsvRow(raw: ExportCsvRawRow): string {
+  const quote = (value: string | null | undefined) =>
+    `"${(value ?? '').replace(/"/g, '""')}"`;
+  const status = computeExportStatus(
+    { chosen_outcome: raw.prediction_chosen_outcome },
+    {
+      is_cancelled: !!raw.market_is_cancelled,
+      is_resolved: !!raw.market_is_resolved,
+      resolved_outcome: raw.market_resolved_outcome,
+    },
+  );
+  const submittedAt =
+    raw.prediction_submitted_at instanceof Date
+      ? raw.prediction_submitted_at.toISOString()
+      : String(raw.prediction_submitted_at);
+
+  return (
+    [
+      raw.prediction_id,
+      quote(raw.market_title),
+      quote(raw.prediction_chosen_outcome),
+      raw.prediction_stake_amount_stroops,
+      status,
+      raw.prediction_payout_amount_stroops ?? '0',
+      quote(raw.prediction_note),
+      submittedAt,
+    ].join(',') + '\n'
+  );
 }
 
 function computeExportStatus(

@@ -12,6 +12,7 @@ import { randomBytes, randomUUID, createHash } from 'crypto';
 import { Keypair } from '@stellar/stellar-sdk';
 import { IsNull, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
+import { normalizeStellarAddress } from '../users/users.service';
 import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { AuthAuditEvent } from './entities/auth-audit-event.entity';
@@ -268,12 +269,15 @@ export class AuthService implements OnModuleInit {
     // Mark nonce as used (replay prevention)
     entry.used = true;
 
-    // Upsert the user record
-    let user = await this.usersRepository.findOneBy({ stellar_address });
+    // Upsert the user record, keyed on the canonical address form
+    const address = normalizeStellarAddress(stellar_address);
+    let user = await this.usersRepository.findOneBy({
+      stellar_address: address,
+    });
     const isNewUser = !user;
     if (!user) {
-      this.logger.debug(`Creating new user for ${stellar_address}`);
-      user = this.usersRepository.create({ stellar_address });
+      this.logger.debug(`Creating new user for ${address}`);
+      user = this.usersRepository.create({ stellar_address: address });
     }
     user = await this.usersRepository.save(user);
 

@@ -16,7 +16,9 @@ import { useCoachInsights } from "@/hooks/useCoachInsights";
 import { EmptyState } from "@/component/ui/empty-state";
 import type { CoachInsightPayload } from "@/lib/coach";
 
-function trendMeta(direction: CoachInsightPayload["accuracy_trend"]["direction"]) {
+function trendMeta(
+  direction: CoachInsightPayload["accuracy_trend"]["direction"],
+) {
   switch (direction) {
     case "improving":
       return {
@@ -90,6 +92,7 @@ export default function CoachCard() {
     refetch,
     hasHistory,
     isHidden,
+    isEmpty,
     dismiss,
     snooze,
   } = useCoachInsights();
@@ -151,6 +154,23 @@ export default function CoachCard() {
           >
             Retry
           </button>
+        </div>
+      </CardShell>
+    );
+  }
+
+  // Explicit empty state — user has history but no recommendations available.
+  // This is distinct from "not enough history yet" and "error loading".
+  if (isEmpty) {
+    return (
+      <CardShell>
+        <div className="mt-5" data-testid="coach-explicit-empty-state">
+          <EmptyState
+            icon={<GraduationCap size={22} />}
+            title="No insights available"
+            description="Your coach is analyzing your predictions. Check back soon for personalized recommendations."
+            variant="empty"
+          />
         </div>
       </CardShell>
     );
@@ -240,7 +260,10 @@ export default function CoachCard() {
           <TrendIcon className="h-4 w-4" aria-hidden="true" />
           {trend.label}
         </span>
-        <span className="text-xs text-gray-400" title="Recent vs previous accuracy">
+        <span
+          className="text-xs text-gray-400"
+          title="Recent vs previous accuracy"
+        >
           {payload.accuracy_trend.recent_accuracy}% vs{" "}
           {payload.accuracy_trend.prior_accuracy}%
         </span>

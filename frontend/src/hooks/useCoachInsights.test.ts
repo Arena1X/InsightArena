@@ -13,9 +13,8 @@ vi.mock("@/context/WalletContext", () => ({
 // for real against jsdom's localStorage so this test exercises the actual
 // persistence logic, not a mock of it.
 vi.mock("@/lib/coach", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/coach")>(
-    "@/lib/coach",
-  );
+  const actual =
+    await vi.importActual<typeof import("@/lib/coach")>("@/lib/coach");
   return {
     ...actual,
     getCoachInsights: vi.fn(),
@@ -172,5 +171,54 @@ describe("useCoachInsights", () => {
     });
 
     expect(result.current.isHidden).toBe(true);
+  });
+
+  it("reports isEmpty=false when insights payload exists", async () => {
+    mockWallet("GADDRESS");
+    mockedGetCoachInsights.mockResolvedValue(buildHistoryResponse());
+
+    const { result } = renderHook(() => useCoachInsights());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.isEmpty).toBe(false);
+  });
+
+  it("reports isEmpty=true for explicit empty state (has_history=true but insights=null)", async () => {
+    mockWallet("GADDRESS");
+    mockedGetCoachInsights.mockResolvedValue({
+      has_history: true,
+      message: "No recommendations available at this time.",
+      insights: null,
+    });
+
+    const { result } = renderHook(() => useCoachInsights());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.isEmpty).toBe(true);
+    expect(result.current.hasHistory).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("reports isEmpty=false when still loading", async () => {
+    mockWallet("GADDRESS");
+    mockedGetCoachInsights.mockImplementation(
+      () => new Promise(() => {}), // Never resolves
+    );
+
+    const { result } = renderHook(() => useCoachInsights());
+
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.isEmpty).toBe(false);
+  });
+
+  it("reports isEmpty=false when there is an error", async () => {
+    mockWallet("GADDRESS");
+    mockedGetCoachInsights.mockRejectedValue(new Error("network down"));
+
+    const { result } = renderHook(() => useCoachInsights());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.isEmpty).toBe(false);
   });
 });

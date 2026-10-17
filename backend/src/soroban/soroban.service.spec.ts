@@ -7,7 +7,12 @@ import {
   SorobanDataBuilder,
   Transaction,
 } from '@stellar/stellar-sdk';
-import { SorobanService, SorobanUnavailableError } from './soroban.service';
+import {
+  DEFAULT_SOROBAN_FALLBACK_FEE_STROOPS,
+  DEFAULT_SOROBAN_MAX_FEE_STROOPS,
+  SorobanService,
+  SorobanUnavailableError,
+} from './soroban.service';
 
 describe('SorobanService', () => {
   let service: SorobanService;
@@ -38,6 +43,10 @@ describe('SorobanService', () => {
     } as unknown as jest.Mocked<ConfigService>;
   }
 
+  function feeStats(p90: string) {
+    return { sorobanInclusionFee: { p90 } } as never;
+  }
+
   async function buildService(
     overrides: Record<string, string | number> = {},
   ): Promise<SorobanService> {
@@ -57,6 +66,9 @@ describe('SorobanService', () => {
     jest
       .spyOn(SorobanRpc.Server.prototype, 'getHealth')
       .mockResolvedValue({ status: 'healthy' } as never);
+    jest
+      .spyOn(SorobanRpc.Server.prototype, 'getFeeStats')
+      .mockResolvedValue(feeStats('10000'));
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -209,6 +221,110 @@ describe('SorobanService', () => {
           '1000000',
         ),
       ).rejects.toThrow('InsufficientFunds');
+    });
+  });
+
+  describe('estimateFee', () => {
+    it('uses the live fee when estimation succeeds', async () => {
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getFeeStats')
+        .mockResolvedValue(feeStats('5000'));
+
+      await expect(service.estimateFee()).resolves.toBe('5000');
+    });
+
+    it('falls back to the documented default fee, within the cap, when estimation fails', async () => {
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getFeeStats')
+        .mockRejectedValue(new TypeError('fetch failed'));
+
+      const fee = Number(await service.estimateFee());
+
+      expect(fee).toBe(DEFAULT_SOROBAN_FALLBACK_FEE_STROOPS);
+      expect(fee).toBeLessThanOrEqual(DEFAULT_SOROBAN_MAX_FEE_STROOPS);
+    });
+
+    it('falls back to the last known live fee when estimation later fails', async () => {
+      const getFeeStats = jest
+        .spyOn(SorobanRpc.Server.prototype, 'getFeeStats')
+        .mockResolvedValueOnce(feeStats('7500'))
+        .mockRejectedValueOnce(new TypeError('fetch failed'));
+
+      await expect(service.estimateFee()).resolves.toBe('7500');
+      await expect(service.estimateFee()).resolves.toBe('7500');
+      expect(getFeeStats).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back when the fee stats are malformed', async () => {
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getFeeStats')
+        .mockResolvedValue({} as never);
+
+      await expect(service.estimateFee()).resolves.toBe(
+        String(DEFAULT_SOROBAN_FALLBACK_FEE_STROOPS),
+      );
+    });
+
+    it('never lets the fallback exceed the configured maximum fee', async () => {
+      const capped = await buildService({
+        SOROBAN_FALLBACK_FEE_STROOPS: 5_000_000,
+        SOROBAN_MAX_FEE_STROOPS: 50_000,
+      });
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getFeeStats')
+        .mockRejectedValue(new TypeError('fetch failed'));
+
+      await expect(capped.estimateFee()).resolves.toBe('50000');
+    });
+
+    it('caps a live fee spike, and the last known fallback, at the configured maximum', async () => {
+      const capped = await buildService({ SOROBAN_MAX_FEE_STROOPS: 50_000 });
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getFeeStats')
+        .mockResolvedValueOnce(feeStats('2000000'))
+        .mockRejectedValueOnce(new TypeError('fetch failed'));
+
+      await expect(capped.estimateFee()).resolves.toBe('50000');
+      await expect(capped.estimateFee()).resolves.toBe('50000');
+    });
+
+    it('does not block a submission when estimation is unavailable', async () => {
+      const mockTxHash = 'c'.repeat(64);
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getFeeStats')
+        .mockRejectedValue(new TypeError('fetch failed'));
+      jest.spyOn(SorobanRpc.Server.prototype, 'getAccount').mockResolvedValue({
+        sequenceNumber: () => '1',
+        accountId: () => testServerKeypair.publicKey(),
+        incrementSequenceNumber: () => {},
+      } as never);
+      const simulateSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({
+          results: [{}],
+          transactionData: new SorobanDataBuilder(),
+          result: { auth: [] },
+          minResourceFee: '100',
+          _parsed: true,
+        } as never);
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'sendTransaction')
+        .mockResolvedValue({ status: 'PENDING', hash: mockTxHash } as never);
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'getTransaction')
+        .mockResolvedValue({ status: 'SUCCESS', hash: mockTxHash } as never);
+
+      const result = await service.refundCompetitionParticipant(
+        testKeypair.publicKey(),
+        'comp_123',
+        '1000000',
+      );
+
+      expect(result.tx_hash).toBe(mockTxHash);
+      const simulatedTx = simulateSpy.mock.calls[0][0] as Transaction;
+      expect(simulatedTx.fee).toBe(
+        String(DEFAULT_SOROBAN_FALLBACK_FEE_STROOPS),
+      );
     });
   });
 

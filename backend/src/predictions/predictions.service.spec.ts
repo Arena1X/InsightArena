@@ -20,8 +20,16 @@ import {
   NoteTooLongException,
 } from './exceptions';
 import { PREDICTION_NOTE_MAX_LENGTH } from './dto/update-prediction-note.dto';
+import {
+  EXPORT_CSV_HEADER,
+  EXPORT_MAX_ROWS,
+} from './dto/export-predictions.dto';
 import { Repository, ObjectLiteral } from 'typeorm';
-import { PredictionsService } from './predictions.service';
+import {
+  ExportCsvRawRow,
+  PredictionsService,
+  formatExportCsvRow,
+} from './predictions.service';
 import { Prediction } from './entities/prediction.entity';
 import {
   FraudFlagStatus,
@@ -34,6 +42,7 @@ import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { SorobanService } from '../soroban/soroban.service';
 import { SlippageCheckerService } from './services/slippage-checker.service';
+import { PredictionFraudRulesService } from './services/prediction-fraud-rules.service';
 import { SlippageExceededException } from './exceptions/slippage-exceeded.exception';
 import { BATCH_PREDICTION_STATUS } from './dto/batch-submit-response.dto';
 
@@ -210,6 +219,10 @@ describe('PredictionsService', () => {
           useValue: {
             recordQualifyingAction: jest.fn().mockResolvedValue(undefined),
           },
+        },
+        {
+          provide: PredictionFraudRulesService,
+          useValue: { evaluate: jest.fn().mockResolvedValue([]) },
         },
         { provide: getDataSourceToken(), useValue: mockDataSource },
         { provide: ConfigService, useValue: mockConfigService },
@@ -732,6 +745,9 @@ describe('PredictionsService', () => {
         claimable_xlm: 1,
         vesting_xlm: 2,
         total_earned_xlm: 1.5,
+        claimable_stroops: '10000000',
+        vesting_stroops: '20000000',
+        total_earned_stroops: '15000000',
       });
     });
 
@@ -744,7 +760,72 @@ describe('PredictionsService', () => {
         claimable_xlm: 0,
         vesting_xlm: 0,
         total_earned_xlm: 0,
+        claimable_stroops: '0',
+        vesting_stroops: '0',
+        total_earned_stroops: '0',
       });
+    });
+
+    it('sums reward amounts exactly, without binary float drift', async () => {
+      const resolvedWon = makeMarket({
+        id: 'm-won',
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+      // 0.1 + 0.2 XLM: the classic case that drifts with float addition.
+      mockPredictionsRepo.find.mockResolvedValue([
+        {
+          id: 'p-1',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: true,
+          payout_amount_stroops: '1000000',
+        },
+        {
+          id: 'p-2',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: true,
+          payout_amount_stroops: '2000000',
+        },
+        // Above Number.MAX_SAFE_INTEGER stroops: exact only as an integer.
+        {
+          id: 'p-3',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '9007199254740993',
+        },
+      ] as unknown as Prediction[]);
+
+      const result = await service.getRewardsSummary(makeUser());
+
+      expect(result.total_earned_stroops).toBe('3000000');
+      expect(result.total_earned_xlm).toBe(0.3);
+      expect(result.claimable_stroops).toBe('9007199254740993');
+    });
+
+    it('does not truncate very small reward amounts to zero', async () => {
+      const resolvedWon = makeMarket({
+        id: 'm-won',
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+      mockPredictionsRepo.find.mockResolvedValue([
+        {
+          id: 'p-dust',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '1',
+        },
+      ] as unknown as Prediction[]);
+
+      const result = await service.getRewardsSummary(makeUser());
+
+      expect(result.claimable_stroops).toBe('1');
+      expect(result.claimable_xlm).toBe(0.0000001);
+      expect(result.claimable_xlm).toBeGreaterThan(0);
     });
   });
 
@@ -812,6 +893,7 @@ describe('PredictionsService', () => {
 
       expect(result.claimed_count).toBe(2);
       expect(result.claimed_xlm).toBe(1.5);
+      expect(result.claimed_stroops).toBe('15000000');
       expect(result.transaction_hash).toBe('tx-2');
       expect(mockSoroban.claimPayout).toHaveBeenCalledTimes(2);
       expect(result.results).toEqual([
@@ -1447,18 +1529,52 @@ describe('PredictionsService', () => {
 
   describe('exportCsv', () => {
     let csvQbMock: any;
+    let dbStream: any;
+
+    const makeRawRow = (i: number): ExportCsvRawRow => ({
+      prediction_id: `pred-${i}`,
+      prediction_chosen_outcome: 'Yes',
+      prediction_stake_amount_stroops: '10000000',
+      prediction_payout_amount_stroops: '0',
+      prediction_submitted_at: new Date(Date.UTC(2026, 0, 1, 0, 0, i % 60)),
+      prediction_note: i % 2 === 0 ? 'say "hi", ok' : null,
+      market_title: `Market ${i}`,
+      market_resolved_outcome: i % 3 === 0 ? 'Yes' : 'No',
+      market_is_resolved: i % 4 !== 0,
+      market_is_cancelled: false,
+    });
+
+    /** A lazy DB cursor mock that records how many rows have been pulled. */
+    const makeDbStream = (total: number) => {
+      const state = { pulled: 0 };
+      return Object.assign(state, {
+        destroy: jest.fn(),
+        on: jest.fn(),
+        [Symbol.asyncIterator]: async function* () {
+          for (let i = 0; i < total; i++) {
+            state.pulled++;
+            yield makeRawRow(i);
+          }
+        },
+      });
+    };
+
+    const readAll = async (stream: NodeJS.ReadableStream) => {
+      let out = '';
+      for await (const chunk of stream) out += chunk.toString();
+      return out;
+    };
 
     beforeEach(() => {
+      dbStream = makeDbStream(0);
       csvQbMock = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
-        stream: jest.fn().mockResolvedValue({
-          [Symbol.asyncIterator]: function* () {},
-          on: jest.fn(),
-        }),
+        limit: jest.fn().mockReturnThis(),
+        stream: jest.fn(() => Promise.resolve(dbStream)),
       };
       (mockPredictionsRepo as any).createQueryBuilder = jest
         .fn()
@@ -1480,6 +1596,62 @@ describe('PredictionsService', () => {
       });
       expect(stream).toBeDefined();
       expect(csvQbMock.andWhere).toHaveBeenCalledTimes(2);
+    });
+
+    it('streams a large export without buffering the whole result set', async () => {
+      const total = 200_000;
+      dbStream = makeDbStream(total);
+
+      const stream = service.exportCsv(makeUser(), {});
+      const iterator = stream[Symbol.asyncIterator]();
+      await iterator.next();
+      await iterator.next();
+
+      // Only a backpressure-bounded window of rows has been pulled from the DB.
+      expect(dbStream.pulled).toBeGreaterThan(0);
+      expect(dbStream.pulled).toBeLessThan(5_000);
+
+      await iterator.return?.();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Abandoning the export releases the DB cursor.
+      expect(dbStream.pulled).toBeLessThan(5_000);
+      expect(dbStream.destroy).toHaveBeenCalled();
+    });
+
+    it('produces the same output as formatting the rows in one buffer for a small export', async () => {
+      const total = 5;
+      dbStream = makeDbStream(total);
+
+      const streamed = await readAll(service.exportCsv(makeUser(), {}));
+
+      const buffered =
+        EXPORT_CSV_HEADER +
+        Array.from({ length: total }, (_, i) =>
+          formatExportCsvRow(makeRawRow(i)),
+        ).join('');
+      expect(streamed).toBe(buffered);
+      expect(streamed.split('\n')[1]).toBe(
+        'pred-0,"Market 0","Yes",10000000,active,0,"say ""hi"", ok",2026-01-01T00:00:00.000Z',
+      );
+      expect(dbStream.destroy).not.toHaveBeenCalled();
+    });
+
+    it('emits only the header for an empty export', async () => {
+      const streamed = await readAll(service.exportCsv(makeUser(), {}));
+      expect(streamed).toBe(EXPORT_CSV_HEADER);
+    });
+
+    it('caps the export at the documented row limit', async () => {
+      dbStream = makeDbStream(EXPORT_MAX_ROWS + 10);
+
+      const streamed = await readAll(service.exportCsv(makeUser(), {}));
+
+      expect(csvQbMock.limit).toHaveBeenCalledWith(EXPORT_MAX_ROWS);
+      const lines = streamed.split('\n').filter((line) => line.length > 0);
+      // Header + EXPORT_MAX_ROWS data rows, even if the cursor yields more.
+      expect(lines).toHaveLength(EXPORT_MAX_ROWS + 1);
+      expect(dbStream.destroy).toHaveBeenCalled();
     });
   });
 
@@ -2011,6 +2183,10 @@ describe('PredictionsService', () => {
             useValue: {
               recordQualifyingAction: jest.fn().mockResolvedValue(undefined),
             },
+          },
+          {
+            provide: PredictionFraudRulesService,
+            useValue: { evaluate: jest.fn().mockResolvedValue([]) },
           },
           { provide: getDataSourceToken(), useValue: mockDataSource },
           { provide: ConfigService, useValue: mockConfigService },

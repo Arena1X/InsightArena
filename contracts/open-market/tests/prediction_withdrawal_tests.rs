@@ -285,7 +285,7 @@ fn test_early_exit_fee_estimate_zero_remaining_stake() {
 
     // With zero remaining stake the fee estimate must not report a stale
     // nonzero fee: it either returns zero or errors.
-    match client.try_get_early_exit_fee_estimate(&0i128) {
+    match client.try_get_early_exit_fee_estimate(&0_i128) {
         Ok(Ok((_refund, fee))) => assert_eq!(fee, 0, "zero remaining stake must estimate a zero fee"),
         _ => {}
     }

@@ -117,6 +117,27 @@ Use this guide when handling errors from the predictions API endpoints.
 }
 ```
 
+#### INSUFFICIENT_LIQUIDITY
+- **Status:** 409
+- **Meaning:** The market had zero / near-zero liquidity, so the fill could not be priced. A fill is rejected when its realized price is `0` (or malformed) or it yields fewer shares than `MIN_LIQUIDITY_SHARES_STROOPS` (currently `1`, inclusive — a fill of exactly `1` share passes).
+- **Response includes:** `details` with `actualPrice`, `actualShares`, `minShares`
+- **Example:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "INSUFFICIENT_LIQUIDITY",
+    "statusCode": 409,
+    "message": "Market has insufficient liquidity to price this prediction",
+    "details": {
+      "actualPrice": "5000000",
+      "actualShares": "0",
+      "minShares": "1"
+    }
+  }
+}
+```
+
 ### Bad Request Errors (400)
 
 #### MARKET_CLOSED
@@ -224,8 +245,8 @@ Use this guide when handling errors from the predictions API endpoints.
 
 #### BATCH_VALIDATION_FAILED
 - **Status:** 400
-- **Meaning:** Batch submission failed validation (atomic mode)
-- **Response includes:** `errors` array with per-item details
+- **Meaning:** Batch submission failed validation (atomic mode). The whole slip is rolled back - nothing is sent on-chain or persisted.
+- **Response includes:** `errors` array (failing items only) and `results` array (one entry per submitted item; valid items carry the "rolled back" reason)
 - **Example:**
 ```json
 {
@@ -235,8 +256,11 @@ Use this guide when handling errors from the predictions API endpoints.
     "statusCode": 400,
     "message": "Batch submission failed validation - no predictions were submitted",
     "errors": [
-      { "index": 0, "error": "Market \"bad-id\" not found" },
-      { "index": 2, "error": "Invalid outcome \"Maybe\"" }
+      { "index": 0, "error": "Market \"bad-id\" not found" }
+    ],
+    "results": [
+      { "index": 0, "market_id": "bad-id", "status": "rejected", "error": "Market \"bad-id\" not found" },
+      { "index": 1, "market_id": "market-2", "status": "rejected", "error": "Not submitted - another item in this atomic batch failed, so the whole batch was rolled back" }
     ]
   }
 }
@@ -244,8 +268,8 @@ Use this guide when handling errors from the predictions API endpoints.
 
 #### BATCH_CHAIN_SUBMISSION_FAILED
 - **Status:** 400
-- **Meaning:** Batch submission failed during on-chain submission (atomic mode)
-- **Response includes:** `errors` array with per-item details
+- **Meaning:** Batch submission failed during on-chain submission (atomic mode). Nothing is persisted and items after the failing one are not sent on-chain.
+- **Response includes:** `errors` array (failing items only) and `results` array (one entry per submitted item, same shape as `BATCH_VALIDATION_FAILED`)
 - **Example:**
 ```json
 {

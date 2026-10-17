@@ -21,6 +21,8 @@ export interface UseCoachInsightsReturn {
   hasHistory: boolean;
   /** True when the current insight exists but was dismissed/snoozed away. */
   isHidden: boolean;
+  /** True when loaded successfully but there are no recommendations (explicit empty state). */
+  isEmpty: boolean;
   /** Permanently dismiss the current weekly insight for this wallet. */
   dismiss: () => void;
   /** Snooze the current weekly insight until next week for this wallet. */
@@ -96,6 +98,17 @@ export function useCoachInsights(): UseCoachInsightsReturn {
 
   const hasHistory = Boolean(insights?.has_history && insights.insights);
 
+  // Explicit empty state: loaded successfully, has history flag is true,
+  // but no actual insight payload exists. This distinguishes "no data yet"
+  // from "data exists but nothing to show".
+  const isEmpty = Boolean(
+    !isLoading &&
+    !error &&
+    insights &&
+    insights.has_history &&
+    !insights.insights,
+  );
+
   return {
     insights,
     isLoading,
@@ -103,6 +116,7 @@ export function useCoachInsights(): UseCoachInsightsReturn {
     refetch: fetchInsights,
     hasHistory,
     isHidden,
+    isEmpty,
     dismiss,
     snooze,
   };

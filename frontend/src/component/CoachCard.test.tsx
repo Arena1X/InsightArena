@@ -2,7 +2,10 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import CoachCard from "./CoachCard";
-import { useCoachInsights, type UseCoachInsightsReturn } from "@/hooks/useCoachInsights";
+import {
+  useCoachInsights,
+  type UseCoachInsightsReturn,
+} from "@/hooks/useCoachInsights";
 import { useWallet } from "@/context/WalletContext";
 import type { CoachInsightsResponse } from "@/lib/coach";
 
@@ -28,6 +31,7 @@ function buildHookReturn(
     refetch: vi.fn(),
     hasHistory: false,
     isHidden: false,
+    isEmpty: false,
     dismiss: vi.fn(),
     snooze: vi.fn(),
     ...overrides,
@@ -135,7 +139,9 @@ describe("CoachCard", () => {
       screen.getByText(/Your coach needs more history first/),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/Make a few more predictions to unlock your personalised coach insights/),
+      screen.getByText(
+        /Make a few more predictions to unlock your personalised coach insights/,
+      ),
     ).toBeInTheDocument();
 
     // Onboarding CTA instead of an insight CTA.
@@ -160,9 +166,15 @@ describe("CoachCard", () => {
     expect(screen.getByText("Loading coach insights…")).toBeInTheDocument();
 
     // Neither the empty state nor an error shows during loading.
-    expect(screen.queryByText(/Your coach needs more history/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    expect(screen.queryByTestId("coach-onboarding-cta")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Your coach needs more history/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Retry" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("coach-onboarding-cta"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders a distinct retryable error state", () => {
@@ -178,12 +190,18 @@ describe("CoachCard", () => {
 
     render(<CoachCard />);
 
-    expect(screen.getByText("Failed to load coach insights.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Failed to load coach insights."),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
 
     // Error is not conflated with the new-user onboarding state.
-    expect(screen.queryByTestId("coach-onboarding-cta")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Your coach needs more history/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("coach-onboarding-cta"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Your coach needs more history/),
+    ).not.toBeInTheDocument();
   });
 
   it("calls dismiss() when the Dismiss control is clicked", async () => {
@@ -240,5 +258,46 @@ describe("CoachCard", () => {
     expect(screen.queryByTestId("coach-insight-cta")).not.toBeInTheDocument();
     expect(screen.queryByTestId("coach-dismiss")).not.toBeInTheDocument();
     expect(screen.queryByTestId("coach-snooze")).not.toBeInTheDocument();
+  });
+
+  it("renders explicit empty state when no recommendations exist (has_history=true, insights=null)", () => {
+    mockedUseCoachInsights.mockReturnValue(
+      buildHookReturn({
+        insights: {
+          has_history: true,
+          message: "No recommendations available at this time.",
+          insights: null,
+        },
+        hasHistory: false,
+        isEmpty: true,
+      }),
+    );
+
+    render(<CoachCard />);
+
+    expect(
+      screen.getByTestId("coach-explicit-empty-state"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("No insights available")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Your coach is analyzing your predictions/),
+    ).toBeInTheDocument();
+
+    // This empty state is distinct from the onboarding state for new users.
+    expect(
+      screen.queryByTestId("coach-onboarding-cta"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Your coach needs more history/),
+    ).not.toBeInTheDocument();
+
+    // And distinct from the dismissed/snoozed state.
+    expect(screen.queryByTestId("coach-empty-state")).not.toBeInTheDocument();
+
+    // And distinct from loading/error.
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Retry" }),
+    ).not.toBeInTheDocument();
   });
 });
