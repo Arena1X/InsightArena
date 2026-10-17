@@ -4,6 +4,7 @@ use soroban_sdk::{symbol_short, token, Address, BytesN, Env, IntoVal, Map, Symbo
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
+use crate::invite;
 use crate::market;
 use crate::season;
 use crate::storage_types::{DataKey, Market, Prediction, UserProfile, BatchPredictionRequest, CommitmentPrediction};
@@ -427,23 +428,7 @@ fn do_submit_prediction(
         return Err(InsightArenaError::InvalidOutcome);
     }
 
-    if !market.is_public {
-        let allowlist: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::MarketAllowlist(market_id))
-            .unwrap_or_else(|| Vec::new(env));
-
-        if !allowlist.iter().any(|entry| entry == predictor) {
-            return Err(InsightArenaError::Unauthorized);
-        }
-
-        env.storage().persistent().extend_ttl(
-            &DataKey::MarketAllowlist(market_id),
-            PERSISTENT_THRESHOLD,
-            PERSISTENT_BUMP,
-        );
-    }
+    invite::validate_market_access(env, &market, &predictor)?;
 
     // ── Guard 5 & 6: stake_amount must be within effective [min, max] ─────────
     // Per-market non-zero bounds override the global Config bounds.
@@ -553,7 +538,7 @@ pub fn commit_prediction(
     predictor: Address,
     market_id: u64,
     commitment_hash: BytesN<32>,
-    reveal_delay_seconds: u64,
+    _reveal_delay_seconds: u64,
 ) -> Result<(), InsightArenaError> {
     config::ensure_not_paused(env)?;
 
@@ -571,6 +556,8 @@ pub fn commit_prediction(
     if now >= market.end_time {
         return Err(InsightArenaError::MarketExpired);
     }
+
+    invite::validate_market_access(env, &market, &predictor)?;
 
     let commitment_key = DataKey::CommitmentPrediction(market_id, predictor.clone());
     if env.storage().persistent().has(&commitment_key) {
@@ -632,6 +619,8 @@ pub fn reveal_prediction(
     if !outcome_valid {
         return Err(InsightArenaError::InvalidOutcome);
     }
+
+    invite::validate_market_access(env, &market, &predictor)?;
 
     // Stake bounds must be resolved the same way as every other submission
     // path: per-market non-zero bounds override, zero inherits the global
@@ -792,23 +781,7 @@ fn do_submit_prediction_via_allowance(
         return Err(InsightArenaError::InvalidOutcome);
     }
 
-    if !market.is_public {
-        let allowlist: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::MarketAllowlist(market_id))
-            .unwrap_or_else(|| Vec::new(env));
-
-        if !allowlist.iter().any(|entry| entry == predictor) {
-            return Err(InsightArenaError::Unauthorized);
-        }
-
-        env.storage().persistent().extend_ttl(
-            &DataKey::MarketAllowlist(market_id),
-            PERSISTENT_THRESHOLD,
-            PERSISTENT_BUMP,
-        );
-    }
+    invite::validate_market_access(env, &market, &predictor)?;
 
     // ── Guard 5 & 6: stake_amount must be within effective [min, max] ─────────
     // Per-market non-zero bounds override the global Config bounds, matching

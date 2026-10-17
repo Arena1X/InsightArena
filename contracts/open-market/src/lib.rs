@@ -946,6 +946,25 @@ impl InsightArenaContract {
         invite::get_invite_code_info(&env, code)
     }
 
+    /// Check whether a participant is authorized to participate in a market.
+    /// Reverts with `Unauthorized` if the market is private and the address is not on the allowlist.
+    pub fn check_market_access(
+        env: Env,
+        market_id: u64,
+        participant: Address,
+    ) -> Result<(), InsightArenaError> {
+        invite::check_market_access(&env, market_id, &participant)
+    }
+
+    /// Query whether an address is authorized to participate in a market (read-only).
+    pub fn is_participant_authorized(
+        env: Env,
+        market_id: u64,
+        participant: Address,
+    ) -> Result<bool, InsightArenaError> {
+        invite::is_participant_authorized(&env, market_id, &participant)
+    }
+
     /// List all season IDs which have snapshots available.
     pub fn list_snapshot_seasons(env: Env) -> Vec<u32> {
         env.storage()
