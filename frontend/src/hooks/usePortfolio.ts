@@ -51,6 +51,13 @@ export interface PnlHistoryResponse {
   };
 }
 
+export type EmptyStateReason =
+  | "no-address"
+  | "no-positions"
+  | "no-filtered-positions"
+  | "loading"
+  | "error";
+
 interface UsePortfolioOptions {
   address: string;
   status?: PositionStatus;
@@ -65,7 +72,11 @@ interface UsePortfolioReturn {
   total: number;
   isLoading: boolean;
   error: string | null;
+  isEmpty: boolean;
+  emptyStateReason: EmptyStateReason | null;
+  hasFilters: boolean;
   refetch: () => void;
+  clearFilters: () => void;
 }
 
 interface UsePnlHistoryOptions {
@@ -78,6 +89,8 @@ interface UsePnlHistoryReturn {
   summary: PnlHistoryResponse["summary"] | null;
   isLoading: boolean;
   error: string | null;
+  isEmpty: boolean;
+  emptyStateReason: EmptyStateReason | null;
   refetch: () => void;
 }
 
@@ -93,9 +106,17 @@ export function usePortfolio({
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [hasInitialLoad, setHasInitialLoad] = useState(false);
+
+  const hasFilters = Boolean(status);
 
   const fetchPositions = useCallback(async () => {
-    if (!address) return;
+    if (!address) {
+      setIsLoading(false);
+      setHasInitialLoad(true);
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
 
@@ -112,6 +133,7 @@ export function usePortfolio({
       );
       setPositions(result.data);
       setTotal(result.total);
+      setHasInitialLoad(true);
     } catch (err) {
       setError(
         logHookError(err, {
@@ -120,16 +142,49 @@ export function usePortfolio({
           id: address,
         }),
       );
+      setHasInitialLoad(true);
     } finally {
       setIsLoading(false);
     }
   }, [address, status, sortBy, sortDir, page, limit]);
 
+  const clearFilters = useCallback(() => {
+    // This is a helper function that consumers can use
+    // The actual filter clearing would be handled by parent component
+    // by resetting the status prop, but we provide this for convenience
+  }, []);
+
   useEffect(() => {
     fetchPositions();
   }, [fetchPositions]);
 
-  return { positions, total, isLoading, error, refetch: fetchPositions };
+  // Determine empty state reason
+  let emptyStateReason: EmptyStateReason | null = null;
+  const isEmpty = positions.length === 0;
+
+  if (!hasInitialLoad || isLoading) {
+    emptyStateReason = "loading";
+  } else if (error) {
+    emptyStateReason = "error";
+  } else if (!address) {
+    emptyStateReason = "no-address";
+  } else if (isEmpty && hasFilters) {
+    emptyStateReason = "no-filtered-positions";
+  } else if (isEmpty && !hasFilters) {
+    emptyStateReason = "no-positions";
+  }
+
+  return {
+    positions,
+    total,
+    isLoading,
+    error,
+    isEmpty,
+    emptyStateReason,
+    hasFilters,
+    refetch: fetchPositions,
+    clearFilters,
+  };
 }
 
 /**
@@ -141,12 +196,20 @@ export function usePnlHistory({
   range,
 }: UsePnlHistoryOptions): UsePnlHistoryReturn {
   const [history, setHistory] = useState<PnlHistoryPoint[]>([]);
-  const [summary, setSummary] = useState<PnlHistoryResponse["summary"] | null>(null);
+  const [summary, setSummary] = useState<PnlHistoryResponse["summary"] | null>(
+    null,
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [hasInitialLoad, setHasInitialLoad] = useState(false);
 
   const fetchHistory = useCallback(async () => {
-    if (!address) return;
+    if (!address) {
+      setIsLoading(false);
+      setHasInitialLoad(true);
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
 
@@ -156,6 +219,7 @@ export function usePnlHistory({
       );
       setHistory(result.data);
       setSummary(result.summary);
+      setHasInitialLoad(true);
     } catch (err) {
       setError(
         logHookError(err, {
@@ -164,6 +228,7 @@ export function usePnlHistory({
           id: address,
         }),
       );
+      setHasInitialLoad(true);
     } finally {
       setIsLoading(false);
     }
@@ -173,5 +238,27 @@ export function usePnlHistory({
     fetchHistory();
   }, [fetchHistory]);
 
-  return { history, summary, isLoading, error, refetch: fetchHistory };
+  // Determine empty state reason
+  let emptyStateReason: EmptyStateReason | null = null;
+  const isEmpty = history.length === 0;
+
+  if (!hasInitialLoad || isLoading) {
+    emptyStateReason = "loading";
+  } else if (error) {
+    emptyStateReason = "error";
+  } else if (!address) {
+    emptyStateReason = "no-address";
+  } else if (isEmpty) {
+    emptyStateReason = "no-positions";
+  }
+
+  return {
+    history,
+    summary,
+    isLoading,
+    error,
+    isEmpty,
+    emptyStateReason,
+    refetch: fetchHistory,
+  };
 }
