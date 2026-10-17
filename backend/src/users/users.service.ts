@@ -5,7 +5,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, QueryFailedError, Repository } from 'typeorm';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import {
   ListUserPredictionsDto,
@@ -59,6 +59,21 @@ import {
 } from '../analytics/analytics.service';
 import { GetFeedQueryDto } from './dto/get-feed-query.dto';
 import { FeedItemDto, FeedResponseDto } from './dto/feed-response.dto';
+
+/** Postgres SQLSTATE for a unique-constraint violation. */
+const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Canonical form of a Stellar address: surrounding whitespace removed and
+ * upper-cased. Stellar StrKey addresses are RFC 4648 base32, whose alphabet
+ * is upper-case only, so `gabc…` and `GABC…` are the same account. Every
+ * address is normalized before it is stored or used in a lookup, which makes
+ * the unique constraint on `users.stellar_address` apply to the canonical
+ * form.
+ */
+export function normalizeStellarAddress(stellar_address: string): string {
+  return stellar_address.trim().toUpperCase();
+}
 
 @Injectable()
 export class UsersService {
@@ -114,15 +129,50 @@ export class UsersService {
   }
 
   async findByAddress(stellar_address: string): Promise<User> {
+    const address = normalizeStellarAddress(stellar_address);
     const user = await this.usersRepository.findOne({
-      where: { stellar_address, deleted_at: IsNull() },
+      where: { stellar_address: address, deleted_at: IsNull() },
     });
     if (!user) {
-      throw new NotFoundException(
-        `User with address ${stellar_address} not found`,
-      );
+      throw new NotFoundException(`User with address ${address} not found`);
     }
     return user;
+  }
+
+  /**
+   * Returns the user for `stellar_address`, creating it if needed. The
+   * address is normalized first, so differently-cased forms of the same
+   * address always resolve to a single user. If a concurrent request
+   * inserts the same canonical address first, the unique constraint
+   * rejects our insert and the existing row is returned instead.
+   */
+  async findOrCreateByAddress(stellar_address: string): Promise<User> {
+    const address = normalizeStellarAddress(stellar_address);
+
+    const existing = await this.usersRepository.findOne({
+      where: { stellar_address: address },
+    });
+    if (existing) {
+      return existing;
+    }
+
+    try {
+      return await this.usersRepository.save(
+        this.usersRepository.create({ stellar_address: address }),
+      );
+    } catch (error) {
+      const code = (error as { driverError?: { code?: string } }).driverError
+        ?.code;
+      if (error instanceof QueryFailedError && code === PG_UNIQUE_VIOLATION) {
+        const winner = await this.usersRepository.findOne({
+          where: { stellar_address: address },
+        });
+        if (winner) {
+          return winner;
+        }
+      }
+      throw error;
+    }
   }
 
   async findPublicPredictionsByAddress(

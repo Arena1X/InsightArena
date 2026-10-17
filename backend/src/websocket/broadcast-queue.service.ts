@@ -22,6 +22,8 @@ export interface BroadcastQueueMetrics {
   coalesced: number;
   /** Messages successfully flushed to a socket. */
   sent: number;
+  /** Flushes skipped because the socket's transport write buffer was full. */
+  deferred: number;
 }
 
 /**
@@ -44,6 +46,14 @@ export interface BroadcastQueueMetrics {
  * anything already queued, the oldest message is dropped to make room.
  * A per-socket flush timer drains the queue on a short interval, so one
  * slow socket's flush never blocks another's.
+ *
+ * Backpressure policy: if a socket's underlying transport write buffer
+ * already holds `maxWriteBuffer` or more packets (the client isn't
+ * draining), the flush for that tick is skipped and messages stay in the
+ * bounded queue. While the consumer stays slow, the queue keeps applying
+ * the policy above — coalesce by key (latest wins), otherwise drop the
+ * oldest — so per-socket memory never exceeds `maxQueueSize` messages and
+ * nothing is pushed into an unbounded socket.io buffer.
  */
 @Injectable()
 export class BroadcastQueueService implements OnModuleDestroy {
@@ -52,11 +62,13 @@ export class BroadcastQueueService implements OnModuleDestroy {
 
   private readonly maxQueueSize: number;
   private readonly flushIntervalMs: number;
+  private readonly maxWriteBuffer: number;
 
   private readonly metrics: BroadcastQueueMetrics = {
     dropped: 0,
     coalesced: 0,
     sent: 0,
+    deferred: 0,
   };
 
   constructor(@Optional() private readonly configService?: ConfigService) {
@@ -64,6 +76,9 @@ export class BroadcastQueueService implements OnModuleDestroy {
       this.configService?.get<number>('BROADCAST_QUEUE_MAX_SIZE') ?? 20;
     this.flushIntervalMs =
       this.configService?.get<number>('BROADCAST_QUEUE_FLUSH_MS') ?? 100;
+    this.maxWriteBuffer =
+      this.configService?.get<number>('BROADCAST_QUEUE_MAX_WRITE_BUFFER') ??
+      50;
   }
 
   /**
@@ -139,6 +154,14 @@ export class BroadcastQueueService implements OnModuleDestroy {
     if (!socket) {
       // Socket already disconnected; stop queueing for it.
       this.removeSocket(socketId);
+      return;
+    }
+
+    // Slow consumer: leave messages in the bounded queue until the
+    // transport drains instead of growing socket.io's write buffer.
+    const writeBufferLength = socket.conn?.writeBuffer?.length ?? 0;
+    if (writeBufferLength >= this.maxWriteBuffer) {
+      this.metrics.deferred++;
       return;
     }
 
