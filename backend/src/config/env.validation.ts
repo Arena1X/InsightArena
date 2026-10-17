@@ -85,6 +85,18 @@ class EnvironmentVariables {
   @Min(0)
   SOROBAN_RPC_MAX_RETRIES?: number;
 
+  /** Default: 10000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(100)
+  SOROBAN_FALLBACK_FEE_STROOPS?: number;
+
+  /** Default: 1000000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(100)
+  SOROBAN_MAX_FEE_STROOPS?: number;
+
   /** Default: true */
   @IsOptional()
   @IsBooleanString()

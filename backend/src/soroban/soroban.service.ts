@@ -171,6 +171,24 @@ const DEFAULT_RPC_MAX_RETRIES = 2;
 /** Base delay for read-retry and post-ambiguity resend backoff — short by design (see #1). */
 const RPC_RETRY_BASE_DELAY_MS = 250;
 
+/**
+ * Fee estimation policy.
+ *
+ * The inclusion (base) fee for a transaction is estimated from the RPC's
+ * recent fee stats (p90 of recent Soroban inclusion fees). If estimation is
+ * unavailable (RPC error, timeout, or malformed stats), submissions are not
+ * blocked: we fall back to the last successfully estimated fee, or to
+ * SOROBAN_FALLBACK_FEE_STROOPS when no estimate has succeeded yet.
+ *
+ * Every fee — live or fallback — is capped at SOROBAN_MAX_FEE_STROOPS so a
+ * fee spike or a misconfigured fallback can never make us overpay. The
+ * resource fee is still added on top by simulation/assembly.
+ */
+export const DEFAULT_SOROBAN_FALLBACK_FEE_STROOPS = 10_000;
+export const DEFAULT_SOROBAN_MAX_FEE_STROOPS = 1_000_000;
+/** Stellar protocol minimum base fee per operation, in stroops. */
+const MIN_BASE_FEE_STROOPS = 100;
+
 function readNonNegativeIntConfig(
   configService: ConfigService,
   key: string,
@@ -194,6 +212,10 @@ export class SorobanService {
   private readonly rpcServer: SorobanRpc.Server;
   private readonly rpcTimeoutMs: number;
   private readonly rpcMaxRetries: number;
+  private readonly fallbackFeeStroops: number;
+  private readonly maxFeeStroops: number;
+  /** Most recent successfully estimated fee, reused as the fallback. */
+  private lastKnownFeeStroops: number | null = null;
 
   constructor(private readonly configService: ConfigService) {
     this.contractId =
@@ -214,6 +236,22 @@ export class SorobanService {
       'SOROBAN_RPC_MAX_RETRIES',
       DEFAULT_RPC_MAX_RETRIES,
     );
+    this.maxFeeStroops = Math.max(
+      MIN_BASE_FEE_STROOPS,
+      readNonNegativeIntConfig(
+        this.configService,
+        'SOROBAN_MAX_FEE_STROOPS',
+        DEFAULT_SOROBAN_MAX_FEE_STROOPS,
+      ),
+    );
+    this.fallbackFeeStroops = Math.max(
+      MIN_BASE_FEE_STROOPS,
+      readNonNegativeIntConfig(
+        this.configService,
+        'SOROBAN_FALLBACK_FEE_STROOPS',
+        DEFAULT_SOROBAN_FALLBACK_FEE_STROOPS,
+      ),
+    );
 
     this.rpcServer = new SorobanRpc.Server(this.rpcUrl, {
       allowHttp: this.rpcUrl.startsWith('http://'),
@@ -228,6 +266,42 @@ export class SorobanService {
 
   getRpcClient(): SorobanRpc.Server {
     return this.rpcServer;
+  }
+
+  /**
+   * Estimates the inclusion fee (in stroops, as a string suitable for
+   * `TransactionBuilder`) per the fee estimation policy above. Never throws:
+   * an unavailable estimate degrades to the capped fallback fee.
+   */
+  async estimateFee(): Promise<string> {
+    try {
+      const stats = await this.withTimeoutRpc('estimateFee:getFeeStats', () =>
+        this.rpcServer.getFeeStats(),
+      );
+      const liveFee = Number(stats.sorobanInclusionFee.p90);
+      if (!Number.isFinite(liveFee) || liveFee <= 0) {
+        throw new Error(
+          `invalid fee stats: p90=${stats.sorobanInclusionFee.p90}`,
+        );
+      }
+      const fee = this.capFee(
+        Math.max(Math.ceil(liveFee), MIN_BASE_FEE_STROOPS),
+      );
+      this.lastKnownFeeStroops = fee;
+      return String(fee);
+    } catch (error) {
+      const fee = this.capFee(
+        this.lastKnownFeeStroops ?? this.fallbackFeeStroops,
+      );
+      this.logger.warn(
+        `Fee estimation unavailable (${errorMessage(error)}); using fallback fee of ${fee} stroops`,
+      );
+      return String(fee);
+    }
+  }
+
+  private capFee(feeStroops: number): number {
+    return Math.min(feeStroops, this.maxFeeStroops);
   }
 
   async getCreationFee(): Promise<string> {
@@ -369,7 +443,7 @@ export class SorobanService {
 
         // Build the invocation
         const tx = new TransactionBuilder(serverAccount, {
-          fee: '10000', // Base fee, updated by simulation
+          fee: await this.estimateFee(), // Base fee; resource fee added by simulation
           networkPassphrase:
             this.network === 'testnet' ? Networks.TESTNET : Networks.PUBLIC,
         })
@@ -723,7 +797,7 @@ export class SorobanService {
 
       // Build the invocation
       const tx = new TransactionBuilder(serverAccount, {
-        fee: '10000',
+        fee: await this.estimateFee(),
         networkPassphrase:
           this.network === 'testnet' ? Networks.TESTNET : Networks.PUBLIC,
       })
