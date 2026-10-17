@@ -20,8 +20,16 @@ import {
   NoteTooLongException,
 } from './exceptions';
 import { PREDICTION_NOTE_MAX_LENGTH } from './dto/update-prediction-note.dto';
+import {
+  EXPORT_CSV_HEADER,
+  EXPORT_MAX_ROWS,
+} from './dto/export-predictions.dto';
 import { Repository, ObjectLiteral } from 'typeorm';
-import { PredictionsService } from './predictions.service';
+import {
+  ExportCsvRawRow,
+  PredictionsService,
+  formatExportCsvRow,
+} from './predictions.service';
 import { Prediction } from './entities/prediction.entity';
 import {
   FraudFlagStatus,
@@ -1452,18 +1460,52 @@ describe('PredictionsService', () => {
 
   describe('exportCsv', () => {
     let csvQbMock: any;
+    let dbStream: any;
+
+    const makeRawRow = (i: number): ExportCsvRawRow => ({
+      prediction_id: `pred-${i}`,
+      prediction_chosen_outcome: 'Yes',
+      prediction_stake_amount_stroops: '10000000',
+      prediction_payout_amount_stroops: '0',
+      prediction_submitted_at: new Date(Date.UTC(2026, 0, 1, 0, 0, i % 60)),
+      prediction_note: i % 2 === 0 ? 'say "hi", ok' : null,
+      market_title: `Market ${i}`,
+      market_resolved_outcome: i % 3 === 0 ? 'Yes' : 'No',
+      market_is_resolved: i % 4 !== 0,
+      market_is_cancelled: false,
+    });
+
+    /** A lazy DB cursor mock that records how many rows have been pulled. */
+    const makeDbStream = (total: number) => {
+      const state = { pulled: 0 };
+      return Object.assign(state, {
+        destroy: jest.fn(),
+        on: jest.fn(),
+        [Symbol.asyncIterator]: async function* () {
+          for (let i = 0; i < total; i++) {
+            state.pulled++;
+            yield makeRawRow(i);
+          }
+        },
+      });
+    };
+
+    const readAll = async (stream: NodeJS.ReadableStream) => {
+      let out = '';
+      for await (const chunk of stream) out += chunk.toString();
+      return out;
+    };
 
     beforeEach(() => {
+      dbStream = makeDbStream(0);
       csvQbMock = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
-        stream: jest.fn().mockResolvedValue({
-          [Symbol.asyncIterator]: function* () {},
-          on: jest.fn(),
-        }),
+        limit: jest.fn().mockReturnThis(),
+        stream: jest.fn(() => Promise.resolve(dbStream)),
       };
       (mockPredictionsRepo as any).createQueryBuilder = jest
         .fn()
@@ -1485,6 +1527,62 @@ describe('PredictionsService', () => {
       });
       expect(stream).toBeDefined();
       expect(csvQbMock.andWhere).toHaveBeenCalledTimes(2);
+    });
+
+    it('streams a large export without buffering the whole result set', async () => {
+      const total = 200_000;
+      dbStream = makeDbStream(total);
+
+      const stream = service.exportCsv(makeUser(), {});
+      const iterator = stream[Symbol.asyncIterator]();
+      await iterator.next();
+      await iterator.next();
+
+      // Only a backpressure-bounded window of rows has been pulled from the DB.
+      expect(dbStream.pulled).toBeGreaterThan(0);
+      expect(dbStream.pulled).toBeLessThan(5_000);
+
+      await iterator.return?.();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Abandoning the export releases the DB cursor.
+      expect(dbStream.pulled).toBeLessThan(5_000);
+      expect(dbStream.destroy).toHaveBeenCalled();
+    });
+
+    it('produces the same output as formatting the rows in one buffer for a small export', async () => {
+      const total = 5;
+      dbStream = makeDbStream(total);
+
+      const streamed = await readAll(service.exportCsv(makeUser(), {}));
+
+      const buffered =
+        EXPORT_CSV_HEADER +
+        Array.from({ length: total }, (_, i) =>
+          formatExportCsvRow(makeRawRow(i)),
+        ).join('');
+      expect(streamed).toBe(buffered);
+      expect(streamed.split('\n')[1]).toBe(
+        'pred-0,"Market 0","Yes",10000000,active,0,"say ""hi"", ok",2026-01-01T00:00:00.000Z',
+      );
+      expect(dbStream.destroy).not.toHaveBeenCalled();
+    });
+
+    it('emits only the header for an empty export', async () => {
+      const streamed = await readAll(service.exportCsv(makeUser(), {}));
+      expect(streamed).toBe(EXPORT_CSV_HEADER);
+    });
+
+    it('caps the export at the documented row limit', async () => {
+      dbStream = makeDbStream(EXPORT_MAX_ROWS + 10);
+
+      const streamed = await readAll(service.exportCsv(makeUser(), {}));
+
+      expect(csvQbMock.limit).toHaveBeenCalledWith(EXPORT_MAX_ROWS);
+      const lines = streamed.split('\n').filter((line) => line.length > 0);
+      // Header + EXPORT_MAX_ROWS data rows, even if the cursor yields more.
+      expect(lines).toHaveLength(EXPORT_MAX_ROWS + 1);
+      expect(dbStream.destroy).toHaveBeenCalled();
     });
   });
 
