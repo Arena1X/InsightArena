@@ -6,6 +6,8 @@ import {
   LessThanOrEqual,
   And,
   Not,
+  LessThan,
+  Brackets,
 } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -94,31 +96,122 @@ export class SubmissionHistoryService {
     return this.anomalyHoldEnabled;
   }
 
+  /**
+   * List submission history using stable keyset (cursor) pagination.
+   *
+   * Rows are ordered by `(created_at DESC, id DESC)` and each page is fetched
+   * with a predicate anchored to the last row of the previous page:
+   * `created_at < :ts OR (created_at = :ts AND id < :id)`. Unlike offset
+   * pagination, this cannot skip or duplicate rows when new submissions are
+   * inserted concurrently mid-pagination (#1929).
+   *
+   * `page` is still accepted for backward compatibility but is only echoed
+   * back; the actual window is driven by `cursor`. When no cursor is supplied
+   * the first page is returned.
+   */
   async getSubmissions(
     query: GetSubmissionsQueryDto,
   ): Promise<PaginatedSubmissionsResponse> {
     const page = query.page ?? 1;
     const limit = Math.min(query.limit ?? 20, 100);
-    const skip = (page - 1) * limit;
 
     const where = this.buildWhereClause(query);
+    const cursor = this.decodeCursor(query.cursor);
 
-    const [submissions, total] = await this.submissionRepository.findAndCount({
-      where,
-      order: { created_at: 'DESC' },
-      skip,
-      take: limit,
-    });
+    // Fetch one extra row to determine whether another page exists without a
+    // second query (and without relying on an unstable COUNT).
+    const qb = this.submissionRepository.createQueryBuilder('submission');
+    this.applyWhereClause(qb, where);
+
+    if (cursor) {
+      qb.andWhere(
+        new Brackets((sub) => {
+          sub
+            .where('submission.created_at < :cursorTs', {
+              cursorTs: cursor.createdAt,
+            })
+            .orWhere(
+              '(submission.created_at = :cursorTs AND submission.id < :cursorId)',
+              { cursorTs: cursor.createdAt, cursorId: cursor.id },
+            );
+        }),
+      );
+    }
+
+    qb.orderBy('submission.created_at', 'DESC')
+      .addOrderBy('submission.id', 'DESC')
+      .take(limit + 1);
+
+    const rows = await qb.getMany();
+    const hasMore = rows.length > limit;
+    const submissions = hasMore ? rows.slice(0, limit) : rows;
+
+    const nextCursor =
+      hasMore && submissions.length > 0
+        ? this.encodeCursor(
+            submissions[submissions.length - 1].created_at,
+            submissions[submissions.length - 1].id,
+          )
+        : null;
 
     const statistics = await this.calculateStatistics(where);
 
     return {
       data: submissions.map((s) => this.mapToResponse(s)),
-      total,
+      total: statistics.total_submissions,
       page,
       limit,
       statistics,
+      nextCursor,
+      hasMore,
     };
+  }
+
+  /** Encode the keyset position of the last row of a page as an opaque token. */
+  private encodeCursor(createdAt: Date, id: string): string {
+    const payload = JSON.stringify({
+      ts: new Date(createdAt).toISOString(),
+      id,
+    });
+    return Buffer.from(payload, 'utf8').toString('base64url');
+  }
+
+  /**
+   * Decode an opaque cursor. Malformed or unparseable cursors are ignored so a
+   * bad token degrades to the first page rather than throwing.
+   */
+  private decodeCursor(
+    cursor?: string,
+  ): { createdAt: Date; id: string } | null {
+    if (!cursor) {
+      return null;
+    }
+    try {
+      const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+      const parsed = JSON.parse(decoded) as { ts?: unknown; id?: unknown };
+      if (typeof parsed.ts !== 'string' || typeof parsed.id !== 'string') {
+        return null;
+      }
+      const createdAt = new Date(parsed.ts);
+      if (Number.isNaN(createdAt.getTime())) {
+        return null;
+      }
+      return { createdAt, id: parsed.id };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Apply a TypeORM `where` object (or array of them) to a query builder. */
+  private applyWhereClause(qb: any, where: any): void {
+    if (!where || (typeof where === 'object' && Object.keys(where).length === 0)) {
+      return;
+    }
+    if (Array.isArray(where)) {
+      where.forEach((w) => this.applyWhereClause(qb, w));
+      return;
+    }
+    qb.andWhere(where);
   }
 
   private buildWhereClause(query: GetSubmissionsQueryDto): any {
