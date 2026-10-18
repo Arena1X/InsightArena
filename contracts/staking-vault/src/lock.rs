@@ -70,6 +70,18 @@ pub fn unlock_at(env: &Env, duration: u64) -> u64 {
     env.ledger().timestamp() + duration
 }
 
+/// Gate a withdrawal on the position's lock period.
+///
+/// Documented rule: a withdrawal is allowed at the exact unlock timestamp and
+/// at any later time (`now >= unlock_at`). A withdrawal before that timestamp
+/// is rejected with [`StakingError::LockNotElapsed`].
+pub fn enforce_lock_period(now: u64, unlock_at: u64) -> Result<(), StakingError> {
+    if now < unlock_at {
+        return Err(StakingError::LockNotElapsed);
+    }
+    Ok(())
+}
+
 /// Calculate early-exit penalty amount using checked arithmetic.
 /// Returns the penalty amount to be deducted from the withdrawal.
 pub fn calculate_penalty(amount: i128, penalty_bps: u32) -> Result<i128, StakingError> {
@@ -86,4 +98,29 @@ pub fn calculate_penalty(amount: i128, penalty_bps: u32) -> Result<i128, Staking
         .ok_or(StakingError::Overflow)?
         .checked_div(BPS_DENOMINATOR as i128)
         .ok_or(StakingError::Overflow)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::enforce_lock_period;
+    use crate::errors::StakingError;
+
+    const UNLOCK_AT: u64 = 1_700_000_000;
+
+    #[test]
+    fn withdrawal_before_unlock_time_is_rejected() {
+        let result = enforce_lock_period(UNLOCK_AT - 1, UNLOCK_AT);
+        assert_eq!(result, Err(StakingError::LockNotElapsed));
+    }
+
+    #[test]
+    fn withdrawal_after_unlock_time_succeeds() {
+        assert_eq!(enforce_lock_period(UNLOCK_AT + 1, UNLOCK_AT), Ok(()));
+    }
+
+    #[test]
+    fn withdrawal_exactly_at_unlock_time_is_allowed() {
+        // Documented rule: the unlock timestamp itself is withdrawable.
+        assert_eq!(enforce_lock_period(UNLOCK_AT, UNLOCK_AT), Ok(()));
+    }
 }
