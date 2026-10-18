@@ -7,6 +7,7 @@ import { WebhookProcessedEvent } from '../entities/webhook-processed-event.entit
 
 const DEFAULT_REPLAY_WINDOW_SECONDS = 300;
 const DEFAULT_TIMESTAMP_FRESHNESS_SECONDS = 300;
+const DEFAULT_CLOCK_SKEW_TOLERANCE_SECONDS = 60;
 
 @Injectable()
 export class WebhookSignatureService {
@@ -71,8 +72,24 @@ export class WebhookSignatureService {
     return (seconds ?? DEFAULT_TIMESTAMP_FRESHNESS_SECONDS) * 1000;
   }
 
+  getClockSkewToleranceMs(): number {
+    const seconds = this.configService.get<number>(
+      'WEBHOOK_CLOCK_SKEW_TOLERANCE_SECONDS',
+    );
+    return (seconds ?? DEFAULT_CLOCK_SKEW_TOLERANCE_SECONDS) * 1000;
+  }
+
   /**
-   * Validates that the provided timestamp is within the freshness window.
+   * Validates that the provided timestamp is within the freshness window,
+   * accounting for clock skew tolerance.
+   *
+   * This method implements a two-tier validation:
+   * 1. First checks if timestamp is within the freshness window
+   * 2. If outside freshness window, checks if it's within clock skew tolerance
+   *
+   * Clock skew tolerance handles legitimate time differences between systems
+   * while the freshness window prevents replay attacks.
+   *
    * Returns true if the timestamp is fresh (within the window), false otherwise.
    */
   isTimestampFresh(timestampStr: string | undefined): boolean {
@@ -86,11 +103,29 @@ export class WebhookSignatureService {
         return false;
       }
 
-      const now = Math.floor(Date.now() / 1000);
-      const age = Math.abs(now - timestamp);
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const age = Math.abs(nowSeconds - timestamp);
       const freshnessWindowSeconds = this.getTimestampFreshnessMs() / 1000;
+      const clockSkewToleranceSeconds = this.getClockSkewToleranceMs() / 1000;
 
-      return age <= freshnessWindowSeconds;
+      // Primary check: within freshness window
+      if (age <= freshnessWindowSeconds) {
+        return true;
+      }
+
+      // Secondary check: within clock skew tolerance
+      // This handles cases where sender's clock is ahead or behind
+      if (age <= freshnessWindowSeconds + clockSkewToleranceSeconds) {
+        this.logger.debug(
+          `Webhook timestamp outside freshness window but within clock skew tolerance (age: ${age}s, tolerance: ${clockSkewToleranceSeconds}s)`,
+        );
+        return true;
+      }
+
+      this.logger.warn(
+        `Webhook timestamp rejected: age ${age}s exceeds freshness window (${freshnessWindowSeconds}s) + clock skew tolerance (${clockSkewToleranceSeconds}s)`,
+      );
+      return false;
     } catch (error) {
       this.logger.warn(
         `Failed to validate webhook timestamp: ${(error as Error).message}`,
