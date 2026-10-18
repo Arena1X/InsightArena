@@ -694,6 +694,11 @@ impl Event {
         time >= self.start_time && time <= self.end_time
     }
 
+    /// Return the submission deadline timestamp for oracle results (#2010).
+    pub fn submission_deadline(&self) -> u64 {
+        self.end_time
+    }
+
     /// Returns `true` when the event can still accept new participants.
     pub fn can_accept_participants(&self) -> bool {
         if !self.is_active || self.is_cancelled {
