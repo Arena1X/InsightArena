@@ -7,7 +7,11 @@ import { useWallet } from "@/context/WalletContext";
 import { env } from "@/lib/env";
 import { calculatePoolStats, type PoolStats } from "@/lib/utils";
 
-export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "polling";
+export type ConnectionStatus =
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "polling";
 
 export interface OddsUpdate {
   marketId: string;
@@ -23,6 +27,12 @@ export interface UseLiveOddsResult {
   status: ConnectionStatus;
   lastUpdatedAt: number | null;
   isStale: boolean;
+  /**
+   * Returns odds with a guarantee of freshness.
+   * If current data is stale, fetches fresh data via HTTP.
+   * Useful for critical actions like placing predictions.
+   */
+  getFreshOdds: () => Promise<OddsUpdate | null>;
 }
 
 const BASE_BACKOFF_MS = 500;
@@ -48,29 +58,41 @@ type RawOddsUpdate = Partial<OddsUpdate> & {
 };
 
 function numberValue(...values: unknown[]): number | null {
-  const value = values.find((candidate) => candidate !== undefined && candidate !== null);
+  const value = values.find(
+    (candidate) => candidate !== undefined && candidate !== null,
+  );
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number) ? number : null;
 }
 
-export function normalizeOddsUpdate(marketId: string, raw: RawOddsUpdate): OddsUpdate {
+export function normalizeOddsUpdate(
+  marketId: string,
+  raw: RawOddsUpdate,
+): OddsUpdate {
   const rows = Array.isArray(raw.odds) ? raw.odds : [];
-  const totalPoolXlm = numberValue(
-    raw.total_pool_xlm,
-    raw.totalPoolXlm,
-    raw.pool?.total_pool_xlm,
-    raw.pool?.totalPoolXlm,
-    raw.total_pool_stroops != null ? Number(raw.total_pool_stroops) / 10_000_000 : undefined,
-    rows.reduce((total, row) => total + (Number(row.total_staked_stroops) || 0), 0) / 10_000_000,
-  ) ?? 0;
-  const contributorCount = numberValue(
-    raw.contributor_count,
-    raw.contributorCount,
-    raw.participant_count,
-    raw.pool?.contributor_count,
-    raw.pool?.contributorCount,
-    rows.reduce((total, row) => total + (Number(row.count) || 0), 0),
-  ) ?? 0;
+  const totalPoolXlm =
+    numberValue(
+      raw.total_pool_xlm,
+      raw.totalPoolXlm,
+      raw.pool?.total_pool_xlm,
+      raw.pool?.totalPoolXlm,
+      raw.total_pool_stroops != null
+        ? Number(raw.total_pool_stroops) / 10_000_000
+        : undefined,
+      rows.reduce(
+        (total, row) => total + (Number(row.total_staked_stroops) || 0),
+        0,
+      ) / 10_000_000,
+    ) ?? 0;
+  const contributorCount =
+    numberValue(
+      raw.contributor_count,
+      raw.contributorCount,
+      raw.participant_count,
+      raw.pool?.contributor_count,
+      raw.pool?.contributorCount,
+      rows.reduce((total, row) => total + (Number(row.count) || 0), 0),
+    ) ?? 0;
 
   return {
     marketId: String(raw.marketId ?? raw.market_id ?? marketId),
@@ -87,7 +109,9 @@ function socketUrl(): string {
 
 async function fetchOddsHttp(marketId: string): Promise<OddsUpdate | null> {
   try {
-    const res = await fetch(`${env.API_URL}/markets/${encodeURIComponent(marketId)}/odds`);
+    const res = await fetch(
+      `${env.API_URL}/markets/${encodeURIComponent(marketId)}/odds`,
+    );
     if (!res.ok) return null;
     return normalizeOddsUpdate(marketId, await res.json());
   } catch {
@@ -96,7 +120,9 @@ async function fetchOddsHttp(marketId: string): Promise<OddsUpdate | null> {
 }
 
 /** Subscribes to authenticated live odds and pool changes, with polling fallback. */
-export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsResult {
+export function useLiveOdds(
+  marketId: string | null | undefined,
+): UseLiveOddsResult {
   const { token } = useWallet();
   const [odds, setOdds] = useState<OddsUpdate | null>(null);
   const [pool, setPool] = useState<PoolStats | null>(null);
@@ -127,61 +153,95 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
   }, []);
 
   const clearTimers = useCallback(() => {
-    if (pollTimerRef.current) { clearTimeout(pollTimerRef.current); pollTimerRef.current = null; }
-    if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
-    if (poolUpdateTimerRef.current) { clearTimeout(poolUpdateTimerRef.current); poolUpdateTimerRef.current = null; }
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (poolUpdateTimerRef.current) {
+      clearTimeout(poolUpdateTimerRef.current);
+      poolUpdateTimerRef.current = null;
+    }
     pendingUpdateRef.current = null;
   }, []);
 
-  const startPolling = useCallback((id: string) => {
-    if (!mountedRef.current) return;
-    setStatus("polling");
-    const poll = async () => {
+  const startPolling = useCallback(
+    (id: string) => {
       if (!mountedRef.current) return;
-      const result = await fetchOddsHttp(id);
-      if (result && mountedRef.current) applyUpdate(result);
-      if (mountedRef.current) pollTimerRef.current = setTimeout(poll, POLL_INTERVAL_MS);
-    };
-    poll();
-  }, [applyUpdate]);
+      setStatus("polling");
+      const poll = async () => {
+        if (!mountedRef.current) return;
+        const result = await fetchOddsHttp(id);
+        if (result && mountedRef.current) applyUpdate(result);
+        if (mountedRef.current)
+          pollTimerRef.current = setTimeout(poll, POLL_INTERVAL_MS);
+      };
+      poll();
+    },
+    [applyUpdate],
+  );
 
-  const connect = useCallback((id: string, authToken: string) => {
-    if (!mountedRef.current) return;
-    closingRef.current = false;
-    const socket = io(`${socketUrl()}/ws`, {
-      auth: { token: authToken },
-      reconnection: false,
-    });
-    socketRef.current = socket;
-    setStatus("connecting");
-
-    socket.on("connect", () => {
+  const connect = useCallback(
+    (id: string, authToken: string) => {
       if (!mountedRef.current) return;
-      attemptRef.current = 0;
-      socket.emit("subscribe:market", id);
-      setStatus("connected");
-    });
-    socket.on("odds:update", (payload: RawOddsUpdate) => {
-      if (mountedRef.current) applyUpdate(normalizeOddsUpdate(id, payload));
-    });
-    socket.on("connect_error", () => {
-      if (!mountedRef.current || closingRef.current) return;
-      socket.disconnect();
-      attemptRef.current += 1;
-      const backoff = Math.min(BASE_BACKOFF_MS * 2 ** (attemptRef.current - 1), MAX_BACKOFF_MS);
-      if (attemptRef.current > 5) { startPolling(id); return; }
-      setStatus("disconnected");
-      reconnectTimerRef.current = setTimeout(() => connect(id, authToken), backoff);
-    });
-    socket.on("disconnect", () => {
-      if (!mountedRef.current || closingRef.current) return;
-      attemptRef.current += 1;
-      const backoff = Math.min(BASE_BACKOFF_MS * 2 ** (attemptRef.current - 1), MAX_BACKOFF_MS);
-      if (attemptRef.current > 5) { startPolling(id); return; }
-      setStatus("disconnected");
-      reconnectTimerRef.current = setTimeout(() => connect(id, authToken), backoff);
-    });
-  }, [applyUpdate, startPolling]);
+      closingRef.current = false;
+      const socket = io(`${socketUrl()}/ws`, {
+        auth: { token: authToken },
+        reconnection: false,
+      });
+      socketRef.current = socket;
+      setStatus("connecting");
+
+      socket.on("connect", () => {
+        if (!mountedRef.current) return;
+        attemptRef.current = 0;
+        socket.emit("subscribe:market", id);
+        setStatus("connected");
+      });
+      socket.on("odds:update", (payload: RawOddsUpdate) => {
+        if (mountedRef.current) applyUpdate(normalizeOddsUpdate(id, payload));
+      });
+      socket.on("connect_error", () => {
+        if (!mountedRef.current || closingRef.current) return;
+        socket.disconnect();
+        attemptRef.current += 1;
+        const backoff = Math.min(
+          BASE_BACKOFF_MS * 2 ** (attemptRef.current - 1),
+          MAX_BACKOFF_MS,
+        );
+        if (attemptRef.current > 5) {
+          startPolling(id);
+          return;
+        }
+        setStatus("disconnected");
+        reconnectTimerRef.current = setTimeout(
+          () => connect(id, authToken),
+          backoff,
+        );
+      });
+      socket.on("disconnect", () => {
+        if (!mountedRef.current || closingRef.current) return;
+        attemptRef.current += 1;
+        const backoff = Math.min(
+          BASE_BACKOFF_MS * 2 ** (attemptRef.current - 1),
+          MAX_BACKOFF_MS,
+        );
+        if (attemptRef.current > 5) {
+          startPolling(id);
+          return;
+        }
+        setStatus("disconnected");
+        reconnectTimerRef.current = setTimeout(
+          () => connect(id, authToken),
+          backoff,
+        );
+      });
+    },
+    [applyUpdate, startPolling],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -193,7 +253,18 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
     }
 
     attemptRef.current = 0;
+
+    // Load initial data via HTTP before connecting
+    const loadInitialData = async () => {
+      const initialData = await fetchOddsHttp(marketId);
+      if (initialData && mountedRef.current) {
+        applyUpdate(initialData);
+      }
+    };
+
+    loadInitialData();
     connect(marketId, token);
+
     return () => {
       mountedRef.current = false;
       closingRef.current = true;
@@ -201,7 +272,7 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
       socketRef.current?.disconnect();
       socketRef.current = null;
     };
-  }, [marketId, token, connect, clearTimers]);
+  }, [marketId, token, connect, clearTimers, applyUpdate]);
 
   useEffect(() => {
     if (status === "disconnected" || status === "connecting") {
@@ -213,12 +284,42 @@ export function useLiveOdds(marketId: string | null | undefined): UseLiveOddsRes
         setIsStale(false);
         return;
       }
-      setIsStale(Date.now() - lastUpdatedAt > STALE_THRESHOLD_MS);
+      const nowStale = Date.now() - lastUpdatedAt > STALE_THRESHOLD_MS;
+      setIsStale(nowStale);
+
+      // Automatic fallback: fetch fresh data via HTTP if stale and not already polling
+      if (nowStale && status === "connected" && marketId) {
+        fetchOddsHttp(marketId).then((freshData) => {
+          if (freshData && mountedRef.current) {
+            applyUpdate(freshData);
+          }
+        });
+      }
     };
     check();
     const id = setInterval(check, STALE_CHECK_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [status, lastUpdatedAt]);
+  }, [status, lastUpdatedAt, marketId, applyUpdate]);
 
-  return { odds, pool, status, lastUpdatedAt, isStale };
+  const getFreshOdds = useCallback(async (): Promise<OddsUpdate | null> => {
+    if (!marketId) return null;
+
+    // If data is fresh enough, return cached
+    if (
+      lastUpdatedAt &&
+      Date.now() - lastUpdatedAt < STALE_THRESHOLD_MS &&
+      odds
+    ) {
+      return odds;
+    }
+
+    // Otherwise fetch fresh data
+    const freshData = await fetchOddsHttp(marketId);
+    if (freshData && mountedRef.current) {
+      applyUpdate(freshData);
+    }
+    return freshData;
+  }, [marketId, lastUpdatedAt, odds, applyUpdate]);
+
+  return { odds, pool, status, lastUpdatedAt, isStale, getFreshOdds };
 }
