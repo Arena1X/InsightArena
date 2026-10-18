@@ -1079,6 +1079,8 @@ impl CreatorEventManagerContract {
     /// * `"match_not_found"` — no match exists with the given ID.
     /// * `"result_already_submitted"` — a result was already submitted.
     /// * `"match_not_started"` — current time is before the match start time.
+    /// * `"submission_deadline_passed"` — current time is past the event's
+    ///   submission deadline.
     /// * `"result_pending_verification"` — a result is already staged for
     ///   this match, awaiting verifier sign-off.
     pub fn submit_match_result(
@@ -1095,6 +1097,9 @@ impl CreatorEventManagerContract {
             Err(oracle::OracleError::MatchNotFound) => panic!("match_not_found"),
             Err(oracle::OracleError::ResultAlreadySubmitted) => panic!("result_already_submitted"),
             Err(oracle::OracleError::MatchNotStarted) => panic!("match_not_started"),
+            Err(oracle::OracleError::SubmissionDeadlinePassed) => {
+                panic!("submission_deadline_passed")
+            }
             Err(oracle::OracleError::ResultPendingVerification) => {
                 panic!("result_pending_verification")
             }
@@ -1431,6 +1436,8 @@ impl CreatorEventManagerContract {
     ///   result; no further proposals are accepted.
     /// * `"duplicate_result_proposal"` — caller already proposed a scoreline
     ///   for this match's consensus round.
+    /// * `"submission_deadline_passed"` — current time is past the event's
+    ///   submission deadline.
     pub fn propose_match_result(
         env: Env,
         source: Address,
@@ -1448,6 +1455,9 @@ impl CreatorEventManagerContract {
             }
             Err(oracle::OracleError::DuplicateResultProposal) => {
                 panic!("duplicate_result_proposal")
+            }
+            Err(oracle::OracleError::SubmissionDeadlinePassed) => {
+                panic!("submission_deadline_passed")
             }
             Err(_) => panic!("unexpected_error"),
         }
@@ -1469,6 +1479,8 @@ impl CreatorEventManagerContract {
     /// * `"not_an_oracle_source"` — caller is not a configured oracle source.
     /// * `"duplicate_oracle_submission"` — caller already submitted a value
     ///   for this match.
+    /// * `"submission_deadline_passed"` — current time is past the event's
+    ///   submission deadline.
     pub fn submit_oracle_value(env: Env, source: Address, match_id: u64, value: i128) {
         match oracle::submit_oracle_value(&env, source, match_id, value) {
             Ok(()) => {}
@@ -1477,6 +1489,9 @@ impl CreatorEventManagerContract {
             Err(oracle::OracleError::NotAnOracleSource) => panic!("not_an_oracle_source"),
             Err(oracle::OracleError::DuplicateOracleSubmission) => {
                 panic!("duplicate_oracle_submission")
+            }
+            Err(oracle::OracleError::SubmissionDeadlinePassed) => {
+                panic!("submission_deadline_passed")
             }
             Err(_) => panic!("unexpected_error"),
         }
