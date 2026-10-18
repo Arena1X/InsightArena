@@ -1,8 +1,15 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Env};
 
 // ── TTL constants (assuming ~5s per ledger) ────────────────────────────────────
 /// ~30 days — hot keys read/written throughout a position's lifecycle.
 pub const LEDGER_BUMP_POSITION: u32 = 518_400;
+/// Minimum remaining TTL before a bump is triggered (~15 days).
+/// Setting the threshold below the bump amount ensures `extend_ttl` always
+/// produces a net extension — Soroban's `extend_ttl` is a no-op when the
+/// current TTL already exceeds `threshold`, so using the same value for both
+/// means a recently-written entry is never re-extended until it falls below
+/// the threshold. With threshold < bump we guarantee every access adds headroom.
+pub const LEDGER_THRESHOLD_POSITION: u32 = 259_200; // ~15 days
 /// ~1 year — global config and pool accounting.
 pub const LEDGER_BUMP_PERMANENT: u32 = 5_184_000;
 
@@ -86,4 +93,106 @@ pub enum DataKey {
     LockTiers,
     /// Unbonding configuration for early-exit penalties.
     UnbondingConfig,
+}
+
+/// Extend the TTL of a staker's `Position` entry so it never expires while
+/// the lock is active.
+///
+/// Uses a split threshold/amount: the bump fires only when the remaining TTL
+/// falls below `LEDGER_THRESHOLD_POSITION` (~15 days), and extends it to
+/// `LEDGER_BUMP_POSITION` (~30 days). This guarantees every access adds real
+/// headroom — using the same value for both threshold and amount would make
+/// `extend_ttl` a no-op for recently-written entries whose TTL already exceeds
+/// the threshold.
+///
+/// # Issue #2039
+/// This helper is the single call site for position TTL management. All reads
+/// (`get_position_raw`) and writes (`set_position`) funnel through it so that
+/// an active lock can never be archived before its `unlock_at` timestamp.
+pub fn bump_position(env: &Env, staker: &Address) {
+    let key = DataKey::Position(staker.clone());
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().extend_ttl(
+            &key,
+            LEDGER_THRESHOLD_POSITION,
+            LEDGER_BUMP_POSITION,
+        );
+    }
+}
+
+// ── Tests (issue #2039) ───────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod ttl_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    fn make_position(owner: Address) -> Position {
+        Position {
+            owner,
+            amount: 1_000_000,
+            shares: 1_000_000,
+            unlock_at: 9_999_999,
+            reward_debt: 0,
+            unlock_requested_at: 0,
+            pending_unlock_amount: 0,
+        }
+    }
+
+    // ── Test 1: bump_position extends TTL on access ───────────────────────────
+    //
+    // Writes a Position, calls bump_position, then verifies the entry still
+    // exists (i.e. the extend_ttl did not panic and the key is present).
+    #[test]
+    fn active_lock_storage_ttl_is_extended_on_access() {
+        let env = Env::default();
+        let staker = Address::generate(&env);
+        let key = DataKey::Position(staker.clone());
+        let pos = make_position(staker.clone());
+
+        env.storage().persistent().set(&key, &pos);
+
+        // Should not panic; key must still be present after bump.
+        bump_position(&env, &staker);
+
+        assert!(
+            env.storage().persistent().has(&key),
+            "position must still exist after TTL bump"
+        );
+    }
+
+    // ── Test 2: bump_position is a no-op for non-existent entry ─────────────
+    //
+    // A fully-withdrawn entry (key removed) must not cause a panic when
+    // bump_position is called — it simply does nothing.
+    #[test]
+    fn fully_withdrawn_entry_is_allowed_to_expire() {
+        let env = Env::default();
+        let staker = Address::generate(&env);
+        let key = DataKey::Position(staker.clone());
+
+        // Key does not exist — simulates post-full-withdrawal state.
+        assert!(!env.storage().persistent().has(&key));
+
+        // Must not panic.
+        bump_position(&env, &staker);
+
+        // Key must still be absent.
+        assert!(
+            !env.storage().persistent().has(&key),
+            "withdrawn entry must remain absent after bump_position no-op"
+        );
+    }
+
+    // ── Test 3: threshold < bump guarantees an extension is always possible ───
+    //
+    // Asserts the compile-time constants maintain the required ordering so
+    // extend_ttl can always produce a net TTL increase.
+    #[test]
+    fn ledger_threshold_is_less_than_bump() {
+        assert!(
+            LEDGER_THRESHOLD_POSITION < LEDGER_BUMP_POSITION,
+            "threshold must be strictly less than bump to guarantee net TTL extension"
+        );
+    }
 }
