@@ -334,6 +334,33 @@ describe("useModalA11y", () => {
   // Focus restoration
   // -------------------------------------------------------------------------
   describe("focus restoration", () => {
+    it("does not restore focus when the close callback changes while open", () => {
+      const { container, triggerButton, buttons } = buildModalDOM(2);
+      triggerButton.focus();
+      const triggerFocus = vi.spyOn(triggerButton, "focus");
+
+      const { result, rerender } = renderHook(
+        ({ onClose }: { onClose: () => void }) =>
+          useModalA11y({ isOpen: true, onClose }),
+        { initialProps: { onClose: vi.fn() } },
+      );
+
+      act(() => {
+        (result.current.containerRef as React.MutableRefObject<HTMLDivElement>).current =
+          container;
+        vi.runOnlyPendingTimers();
+      });
+      expect(document.activeElement).toBe(buttons[0]);
+
+      rerender({ onClose: vi.fn() });
+      act(() => {
+        vi.runOnlyPendingTimers();
+      });
+
+      expect(triggerFocus).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(buttons[0]);
+    });
+
     it("restores focus to the triggering element after the modal closes", () => {
       const { triggerButton } = buildModalDOM(2);
 

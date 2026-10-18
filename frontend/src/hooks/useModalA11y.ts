@@ -101,8 +101,13 @@ export function useModalA11y({
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Track which element had focus before the modal opened so we can restore it.
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
   // Stable id for aria-labelledby wiring.
   const titleId = useId();
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -143,7 +148,7 @@ export function useModalA11y({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
 
@@ -208,7 +213,7 @@ export function useModalA11y({
         window.setTimeout(() => target.focus(), 0);
       }
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   return { containerRef, titleId };
 }
