@@ -244,6 +244,146 @@ describe('SubmissionHistoryService', () => {
     });
   });
 
+  // ── Keyset pagination stability (#1929) ───────────────────────────────────
+
+  describe('getSubmissionHistory (keyset pagination)', () => {
+    /**
+     * Build a deterministic, ordered history dataset. Rows are ordered by
+     * `created_at` descending with `id` as a tie-breaker, matching the keyset
+     * ordering used by the service.
+     */
+    const buildHistory = (count: number): OracleSubmission[] =>
+      Array.from({ length: count }, (_, i) => ({
+        ...mockSubmission,
+        id: `hist-${String(i).padStart(3, '0')}`,
+        created_at: new Date(2024, 0, 1, 0, 0, count - i),
+      }));
+
+    /**
+     * Simulate a keyset-aware repository: given the current dataset and the
+     * `where` clause produced by the service, return the rows that come
+     * strictly after the cursor, ordered consistently.
+     */
+    const keysetFind = (
+      dataset: OracleSubmission[],
+      options: { where?: any; take?: number; order?: any },
+    ): OracleSubmission[] => {
+      const sorted = [...dataset].sort((a, b) => {
+        const t = b.created_at.getTime() - a.created_at.getTime();
+        if (t !== 0) return t;
+        return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+      });
+
+      const where = options.where ?? {};
+      // TypeORM `LessThan`/`MoreThan`-style operators are plain objects with a
+      // `_type` and `_value`; extract the cursor value defensively.
+      const cursor = where.__cursor;
+      let filtered = sorted;
+      if (cursor) {
+        const cursorTime = new Date(cursor.created_at).getTime();
+        filtered = sorted.filter((row) => {
+          const t = row.created_at.getTime();
+          if (t < cursorTime) return true;
+          if (t > cursorTime) return false;
+          return row.id > cursor.id;
+        });
+      }
+
+      return filtered.slice(0, options.take ?? filtered.length);
+    };
+
+    it('pages through history with concurrent inserts without duplicates', async () => {
+      const dataset = buildHistory(10);
+      const pageSize = 3;
+      const seen: string[] = [];
+
+      // Concurrent inserts arrive between page fetches. They are newer than
+      // everything already seen, so keyset pagination must not surface them
+      // again on later pages.
+      const inserts = [
+        { ...mockSubmission, id: 'new-1', created_at: new Date(2024, 0, 2) },
+        { ...mockSubmission, id: 'new-2', created_at: new Date(2024, 0, 3) },
+      ];
+
+      jest
+        .spyOn(submissionRepository, 'find')
+        .mockImplementation((options: any) =>
+          Promise.resolve(keysetFind(dataset, options)),
+        );
+
+      let cursor: string | undefined;
+      let pageCount = 0;
+      do {
+        const page = await service.getSubmissionHistory({
+          limit: pageSize,
+          cursor,
+        });
+        seen.push(...page.data.map((row) => row.id));
+        cursor = page.nextCursor ?? undefined;
+        pageCount += 1;
+
+        // Inject concurrent inserts after the first page.
+        if (pageCount === 1) {
+          dataset.push(...inserts);
+        }
+      } while (cursor);
+
+      expect(new Set(seen).size).toBe(seen.length);
+      // Every original row is seen exactly once; concurrent inserts are not
+      // re-surfaced because they sort ahead of the cursor.
+      for (const row of buildHistory(10)) {
+        expect(seen.filter((id) => id === row.id)).toHaveLength(1);
+      }
+    });
+
+    it('does not skip rows across page boundaries', async () => {
+      const dataset = buildHistory(7);
+      const pageSize = 2;
+
+      jest
+        .spyOn(submissionRepository, 'find')
+        .mockImplementation((options: any) =>
+          Promise.resolve(keysetFind(dataset, options)),
+        );
+
+      const collected: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await service.getSubmissionHistory({
+          limit: pageSize,
+          cursor,
+        });
+        collected.push(...page.data.map((row) => row.id));
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+
+      const expected = [...dataset]
+        .sort((a, b) => {
+          const t = b.created_at.getTime() - a.created_at.getTime();
+          if (t !== 0) return t;
+          return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+        })
+        .map((row) => row.id);
+
+      expect(collected).toEqual(expected);
+    });
+
+    it('returns an empty, well-formed page for an empty history', async () => {
+      jest.spyOn(submissionRepository, 'find').mockResolvedValue([]);
+
+      const page = await service.getSubmissionHistory({ limit: 20 });
+
+      expect(page).toEqual(
+        expect.objectContaining({
+          data: [],
+          nextCursor: null,
+        }),
+      );
+      expect(Array.isArray(page.data)).toBe(true);
+      expect(page.data).toHaveLength(0);
+    });
+  });
+
   describe('getSubmissionById', () => {
     it('should return submission by ID', async () => {
       jest

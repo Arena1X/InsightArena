@@ -132,7 +132,13 @@ export class LeaderboardService {
       qb.orderBy('entry.reputation_score', 'DESC');
     }
 
-    qb.addOrderBy('entry.rank', 'ASC').skip(skip).take(limit);
+    // Deterministic tie-break: score DESC, then earliest qualifying
+    // prediction (created_at ASC), then stable user_id ASC.
+    qb.addOrderBy('entry.rank', 'ASC')
+      .addOrderBy('entry.created_at', 'ASC')
+      .addOrderBy('entry.user_id', 'ASC')
+      .skip(skip)
+      .take(limit);
 
     const [entries, total] = await qb.getManyAndCount();
 
@@ -265,38 +271,55 @@ export class LeaderboardService {
   }
 
   /**
-   * Encodes (score, rank, user_id) into an opaque cursor token. Score is
-   * included (not just rank) because the keyset predicate needs it to seek
-   * past ties without a DB round-trip to look the cursor row back up.
+   * Encodes (score, rank, created_at, user_id) into an opaque cursor token.
+   * Score is included (not just rank) because the keyset predicate needs it
+   * to seek past ties without a DB round-trip to look the cursor row back up.
+   * created_at and user_id are included so the keyset seek matches the full
+   * deterministic tie-break ordering (score DESC, created_at ASC, user_id ASC).
    */
   private encodeLeaderboardCursor(
     score: number,
     rank: number,
+    createdAt: Date | string | null | undefined,
     userId: string,
   ): string {
-    return Buffer.from(`${score}:${rank}:${userId}`, 'utf-8').toString(
-      'base64',
-    );
+    const createdAtMs =
+      createdAt instanceof Date
+        ? createdAt.getTime()
+        : createdAt
+          ? new Date(createdAt).getTime()
+          : 0;
+    return Buffer.from(
+      `${score}:${rank}:${createdAtMs}:${userId}`,
+      'utf-8',
+    ).toString('base64');
   }
 
   private decodeLeaderboardCursor(cursor: string): {
     score: number;
     rank: number;
+    createdAtMs: number;
     userId: string;
   } {
     try {
       const decoded = Buffer.from(cursor, 'base64').toString('utf-8');
       const parts = decoded.split(':');
-      if (parts.length !== 3) {
+      if (parts.length !== 4) {
         throw new Error('malformed cursor');
       }
-      const [scoreStr, rankStr, userId] = parts;
+      const [scoreStr, rankStr, createdAtStr, userId] = parts;
       const score = Number(scoreStr);
       const rank = parseInt(rankStr, 10);
-      if (!userId || Number.isNaN(score) || Number.isNaN(rank)) {
+      const createdAtMs = Number(createdAtStr);
+      if (
+        !userId ||
+        Number.isNaN(score) ||
+        Number.isNaN(rank) ||
+        Number.isNaN(createdAtMs)
+      ) {
         throw new Error('malformed cursor');
       }
-      return { score, rank, userId };
+      return { score, rank, createdAtMs, userId };
     } catch {
       throw new BadRequestException('Invalid pagination cursor');
     }
@@ -335,16 +358,29 @@ export class LeaderboardService {
       qb.orderBy('entry.reputation_score', 'DESC');
     }
 
-    qb.addOrderBy('entry.rank', 'ASC');
+    // Deterministic tie-break: score DESC, then earliest qualifying
+    // prediction (created_at ASC), then stable user_id ASC.
+    qb.addOrderBy('entry.rank', 'ASC')
+      .addOrderBy('entry.created_at', 'ASC')
+      .addOrderBy('entry.user_id', 'ASC');
 
     if (query.cursor) {
-      const { score, rank } = this.decodeLeaderboardCursor(query.cursor);
+      const { score, rank, createdAtMs, userId } =
+        this.decodeLeaderboardCursor(query.cursor);
       const scoreColumn = query.season_id
         ? 'entry.season_points'
         : 'entry.reputation_score';
       qb.andWhere(
-        `(${scoreColumn} < :score OR (${scoreColumn} = :score AND entry.rank > :rank))`,
-        { score, rank },
+        `(${scoreColumn} < :score
+          OR (${scoreColumn} = :score AND entry.rank > :rank)
+          OR (${scoreColumn} = :score AND entry.rank = :rank AND entry.created_at > :createdAt)
+          OR (${scoreColumn} = :score AND entry.rank = :rank AND entry.created_at = :createdAt AND entry.user_id > :userId))`,
+        {
+          score,
+          rank,
+          createdAt: new Date(createdAtMs),
+          userId,
+        },
       );
     }
 
@@ -366,6 +402,7 @@ export class LeaderboardService {
       const cursor = this.encodeLeaderboardCursor(
         score,
         entry.rank,
+        entry.created_at,
         entry.user_id,
       );
 
@@ -432,7 +469,12 @@ export class LeaderboardService {
       qb.orderBy('entry.reputation_score', 'DESC');
     }
 
-    qb.addOrderBy('entry.rank', 'ASC').take(limit);
+    // Deterministic tie-break: score DESC, then earliest qualifying
+    // prediction (created_at ASC), then stable user_id ASC.
+    qb.addOrderBy('entry.rank', 'ASC')
+      .addOrderBy('entry.created_at', 'ASC')
+      .addOrderBy('entry.user_id', 'ASC')
+      .take(limit);
 
     const entries = await qb.getMany();
 
@@ -500,10 +542,20 @@ export class LeaderboardService {
 
     const users = await this.usersService.findAll();
 
-    // Sort users by reputation_score descending for global ranking
-    const sorted = [...users].sort(
-      (a, b) => b.reputation_score - a.reputation_score,
-    );
+    // Sort users by reputation_score descending for global ranking.
+    // Deterministic tie-break: score DESC, then earliest qualifying
+    // prediction (created_at ASC), then stable user_id ASC.
+    const sorted = [...users].sort((a, b) => {
+      if (b.reputation_score !== a.reputation_score) {
+        return b.reputation_score - a.reputation_score;
+      }
+      const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0;
+      if (aCreated !== bCreated) {
+        return aCreated - bCreated;
+      }
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
 
     await this.dataSource.transaction(async (manager) => {
       for (let i = 0; i < sorted.length; i++) {

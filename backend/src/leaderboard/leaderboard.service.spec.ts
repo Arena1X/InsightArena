@@ -385,6 +385,78 @@ describe('LeaderboardService', () => {
     });
   });
 
+  describe('deterministic tie-breaking', () => {
+    function makeTiedEntry(
+      userId: string,
+      score: number,
+      overrides: Partial<LeaderboardEntry> = {},
+    ) {
+      return {
+        ...mockEntry,
+        id: `entry-${userId}`,
+        user_id: userId,
+        reputation_score: score,
+        user: { ...mockUser, id: userId } as User,
+        ...overrides,
+      } as LeaderboardEntry;
+    }
+
+    it('orders tied users deterministically by the documented tie-break', async () => {
+      // Same score for all three users; the service must apply a stable
+      // secondary ordering (earliest qualifying prediction, then id).
+      const tiedEntries = [
+        makeTiedEntry('user-b', 100),
+        makeTiedEntry('user-a', 100),
+        makeTiedEntry('user-c', 100),
+      ];
+      mockQb.getManyAndCount.mockResolvedValue([tiedEntries, 3]);
+
+      await service.getLeaderboard({ page: 1, limit: 20 });
+
+      // Primary ordering by score, then a deterministic tie-break column.
+      expect(mockQb.orderBy).toHaveBeenCalledWith(
+        'entry.reputation_score',
+        'DESC',
+      );
+      expect(mockQb.addOrderBy).toHaveBeenCalledWith(
+        'entry.user_id',
+        'ASC',
+      );
+    });
+
+    it('returns identical order across repeated reads of unchanged data', async () => {
+      const tiedEntries = [
+        makeTiedEntry('user-b', 100),
+        makeTiedEntry('user-a', 100),
+        makeTiedEntry('user-c', 100),
+      ];
+      mockQb.getManyAndCount.mockResolvedValue([tiedEntries, 3]);
+
+      const first = await service.getLeaderboard({ page: 1, limit: 20 });
+      const second = await service.getLeaderboard({ page: 1, limit: 20 });
+
+      expect(first.data.map((e) => e.user_id)).toEqual(
+        second.data.map((e) => e.user_id),
+      );
+      expect(first.data.map((e) => e.rank)).toEqual(
+        second.data.map((e) => e.rank),
+      );
+    });
+
+    it('leaves a single clear leader unaffected by the tie-break', async () => {
+      const leader = makeTiedEntry('user-leader', 200);
+      const runnerUp = makeTiedEntry('user-runner', 100);
+      mockQb.getManyAndCount.mockResolvedValue([[leader, runnerUp], 2]);
+
+      const result = await service.getLeaderboard({ page: 1, limit: 20 });
+
+      expect(result.data[0].user_id).toBe('user-leader');
+      expect(result.data[0].rank).toBe(1);
+      expect(result.data[1].user_id).toBe('user-runner');
+      expect(result.data[1].rank).toBe(2);
+    });
+  });
+
   describe('getTopLeaderboard', () => {
     it('should return top entries for the active season and cap at 20', async () => {
       mockSeasonsService.findActive.mockResolvedValue({ id: 'season-1' });

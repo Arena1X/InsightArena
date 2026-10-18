@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -28,6 +29,8 @@ import {
 } from './dto/anomaly-detection.dto';
 
 const POSTGRES_UNIQUE_VIOLATION = '23505';
+
+const DEFAULT_SIGNATURE_WINDOW_MS = 5 * 60 * 1000;
 
 function isUniqueViolation(error: unknown): boolean {
   return (
@@ -57,6 +60,8 @@ export class WebhookService {
   private readonly submissionQueue: Map<string, QueuedSubmission> = new Map();
   private readonly MAX_RETRIES = 3;
   private readonly RETRY_DELAYS = [60000, 300000, 900000]; // 1min, 5min, 15min
+  // Signed event ids seen within the signature window, mapped to their expiry.
+  private readonly processedEventIds: Map<string, number> = new Map();
 
   constructor(
     @InjectRepository(CreatorEventMatch)
@@ -72,6 +77,9 @@ export class WebhookService {
   async processMatchResult(
     dto: WebhookMatchResultDto,
   ): Promise<WebhookResponseDto> {
+    // Reject replayed or stale payloads before doing any work (#1930).
+    const eventId = this.assertFreshSignedPayload(dto);
+
     // A duplicate delivery of a result we already accepted is answered with
     // the original job, before the resolved-match check, so an oracle retrying
     // after a successful submission gets the same answer instead of a 409.
@@ -149,6 +157,7 @@ export class WebhookService {
     }
 
     this.submissionQueue.set(jobId, submission);
+    this.rememberEventId(eventId);
 
     // Screen for statistical anomalies before any on-chain use (#1364). A
     // flagged submission is recorded; when holding is enabled it is withheld
@@ -188,6 +197,84 @@ export class WebhookService {
       duplicate: false,
       submission_id: savedSubmission?.id,
     };
+  }
+
+  /**
+   * Validate the signed timestamp window and deduplicate by signed event id
+   * (#1930). Returns the event id so it can be recorded once the payload is
+   * accepted. Throws when the timestamp is missing, malformed, or outside the
+   * allowed window, or when the event id was already processed.
+   */
+  private assertFreshSignedPayload(dto: WebhookMatchResultDto): string {
+    const windowMs = this.getSignatureWindowMs();
+
+    const parsed = new Date(dto.timestamp);
+    if (!dto.timestamp || Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException(
+        'Webhook payload is missing a valid signed timestamp',
+      );
+    }
+
+    const age = Date.now() - parsed.getTime();
+    if (Math.abs(age) > windowMs) {
+      throw new ConflictException(
+        `Webhook timestamp is outside the allowed window of ${windowMs}ms`,
+      );
+    }
+
+    const eventId = this.resolveEventId(dto);
+    this.pruneExpiredEventIds();
+    if (this.processedEventIds.has(eventId)) {
+      throw new ConflictException(
+        `Webhook event ${eventId} has already been processed`,
+      );
+    }
+
+    return eventId;
+  }
+
+  private getSignatureWindowMs(): number {
+    const configured = Number(
+      this.configService.get<string | number>(
+        'ORACLE_WEBHOOK_SIGNATURE_WINDOW_MS',
+      ),
+    );
+    return Number.isFinite(configured) && configured > 0
+      ? configured
+      : DEFAULT_SIGNATURE_WINDOW_MS;
+  }
+
+  private resolveEventId(dto: WebhookMatchResultDto): string {
+    const raw =
+      dto.idempotency_key ??
+      createHash('sha256')
+        .update(
+          JSON.stringify([
+            dto.match_id,
+            dto.data_source,
+            dto.winning_team,
+            dto.confidence_score,
+            dto.timestamp,
+          ]),
+        )
+        .digest('hex');
+    return `${dto.data_source}:${raw}`;
+  }
+
+  private rememberEventId(eventId: string): void {
+    this.processedEventIds.set(
+      eventId,
+      Date.now() + this.getSignatureWindowMs(),
+    );
+  }
+
+  private pruneExpiredEventIds(): void {
+    const now = Date.now();
+    for (const [eventId, expiresAt] of this.processedEventIds.entries()) {
+      if (expiresAt <= now) {
+        this.processedEventIds.delete(eventId);
+      }
+    }
   }
 
   /**

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { OracleSourceReliability } from './entities/oracle-source-reliability.entity';
 import { OracleReliabilityHistory } from './entities/oracle-reliability-history.entity';
@@ -31,12 +32,115 @@ export class OracleReliabilityService {
    */
   private readonly DEFAULT_WEIGHT = 1.0;
 
+  /**
+   * Default decay parameters (configuration-driven via ConfigService).
+   *
+   * - DECAY_RATE: fraction of the score lost per full decay period of
+   *   inactivity (linear decay). 0 disables decay.
+   * - DECAY_PERIOD_MS: length of one inactivity period, in milliseconds.
+   * - DECAY_FLOOR: the lowest score decay may reduce a source to.
+   */
+  private readonly DEFAULT_DECAY_RATE = 0.05;
+  private readonly DEFAULT_DECAY_PERIOD_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+  private readonly DEFAULT_DECAY_FLOOR = 0.1;
+
   constructor(
     @InjectRepository(OracleSourceReliability)
     private readonly reliabilityRepository: Repository<OracleSourceReliability>,
     @InjectRepository(OracleReliabilityHistory)
     private readonly historyRepository: Repository<OracleReliabilityHistory>,
+    private readonly configService: ConfigService,
   ) {}
+
+  private getDecayRate(): number {
+    const raw = this.configService?.get<string | number>(
+      'ORACLE_RELIABILITY_DECAY_RATE',
+    );
+    const parsed = raw === undefined || raw === null ? NaN : Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0
+      ? parsed
+      : this.DEFAULT_DECAY_RATE;
+  }
+
+  private getDecayPeriodMs(): number {
+    const raw = this.configService?.get<string | number>(
+      'ORACLE_RELIABILITY_DECAY_PERIOD_MS',
+    );
+    const parsed = raw === undefined || raw === null ? NaN : Number(raw);
+    return Number.isFinite(parsed) && parsed > 0
+      ? parsed
+      : this.DEFAULT_DECAY_PERIOD_MS;
+  }
+
+  private getDecayFloor(): number {
+    const raw = this.configService?.get<string | number>(
+      'ORACLE_RELIABILITY_DECAY_FLOOR',
+    );
+    const parsed = raw === undefined || raw === null ? NaN : Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1
+      ? parsed
+      : this.DEFAULT_DECAY_FLOOR;
+  }
+
+  /**
+   * Compute the decayed reliability score for a record based on the time
+   * elapsed since its last activity (updated_at).
+   *
+   * Decay is linear: for every full DECAY_PERIOD_MS of inactivity the score
+   * drops by DECAY_RATE (as a fraction of the score). The result is clamped
+   * so it never falls below DECAY_FLOOR. Records with no score (null) are
+   * returned unchanged.
+   */
+  private applyDecay(
+    record: OracleSourceReliability,
+    now: number = Date.now(),
+  ): number | null {
+    const score = record.reliability_score;
+    if (score === null || score === undefined) {
+      return score ?? null;
+    }
+
+    const rate = this.getDecayRate();
+    if (rate <= 0) {
+      return score;
+    }
+
+    const periodMs = this.getDecayPeriodMs();
+    const floor = this.getDecayFloor();
+
+    const lastActivity = record.updated_at
+      ? new Date(record.updated_at).getTime()
+      : now;
+    const elapsed = Math.max(0, now - lastActivity);
+    const periods = Math.floor(elapsed / periodMs);
+
+    if (periods <= 0) {
+      return score;
+    }
+
+    const decayed = score * Math.pow(1 - rate, periods);
+    return Math.max(floor, Math.min(1.0, decayed));
+  }
+
+  /**
+   * Apply decay to a record and persist the change if the score moved.
+   * Returns the (possibly updated) record.
+   */
+  private async decayAndPersist(
+    record: OracleSourceReliability,
+  ): Promise<OracleSourceReliability> {
+    const decayed = this.applyDecay(record);
+    if (decayed === null || decayed === record.reliability_score) {
+      return record;
+    }
+
+    this.logger.log(
+      `Reliability decayed: source=${record.data_source}, ${record.reliability_score?.toFixed(4)} -> ${decayed.toFixed(4)}`,
+    );
+
+    record.reliability_score = decayed;
+    return this.reliabilityRepository.save(record);
+  }
 
   /**
    * Called when a match outcome is finalized. Records whether the source's
@@ -58,6 +162,12 @@ export class OracleReliabilityService {
     let record = await this.reliabilityRepository.findOne({
       where: { data_source: dataSource },
     });
+
+    // Apply any pending inactivity decay before recording the new outcome so
+    // the running score reflects the source's current (decayed) reputation.
+    if (record) {
+      record = await this.decayAndPersist(record);
+    }
 
     const previousScore = record?.reliability_score ?? null;
 
@@ -102,7 +212,15 @@ export class OracleReliabilityService {
     const records = await this.reliabilityRepository.find({
       order: { reliability_score: 'DESC' },
     });
-    return records.map((r) => this.toResponse(r));
+    const decayed = await Promise.all(
+      records.map((r) => this.decayAndPersist(r)),
+    );
+    return decayed
+      .sort(
+        (a, b) =>
+          (b.reliability_score ?? -1) - (a.reliability_score ?? -1),
+      )
+      .map((r) => this.toResponse(r));
   }
 
   async getScoreBySource(
@@ -111,7 +229,11 @@ export class OracleReliabilityService {
     const record = await this.reliabilityRepository.findOne({
       where: { data_source: dataSource },
     });
-    return record ? this.toResponse(record) : null;
+    if (!record) {
+      return null;
+    }
+    const decayed = await this.decayAndPersist(record);
+    return this.toResponse(decayed);
   }
 
   /**
@@ -144,7 +266,8 @@ export class OracleReliabilityService {
     const record = await this.reliabilityRepository.findOne({
       where: { data_source: dataSource },
     });
-    const weight = record?.reliability_score ?? this.DEFAULT_WEIGHT;
+    const decayed = record ? await this.decayAndPersist(record) : null;
+    const weight = decayed?.reliability_score ?? this.DEFAULT_WEIGHT;
     // Clamp to [WEIGHT_FLOOR, 1.0]
     return Math.max(this.WEIGHT_FLOOR, Math.min(1.0, weight));
   }
