@@ -73,10 +73,40 @@ export function clearQueue(): void {
   }
 }
 
-export async function processQueue(): Promise<void> {
-  if (typeof window === "undefined") return;
-  if (!navigator.onLine) return;
+export type QueueActionHandler = (action: QueuedAction) => Promise<void> | void;
 
+async function defaultHandler(action: QueuedAction): Promise<void> {
+  // Dispatch custom event for app to handle
+  window.dispatchEvent(
+    new CustomEvent("processQueuedAction", {
+      detail: action,
+    })
+  );
+
+  // Allow handlers to complete before the action is considered processed
+  await new Promise((resolve) => setTimeout(resolve, 500));
+}
+
+let processing: Promise<void> | null = null;
+
+/**
+ * Replays queued actions strictly in FIFO (enqueue) order. Each action must
+ * complete before the next starts. On the first failure the retry count is
+ * bumped and replay halts, leaving the failed action and everything after it
+ * in the queue. Concurrent calls share a single in-flight run.
+ */
+export function processQueue(handler: QueueActionHandler = defaultHandler): Promise<void> {
+  if (typeof window === "undefined") return Promise.resolve();
+  if (!navigator.onLine) return Promise.resolve();
+  if (processing) return processing;
+
+  processing = replayQueue(handler).finally(() => {
+    processing = null;
+  });
+  return processing;
+}
+
+async function replayQueue(handler: QueueActionHandler): Promise<void> {
   const queue = getQueue();
   for (const action of queue) {
     if (action.retries >= MAX_RETRIES) {
@@ -85,18 +115,11 @@ export async function processQueue(): Promise<void> {
     }
 
     try {
-      // Dispatch custom event for app to handle
-      window.dispatchEvent(
-        new CustomEvent("processQueuedAction", {
-          detail: action,
-        })
-      );
-
-      // Mark as processed after a short delay to allow handlers to complete
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      removeQueuedAction(action.id);
-    } catch (error) {
+      await handler(action);
+    } catch {
       updateQueuedActionRetries(action.id, action.retries + 1);
+      return;
     }
+    removeQueuedAction(action.id);
   }
 }
