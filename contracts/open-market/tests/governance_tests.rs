@@ -1000,3 +1000,140 @@ fn test_quorum_fail_and_majority_fail_return_different_errors() {
         "quorum failure and majority failure must be distinguishable errors"
     );
 }
+
+// ── Issue #2025: Open Market Governance Proposal Quorum ──────────────────────
+//
+// Acceptance criteria:
+//   AC1 – A proposal below quorum cannot execute.
+//   AC2 – A proposal meeting quorum and approval threshold executes.
+//   AC3 – Double-voting by one voter is rejected; each voter counts once.
+
+/// AC1 — A proposal that fails to meet the quorum threshold is rejected with
+/// `InvalidInput` when execution is attempted after the voting window closes.
+///
+/// Setup: 10 registered users, default quorum 10% (= 1 vote needed).
+/// We deliberately cast 0 votes so the quorum is not met.
+#[test]
+fn test_issue_2025_below_quorum_cannot_execute() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy(&env);
+
+    // Register 10 users. Default governance_quorum_bps = 1000 (10%).
+    // Quorum requires ceil(10 * 10%) = 1 vote. We cast none.
+    register_users(&env, &client, 10);
+
+    let duration = 3_600_u64;
+    let proposer = Address::generate(&env);
+    let id = client.create_proposal(&proposer, &ProposalType::UpdateProtocolFee(400), &duration);
+
+    // No votes cast — total_votes = 0, below 10% of 10 registered users.
+    env.ledger().with_mut(|l| l.timestamp += duration + 1);
+
+    let executor = Address::generate(&env);
+    let result = client.try_execute_proposal(&executor, &id);
+
+    // governance::execute_proposal returns InvalidInput when turnout < quorum.
+    assert!(
+        matches!(result, Err(Ok(InsightArenaError::InvalidInput))),
+        "expected InvalidInput when proposal is below quorum, got {:?}",
+        result
+    );
+}
+
+/// AC2 — A proposal that meets both the quorum threshold and the approval
+/// threshold (votes_for > votes_against) is queued and, after the timelock
+/// elapses, executes successfully and applies its effect.
+///
+/// Setup: 10 registered users, default quorum 10%.
+/// We cast 5 yes votes (50% participation >> 10% quorum, and 5 for > 0 against).
+#[test]
+fn test_issue_2025_meets_quorum_and_threshold_executes() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy(&env);
+
+    // Register 10 users; cast 5 yes votes — well above 10% quorum.
+    let users = register_users(&env, &client, 10);
+
+    let duration = 3_600_u64;
+    let proposer = Address::generate(&env);
+    let id = client.create_proposal(&proposer, &ProposalType::UpdateProtocolFee(350), &duration);
+
+    // Vote for with 5 of the 10 registered users.
+    for i in 0..5_u32 {
+        client.vote(&users.get(i).unwrap(), &id, &true);
+    }
+
+    env.ledger().with_mut(|l| l.timestamp += duration + 1);
+
+    let executor = Address::generate(&env);
+
+    // First execute call: queues the proposal (sets ready_at).
+    client.execute_proposal(&executor, &id);
+    let proposal = client.get_proposal(&id);
+    assert!(
+        proposal.ready_at.is_some(),
+        "proposal must be queued (ready_at set) after meeting quorum + threshold"
+    );
+    assert_eq!(client.get_proposal_state(&id), ProposalState::Queued);
+    // Effect not yet applied.
+    assert_eq!(client.get_config().protocol_fee_bps, 200);
+
+    // Advance past the timelock.
+    let ready_at = proposal.ready_at.unwrap();
+    env.ledger().with_mut(|l| l.timestamp = ready_at);
+
+    // Second execute call: applies the effect.
+    client.execute_proposal(&executor, &id);
+    assert!(client.get_proposal(&id).executed);
+    assert_eq!(client.get_proposal_state(&id), ProposalState::Executed);
+    assert_eq!(
+        client.get_config().protocol_fee_bps,
+        350,
+        "UpdateProtocolFee effect must be applied after successful execution"
+    );
+}
+
+/// AC3 — A voter who attempts to vote twice on the same proposal is rejected
+/// on the second attempt; their vote is counted exactly once.
+///
+/// The contract stores a `DataKey::ProposalVote(proposal_id, voter)` sentinel
+/// on the first vote and checks for its presence before counting, so a second
+/// call by the same address returns `InvalidInput` and `votes_for` remains 1.
+#[test]
+fn test_issue_2025_double_vote_counted_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy(&env);
+
+    let duration = 3_600_u64;
+    let proposer = Address::generate(&env);
+    let id = client.create_proposal(&proposer, &ProposalType::UpdateProtocolFee(400), &duration);
+
+    let voter = Address::generate(&env);
+
+    // First vote succeeds.
+    client.vote(&voter, &id, &true);
+    let proposal_after_first = client.get_proposal(&id);
+    assert_eq!(
+        proposal_after_first.votes_for, 1,
+        "votes_for must be 1 after the first vote"
+    );
+
+    // Second vote by the same address must be rejected.
+    let result = client.try_vote(&voter, &id, &true);
+    assert!(
+        matches!(result, Err(Ok(InsightArenaError::InvalidInput))),
+        "duplicate vote must return InvalidInput, got {:?}",
+        result
+    );
+
+    // votes_for must still be 1 — the second attempt did not increment it.
+    let proposal_after_second = client.get_proposal(&id);
+    assert_eq!(
+        proposal_after_second.votes_for, 1,
+        "votes_for must remain 1 after a rejected duplicate vote"
+    );
+}
+}
