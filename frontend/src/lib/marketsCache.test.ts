@@ -1,5 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { cacheMarkets, getCachedMarkets, type CachedMarket } from "./marketsCache";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  cacheMarkets,
+  getCachedMarkets,
+  setMarketsRevalidator,
+  subscribeToMarketsCache,
+  type CachedMarket,
+} from "./marketsCache";
 
 const sample: CachedMarket[] = [
   { name: "Bitcoin", price: "$39422.76", volume: "2.1B", change: "+10.29%", isFavorite: false },
@@ -9,6 +15,8 @@ const sample: CachedMarket[] = [
 describe("marketsCache", () => {
   afterEach(() => {
     window.localStorage.clear();
+    setMarketsRevalidator(null);
+    vi.useRealTimers();
   });
 
   it("returns an empty array when nothing has been cached", () => {
@@ -34,5 +42,51 @@ describe("marketsCache", () => {
   it("falls back to an empty array when the stored value isn't an array", () => {
     window.localStorage.setItem("insightarena.cached_markets", JSON.stringify({ not: "an array" }));
     expect(getCachedMarkets()).toEqual([]);
+  });
+
+  it("serves stale markets while revalidating in the background", async () => {
+    const updated = [
+      { ...sample[0], price: "$41000.00" },
+    ];
+    let resolveFetch!: (markets: CachedMarket[]) => void;
+    const revalidate = vi.fn(
+      () => new Promise<CachedMarket[]>((resolve) => (resolveFetch = resolve)),
+    );
+    const listener = vi.fn();
+    const unsubscribe = subscribeToMarketsCache(listener);
+    cacheMarkets(sample);
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 31_000);
+    setMarketsRevalidator(revalidate);
+
+    expect(getCachedMarkets()).toEqual(sample);
+    expect(revalidate).toHaveBeenCalledTimes(0);
+    await Promise.resolve();
+    expect(revalidate).toHaveBeenCalledTimes(1);
+
+    resolveFetch(updated);
+    await vi.waitFor(() => expect(listener).toHaveBeenCalledWith(updated));
+    expect(getCachedMarkets()).toEqual(updated);
+    unsubscribe();
+  });
+
+  it("serves a fresh cache without refetching", () => {
+    const revalidate = vi.fn().mockResolvedValue(sample);
+    cacheMarkets(sample);
+    setMarketsRevalidator(revalidate);
+
+    expect(getCachedMarkets()).toEqual(sample);
+    expect(revalidate).not.toHaveBeenCalled();
+  });
+
+  it("does not serve data beyond the maximum stale window", async () => {
+    const revalidate = vi.fn().mockResolvedValue(sample);
+    cacheMarkets(sample);
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+    setMarketsRevalidator(revalidate);
+
+    expect(getCachedMarkets()).toEqual([]);
+    await vi.waitFor(() => expect(revalidate).toHaveBeenCalledTimes(1));
   });
 });

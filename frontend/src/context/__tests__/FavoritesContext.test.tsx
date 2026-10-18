@@ -201,4 +201,58 @@ describe("FavoritesContext unauthenticated fallback", () => {
     expect(stored).toContain("m1");
     expect(mockAdd).not.toHaveBeenCalled();
   });
+
+  it("syncs favorites added in another tab", async () => {
+    const { result } = renderHook(() => useFavorites(), { wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    const key = "insightarena.favorites.guest";
+    const newValue = JSON.stringify(["m1"]);
+    window.localStorage.setItem(key, newValue);
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", { key, oldValue: "[]", newValue }),
+      );
+    });
+
+    expect(result.current.isFavorite("m1")).toBe(true);
+  });
+
+  it("syncs favorites removed in another tab", async () => {
+    window.localStorage.setItem(
+      "insightarena.favorites.guest",
+      JSON.stringify(["m1", "m2"]),
+    );
+    const { result } = renderHook(() => useFavorites(), { wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    const key = "insightarena.favorites.guest";
+    const newValue = JSON.stringify(["m2"]);
+    window.localStorage.setItem(key, newValue);
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key,
+          oldValue: JSON.stringify(["m1", "m2"]),
+          newValue,
+        }),
+      );
+    });
+
+    expect(result.current.isFavorite("m1")).toBe(false);
+    expect(result.current.isFavorite("m2")).toBe(true);
+  });
+
+  it("restores toggled favorites after the provider remounts", async () => {
+    const firstTab = renderHook(() => useFavorites(), { wrapper });
+    await waitFor(() => expect(firstTab.result.current.isLoading).toBe(false));
+
+    act(() => firstTab.result.current.addFavorite("m1"));
+    firstTab.unmount();
+
+    const reloadedTab = renderHook(() => useFavorites(), { wrapper });
+    await waitFor(() => expect(reloadedTab.result.current.isLoading).toBe(false));
+
+    expect(reloadedTab.result.current.isFavorite("m1")).toBe(true);
+  });
 });

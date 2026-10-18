@@ -58,6 +58,20 @@ function readStoredFavorites(key: string): Set<string> {
   }
 }
 
+function parseStoredFavorites(raw: string | null): Set<string> {
+  if (!raw) return new Set();
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return new Set(
+      Array.isArray(parsed)
+        ? parsed.filter((id): id is string => typeof id === "string")
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+}
+
 function writeStoredFavorites(key: string, favorites: Set<string>) {
   if (typeof window === "undefined") return;
   try {
@@ -150,6 +164,19 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
       abortController.abort();
     };
   }, [storageKey, token]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== storageKey) return;
+
+      const updated = parseStoredFavorites(event.newValue);
+      confirmedRef.current = new Set(updated);
+      setFavoriteIds(updated);
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [storageKey]);
 
   const applyOptimistic = useCallback((marketId: string, desired: boolean) => {
     setFavoriteIds((prev) => {
