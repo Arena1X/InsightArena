@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{
+    contract, contractimpl, contracttype,
     testutils::{Address as _, Ledger},
     token::{StellarAssetClient, TokenClient},
     Address, Env, Vec,
@@ -1134,4 +1135,184 @@ fn test_large_amounts_no_overflow() {
 
     let balance = token.balance(&staker);
     assert_eq!(balance, large_amount + 1_000_000);
+}
+
+// ---------------------------------------------------------------------------
+// #2038 — Withdraw reentrancy guard
+// ---------------------------------------------------------------------------
+
+#[contracttype]
+enum CallbackKey {
+    Balance(Address),
+    Vault,
+    Reentered,
+}
+
+/// Token whose `transfer` calls back into `withdraw` when the vault pays out.
+#[contract]
+pub struct ReentrantToken;
+
+#[contractimpl]
+impl ReentrantToken {
+    pub fn mint(env: Env, to: Address, amount: i128) {
+        let key = CallbackKey::Balance(to.clone());
+        let balance: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &(balance + amount));
+    }
+
+    pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&CallbackKey::Balance(id))
+            .unwrap_or(0)
+    }
+
+    pub fn set_vault(env: Env, vault: Address) {
+        env.storage().instance().set(&CallbackKey::Vault, &vault);
+    }
+
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        from.require_auth();
+
+        let from_key = CallbackKey::Balance(from.clone());
+        let from_balance: i128 = env.storage().persistent().get(&from_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&from_key, &(from_balance - amount));
+
+        let to_key = CallbackKey::Balance(to.clone());
+        let to_balance: i128 = env.storage().persistent().get(&to_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&to_key, &(to_balance + amount));
+
+        let vault: Option<Address> = env.storage().instance().get(&CallbackKey::Vault);
+        if let Some(vault) = vault {
+            if from == vault {
+                let seen: bool = env
+                    .storage()
+                    .instance()
+                    .get(&CallbackKey::Reentered)
+                    .unwrap_or(false);
+                if !seen {
+                    env.storage().instance().set(&CallbackKey::Reentered, &true);
+                    // Swallow the inner error so a rejected reentrant withdraw
+                    // does not roll back the outer payout.
+                    let client = StakingVaultClient::new(&env, &vault);
+                    let _ = client.try_withdraw(&to);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_reentrant_withdraw_cannot_double_withdraw() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let token_id = env.register(ReentrantToken, ());
+    let token = ReentrantTokenClient::new(&env, &token_id);
+    let vault_id = env.register(StakingVault, ());
+    token.set_vault(&vault_id);
+
+    let client = StakingVaultClient::new(&env, &vault_id);
+    let admin = Address::generate(&env);
+    let fee_source = Address::generate(&env);
+    let unbonding_config = UnbondingConfig {
+        cooldown_period: 7 * 86_400,
+        penalty_bps: 500,
+    };
+    client.initialize(
+        &admin,
+        &token_id,
+        &fee_source,
+        &tiers(&env),
+        &unbonding_config,
+    );
+
+    let staker = Address::generate(&env);
+    token.mint(&staker, &1_000);
+    // Extra tokens sit on the vault so a second transfer would succeed if the
+    // guard failed to stop it.
+    token.mint(&vault_id, &1_000);
+
+    client.stake(&staker, &1_000, &(30 * 86_400));
+
+    let position = client.get_position(&staker).unwrap();
+    env.ledger().with_mut(|l| l.timestamp = position.unlock_at);
+    client.request_unlock(&staker, &1_000);
+
+    let unlocked = client.get_position(&staker).unwrap();
+    env.ledger()
+        .with_mut(|l| l.timestamp = unlocked.unlock_requested_at + 7 * 86_400);
+
+    client.withdraw(&staker);
+
+    // One payout only: the original 1_000 returned, not the extra 1_000.
+    assert_eq!(token.balance(&staker), 1_000);
+    let position_after = client.get_position(&staker).unwrap();
+    assert_eq!(position_after.amount, 0);
+    assert_eq!(position_after.shares, 0);
+    assert_eq!(position_after.pending_unlock_amount, 0);
+    assert_eq!(client.get_pool().total_shares, 0);
+}
+
+#[test]
+fn test_normal_withdraw_succeeds_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _fee_source, token, asset) = setup(&env);
+
+    let staker = Address::generate(&env);
+    asset.mint(&staker, &1_000_000);
+    client.stake(&staker, &1_000, &(30 * 86_400));
+
+    let position = client.get_position(&staker).unwrap();
+    env.ledger().with_mut(|l| l.timestamp = position.unlock_at);
+    client.request_unlock(&staker, &1_000);
+    let unlocked = client.get_position(&staker).unwrap();
+    env.ledger()
+        .with_mut(|l| l.timestamp = unlocked.unlock_requested_at + 7 * 86_400);
+
+    client.withdraw(&staker);
+    assert_eq!(token.balance(&staker), 1_000_000);
+
+    let second = client.try_withdraw(&staker);
+    assert_eq!(second, Err(Ok(StakingError::NoPendingUnlock)));
+    assert_eq!(token.balance(&staker), 1_000_000);
+}
+
+#[test]
+fn test_state_is_consistent_after_withdraw() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _fee_source, _token, asset) = setup(&env);
+
+    let staker = Address::generate(&env);
+    let other = Address::generate(&env);
+    asset.mint(&staker, &1_000_000);
+    asset.mint(&other, &1_000_000);
+    client.stake(&staker, &1_000, &(30 * 86_400));
+    client.stake(&other, &1_000, &(30 * 86_400));
+
+    let position = client.get_position(&staker).unwrap();
+    env.ledger().with_mut(|l| l.timestamp = position.unlock_at);
+    client.request_unlock(&staker, &1_000);
+    let unlocked = client.get_position(&staker).unwrap();
+    env.ledger()
+        .with_mut(|l| l.timestamp = unlocked.unlock_requested_at + 7 * 86_400);
+
+    client.withdraw(&staker);
+
+    let position_after = client.get_position(&staker).unwrap();
+    assert_eq!(position_after.amount, 0);
+    assert_eq!(position_after.shares, 0);
+    assert_eq!(position_after.pending_unlock_amount, 0);
+    assert_eq!(position_after.unlock_requested_at, 0);
+
+    let other_position = client.get_position(&other).unwrap();
+    assert_eq!(other_position.amount, 1_000);
+    assert_eq!(other_position.shares, 1_000);
+    assert_eq!(client.get_pool().total_shares, other_position.shares);
 }
