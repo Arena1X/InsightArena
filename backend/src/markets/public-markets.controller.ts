@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Inject,
   NotFoundException,
   Param,
   Query,
@@ -13,6 +14,8 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
 import { Public } from '../common/decorators/public.decorator';
 import { Scopes } from '../common/decorators/scopes.decorator';
 import { ApiKeyGuard } from '../common/guards/api-key.guard';
@@ -33,7 +36,15 @@ import { MarketsService } from './markets.service';
 @SkipThrottle({ default: true, auth: true })
 @Throttle({ public: {} })
 export class PublicMarketsController {
-  constructor(private readonly marketsService: MarketsService) {}
+  private readonly PUBLIC_MARKETS_CACHE_KEY = 'public:markets:list';
+  private readonly PUBLIC_MARKET_DETAIL_CACHE_KEY_PREFIX =
+    'public:markets:detail:';
+  private readonly CACHE_TTL_MS = 60000; // 1 minute
+
+  constructor(
+    private readonly marketsService: MarketsService,
+    @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -52,17 +63,33 @@ export class PublicMarketsController {
   async list(
     @Query() query: ListMarketsDto,
   ): Promise<PaginatedPublicMarketsResponseDto> {
+    // Generate cache key based on query parameters
+    const cacheKey = `${this.PUBLIC_MARKETS_CACHE_KEY}:${JSON.stringify(query)}`;
+
+    // Try to get from cache
+    const cached =
+      await this.cacheManager.get<PaginatedPublicMarketsResponseDto>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    // Fetch from database
     const result = await this.marketsService.findAllFiltered({
       ...query,
       is_public: true,
     });
 
-    return {
+    const response = {
       ...result,
       data: (result.data as Market[]).map((market) =>
         PublicMarketResponseDto.fromEntity(market),
       ),
     };
+
+    // Store in cache with TTL
+    await this.cacheManager.set(cacheKey, response, this.CACHE_TTL_MS);
+
+    return response;
   }
 
   @Get(':id')
@@ -81,10 +108,26 @@ export class PublicMarketsController {
   @ApiResponse({ status: 404, description: 'Public market not found' })
   @ApiResponse({ status: 429, description: 'Public API rate limit exceeded' })
   async get(@Param('id') id: string): Promise<PublicMarketResponseDto> {
+    const cacheKey = `${this.PUBLIC_MARKET_DETAIL_CACHE_KEY_PREFIX}${id}`;
+
+    // Try to get from cache
+    const cached =
+      await this.cacheManager.get<PublicMarketResponseDto>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    // Fetch from database
     const market = await this.marketsService.findByIdOrOnChainId(id);
     if (!market.is_public) {
       throw new NotFoundException(`Public market with ID "${id}" not found`);
     }
-    return PublicMarketResponseDto.fromEntity(market);
+
+    const response = PublicMarketResponseDto.fromEntity(market);
+
+    // Store in cache with TTL
+    await this.cacheManager.set(cacheKey, response, this.CACHE_TTL_MS);
+
+    return response;
   }
 }
