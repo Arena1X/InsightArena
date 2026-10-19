@@ -11,6 +11,7 @@ export const CACHE_NAMESPACE_TTL_MS: Record<string, number> = {
   'analytics:market-history': 60 * 1000, // 1 minute — keyed by date range, so entries don't get reused as often
   'analytics:user-trends': 60 * 1000, // 1 minute
   'analytics:dashboard': 30 * 1000, // 30 seconds — personalized (rank/streak), kept fresh
+  'public:markets': 60 * 1000, // 1 minute — public markets read with stampede protection
 };
 
 export const DEFAULT_TTL_MS = 60 * 1000; // 1 minute
