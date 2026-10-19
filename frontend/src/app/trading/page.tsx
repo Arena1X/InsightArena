@@ -7,6 +7,8 @@ import StatsCards from "@/component/trading/StatsCards";
 import TradingTabs from "@/component/trading/TradingTabs";
 import MarketSearchBar from "@/component/trading/MarketSearchBar";
 import MarketList from "@/component/trading/MarketList";
+import KeyboardShortcutsHelp, { type ShortcutDisplay } from "@/component/trading/KeyboardShortcutsHelp";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import Image from "next/image";
 import { cacheMarkets, getCachedMarkets } from "@/lib/marketsCache";
 
@@ -49,6 +51,7 @@ export default function TradingPage() {
   const [activeTab, setActiveTab] = useState("Live market");
   const [search, setSearch] = useState("");
   const [markets, setMarkets] = useState(initialMarkets);
+  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   // Mirrors navigator.onLine, with the same event-listener pattern
   // PwaManager already uses, so both stay in agreement about connectivity.
   const [isOnline, setIsOnline] = useState(
@@ -134,8 +137,93 @@ export default function TradingPage() {
     alert("Token filter clicked");
   };
 
+  // Keyboard shortcuts setup
+  const shortcuts = [
+    {
+      key: "?",
+      description: "Show keyboard shortcuts",
+      action: () => setShowShortcutsHelp((prev) => !prev),
+    },
+    {
+      key: "f",
+      description: "Focus search",
+      action: () => {
+        const searchInput = document.getElementById("market-search");
+        if (searchInput instanceof HTMLInputElement) {
+          searchInput.focus();
+        }
+      },
+    },
+    {
+      key: "1",
+      description: "Switch to Live Market tab",
+      action: () => setActiveTab("Live market"),
+    },
+    {
+      key: "2",
+      description: "Switch to Tournament tab",
+      action: () => setActiveTab("Tournament"),
+    },
+    {
+      key: "3",
+      description: "Switch to Portfolio tab",
+      action: () => setActiveTab("Portfolio"),
+    },
+    {
+      key: "4",
+      description: "Switch to Leaderboards tab",
+      action: () => setActiveTab("Leaderboards"),
+    },
+    {
+      key: "t",
+      description: "Trade first visible market",
+      action: () => {
+        if (filteredMarkets.length > 0 && isOnline) {
+          handleTrade(filteredMarkets[0].name);
+        }
+      },
+    },
+    {
+      key: "s",
+      description: "Toggle favorite on first market",
+      action: () => {
+        if (filteredMarkets.length > 0 && isOnline) {
+          handleFavorite(filteredMarkets[0].name);
+        }
+      },
+    },
+    {
+      key: "Escape",
+      description: "Close overlays and clear search",
+      action: () => {
+        setShowShortcutsHelp(false);
+        setSearch("");
+      },
+    },
+  ];
+
+  // Shortcuts for display in help overlay
+  const shortcutDisplays: ShortcutDisplay[] = [
+    { key: "?", description: "Show keyboard shortcuts" },
+    { key: "f", description: "Focus search" },
+    { key: "1", description: "Switch to Live Market tab" },
+    { key: "2", description: "Switch to Tournament tab" },
+    { key: "3", description: "Switch to Portfolio tab" },
+    { key: "4", description: "Switch to Leaderboards tab" },
+    { key: "t", description: "Trade first visible market" },
+    { key: "s", description: "Toggle favorite on first market" },
+    { key: "Escape", description: "Close overlays and clear search" },
+  ];
+
+  useKeyboardShortcuts({ shortcuts, enabled: true });
+
   return (
     <PageBackground>
+      <KeyboardShortcutsHelp
+        isOpen={showShortcutsHelp}
+        onClose={() => setShowShortcutsHelp(false)}
+        shortcuts={shortcutDisplays}
+      />
       <div className="flex min-h-screen flex-col">
         <Header />
         <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pt-28">
