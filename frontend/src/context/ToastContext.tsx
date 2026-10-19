@@ -39,12 +39,6 @@ const DEFAULT_DURATION = 5000;
 const MAX_TOASTS = 5;
 const DEDUP_WINDOW_MS = 3000;
 
-const VARIANT_PRIORITY: Record<ToastVariant, number> = {
-  error: 0,
-  success: 1,
-  info: 2,
-};
-
 let idCounter = 0;
 function generateId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -56,6 +50,7 @@ function generateId() {
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const toastsRef = useRef<ToastItem[]>([]);
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const recentMessages = useRef<Map<string, number>>(new Map());
 
@@ -70,7 +65,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const dismiss = useCallback(
     (id: string) => {
       clearTimer(id);
-      setToasts((prev) => prev.filter((toast) => toast.id !== id));
+      const next = toastsRef.current.filter((toast) => toast.id !== id);
+      toastsRef.current = next;
+      setToasts(next);
     },
     [clearTimer],
   );
@@ -96,6 +93,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       if (lastSeen && now - lastSeen < DEDUP_WINDOW_MS) {
         return "";
       }
+
+      // Overflow policy: keep the first five concurrent toasts and drop new arrivals.
+      if (toastsRef.current.length >= MAX_TOASTS) return "";
+
       recentMessages.current.set(description, now);
 
       // Clean old dedup entries
@@ -116,18 +117,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         action: options.action,
       };
 
-      setToasts((prev) => {
-        // Cap: keep at most MAX_TOASTS, evict lowest-priority
-        let next = [...prev, toast];
-        if (next.length > MAX_TOASTS) {
-          next.sort(
-            (a, b) =>
-              VARIANT_PRIORITY[a.variant] - VARIANT_PRIORITY[b.variant],
-          );
-          next = next.slice(0, MAX_TOASTS);
-        }
-        return next;
-      });
+      const next = [...toastsRef.current, toast];
+      toastsRef.current = next;
+      setToasts(next);
 
       scheduleDismiss(id, duration);
       return id;

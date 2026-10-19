@@ -249,6 +249,64 @@ describe("WalletContext", () => {
 
             expect(result.current.address).toBeNull();
         });
+
+        it("attempts a bounded reconnect after a transient disconnect", async () => {
+            localStorage.setItem("insightarena.wallet.v1", JSON.stringify({
+                walletId: "freighter",
+                address: "GTEST123",
+                network: "PUBLIC",
+            }));
+            mockFetchAddress
+                .mockResolvedValueOnce({ address: "GTEST123" })
+                .mockRejectedValueOnce(new Error("Connection lost"))
+                .mockRejectedValue(new Error("Connection lost"));
+
+            const { result } = renderHook(() => useWallet(), {
+                wrapper: WalletProvider,
+            });
+
+            await waitFor(() => {
+                expect(result.current.isRestoring).toBe(false);
+            });
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(4000);
+            });
+
+            expect(mockFetchAddress).toHaveBeenCalledTimes(5);
+            expect(result.current.address).toBeNull();
+            expect(result.current.walletError?.type).toBe("disconnected");
+            expect(result.current.walletError?.retryable).toBe(true);
+            expect(localStorage.getItem("insightarena.wallet.v1")).not.toBeNull();
+        });
+
+        it("restores the selected account when reconnect succeeds", async () => {
+            localStorage.setItem("insightarena.wallet.v1", JSON.stringify({
+                walletId: "freighter",
+                address: "GTEST123",
+                network: "PUBLIC",
+            }));
+            mockFetchAddress
+                .mockResolvedValueOnce({ address: "GTEST123" })
+                .mockRejectedValueOnce(new Error("Connection lost"))
+                .mockResolvedValueOnce({ address: "GTEST123" });
+
+            const { result } = renderHook(() => useWallet(), {
+                wrapper: WalletProvider,
+            });
+
+            await waitFor(() => {
+                expect(result.current.isRestoring).toBe(false);
+            });
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(3250);
+            });
+
+            expect(result.current.address).toBe("GTEST123");
+            expect(result.current.isAuthenticated).toBe(true);
+            expect(result.current.walletError).toBeNull();
+        });
     });
 
     describe("Error Classification", () => {
@@ -402,6 +460,40 @@ describe("WalletContext", () => {
 
             expect(result.current.isConnectModalOpen).toBe(true);
             expect(result.current.walletError).toBeNull();
+        });
+
+        it("offers manual retry after automatic reconnect attempts are exhausted", async () => {
+            vi.useFakeTimers();
+            localStorage.setItem("insightarena.wallet.v1", JSON.stringify({
+                walletId: "freighter",
+                address: "GTEST123",
+                network: "PUBLIC",
+            }));
+            mockFetchAddress
+                .mockResolvedValueOnce({ address: "GTEST123" })
+                .mockRejectedValue(new Error("Connection lost"));
+
+            const { result } = renderHook(() => useWallet(), {
+                wrapper: WalletProvider,
+            });
+
+            await waitFor(() => {
+                expect(result.current.isRestoring).toBe(false);
+            });
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(4000);
+            });
+
+            expect(result.current.walletError?.retryable).toBe(true);
+
+            await act(async () => {
+                await result.current.retry();
+            });
+
+            expect(result.current.isConnectModalOpen).toBe(true);
+            expect(result.current.walletError).toBeNull();
+            vi.useRealTimers();
         });
 
         it("should clear errors", () => {

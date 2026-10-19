@@ -1,12 +1,40 @@
 export function Sparkline({ data }: { data: number[] }) {
-  if (data.length < 2) return null;
+  const width = 120;
+  const height = 24;
+  const padding = 2;
+
+  if (data.length === 0) {
+    return (
+      <svg
+        width={width}
+        height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="No data available"
+      >
+        <line
+          x1={padding}
+          y1={height / 2}
+          x2={width - padding}
+          y2={height / 2}
+          stroke="#9ca3af"
+          strokeDasharray="2 2"
+        />
+      </svg>
+    );
+  }
+
+  if (data.length === 1) {
+    return (
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+        <circle cx={width / 2} cy={height / 2} r="2.5" fill="#10b981" />
+      </svg>
+    );
+  }
 
   const min = Math.min(...data);
   const max = Math.max(...data);
   const range = max - min || 1;
-  const width = 120;
-  const height = 24;
-  const padding = 2;
   const graphWidth = width - padding * 2;
   const graphHeight = height - padding * 2;
 

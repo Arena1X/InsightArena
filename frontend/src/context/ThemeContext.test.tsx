@@ -148,12 +148,15 @@ describe("persisted theme choice is restored on mount", () => {
   });
 
   it("defaults to system when nothing is stored", async () => {
-    // nothing in localStorage
+    mockMatchMedia(false);
+
     const { result } = renderHook(() => useTheme(), { wrapper });
 
     await act(async () => {});
 
     expect(result.current.mode).toBe("system");
+    expect(result.current.theme).toBe("light");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
   });
 });
 
@@ -236,16 +239,19 @@ describe("toggleTheme cycles correctly", () => {
     // light → dark
     act(() => result.current.toggleTheme());
     expect(result.current.mode).toBe("dark");
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(getStoredMode()).toBe("dark");
 
     // dark → system
     act(() => result.current.toggleTheme());
     expect(result.current.mode).toBe("system");
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(getStoredMode()).toBe("system");
 
     // system → light
     act(() => result.current.toggleTheme());
     expect(result.current.mode).toBe("light");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
     expect(getStoredMode()).toBe("light");
   });
 });
