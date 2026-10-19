@@ -437,6 +437,50 @@ export function formatPnlXlm(pnl: number, digits = 2): string {
   return `${sign}${pnl.toFixed(digits)} XLM`;
 }
 
+/**
+ * Formats cashout amounts correctly across magnitudes and locales without precision loss.
+ *
+ * - Non-finite values (NaN, Infinity, -Infinity) return "—"
+ * - Zero and negative zero return "0.00 XLM" (or locale-equivalent)
+ * - Sub-unit amounts (0 < |amount| < 0.01) use up to 7 significant decimal places
+ *   to avoid showing "0.00 XLM" for non-zero values
+ * - Uses Intl.NumberFormat for locale-aware thousand and decimal separators
+ * - Very large amounts are handled without precision loss
+ *
+ * @param amount The amount to format
+ * @param locale The locale string (default: "en-US")
+ * @param digits Number of decimal places (default: 2)
+ * @returns Formatted string with " XLM" suffix
+ *
+ * @example
+ * formatCashOut(1000.5, "en-US", 2) // "1,000.50 XLM"
+ * formatCashOut(1000.5, "de-DE", 2) // "1.000,50 XLM"
+ * formatCashOut(0.000001)            // "0.000001 XLM"
+ * formatCashOut(NaN)                 // "—"
+ */
+export function formatCashOut(amount: number, locale = "en-US", digits = 2): string {
+  if (!Number.isFinite(amount)) return "—";
+
+  // Treat -0 as 0
+  const value = amount === 0 ? 0 : amount;
+
+  // For amounts that would round to zero at `digits` decimals but are non-zero,
+  // show more decimal places so the user sees a real number.
+  if (value !== 0 && Math.abs(value) < Math.pow(10, -digits)) {
+    const sigFmt = new Intl.NumberFormat(locale, {
+      minimumSignificantDigits: 1,
+      maximumSignificantDigits: 7,
+    });
+    return `${sigFmt.format(value)} XLM`;
+  }
+
+  const fmt = new Intl.NumberFormat(locale, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  return `${fmt.format(value)} XLM`;
+}
+
 // ── Dashboard sidebar auto-collapse (#1584) ─────────────────────────────────
 
 /**
