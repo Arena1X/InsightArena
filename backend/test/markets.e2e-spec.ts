@@ -59,10 +59,19 @@ describe('Markets (e2e)', () => {
     is_public: true,
     is_resolved: false,
     resolved_outcome: null as any, // eslint-disable-line @typescript-eslint/no-unsafe-assignment
+    resolved_at: null,
     is_cancelled: false,
+    is_featured: false,
+    is_paused: false,
+    featured_at: null,
     total_pool_stroops: '0',
     participant_count: 0,
     created_at: new Date('2024-01-01'),
+    settlement_state: 'pending' as Market['settlement_state'],
+    proposed_outcome: null,
+    resolution_proposed_at: null,
+    grace_period_seconds: 86400,
+    settlement_attempt_count: 0,
   };
 
   const mockResolvedMarket: Market = {

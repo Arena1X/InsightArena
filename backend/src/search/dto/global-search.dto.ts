@@ -8,7 +8,11 @@ import {
   Max,
   Min,
   MinLength,
+  MaxLength,
+  Validate,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsNotWhitespaceOnly } from './search-query.dto';
 
 export enum SearchType {
   All = 'all',
@@ -18,9 +22,25 @@ export enum SearchType {
 }
 
 export class GlobalSearchDto {
-  @ApiProperty({ description: 'Search query string', example: 'bitcoin' })
-  @IsString()
-  @MinLength(1)
+  @ApiProperty({
+    description:
+      'Search query string (2-100 characters, trimmed, wildcards escaped)',
+    example: 'bitcoin',
+    minLength: 2,
+    maxLength: 100,
+  })
+  @IsString({ message: 'Search query must be a string' })
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    return value.trim().replace(/\s+/g, ' ');
+  })
+  @Validate(IsNotWhitespaceOnly)
+  @MinLength(2, {
+    message: 'Search query must be at least 2 characters long',
+  })
+  @MaxLength(100, {
+    message: 'Search query must not exceed 100 characters',
+  })
   query: string;
 
   @ApiPropertyOptional({
@@ -57,6 +77,15 @@ export class MarketSearchResult {
   @ApiProperty() is_public: boolean;
   @ApiProperty() participant_count: number;
   @ApiProperty() created_at: Date;
+  @ApiProperty({
+    description: 'Combined relevance score (FTS rank + trigram similarity)',
+  })
+  relevance_score: number;
+  @ApiProperty({
+    description:
+      'Highlighted snippet showing the matched term in context (HTML <b> tags)',
+  })
+  highlight: string;
 }
 
 export class UserSearchResult {
@@ -66,6 +95,15 @@ export class UserSearchResult {
   @ApiProperty() avatar_url: string | null;
   @ApiProperty() reputation_score: number;
   @ApiProperty() total_predictions: number;
+  @ApiProperty({
+    description: 'Combined relevance score (FTS rank + trigram similarity)',
+  })
+  relevance_score: number;
+  @ApiProperty({
+    description:
+      'Highlighted snippet showing the matched term in context (HTML <b> tags)',
+  })
+  highlight: string;
 }
 
 export class CompetitionSearchResult {
@@ -76,6 +114,26 @@ export class CompetitionSearchResult {
   @ApiProperty() end_time: Date;
   @ApiProperty() participant_count: number;
   @ApiProperty() visibility: string;
+  @ApiProperty({
+    description: 'Combined relevance score (FTS rank + trigram similarity)',
+  })
+  relevance_score: number;
+  @ApiProperty({
+    description:
+      'Highlighted snippet showing the matched term in context (HTML <b> tags)',
+  })
+  highlight: string;
+}
+
+export class SuggestionsResponseDto {
+  @ApiProperty({
+    type: [String],
+    description: 'Up to 5 matching market titles',
+  })
+  markets: string[];
+
+  @ApiProperty({ type: [String], description: 'Up to 5 matching usernames' })
+  users: string[];
 }
 
 export class GlobalSearchResponseDto {
@@ -89,6 +147,9 @@ export class GlobalSearchResponseDto {
   competitions: CompetitionSearchResult[];
 
   @ApiProperty() total: number;
+  @ApiPropertyOptional() total_markets?: number;
+  @ApiPropertyOptional() total_users?: number;
+  @ApiPropertyOptional() total_competitions?: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
 }

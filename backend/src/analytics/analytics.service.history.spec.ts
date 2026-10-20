@@ -8,6 +8,7 @@ import { User } from '../users/entities/user.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.entity';
 import { ActivityLog } from './entities/activity-log.entity';
+import { CacheService } from '../cache/cache.service';
 
 describe('AnalyticsService - Market History', () => {
   let service: AnalyticsService;
@@ -30,6 +31,12 @@ describe('AnalyticsService - Market History', () => {
       find: jest.fn(),
       create: jest.fn(),
       save: jest.fn(),
+      createQueryBuilder: jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      }),
     } as any;
 
     marketsRepository = {
@@ -67,6 +74,13 @@ describe('AnalyticsService - Market History', () => {
           provide: getRepositoryToken(MarketHistory),
           useValue: marketHistoryRepository,
         },
+        {
+          provide: CacheService,
+          useValue: {
+            getOrSet: (_ns: string, _key: string, loader: () => unknown) =>
+              loader(),
+          },
+        },
       ],
     }).compile();
 
@@ -91,9 +105,12 @@ describe('AnalyticsService - Market History', () => {
       },
     ] as MarketHistory[];
 
-    marketHistoryRepository.find.mockResolvedValue(mockHistory);
+    const qb = marketHistoryRepository.createQueryBuilder();
+    (qb.getMany as jest.Mock).mockResolvedValue(mockHistory);
 
-    const result = await service.getMarketHistory('market-1');
+    const from = new Date('2026-05-01T00:00:00.000Z');
+    const to = new Date('2026-06-01T00:00:00.000Z');
+    const result = await service.getMarketHistory('market-1', from, to);
 
     expect(result.market_id).toBe('market-1');
     expect(result.title).toBe('Test Market');
@@ -122,6 +139,12 @@ describe('AnalyticsService - Market History', () => {
   it('should throw NotFoundException for non-existent market', async () => {
     marketsRepository.findOne.mockResolvedValue(null);
 
-    await expect(service.getMarketHistory('invalid-id')).rejects.toThrow();
+    await expect(
+      service.getMarketHistory(
+        'invalid-id',
+        new Date('2026-05-01T00:00:00.000Z'),
+        new Date('2026-06-01T00:00:00.000Z'),
+      ),
+    ).rejects.toThrow();
   });
 });

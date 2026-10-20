@@ -1,9 +1,9 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { HealthCheckResult } from '@nestjs/terminus';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Public } from '../common/decorators/public.decorator';
 import { HealthService } from './health.service';
-import { DetailedHealthDto } from './dto/detailed-health.dto';
+import { DetailedHealthDto, HealthSummaryDto } from './dto/detailed-health.dto';
 
 @ApiTags('Health')
 @Controller('health')
@@ -36,15 +36,56 @@ export class HealthController {
     return this.healthService.checkPing();
   }
 
+  @Get('live')
+  @Public()
+  @ApiOperation({
+    summary: 'Liveness probe — is the process itself responsive?',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Process is alive. Does not check dependencies.',
+  })
+  checkLive() {
+    return this.healthService.checkLiveness();
+  }
+
+  @Get('ready')
+  @Public()
+  @ApiOperation({
+    summary: 'Readiness probe — can this instance serve traffic?',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Database, Soroban RPC, and cache are all reachable',
+    type: DetailedHealthDto,
+  })
+  @ApiResponse({
+    status: 503,
+    description: 'At least one critical dependency is unreachable',
+    type: DetailedHealthDto,
+  })
+  checkReady(): Promise<DetailedHealthDto> {
+    return this.healthService.checkReadiness();
+  }
+
   @Get('detailed')
   @Public()
   @ApiOperation({ summary: 'Detailed health status for monitoring' })
+  @ApiQuery({
+    name: 'verbose',
+    required: false,
+    type: Boolean,
+    description:
+      'When true, includes per-dependency status and latency. Defaults to a compact summary.',
+  })
   @ApiResponse({
     status: 200,
-    description: 'Detailed health status of all components',
+    description: 'Health status, compact by default or detailed when verbose',
     type: DetailedHealthDto,
   })
-  async checkDetailed(): Promise<DetailedHealthDto> {
-    return this.healthService.checkDetailed();
+  async checkDetailed(
+    @Query('verbose') verbose?: string,
+  ): Promise<DetailedHealthDto | HealthSummaryDto> {
+    return this.healthService.checkDetailed(verbose === 'true');
   }
 }

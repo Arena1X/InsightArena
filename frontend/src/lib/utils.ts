@@ -4,3 +4,760 @@ import { twMerge } from "tailwind-merge"
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
+
+export interface PoolStats {
+  poolXlm: number;
+  contributorCount: number;
+  averageStakeXlm: number;
+}
+
+/** Calculates the mean stake without allowing an empty pool to produce NaN. */
+export function calculateAverageStake(
+  poolXlm: number,
+  contributorCount: number,
+): number {
+  if (!Number.isFinite(poolXlm) || !Number.isFinite(contributorCount) || contributorCount <= 0) {
+    return 0;
+  }
+  return poolXlm / contributorCount;
+}
+
+export function calculatePoolStats(
+  poolXlm: number,
+  contributorCount: number,
+): PoolStats {
+  const safePoolXlm = Number.isFinite(poolXlm) ? Math.max(0, poolXlm) : 0;
+  const safeContributorCount = Number.isFinite(contributorCount)
+    ? Math.max(0, Math.floor(contributorCount))
+    : 0;
+
+  return {
+    poolXlm: safePoolXlm,
+    contributorCount: safeContributorCount,
+    averageStakeXlm: calculateAverageStake(safePoolXlm, safeContributorCount),
+  };
+}
+
+/** Minimal shape a documentation section must satisfy to be searchable/TOC-able. */
+export interface DocSearchable {
+  id: string;
+  title: string;
+  description?: string;
+  content?: string;
+}
+
+/** A single anchored table-of-contents entry. */
+export interface TocEntry {
+  id: string;
+  title: string;
+}
+
+/**
+ * Derives an anchored table of contents from a list of documentation
+ * sections. Each section's heading becomes one TOC entry, in source order,
+ * so the TOC always stays in sync with the headings actually rendered.
+ */
+export function buildTableOfContents<T extends DocSearchable>(
+  sections: T[]
+): TocEntry[] {
+  return sections.map(({ id, title }) => ({ id, title }));
+}
+
+/**
+ * Case-insensitive client-side search over documentation sections. Matches
+ * against the title, description, and body content of each section.
+ */
+export function filterDocSections<T extends DocSearchable>(
+  sections: T[],
+  query: string
+): T[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return sections;
+
+  return sections.filter((section) =>
+    [section.title, section.description, section.content]
+      .filter((field): field is string => Boolean(field))
+      .some((field) => field.toLowerCase().includes(normalizedQuery))
+  );
+}
+
+/**
+ * Converts arbitrary text into a URL/hash-safe slug, e.g. for deep-linking
+ * to a specific accordion section (`#what-is-cryptocurrency`).
+ */
+export function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+}
+
+// ── Route content pending signal ────────────────────────────────────────────
+//
+// Next.js updates the URL (usePathname/useSearchParams) as soon as a client
+// navigation is committed, even while the destination's loading.tsx Suspense
+// fallback is still showing. A route-change listener that treats "pathname
+// changed" as "route settled" therefore fires early on slow transitions.
+// Route-level loading.tsx files call `beginRouteContentLoad()` on mount and
+// release it on unmount so anything that needs to know when the *content*
+// (not just the URL) is actually ready — like RouteProgress — can wait for it.
+
+type RouteContentPendingListener = (pending: boolean) => void;
+
+let pendingRouteContentCount = 0;
+const routeContentPendingListeners = new Set<RouteContentPendingListener>();
+
+function notifyRouteContentPendingListeners() {
+  const pending = pendingRouteContentCount > 0;
+  routeContentPendingListeners.forEach((listener) => listener(pending));
+}
+
+export function isRouteContentPending(): boolean {
+  return pendingRouteContentCount > 0;
+}
+
+/** Marks route content as loading; call the returned function once it's ready. */
+export function beginRouteContentLoad(): () => void {
+  pendingRouteContentCount += 1;
+  notifyRouteContentPendingListeners();
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    pendingRouteContentCount = Math.max(0, pendingRouteContentCount - 1);
+    notifyRouteContentPendingListeners();
+  };
+}
+
+/** Subscribes to route-content-pending changes; returns an unsubscribe function. */
+export function subscribeRouteContentPending(
+  listener: RouteContentPendingListener,
+): () => void {
+  routeContentPendingListeners.add(listener);
+  listener(isRouteContentPending());
+  return () => {
+    routeContentPendingListeners.delete(listener);
+  };
+}
+
+export interface CourseLesson {
+  id: string;
+  title: string;
+  href: string;
+}
+
+export const COURSE_PROGRESS_STORAGE_KEY = "insightarena.course-progress.v1";
+
+function readCourseProgress(): Record<string, string[]> {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const stored = window.localStorage.getItem(COURSE_PROGRESS_STORAGE_KEY);
+    const parsed: unknown = stored ? JSON.parse(stored) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        ([, lessonIds]) =>
+          Array.isArray(lessonIds) && lessonIds.every((lessonId) => typeof lessonId === "string"),
+      ),
+    ) as Record<string, string[]>;
+  } catch {
+    return {};
+  }
+}
+
+export function getViewedLessonIds(courseId: string): string[] {
+  return readCourseProgress()[courseId] ?? [];
+}
+
+export function markLessonViewed(courseId: string, lessonId: string): string[] {
+  const progress = readCourseProgress();
+  const viewedLessonIds = Array.from(new Set([...(progress[courseId] ?? []), lessonId]));
+
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(
+        COURSE_PROGRESS_STORAGE_KEY,
+        JSON.stringify({ ...progress, [courseId]: viewedLessonIds }),
+      );
+    } catch {
+      // Storage can be unavailable in private browsing or restricted embeds.
+    }
+  }
+
+  return viewedLessonIds;
+}
+
+export function getResumeLesson(
+  courseId: string,
+  lessons: CourseLesson[],
+): CourseLesson | undefined {
+  const viewedLessonIds = new Set(getViewedLessonIds(courseId));
+  return lessons.find((lesson) => !viewedLessonIds.has(lesson.id)) ?? lessons.at(-1);
+}
+
+const STROOPS_PER_XLM = 10_000_000;
+
+/**
+ * Minimal shape needed to compute a per-position P&L breakdown. Kept
+ * structural (rather than importing the `Position` type) so this module has
+ * no dependency on any particular hook/data-fetching layer.
+ */
+export interface PnlPosition {
+  pnl: string;
+  status: "open" | "settled" | string;
+}
+
+export interface PnlBreakdown {
+  /** P&L locked in because the position has settled, in stroops. */
+  realized: number;
+  /** Mark-to-market P&L for a still-open position, in stroops. */
+  unrealized: number;
+}
+
+/**
+ * Splits a position's P&L into realized vs. unrealized buckets.
+ *
+ * - Settled positions have already paid out (or lost their stake), so their
+ *   entire P&L is realized.
+ * - Open positions are only marked-to-market against `current_value`, so
+ *   their P&L is unrealized until the market settles.
+ */
+export function computePositionPnl(position: PnlPosition): PnlBreakdown {
+  const pnl = Number(position.pnl);
+  const safePnl = Number.isNaN(pnl) ? 0 : pnl;
+
+  if (position.status === "settled") {
+    return { realized: safePnl, unrealized: 0 };
+  }
+  return { realized: 0, unrealized: safePnl };
+}
+
+/**
+ * Aggregates realized/unrealized P&L (in stroops) across a set of positions.
+ */
+export function sumPnlBreakdown(positions: PnlPosition[]): PnlBreakdown {
+  return positions.reduce<PnlBreakdown>(
+    (totals, position) => {
+      const { realized, unrealized } = computePositionPnl(position);
+      return {
+        realized: totals.realized + realized,
+        unrealized: totals.unrealized + unrealized,
+      };
+    },
+    { realized: 0, unrealized: 0 },
+  );
+}
+
+function stroopsToXlmString(value: number): string {
+  return (value / STROOPS_PER_XLM).toFixed(2);
+}
+
+function csvEscape(value: string): string {
+  if (/[",\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+/**
+ * Minimal shape needed to render a portfolio position as a CSV row.
+ */
+export interface PortfolioCsvPosition extends PnlPosition {
+  market_title: string;
+  outcome: string;
+  stake: string;
+  current_value: string;
+  placed_at: string;
+  resolved_at: string | null;
+}
+
+export const PORTFOLIO_CSV_HEADERS = [
+  "Market",
+  "Outcome",
+  "Status",
+  "Stake (XLM)",
+  "Current Value (XLM)",
+  "Realized P&L (XLM)",
+  "Unrealized P&L (XLM)",
+  "Total P&L (XLM)",
+  "Placed At",
+  "Resolved At",
+] as const;
+
+/**
+ * Builds a CSV document (header row + one row per position) for the
+ * portfolio P&L breakdown, suitable for a client-side download.
+ */
+export function positionsToCsv(positions: PortfolioCsvPosition[]): string {
+  const rows = positions.map((position) => {
+    const { realized, unrealized } = computePositionPnl(position);
+    const total = realized + unrealized;
+
+    return [
+      csvEscape(position.market_title),
+      csvEscape(position.outcome),
+      csvEscape(position.status),
+      stroopsToXlmString(Number(position.stake) || 0),
+      stroopsToXlmString(Number(position.current_value) || 0),
+      stroopsToXlmString(realized),
+      stroopsToXlmString(unrealized),
+      stroopsToXlmString(total),
+      csvEscape(position.placed_at),
+      csvEscape(position.resolved_at ?? ""),
+    ].join(",");
+  });
+
+  return [PORTFOLIO_CSV_HEADERS.join(","), ...rows].join("\n");
+}
+
+/**
+ * Triggers a client-side download of `content` as a file named `filename`.
+ * No-op outside the browser (e.g. during SSR).
+ */
+export function downloadCsv(filename: string, content: string): void {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return;
+  }
+
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.setAttribute("download", filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+// ── Active prediction cash-out estimate (#1600) ─────────────────────────────
+
+/** Odds as implied probabilities in (0, 1]. */
+export interface LiveOddsPrices {
+  yes: number;
+  no: number;
+}
+
+export type PredictionStance = "Yes" | "No" | "yes" | "no";
+
+export interface CashOutEstimateInput {
+  /** Stake in the same unit shown in the UI (e.g. XLM). */
+  stake: number;
+  /** Side the user took. */
+  stance: PredictionStance;
+  /** Implied price when the position was opened (0–1). */
+  entryOdds: number;
+  /** Latest live prices. */
+  live: LiveOddsPrices | null;
+  /** When true, early exit is unavailable. */
+  marketLocked?: boolean;
+}
+
+export interface CashOutEstimate {
+  /** Mark-to-market value if the user exited now. */
+  estimatedValue: number;
+  /** estimatedValue − stake */
+  unrealizedPnl: number;
+  /** Whether the UI should allow an early-exit action. */
+  canExit: boolean;
+  /** Short reason when canExit is false. */
+  exitBlockedReason: string | null;
+}
+
+function clampProb(p: number): number {
+  if (!Number.isFinite(p) || p <= 0) return 0;
+  if (p > 1) return 1;
+  return p;
+}
+
+/**
+ * Estimate cash-out value from live odds.
+ *
+ * Model: shares = stake / entryOdds; value = shares * currentOddsForSide.
+ * If the market is locked or prices are missing/invalid, exit is disabled.
+ */
+export function estimateCashOut(input: CashOutEstimateInput): CashOutEstimate {
+  const stake = Number(input.stake);
+  const entry = clampProb(Number(input.entryOdds));
+  const locked = Boolean(input.marketLocked);
+
+  if (locked) {
+    return {
+      estimatedValue: Number.isFinite(stake) ? stake : 0,
+      unrealizedPnl: 0,
+      canExit: false,
+      exitBlockedReason: "Market locked — early exit unavailable",
+    };
+  }
+
+  if (!input.live || !Number.isFinite(stake) || stake <= 0 || entry <= 0) {
+    return {
+      estimatedValue: Number.isFinite(stake) ? stake : 0,
+      unrealizedPnl: 0,
+      canExit: false,
+      exitBlockedReason: "Live odds unavailable",
+    };
+  }
+
+  const stance = String(input.stance).toLowerCase();
+  const current = clampProb(stance === "no" ? input.live.no : input.live.yes);
+  if (current <= 0) {
+    return {
+      estimatedValue: 0,
+      unrealizedPnl: -stake,
+      canExit: false,
+      exitBlockedReason: "Live odds unavailable",
+    };
+  }
+
+  const shares = stake / entry;
+  const estimatedValue = shares * current;
+  const unrealizedPnl = estimatedValue - stake;
+
+  return {
+    estimatedValue,
+    unrealizedPnl,
+    canExit: true,
+    exitBlockedReason: null,
+  };
+}
+
+export function formatXlm(amount: number, digits = 2): string {
+  if (!Number.isFinite(amount)) return "—";
+  return `${amount.toFixed(digits)} XLM`;
+}
+
+export function formatPnlXlm(pnl: number, digits = 2): string {
+  if (!Number.isFinite(pnl)) return "—";
+  const sign = pnl > 0 ? "+" : "";
+  return `${sign}${pnl.toFixed(digits)} XLM`;
+}
+
+// ── Dashboard sidebar auto-collapse (#1584) ─────────────────────────────────
+
+/**
+ * Viewport width (px) below which the dashboard sidebar auto-collapses to an
+ * icon-only rail, regardless of the user's persisted preference. Matches
+ * Tailwind's `lg` breakpoint so the CSS and the JS resize logic stay in sync.
+ */
+export const SIDEBAR_AUTO_COLLAPSE_BREAKPOINT_PX = 1024;
+
+/** Pure predicate so the auto-collapse threshold is testable without a DOM. */
+export function shouldAutoCollapseSidebar(viewportWidth: number): boolean {
+  return viewportWidth < SIDEBAR_AUTO_COLLAPSE_BREAKPOINT_PX;
+}
+
+// ── Portfolio P/L History Utilities (#1581) ────────────────────────────────
+
+export interface PnlDataPoint {
+  date: string;
+  timestamp: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+}
+
+/**
+ * Fills gaps in sparse P/L history data by forward-filling values.
+ * If there's no data for a given date, uses the most recent available value.
+ * This ensures a smooth chart even when there are days with no trading activity.
+ */
+export function fillSparseHistory(
+  data: PnlDataPoint[],
+  range: "7d" | "30d" | "all",
+): PnlDataPoint[] {
+  if (data.length === 0) return [];
+  if (data.length === 1) return data;
+
+  // Sort by timestamp to ensure chronological order
+  const sorted = [...data].sort((a, b) => a.timestamp - b.timestamp);
+
+  // Determine the date range
+  const endDate = new Date();
+  const startDate = new Date();
+
+  if (range === "7d") {
+    startDate.setDate(endDate.getDate() - 7);
+  } else if (range === "30d") {
+    startDate.setDate(endDate.getDate() - 30);
+  } else {
+    // "all" - use the earliest data point
+    return sorted; // No need to fill for "all" range
+  }
+
+  const filled: PnlDataPoint[] = [];
+  const dataByDate = new Map(sorted.map((d) => [d.date, d]));
+
+  let lastKnownValues: PnlDataPoint | null = null;
+
+  // Iterate through each day in the range
+  for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split("T")[0];
+    const existing = dataByDate.get(dateStr);
+
+    if (existing) {
+      filled.push(existing);
+      lastKnownValues = existing;
+    } else if (lastKnownValues) {
+      // Forward-fill with last known values
+      filled.push({
+        date: dateStr,
+        timestamp: d.getTime() / 1000,
+        realized_pnl: lastKnownValues.realized_pnl,
+        unrealized_pnl: lastKnownValues.unrealized_pnl,
+        total_pnl: lastKnownValues.total_pnl,
+      });
+    } else {
+      // No prior data yet - use zeros
+      filled.push({
+        date: dateStr,
+        timestamp: d.getTime() / 1000,
+        realized_pnl: 0,
+        unrealized_pnl: 0,
+        total_pnl: 0,
+      });
+    }
+  }
+
+  return filled;
+}
+
+/**
+ * Aggregates P/L data into larger time buckets to reduce chart noise
+ * for longer time ranges. For "all" range with many data points, groups
+ * by week instead of day.
+ */
+export function aggregatePnlByPeriod(
+  data: PnlDataPoint[],
+  periodDays: number,
+): PnlDataPoint[] {
+  if (data.length === 0 || periodDays <= 1) return data;
+
+  const aggregated: PnlDataPoint[] = [];
+  const sorted = [...data].sort((a, b) => a.timestamp - b.timestamp);
+
+  for (let i = 0; i < sorted.length; i += periodDays) {
+    const chunk = sorted.slice(i, i + periodDays);
+    if (chunk.length === 0) continue;
+
+    // Use the last point in the period for values (most recent)
+    const lastPoint = chunk[chunk.length - 1];
+
+    aggregated.push({
+      date: lastPoint.date,
+      timestamp: lastPoint.timestamp,
+      realized_pnl: lastPoint.realized_pnl,
+      unrealized_pnl: lastPoint.unrealized_pnl,
+      total_pnl: lastPoint.total_pnl,
+    });
+  }
+
+  return aggregated;
+}
+
+/**
+ * Formats P/L value for chart display, handling positive/negative values
+ * and converting from stroops to XLM.
+ */
+export function formatPnlForChart(stroops: number): string {
+  const xlm = stroops / 10_000_000;
+  if (xlm === 0) return "0.00 XLM";
+  const sign = xlm > 0 ? "+" : "";
+  return `${sign}${xlm.toFixed(2)} XLM`;
+}
+
+/**
+ * Calculates summary statistics from P/L history data.
+ * Returns totals and percentages for realized, unrealized, and total P/L.
+ */
+export function calculatePnlSummary(data: PnlDataPoint[]): {
+  totalRealized: number;
+  totalUnrealized: number;
+  totalPnl: number;
+  realizedPercentage: number;
+  unrealizedPercentage: number;
+} {
+  if (data.length === 0) {
+    return {
+      totalRealized: 0,
+      totalUnrealized: 0,
+      totalPnl: 0,
+      realizedPercentage: 0,
+      unrealizedPercentage: 0,
+    };
+  }
+
+  // Use the most recent data point for totals
+  const latest = data[data.length - 1];
+
+  const totalRealized = latest.realized_pnl;
+  const totalUnrealized = latest.unrealized_pnl;
+  const totalPnl = latest.total_pnl;
+
+  const realizedPercentage =
+    totalPnl !== 0 ? (Math.abs(totalRealized) / Math.abs(totalPnl)) * 100 : 0;
+  const unrealizedPercentage =
+    totalPnl !== 0 ? (Math.abs(totalUnrealized) / Math.abs(totalPnl)) * 100 : 0;
+
+  return {
+    totalRealized,
+    totalUnrealized,
+    totalPnl,
+    realizedPercentage,
+    unrealizedPercentage,
+  };
+}
+
+// ── Event Leaderboard Tie-Break Utilities (#1549) ───────────────────────────
+
+/**
+ * Minimal shape needed for event leaderboard tie-break sorting.
+ * Follows the documented tie-break order from the smart contract (#1343):
+ * 1. Higher points (descending)
+ * 2. Higher exact_scores (descending)
+ * 3. Earlier earliestPredictionTime (ascending) — ties broken by who predicted first
+ * 4. Smaller address (ascending, final deterministic tiebreaker)
+ */
+export interface LeaderboardEntryForTieBreak {
+  address: string;
+  points: number;
+  exactScores: number;
+  earliestPredictionTime?: number; // Unix timestamp in seconds; undefined means no predictions yet
+}
+
+/**
+ * Comparator function implementing the documented tie-break order.
+ * Returns negative if `a` outranks `b`, positive if `b` outranks `a`, zero if identical.
+ */
+function compareLeaderboardEntries(
+  a: LeaderboardEntryForTieBreak,
+  b: LeaderboardEntryForTieBreak,
+): number {
+  // 1. Higher points wins
+  if (b.points !== a.points) {
+    return b.points - a.points;
+  }
+
+  // 2. Higher exact_scores wins
+  if (b.exactScores !== a.exactScores) {
+    return b.exactScores - a.exactScores;
+  }
+
+  // 3. Earlier prediction time wins (lower timestamp = earlier = better)
+  const aTime = a.earliestPredictionTime ?? Number.MAX_SAFE_INTEGER;
+  const bTime = b.earliestPredictionTime ?? Number.MAX_SAFE_INTEGER;
+  if (aTime !== bTime) {
+    return aTime - bTime;
+  }
+
+  // 4. Smaller address wins (lexicographic comparison for determinism)
+  return a.address.localeCompare(b.address);
+}
+
+/**
+ * Sorts leaderboard entries according to the documented tie-break order.
+ * Returns a new sorted array without mutating the input.
+ */
+export function sortLeaderboardWithTieBreak<T extends LeaderboardEntryForTieBreak>(
+  entries: T[],
+): T[] {
+  return [...entries].sort(compareLeaderboardEntries);
+}
+
+/**
+ * Detects which entries are tied based on points and exact_scores.
+ * Two entries are considered tied if they have identical points AND exact_scores.
+ * Returns a Set of addresses that are involved in ties (2+ participants with same points + exact_scores).
+ */
+export function detectTies<T extends LeaderboardEntryForTieBreak>(
+  sortedEntries: T[],
+): Set<string> {
+  const tiedAddresses = new Set<string>();
+  const groupKey = (e: T) => `${e.points}-${e.exactScores}`;
+  const groups = new Map<string, T[]>();
+
+  // Group entries by points + exact_scores
+  for (const entry of sortedEntries) {
+    const key = groupKey(entry);
+    const group = groups.get(key);
+    if (group) {
+      group.push(entry);
+    } else {
+      groups.set(key, [entry]);
+    }
+  }
+
+  // Mark all addresses in groups with 2+ participants as tied
+  for (const group of groups.values()) {
+    if (group.length >= 2) {
+      for (const entry of group) {
+        tiedAddresses.add(entry.address);
+      }
+    }
+  }
+
+  return tiedAddresses;
+}
+
+// ── Share deep links (#1567) ────────────────────────────────────────────────
+
+export type ShareEntityType = "market" | "event" | "profile";
+
+/** Where a share was initiated from, recorded as `utm_source`. */
+export type ShareChannel = "copy" | "native" | "twitter";
+
+/**
+ * Adds attribution params to a share URL. Relative URLs are resolved against
+ * `origin`. Existing query params and hash are preserved; UTM params already
+ * on the URL are overwritten so repeated shares don't stack attribution.
+ */
+export function buildShareUrl(
+  url: string,
+  { entity, channel, origin }: { entity: ShareEntityType; channel: ShareChannel; origin: string },
+): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url, origin || undefined);
+  } catch {
+    return url;
+  }
+  parsed.searchParams.set("utm_source", channel);
+  parsed.searchParams.set("utm_medium", "share");
+  parsed.searchParams.set("utm_campaign", `${entity}_share`);
+  return parsed.toString();
+}
+
+/** Share copy tailored to the kind of page being shared. */
+export function getShareText(entity: ShareEntityType, title: string): string {
+  switch (entity) {
+    case "market":
+      return `What's your call on "${title}"? Make your prediction on InsightArena.`;
+    case "event":
+      return `Join "${title}" and compete on InsightArena.`;
+    case "profile":
+      return `Check out ${title}'s predictions on InsightArena.`;
+  }
+}
+
+// ── Onboarding tour (#1568) ─────────────────────────────────────────────────
+
+/**
+ * Minimum viewport width (px) for the onboarding tour. Below Tailwind's `md`
+ * breakpoint the sidebar the tour points at is hidden behind the mobile menu.
+ */
+export const ONBOARDING_TOUR_MIN_VIEWPORT_PX = 768;
+
+export function isOnboardingTourSupported(viewportWidth: number): boolean {
+  return viewportWidth >= ONBOARDING_TOUR_MIN_VIEWPORT_PX;
+}
+
+const ONBOARDING_STORAGE_PREFIX = "insightarena.onboarding.v2";
+
+/** Per-user storage key so each wallet keeps its own tour progress. */
+export function getOnboardingStorageKey(userId?: string | null): string {
+  return `${ONBOARDING_STORAGE_PREFIX}:${userId || "anonymous"}`;
+}

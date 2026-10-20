@@ -3,10 +3,14 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  DeleteDateColumn,
   UpdateDateColumn,
   Index,
+  OneToOne,
+  JoinColumn,
 } from 'typeorm';
 import { IsString, IsOptional, IsNumber, Min, IsIn } from 'class-validator';
+import { UserPreferences } from './user-preferences.entity';
 
 @Entity('users')
 export class User {
@@ -59,6 +63,11 @@ export class User {
   @IsIn(['user', 'admin'])
   role: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  @IsOptional()
+  @IsString()
+  email: string | null;
+
   @Column({ default: false })
   is_banned: boolean;
 
@@ -76,9 +85,16 @@ export class User {
   @IsString()
   banned_by: string | null;
 
+  @OneToOne(() => UserPreferences, { cascade: true, onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'preferences_id' })
+  preferences?: UserPreferences;
+
   @CreateDateColumn()
   created_at: Date;
 
   @UpdateDateColumn()
   updated_at: Date;
+
+  @DeleteDateColumn({ name: 'deleted_at' })
+  deleted_at: Date | null;
 }

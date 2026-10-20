@@ -4,16 +4,22 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "contracts/**"
+      - ".github/workflows/contract-ci.yml"
   pull_request:
+    paths:
+      - "contracts/**"
+      - ".github/workflows/contract-ci.yml"
 
 jobs:
-  build-and-test:
-    name: Build, Lint, and Test Contract
+  open-market:
+    name: Build, Lint, and Test open-market
     runs-on: ubuntu-latest
-    
+
     defaults:
       run:
-        working-directory: contract
+        working-directory: contracts/open-market
 
     steps:
       - name: Checkout Code
@@ -28,8 +34,65 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "contract -> target"
+          workspaces: "contracts/open-market -> target"
 
+      - name: Unit Tests
+        run: cargo test
+
+      - name: WASM Build
+        run: cargo build --target wasm32-unknown-unknown --release
+
+  creator-event-manager:
+    name: Build, Lint, and Test creator-event-manager
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: contracts/creator-event-manager
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "contracts/creator-event-manager -> target"
+
+      - name: Unit Tests
+        run: cargo test
+
+      - name: WASM Build
+        run: cargo build --target wasm32-unknown-unknown --release
+
+  staking-vault:
+    name: Build, Lint, and Test staking-vault
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: contracts/staking-vault
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "contracts/staking-vault -> target"
 
       - name: Unit Tests
         run: cargo test

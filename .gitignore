@@ -17,3 +17,14 @@ build/
 /build/
 
 issue.md
+CLAUDE.md
+.playwright-mcp
+.claude/
+
+# project uses pnpm — don't commit npm lockfiles
+package-lock.json
+
+# mimo
+.mimocode/
+mimocode.json
+mimocode.jsonc

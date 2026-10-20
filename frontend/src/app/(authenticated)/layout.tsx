@@ -3,6 +3,8 @@ import { Suspense } from "react";
 
 import { DashboardShell } from "@/component/dashboard-shell";
 import { AuthenticatedPageLoadingSkeleton } from "@/component/loading-route-skeletons";
+import { AuthGuard } from "@/component/AuthGuard";
+import { ProfileGateWrapper } from "@/component/ProfileGateWrapper";
 
 export default function AuthenticatedLayout({
   children,
@@ -10,10 +12,14 @@ export default function AuthenticatedLayout({
   children: ReactNode;
 }) {
   return (
-    <DashboardShell>
-      <Suspense fallback={<AuthenticatedPageLoadingSkeleton />}>
-        {children}
-      </Suspense>
-    </DashboardShell>
+    <AuthGuard>
+      <ProfileGateWrapper>
+        <DashboardShell>
+          <Suspense fallback={<AuthenticatedPageLoadingSkeleton />}>
+            {children}
+          </Suspense>
+        </DashboardShell>
+      </ProfileGateWrapper>
+    </AuthGuard>
   );
 }

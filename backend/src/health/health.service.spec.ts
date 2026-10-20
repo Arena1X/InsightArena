@@ -1,0 +1,389 @@
+import { ServiceUnavailableException } from '@nestjs/common';
+import {
+  DATABASE_PROBE_TIMEOUT_MS,
+  HEALTH_AGGREGATE_TIMEOUT_MS,
+  HealthService,
+} from './health.service';
+
+describe('HealthService - checkDetailed', () => {
+  let dataSource: { query: jest.Mock };
+  let cacheManager: { set: jest.Mock; get: jest.Mock };
+  let service: HealthService;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    dataSource = { query: jest.fn().mockResolvedValue([{ '?column?': 1 }]) };
+    cacheManager = {
+      set: jest.fn().mockResolvedValue(undefined),
+      get: jest.fn().mockResolvedValue('ok'),
+    };
+    fetchMock = jest.fn().mockResolvedValue({ ok: true });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    service = new HealthService(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      dataSource as never,
+      cacheManager as never,
+    );
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('reports healthy when database, soroban, and cache are all up', async () => {
+    const result = await service.checkDetailed(true);
+
+    expect(result.status).toBe('healthy');
+    expect('database' in result && result.database.status).toBe('up');
+    expect('soroban' in result && result.soroban.status).toBe('up');
+    expect('cache' in result && result.cache.status).toBe('up');
+  });
+
+  it('reports down when the database is unreachable', async () => {
+    dataSource.query.mockRejectedValue(new Error('connection refused'));
+
+    const result = await service.checkDetailed(true);
+
+    expect(result.status).toBe('down');
+    expect('database' in result && result.database.status).toBe('down');
+  });
+
+  it('reports degraded when soroban RPC fails but the database is up', async () => {
+    fetchMock.mockRejectedValue(new Error('timeout'));
+
+    const result = await service.checkDetailed(true);
+
+    expect(result.status).toBe('degraded');
+    expect('soroban' in result && result.soroban.status).toBe('down');
+    expect('database' in result && result.database.status).toBe('up');
+  });
+
+  it('reports degraded when soroban RPC responds with a non-ok status', async () => {
+    fetchMock.mockResolvedValue({ ok: false });
+
+    const result = await service.checkDetailed(true);
+
+    expect(result.status).toBe('degraded');
+    expect('soroban' in result && result.soroban.status).toBe('degraded');
+  });
+
+  it('reports degraded when the cache is unreachable but the database is up', async () => {
+    cacheManager.get.mockResolvedValue(undefined);
+
+    const result = await service.checkDetailed(true);
+
+    expect(result.status).toBe('degraded');
+    expect('cache' in result && result.cache.status).toBe('down');
+  });
+
+  it('prioritizes down over degraded when both the database and a non-critical dependency fail', async () => {
+    dataSource.query.mockRejectedValue(new Error('connection refused'));
+    fetchMock.mockRejectedValue(new Error('timeout'));
+
+    const result = await service.checkDetailed(true);
+
+    expect(result.status).toBe('down');
+  });
+
+  it('omits per-dependency detail when verbose is not requested', async () => {
+    const result = await service.checkDetailed();
+
+    expect(result).toEqual({
+      status: 'healthy',
+      uptime_seconds: expect.any(Number),
+    });
+    expect('database' in result).toBe(false);
+    expect('soroban' in result).toBe(false);
+    expect('cache' in result).toBe(false);
+  });
+
+  it('includes per-dependency status and latency when verbose is requested', async () => {
+    const result = await service.checkDetailed(true);
+
+    expect('database' in result && result.database).toEqual({
+      status: 'up',
+      latency_ms: expect.any(Number),
+    });
+    expect('soroban' in result && result.soroban).toEqual({
+      status: 'up',
+      latency_ms: expect.any(Number),
+    });
+    expect('cache' in result && result.cache).toEqual({
+      status: 'up',
+      latency_ms: expect.any(Number),
+    });
+  });
+});
+
+describe('HealthService - checkCache', () => {
+  let cacheManager: { set: jest.Mock; get: jest.Mock };
+  let service: HealthService;
+
+  beforeEach(() => {
+    cacheManager = {
+      set: jest.fn().mockResolvedValue(undefined),
+      get: jest.fn().mockResolvedValue('ok'),
+    };
+
+    service = new HealthService(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      cacheManager as never,
+    );
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+    jest.useRealTimers();
+  });
+
+  it('reports up when the cache ping resolves', async () => {
+    const result = await service.checkCache();
+
+    expect(result.status).toBe('up');
+    expect(result.latency_ms).toEqual(expect.any(Number));
+  });
+
+  it('reports unhealthy with a distinct reason when the cache ping hangs past the timeout', async () => {
+    jest.useFakeTimers();
+    cacheManager.get.mockImplementation(() => new Promise(() => undefined));
+
+    const pending = service.checkCache();
+    jest.advanceTimersByTime(5000);
+    const result = await pending;
+
+    expect(result.status).toBe('down');
+    expect(result.error).toMatch(/timed out/i);
+  });
+
+  it('reports unhealthy immediately with a distinct reason when the connection is refused', async () => {
+    cacheManager.get.mockRejectedValue(new Error('connection refused'));
+
+    const result = await service.checkCache();
+
+    expect(result.status).toBe('down');
+    expect(result.error).toMatch(/connection refused/i);
+    expect(result.error).not.toMatch(/timed out/i);
+  });
+});
+
+describe('HealthService - checkLiveness', () => {
+  let service: HealthService;
+
+  beforeEach(() => {
+    service = new HealthService(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+  });
+
+  it('reports ok without checking any dependency', () => {
+    const result = service.checkLiveness();
+
+    expect(result.status).toBe('ok');
+    expect(result.uptime_seconds).toEqual(expect.any(Number));
+  });
+});
+
+describe('HealthService - checkReadiness', () => {
+  let dataSource: { query: jest.Mock };
+  let cacheManager: { set: jest.Mock; get: jest.Mock };
+  let service: HealthService;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    dataSource = { query: jest.fn().mockResolvedValue([{ '?column?': 1 }]) };
+    cacheManager = {
+      set: jest.fn().mockResolvedValue(undefined),
+      get: jest.fn().mockResolvedValue('ok'),
+    };
+    fetchMock = jest.fn().mockResolvedValue({ ok: true });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    service = new HealthService(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      dataSource as never,
+      cacheManager as never,
+    );
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('resolves with ready status when all dependencies are up', async () => {
+    const result = await service.checkReadiness();
+
+    expect(result.status).toBe('healthy');
+    expect(result.database.status).toBe('up');
+    expect(result.soroban.status).toBe('up');
+    expect(result.cache.status).toBe('up');
+  });
+
+  it('throws ServiceUnavailableException (not-ready) when the database is down', async () => {
+    dataSource.query.mockRejectedValue(new Error('connection refused'));
+
+    await expect(service.checkReadiness()).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+  });
+
+  it('throws ServiceUnavailableException (not-ready) when Soroban RPC is down', async () => {
+    fetchMock.mockRejectedValue(new Error('timeout'));
+
+    await expect(service.checkReadiness()).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+  });
+
+  it('throws ServiceUnavailableException (not-ready) when the cache is unreachable', async () => {
+    cacheManager.get.mockResolvedValue(undefined);
+
+    await expect(service.checkReadiness()).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+  });
+
+  it('includes per-dependency detail in the not-ready exception response', async () => {
+    dataSource.query.mockRejectedValue(new Error('connection refused'));
+
+    try {
+      await service.checkReadiness();
+      fail('expected checkReadiness to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ServiceUnavailableException);
+      const response = (error as ServiceUnavailableException).getResponse();
+      expect(response).toMatchObject({
+        status: 'down',
+        database: { status: 'down' },
+      });
+    }
+  });
+});
+
+describe('HealthService - dependency timeout isolation', () => {
+  const never = () => new Promise(() => undefined);
+
+  let dataSource: { query: jest.Mock };
+  let cacheManager: { set: jest.Mock; get: jest.Mock };
+  let service: HealthService;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    dataSource = { query: jest.fn().mockResolvedValue([{ '?column?': 1 }]) };
+    cacheManager = {
+      set: jest.fn().mockResolvedValue(undefined),
+      get: jest.fn().mockResolvedValue('ok'),
+    };
+    fetchMock = jest.fn().mockResolvedValue({ ok: true });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    service = new HealthService(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      dataSource as never,
+      cacheManager as never,
+    );
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+    jest.useRealTimers();
+  });
+
+  it('reports a slow dependency as unhealthy without hanging the response', async () => {
+    dataSource.query.mockImplementation(never);
+
+    let settled = false;
+    const pending = service.checkDetailed(true).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await jest.advanceTimersByTimeAsync(DATABASE_PROBE_TIMEOUT_MS);
+    expect(settled).toBe(true);
+
+    const result = await pending;
+    expect(result.status).toBe('down');
+    expect('database' in result && result.database.status).toBe('down');
+    expect('database' in result && result.database.error).toMatch(
+      /timed out/i,
+    );
+    // The other dependencies are still reported independently.
+    expect('soroban' in result && result.soroban.status).toBe('up');
+    expect('cache' in result && result.cache.status).toBe('up');
+  });
+
+  it('reports healthy when every dependency responds in time', async () => {
+    const pending = service.checkDetailed(true);
+    await jest.advanceTimersByTimeAsync(0);
+    const result = await pending;
+
+    expect(result.status).toBe('healthy');
+    expect('database' in result && result.database).toEqual({
+      status: 'up',
+      latency_ms: expect.any(Number),
+    });
+    expect('soroban' in result && result.soroban).toEqual({
+      status: 'up',
+      latency_ms: expect.any(Number),
+    });
+    expect('cache' in result && result.cache).toEqual({
+      status: 'up',
+      latency_ms: expect.any(Number),
+    });
+  });
+
+  it('returns within the aggregate timeout even when every dependency hangs', async () => {
+    dataSource.query.mockImplementation(never);
+    fetchMock.mockImplementation(never);
+    cacheManager.set.mockImplementation(never);
+
+    let settled = false;
+    const pending = service.checkDetailed(true).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await jest.advanceTimersByTimeAsync(HEALTH_AGGREGATE_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(settled).toBe(true);
+
+    const result = await pending;
+    expect(result.status).toBe('down');
+    expect('database' in result && result.database.error).toMatch(
+      /timed out/i,
+    );
+    expect('soroban' in result && result.soroban.error).toMatch(/timed out/i);
+    expect('cache' in result && result.cache.error).toMatch(/timed out/i);
+  });
+
+  it('readiness rejects with a not-ready response instead of hanging on a slow dependency', async () => {
+    fetchMock.mockImplementation(never);
+
+    const pending = service.checkReadiness();
+    const assertion = expect(pending).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+    await jest.advanceTimersByTimeAsync(HEALTH_AGGREGATE_TIMEOUT_MS);
+    await assertion;
+  });
+});

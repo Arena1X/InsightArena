@@ -1,6 +1,12 @@
-import { IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+export enum SeasonStatus {
+  Active = 'active',
+  Upcoming = 'upcoming',
+  Finalized = 'finalized',
+}
 
 export class ListSeasonsDto {
   @ApiPropertyOptional({ description: 'Page number', default: 1, minimum: 1 })
@@ -22,6 +28,14 @@ export class ListSeasonsDto {
   @Min(1)
   @Max(50)
   limit?: number = 20;
+
+  @ApiPropertyOptional({
+    description: 'Filter seasons by lifecycle status',
+    enum: SeasonStatus,
+  })
+  @IsOptional()
+  @IsEnum(SeasonStatus)
+  status?: SeasonStatus;
 }
 
 export class SeasonTopWinnerDto {

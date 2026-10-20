@@ -4,17 +4,52 @@ import { Market } from './entities/market.entity';
 import { Comment } from './entities/comment.entity';
 import { MarketTemplate } from './entities/market-template.entity';
 import { UserBookmark } from './entities/user-bookmark.entity';
+import { Prediction } from '../predictions/entities/prediction.entity';
 import { MarketsService } from './markets.service';
 import { MarketsController } from './markets.controller';
+import { MarketSettlementScheduler } from './market-settlement.scheduler';
 import { UsersModule } from '../users/users.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
+import { DisputesModule } from '../disputes/disputes.module';
+import { WebhooksModule } from '../webhooks/webhooks.module';
+import { SearchModule } from '../search/search.module';
+import { CommonModule } from '../common/common.module';
+import { OptionalIdempotencyInterceptor } from '../common/idempotency/optional-idempotency.interceptor';
+import { AuthModule } from '../auth/auth.module';
+import { ApiKeyGuard } from '../common/guards/api-key.guard';
+import { PublicMarketsController } from './public-markets.controller';
+import { CacheServiceModule } from '../cache/cache.module';
+
+import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
+import { SettlementAttempt } from './entities/settlement-attempt.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Market, Comment, MarketTemplate, UserBookmark]),
+    TypeOrmModule.forFeature([
+      Market,
+      Comment,
+      MarketTemplate,
+      UserBookmark,
+      Prediction,
+      MarketPriceSnapshot,
+      SettlementAttempt,
+    ]),
     UsersModule,
+    AnalyticsModule,
+    DisputesModule,
+    WebhooksModule,
+    SearchModule,
+    CommonModule,
+    AuthModule,
+    CacheServiceModule,
   ],
-  controllers: [MarketsController],
-  providers: [MarketsService],
+  controllers: [MarketsController, PublicMarketsController],
+  providers: [
+    MarketsService,
+    MarketSettlementScheduler,
+    OptionalIdempotencyInterceptor,
+    ApiKeyGuard,
+  ],
   exports: [MarketsService, TypeOrmModule],
 })
 export class MarketsModule {}

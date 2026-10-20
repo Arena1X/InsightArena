@@ -1,14 +1,7 @@
-import {
-  IsOptional,
-  IsString,
-  IsNumber,
-  IsBoolean,
-  IsEnum,
-  Min,
-  Max,
-} from 'class-validator';
+import { IsOptional, IsString, IsBoolean, IsEnum } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Transform, Type } from 'class-transformer';
+import { Transform } from 'class-transformer';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 export enum MarketStatus {
   Open = 'open',
@@ -16,25 +9,11 @@ export enum MarketStatus {
   Cancelled = 'cancelled',
 }
 
-export class ListMarketsDto {
-  @ApiPropertyOptional({ description: 'Page number', default: 1 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @Min(1)
-  page?: number = 1;
-
-  @ApiPropertyOptional({
-    description: 'Items per page (max 50)',
-    default: 20,
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @Min(1)
-  @Max(50)
-  limit?: number = 20;
-
+/**
+ * Query DTO for the GET /markets list endpoint.
+ * Extends the shared PaginationQueryDto (page, limit with 1–100 max).
+ */
+export class ListMarketsDto extends PaginationQueryDto {
   @ApiPropertyOptional({ description: 'Filter by category' })
   @IsOptional()
   @IsString()
@@ -65,4 +44,5 @@ export class PaginatedMarketsResponse {
   total: number;
   page: number;
   limit: number;
+  totalPages: number;
 }

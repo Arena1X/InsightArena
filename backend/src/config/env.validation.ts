@@ -1,9 +1,14 @@
 import { plainToInstance } from 'class-transformer';
 import {
+  IsBooleanString,
   IsEnum,
+  IsIn,
   IsNotEmpty,
   IsNumber,
+  IsOptional,
   IsString,
+  IsUrl,
+  Min,
   MinLength,
   validateSync,
 } from 'class-validator';
@@ -13,6 +18,17 @@ enum StellarNetwork {
   MAINNET = 'mainnet',
 }
 
+export enum NodeEnvironment {
+  DEVELOPMENT = 'development',
+  PRODUCTION = 'production',
+  TEST = 'test',
+}
+
+/**
+ * Validated environment configuration.
+ *
+ * Optional variables document their runtime default in comments below.
+ */
 class EnvironmentVariables {
   @IsString()
   @IsNotEmpty()
@@ -41,9 +57,324 @@ class EnvironmentVariables {
   @IsNotEmpty()
   SERVER_SECRET_KEY: string;
 
+  /** Default: development */
+  @IsOptional()
+  @IsEnum(NodeEnvironment)
+  NODE_ENV?: NodeEnvironment = NodeEnvironment.DEVELOPMENT;
+
+  /** Default: 3000 */
+  @IsOptional()
   @IsNumber()
-  PORT: number = 3000;
+  @Min(1)
+  PORT?: number = 3000;
+
+  /** Default: derived from STELLAR_NETWORK when unset */
+  @IsOptional()
+  @IsUrl({ require_tld: false })
+  SOROBAN_RPC_URL?: string;
+
+  /** Default: 10000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  SOROBAN_RPC_TIMEOUT_MS?: number;
+
+  /** Default: 2 */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  SOROBAN_RPC_MAX_RETRIES?: number;
+
+  /** Default: 10000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(100)
+  SOROBAN_FALLBACK_FEE_STROOPS?: number;
+
+  /** Default: 1000000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(100)
+  SOROBAN_MAX_FEE_STROOPS?: number;
+
+  /** Default: true */
+  @IsOptional()
+  @IsBooleanString()
+  RECONCILE_ENABLED?: string;
+
+  /** Default: 60000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  RECONCILE_INTERVAL_MS?: number;
+
+  /** Default: 200 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  RECONCILE_WINDOW?: number;
+
+  /** Default: true — hourly dispute chain ID reconciliation */
+  @IsOptional()
+  @IsBooleanString()
+  DISPUTE_CHAIN_RECONCILE_ENABLED?: string;
+
+  /** Default: 50 — markets read from chain per reconciliation batch */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  DISPUTE_CHAIN_RECONCILE_BATCH_SIZE?: number;
+
+  /** Default: 10 — ledgers to rewind the checkpoint on a detected chain reorg */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  INDEXER_REORG_ROLLBACK_DEPTH?: number;
+
+  /** Default: ./exports */
+  @IsOptional()
+  @IsString()
+  EXPORT_DIR?: string = './exports';
+
+  /** Default: 48 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  EXPORT_TTL_HOURS?: number = 48;
+
+  /** Default: 0 * * * * */
+  @IsOptional()
+  @IsString()
+  LEADERBOARD_SNAPSHOT_CRON?: string = '0 * * * *';
+
+  /** Default: 30 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  LEADERBOARD_SNAPSHOT_RETENTION_DAYS?: number = 30;
+
+  /** Default: 24 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  IDEMPOTENCY_KEY_TTL_HOURS?: number = 24;
+
+  /** Default: 5 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  WEBHOOK_MAX_ATTEMPTS?: number = 5;
+
+  /** Default: 5000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  WEBHOOK_TIMEOUT_MS?: number = 5000;
+
+  /** Default: 50 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  WEBHOOK_BATCH_SIZE?: number = 50;
+
+  /** Default: unset (webhook signatures disabled) */
+  @IsOptional()
+  @IsString()
+  WEBHOOK_HMAC_SECRET?: string;
+
+  /** Default: 300 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  WEBHOOK_REPLAY_WINDOW_SECONDS?: number;
+
+  @IsOptional()
+  @IsNumber()
+  ORACLE_ANOMALY_THRESHOLD?: number;
+
+  @IsOptional()
+  @IsNumber()
+  ORACLE_ANOMALY_MIN_SAMPLES?: number;
+
+  @IsOptional()
+  @IsNumber()
+  ORACLE_ANOMALY_WINDOW?: number;
+
+  /** Absolute deviation from the baseline median beyond which a submission is flagged (#1611). Default: 15 */
+  @IsOptional()
+  @IsNumber()
+  ORACLE_MEDIAN_DEVIATION_THRESHOLD?: number;
+
+  /** Minimum eligible oracle sources before a match may be auto-finalized from consensus (#1611). Default: 2 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  ORACLE_CONSENSUS_MIN_SOURCES?: number;
+
+  @IsOptional()
+  @IsString()
+  ORACLE_ANOMALY_HOLD?: string;
+
+  /** Default: 60000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  RATE_LIMIT_DEFAULT_TTL_MS?: number;
+
+  /** Default: 100 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  RATE_LIMIT_DEFAULT_LIMIT?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  RATE_LIMIT_AUTH_TTL_MS?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  RATE_LIMIT_AUTH_LIMIT?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  RATE_LIMIT_READ_TTL_MS?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  RATE_LIMIT_READ_LIMIT?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  RATE_LIMIT_WRITE_TTL_MS?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  RATE_LIMIT_WRITE_LIMIT?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  DISPUTE_EVIDENCE_MAX_SIZE_BYTES?: number;
+
+  @IsOptional()
+  @IsString()
+  DISPUTE_EVIDENCE_ALLOWED_MIME_TYPES?: string;
+
+  /** Default: 5 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  AUTH_THROTTLE_LIMIT?: number;
+
+  /** Default: 60000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  AUTH_THROTTLE_TTL_MS?: number;
+
+  /** Default: unset */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  PUBLIC_API_THROTTLE_LIMIT?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  PUBLIC_API_THROTTLE_TTL_MS?: number;
+
+  /** Default: unset (SendGrid disabled — emails logged in dev) */
+  @IsOptional()
+  @IsString()
+  SENDGRID_API_KEY?: string;
+
+  /** Default: notifications@insightarena.app */
+  @IsOptional()
+  @IsString()
+  EMAIL_FROM?: string = 'notifications@insightarena.app';
+
+  /** Default: 30 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  EMAIL_RATE_LIMIT_PER_MINUTE?: number;
+
+  /** Default: 3 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  EMAIL_RETRY_MAX_ATTEMPTS?: number;
+
+  /** Default: 1000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  EMAIL_RETRY_BASE_DELAY_MS?: number;
+
+  /** Default: true */
+  @IsOptional()
+  @IsBooleanString()
+  DIGEST_ENABLED?: string;
+
+  /** Default: 1 (Monday) */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  DIGEST_WEEKLY_DAY?: number;
+
+  /** Default: unset */
+  @IsOptional()
+  @IsString()
+  MATCH_RESULTS_FEED_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  MATCH_RESULTS_FEED_CREDENTIAL?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  MATCH_RESULTS_POLL_INTERVAL_MS?: number;
+
+  /** Default: 500 */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  ODDS_THROTTLE_MS?: number;
+
+  /** Default: unset */
+  @IsOptional()
+  @IsString()
+  ORACLE_API_KEY?: string;
+
+  @IsOptional()
+  @IsString()
+  AI_AGENT_ADDRESS?: string;
+
+  @IsOptional()
+  @IsBooleanString()
+  CACHE_WARMING_ENABLED?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  ACTIVE_USERS_IDLE_WINDOW_MS?: number;
+
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  SWAGGER_EXPORT?: string;
 }
+
+const DEFAULT_SOROBAN_RPC: Record<StellarNetwork, string> = {
+  [StellarNetwork.TESTNET]: 'https://soroban-testnet.stellar.org',
+  [StellarNetwork.MAINNET]: 'https://soroban-mainnet.stellar.org',
+};
 
 export function validate(config: Record<string, unknown>) {
   const validatedConfig = plainToInstance(EnvironmentVariables, config, {
@@ -69,5 +400,12 @@ export function validate(config: Record<string, unknown>) {
     );
   }
 
+  if (!validatedConfig.SOROBAN_RPC_URL) {
+    validatedConfig.SOROBAN_RPC_URL =
+      DEFAULT_SOROBAN_RPC[validatedConfig.STELLAR_NETWORK];
+  }
+
   return validatedConfig;
 }
+
+export type ValidatedEnvironment = ReturnType<typeof validate>;

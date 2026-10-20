@@ -66,6 +66,13 @@ export class Season {
   @Column({ type: 'varchar', length: 128, nullable: true })
   soroban_tx_hash: string | null;
 
+  @ApiPropertyOptional({
+    description:
+      'Set when automated rollover has finalized this season; acts as an idempotency marker',
+  })
+  @Column({ type: 'timestamp', nullable: true })
+  rollover_processed_at: Date | null;
+
   @CreateDateColumn()
   created_at: Date;
 

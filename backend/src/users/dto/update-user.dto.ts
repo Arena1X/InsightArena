@@ -1,10 +1,10 @@
 import {
-  IsOptional,
   IsString,
   IsUrl,
   Matches,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -13,7 +13,7 @@ export class UpdateUserDto {
     description: 'Display name (alphanumeric, 3–30 chars)',
     example: 'StellarTrader42',
   })
-  @IsOptional()
+  @ValidateIf((_, value: unknown) => value !== undefined)
   @IsString()
   @MinLength(3, { message: 'username must be at least 3 characters' })
   @MaxLength(30, { message: 'username must be at most 30 characters' })
@@ -26,7 +26,7 @@ export class UpdateUserDto {
     description: 'Profile avatar URL',
     example: 'https://example.com/avatar.png',
   })
-  @IsOptional()
+  @ValidateIf((_, value: unknown) => value !== undefined)
   @IsString()
   @IsUrl({}, { message: 'avatar_url must be a valid URL' })
   avatar_url?: string;

@@ -55,7 +55,30 @@ pnpm run migration:generate -- src/migrations/MigrationName
 
 # Revert last migration
 pnpm run migration:revert
+
+# Verify migration filenames use unique timestamp prefixes
+pnpm run migration:check-timestamps
 ```
+
+#### Migration naming convention
+
+TypeORM migration files live in `src/migrations/` and must follow:
+
+```
+{13-digit-timestamp}-{PascalCaseDescription}.ts
+```
+
+Examples:
+
+- `1774313247489-CreateUserEntity.ts`
+- `1775000001000-AddPredictionNoteColumn.ts`
+
+Rules:
+
+- Every migration must have a **unique** 13-digit timestamp prefix.
+- Prefer `pnpm run migration:generate` so TypeORM assigns a fresh timestamp.
+- If you add a migration manually, pick a timestamp that does not collide with an existing file.
+- Run `pnpm run migration:check-timestamps` locally before opening a PR. CI runs the same check on changed migration files.
 
 ### 4. Run the Project
 

@@ -1,4 +1,6 @@
+import { useMemo } from "react";
 import UpcomingRewardCard, { UpcomingRewardCardProps } from "./UpcomingRewardCard";
+import { calculateCountdown } from "@/hooks/useCountdown";
 
 function TrophyIcon() {
   return (
@@ -24,46 +26,120 @@ function ChartIcon() {
   );
 }
 
+function daysFromNow(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString();
+}
+
 const DEFAULT_UPCOMING: UpcomingRewardCardProps[] = [
   {
     category: "Weekly Competition",
     amount: "$350",
-    settlementLabel: "Settles on Dec 22, 2024",
+    settlementDate: daysFromNow(3),
     icon: <TrophyIcon />,
   },
   {
     category: "Quarterly Bonus Pool",
     amount: "$1,200",
-    settlementLabel: "Settles on Dec 31, 2024",
+    settlementDate: daysFromNow(12),
     icon: <SparkleIcon />,
   },
   {
     category: "Market Prediction",
     amount: "$180",
-    settlementLabel: "Settles on Dec 25, 2024",
+    settlementDate: daysFromNow(6),
     icon: <ChartIcon />,
   },
 ];
 
 interface UpcomingRewardsProps {
   items?: UpcomingRewardCardProps[];
+  /** Injectable for tests; defaults to the real clock. */
+  now?: number;
 }
 
-export default function UpcomingRewards({ items = DEFAULT_UPCOMING }: UpcomingRewardsProps) {
+/** The calendar day (in the viewer's local time zone) `date` falls on, as a stable grouping key. */
+function dayKey(date: string | Date | number): string {
+  const parsed =
+    typeof date === "string" || typeof date === "number" ? new Date(date) : date;
+  return parsed.toDateString();
+}
+
+export default function UpcomingRewards({ items = DEFAULT_UPCOMING, now }: UpcomingRewardsProps) {
+  const { processing, byDay } = useMemo(() => {
+    const pending: UpcomingRewardCardProps[] = [];
+    const expired: UpcomingRewardCardProps[] = [];
+
+    for (const item of items) {
+      const isExpired = calculateCountdown(item.settlementDate, now).isExpired;
+      (isExpired ? expired : pending).push(item);
+    }
+
+    const groups = new Map<string, UpcomingRewardCardProps[]>();
+    for (const item of pending) {
+      const key = dayKey(item.settlementDate);
+      const group = groups.get(key);
+      if (group) {
+        group.push(item);
+      } else {
+        groups.set(key, [item]);
+      }
+    }
+
+    const sortedDays = Array.from(groups.entries()).sort(
+      ([, a], [, b]) =>
+        new Date(a[0].settlementDate).getTime() - new Date(b[0].settlementDate).getTime(),
+    );
+
+    return { processing: expired, byDay: sortedDays };
+  }, [items, now]);
+
   return (
     <div>
       <h2 className="text-white font-semibold text-lg mb-4">Upcoming Rewards</h2>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {items.map((item, i) => (
-          <UpcomingRewardCard
-            key={i}
-            category={item.category}
-            amount={item.amount}
-            settlementLabel={item.settlementLabel}
-            icon={item.icon}
-          />
-        ))}
-      </div>
+
+      {byDay.length === 0 && processing.length === 0 && (
+        <p className="text-gray-500 text-sm">No upcoming rewards.</p>
+      )}
+
+      {byDay.map(([day, dayItems]) => (
+        <div key={day} className="mb-6">
+          <p className="text-gray-400 text-xs font-medium uppercase tracking-wider mb-3">
+            {day}
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {dayItems.map((item, i) => (
+              <UpcomingRewardCard
+                key={i}
+                category={item.category}
+                amount={item.amount}
+                settlementDate={item.settlementDate}
+                icon={item.icon}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {processing.length > 0 && (
+        <div>
+          <p className="text-amber-400 text-xs font-medium uppercase tracking-wider mb-3">
+            Processing
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {processing.map((item, i) => (
+              <UpcomingRewardCard
+                key={i}
+                category={item.category}
+                amount={item.amount}
+                settlementDate={item.settlementDate}
+                icon={item.icon}
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

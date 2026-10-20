@@ -3,50 +3,54 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
-  ManyToOne,
-  JoinColumn,
   Index,
   DeleteDateColumn,
 } from 'typeorm';
-import { User } from '../../users/entities/user.entity';
 
 export enum NotificationType {
-  CompetitionStarted = 'competition_started',
-  CompetitionEnded = 'competition_ended',
-  LeaderboardUpdated = 'leaderboard_updated',
-  MarketResolved = 'market_resolved',
-  System = 'system',
+  EventCreated = 'event_created',
+  MatchAdded = 'match_added',
+  PredictionSubmitted = 'prediction_submitted',
+  MatchResolved = 'match_resolved',
+  WinnerVerified = 'winner_verified',
+  EventCancelled = 'event_cancelled',
+  DisputeSlaApproaching = 'dispute_sla_approaching',
+  DisputeSlaBreached = 'dispute_sla_breached',
+  AchievementUnlocked = 'achievement_unlocked',
+  OracleResultDivergence = 'oracle_result_divergence',
+  DisputeChainDriftDetected = 'dispute_chain_drift_detected',
+  DisputeQuorumValidationFailed = 'dispute_quorum_validation_failed',
 }
 
-@Index(['user_id', 'is_read'])
 @Entity('notifications')
+@Index(['user_address'])
+@Index(['type'])
+@Index(['read'])
+@Index(['created_at'])
+@Index(['user_address', 'read', 'created_at'])
 export class Notification {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
+  @PrimaryGeneratedColumn({ type: 'bigint' })
+  id: number;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE', nullable: false })
-  @JoinColumn({ name: 'user_id' })
-  user: User;
+  @Column({ type: 'varchar' })
+  user_address: string;
 
-  @Column({ name: 'user_id' })
-  user_id: string;
+  @Column({ type: 'varchar' })
+  type: string;
 
-  @Column({ type: 'enum', enum: NotificationType })
-  type: NotificationType;
-
-  @Column()
+  @Column({ type: 'varchar' })
   title: string;
 
   @Column({ type: 'text' })
   message: string;
 
-  @Column({ default: false })
-  is_read: boolean;
-
   @Column({ type: 'jsonb', nullable: true })
-  metadata: Record<string, unknown>;
+  data: Record<string, unknown> | null;
 
-  @CreateDateColumn()
+  @Column({ type: 'boolean', default: false })
+  read: boolean;
+
+  @CreateDateColumn({ type: 'timestamp' })
   created_at: Date;
 
   @DeleteDateColumn()

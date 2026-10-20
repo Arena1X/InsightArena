@@ -2,13 +2,22 @@
 
 import RewardsWalletCard from "@/component/RewardsWalletCard";
 import NotificationsCard from "@/component/NotificationsCard";
+import CoachCard from "@/component/CoachCard";
+import { useWallet } from "@/context/WalletContext";
+import { useTheme } from "@/context/ThemeContext";
+import { useConfirm } from "@/hooks/useConfirm";
+import { useToast } from "@/hooks/useToast";
+import { useOnboardingTour, type UseOnboardingTourResult } from "@/hooks/useOnboardingTour";
+import { shouldAutoCollapseSidebar } from "@/lib/utils";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   BarChart3,
   Gift,
   LayoutDashboard,
@@ -20,11 +29,17 @@ import {
   Wallet,
   X,
   Home,
+  Compass,
 } from "lucide-react";
+
+function truncateAddress(address: string): string {
+  if (address.length < 10) return address;
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
 
 const navigation = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { label: "Markets", href: "/markets", icon: BarChart3 },
+  { label: "My Markets", href: "/my-markets", icon: BarChart3 },
   { label: "My Predictions", href: "/my-predictions", icon: Sword },
   { label: "Competitions", href: "/competitions", icon: Trophy },
   { label: "Leaderboards", href: "/leaderboards", icon: BarChart3 },
@@ -34,39 +49,74 @@ const navigation = [
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 
-function Brand() {
+function Brand({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <Link
       href="/dashboard"
-      className="flex items-center gap-3 rounded-2xl px-6 py-6 text-white transition hover:bg-white/5"
+      className={`flex items-center gap-3 rounded-2xl py-6 text-white transition hover:bg-white/5 ${
+        collapsed ? "justify-center px-3" : "px-6"
+      }`}
     >
-      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#43c3be] text-xs font-bold text-[#111827] shadow-[0_0_0_6px_rgba(67,195,190,0.12)]">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-orange-500 text-xs font-bold text-white shadow-[0_0_0_6px_rgba(249,115,22,0.15)]">
         IA
       </span>
-      <div className="min-w-0">
-        <p className="truncate text-base font-semibold tracking-tight">
-          InsightArena
-        </p>
-        <p className="text-xs text-[#7f8aa3]">Prediction Markets</p>
-      </div>
+      {!collapsed && (
+        <div className="min-w-0">
+          <p className="truncate text-base font-semibold tracking-tight">
+            InsightArena
+          </p>
+          <p className="text-xs text-gray-400">Prediction Markets</p>
+        </div>
+      )}
     </Link>
   );
 }
 
 type SidebarContentProps = {
   onNavigate?: () => void;
+  collapsed?: boolean;
 };
 
-function SidebarContent({ onNavigate }: SidebarContentProps) {
+function SidebarContent({ onNavigate, collapsed = false }: SidebarContentProps) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { address, logout } = useWallet();
+  const confirm = useConfirm();
+  const toast = useToast();
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyAddress = async () => {
+    if (!address) return;
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy address:", err);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    const confirmed = await confirm({
+      title: "Disconnect wallet?",
+      description: "You'll need to reconnect your wallet to trade or view your account.",
+      confirmLabel: "Disconnect",
+      variant: "destructive",
+    });
+    if (!confirmed) return;
+    logout();
+    toast.success("Wallet disconnected");
+    router.push("/");
+  };
 
   return (
-    <div className="flex h-full flex-col bg-[#171d2d] text-white">
-      <div className="border-b border-orange-500/30">
-        <Brand />
+    <div className="flex h-full flex-col bg-transparent text-white">
+      <div className="border-b border-white/10">
+        <Brand collapsed={collapsed} />
       </div>
 
       <nav
+        id="dashboard-sidebar-nav"
         className="flex-1 space-y-1 overflow-y-auto px-3 py-5"
         aria-label="Dashboard navigation"
       >
@@ -79,39 +129,130 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
               href={href}
               onClick={onNavigate}
               aria-current={isActive ? "page" : undefined}
-              className={`group relative flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition ${
+              title={collapsed ? label : undefined}
+              className={`group relative flex items-center gap-3 rounded-xl py-3 text-sm font-medium transition ${
+                collapsed ? "justify-center px-2" : "px-4"
+              } ${
                 isActive
-                  ? "bg-[#232b3f] text-white shadow-[inset_3px_0_0_0_#39bdb8]"
-                  : "text-[#98a2b8] hover:bg-white/5 hover:text-white"
+                  ? "bg-white/10 text-white shadow-[inset_3px_0_0_0_#f97316]"
+                  : "text-gray-400 hover:bg-white/5 hover:text-white"
               }`}
             >
               <Icon
-                className={`h-4 w-4 ${
+                className={`h-4 w-4 shrink-0 ${
                   isActive
-                    ? "text-[#4fd1c5]"
-                    : "text-[#8f98ae] group-hover:text-white"
+                    ? "text-orange-400"
+                    : "text-gray-500 group-hover:text-white"
                 }`}
               />
-              <span>{label}</span>
+              {!collapsed && <span>{label}</span>}
             </Link>
           );
         })}
       </nav>
 
-      <div className="border-t border-orange-500/30 px-4 py-4">
-        <div className="rounded-2xl border border-orange-500/30 bg-[#111726] px-4 py-4">
-          <p className="text-xs uppercase tracking-[0.24em] text-[#6f7891]">
-            Connected
-          </p>
-          <p className="mt-2 truncate text-sm font-semibold text-white">
-            0x71A4...9cF2
-          </p>
+      <div className="border-t border-white/10 px-4 py-4">
+        {collapsed ? (
+          <div className="flex flex-col items-center gap-3">
+            <span
+              className={`h-2.5 w-2.5 rounded-full ${address ? "bg-emerald-400" : "bg-gray-500"}`}
+              title={address ? truncateAddress(address) : "Not connected"}
+            />
+            {address && (
+              <button
+                type="button"
+                onClick={handleDisconnect}
+                aria-label="Disconnect wallet"
+                title="Disconnect wallet"
+                className="text-xs font-medium text-orange-400 transition hover:text-orange-300"
+              >
+                ⏻
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4">
+            <p className="text-xs uppercase tracking-[0.24em] text-gray-400">
+              Connected
+            </p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <p
+                className="truncate text-sm font-semibold text-white cursor-help"
+                title={address ?? ""}
+              >
+                {address ? truncateAddress(address) : "Not connected"}
+              </p>
+              {address && (
+                <button
+                  type="button"
+                  onClick={handleCopyAddress}
+                  aria-label="Copy wallet address"
+                  className="text-xs text-orange-400 hover:text-orange-300 transition"
+                  title={copied ? "Copied!" : "Copy address"}
+                >
+                  {copied ? "✓" : "📋"}
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={handleDisconnect}
+              aria-label="Disconnect wallet"
+              className="mt-3 text-sm font-medium text-orange-400 transition hover:text-orange-300"
+            >
+              Disconnect
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function OnboardingTourCard({ tour }: { tour: UseOnboardingTourResult }) {
+  const step = tour.currentStep;
+  if (!step) return null;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="onboarding-tour-title"
+      aria-describedby="onboarding-tour-description"
+      className="fixed bottom-6 right-6 z-40 w-[340px] rounded-2xl border border-orange-500/30 bg-gray-900/95 p-5 text-white shadow-[0_20px_60px_rgba(0,0,0,0.5)] backdrop-blur"
+    >
+      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-orange-400">
+        Step {tour.currentStepIndex + 1} of {tour.totalSteps}
+      </p>
+      <h2 id="onboarding-tour-title" className="mt-2 text-lg font-semibold">
+        {step.title}
+      </h2>
+      <p id="onboarding-tour-description" className="mt-2 text-sm leading-6 text-gray-300">
+        {step.description}
+      </p>
+      <div className="mt-5 flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={tour.skip}
+          className="text-sm font-medium text-gray-400 transition hover:text-white"
+        >
+          Skip tour
+        </button>
+        <div className="flex gap-2">
           <button
             type="button"
-            aria-label="Disconnect wallet"
-            className="mt-3 text-sm font-medium text-[#4fd1c5] transition hover:text-[#72ddd3]"
+            onClick={tour.prev}
+            disabled={!tour.canGoBack}
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-sm font-medium text-gray-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Disconnect
+            Back
+          </button>
+          <button
+            type="button"
+            onClick={tour.next}
+            className="rounded-lg bg-orange-500 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-orange-400"
+          >
+            {tour.isLastStep ? "Finish" : "Next"}
           </button>
         </div>
       </div>
@@ -119,10 +260,19 @@ function SidebarContent({ onNavigate }: SidebarContentProps) {
   );
 }
 
-function TopNavigation() {
+type TopNavigationProps = {
+  onRestartTour?: () => void;
+};
+
+function TopNavigation({ onRestartTour }: TopNavigationProps) {
+  const { address, user } = useWallet();
+
+  const displayName = user?.username ?? "Alex";
+
   return (
-    <section className="border-b border-orange-500/30 px-6">
+    <section className="border-b border-white/10 px-6">
       <div className="flex items-center justify-between gap-6 py-4">
+        {/* Home button */}
         <Link
           href="/"
           className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-transparent p-3 text-white transition hover:bg-white/5 hover:border-orange-500/50 xl:self-start"
@@ -130,24 +280,38 @@ function TopNavigation() {
         >
           <Home className="h-5 w-5" />
         </Link>
-        <div className="text-center">
-          <h1 className="text-3xl font-semibold tracking-tight sm:text-[2.45rem]">
-            Welcome back, Ayomide
-          </h1>
-          <p className="mt-2 max-w-2xl text-sm text-[#97a0b5] sm:text-base"></p>
-        </div>
-        <div className="flex flex-col gap-3 sm:flex-row">
+
+        {/* Greeting — single line */}
+        <h1 className="text-xl font-semibold tracking-tight text-white sm:text-2xl">
+          Welcome back,{" "}
+          <span className="text-orange-400 font-bold">{displayName}</span>
+        </h1>
+
+        {/* Actions */}
+        <div className="flex items-center gap-3">
+          {onRestartTour && (
+            <button
+              type="button"
+              onClick={onRestartTour}
+              aria-label="Restart onboarding tour"
+              title="Restart tour"
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-transparent px-3 py-2.5 text-sm font-medium text-gray-400 transition hover:bg-white/5 hover:text-white"
+            >
+              <Compass className="h-4 w-4" />
+              <span className="hidden lg:inline">Restart tour</span>
+            </button>
+          )}
           <button
             type="button"
             aria-label="Make a prediction"
-            className="rounded-xl bg-orange-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-orange-600"
+            className="rounded-xl bg-orange-500/90 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-orange-500"
           >
             Make Prediction
           </button>
           <button
             type="button"
             aria-label="Create a competition"
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-transparent px-6 py-3 text-sm font-medium text-[#d6daea] transition hover:bg-white/5"
+            className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-transparent px-5 py-2.5 text-sm font-medium text-gray-400 transition hover:bg-white/5 hover:text-white"
           >
             Create Competition
             <ChevronDown className="h-4 w-4" />
@@ -164,23 +328,118 @@ type DashboardShellProps = {
 
 export function DashboardShell({ children }: DashboardShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [autoCollapsed, setAutoCollapsed] = useState(false);
   const pathname = usePathname();
+  const { sidebarCollapsed, toggleSidebarCollapsed } = useTheme();
+  const collapseButtonRef = useRef<HTMLButtonElement>(null);
+  const { address } = useWallet();
+  const tour = useOnboardingTour(address);
 
   useEffect(() => {
     setMobileOpen(false);
   }, [pathname]);
 
+  // Auto-collapse the sidebar to an icon-only rail below the medium-viewport
+  // breakpoint, independent of (and without overwriting) the user's
+  // persisted manual preference.
+  useEffect(() => {
+    function evaluate() {
+      setAutoCollapsed(shouldAutoCollapseSidebar(window.innerWidth));
+    }
+    evaluate();
+    window.addEventListener("resize", evaluate);
+    return () => window.removeEventListener("resize", evaluate);
+  }, []);
+
+  const collapsed = autoCollapsed || sidebarCollapsed;
+
+  const handleToggleCollapsed = useCallback(() => {
+    toggleSidebarCollapsed();
+    // Keep focus on the toggle control itself so keyboard users don't lose
+    // their place when the sidebar's width/labels shift after the toggle.
+    requestAnimationFrame(() => collapseButtonRef.current?.focus());
+  }, [toggleSidebarCollapsed]);
+
   return (
-    <div className="dark min-h-screen bg-[#141824] text-white">
-      <div className="flex min-h-screen">
-        <aside className="hidden w-[280px] shrink-0 border-r border-orange-500/30 lg:fixed lg:inset-y-0 lg:flex">
-          <div className="w-full">
-            <SidebarContent />
+    <div className="dark relative min-h-screen overflow-x-hidden bg-gradient-to-br from-gray-900 via-black to-gray-900 text-white">
+      {/* Landing-page network lines background */}
+      <div className="pointer-events-none absolute inset-0 z-0 h-full w-full">
+        <svg
+          className="h-full w-full opacity-15"
+          viewBox="0 0 1000 1000"
+          preserveAspectRatio="xMidYMid slice"
+        >
+          <defs>
+            <linearGradient
+              id="dashLineGradient"
+              x1="0%"
+              y1="0%"
+              x2="100%"
+              y2="100%"
+            >
+              <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.2" />
+            </linearGradient>
+          </defs>
+          <path
+            d="M100,200 Q300,100 500,200 T900,200"
+            stroke="url(#dashLineGradient)"
+            strokeWidth="2"
+            fill="none"
+          />
+          <path
+            d="M200,400 Q400,300 600,400 T1000,400"
+            stroke="url(#dashLineGradient)"
+            strokeWidth="2"
+            fill="none"
+          />
+          <path
+            d="M50,600 Q250,500 450,600 T850,600"
+            stroke="url(#dashLineGradient)"
+            strokeWidth="2"
+            fill="none"
+          />
+          <path
+            d="M150,800 Q350,700 550,800 T950,800"
+            stroke="url(#dashLineGradient)"
+            strokeWidth="2"
+            fill="none"
+          />
+        </svg>
+      </div>
+
+      <div className="relative z-10 flex min-h-screen">
+        <aside
+          className={`hidden shrink-0 border-r border-white/10 transition-[width] duration-300 ease-in-out md:fixed md:inset-y-0 md:flex ${
+            collapsed ? "md:w-20" : "md:w-[280px]"
+          }`}
+        >
+          <div className="relative w-full">
+            <SidebarContent collapsed={collapsed} />
+            <button
+              ref={collapseButtonRef}
+              type="button"
+              aria-expanded={!collapsed}
+              aria-controls="dashboard-sidebar-nav"
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              onClick={handleToggleCollapsed}
+              className="absolute -right-3 top-8 z-10 hidden h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-gray-900 text-gray-300 shadow transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 lg:inline-flex"
+            >
+              {collapsed ? (
+                <ChevronRight className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronLeft className="h-3.5 w-3.5" />
+              )}
+            </button>
           </div>
         </aside>
 
-        <div className="flex min-h-screen w-full flex-col lg:pl-[280px]">
-          <header className="sticky top-0 z-30 flex items-center justify-between border-b border-orange-500/30 bg-[#141824]/90 px-4 py-4 backdrop-blur lg:hidden">
+        <div
+          className={`flex min-h-screen w-full flex-col transition-[padding] duration-300 ease-in-out ${
+            collapsed ? "md:pl-20" : "md:pl-[280px]"
+          }`}
+        >
+          <header className="sticky top-0 z-30 flex items-center justify-between border-b border-white/10 bg-gray-900/80 px-4 py-4 backdrop-blur md:hidden">
             <Brand />
             <button
               type="button"
@@ -192,8 +451,10 @@ export function DashboardShell({ children }: DashboardShellProps) {
             </button>
           </header>
 
-          <div className="sticky top-[72px] z-20 bg-[#141824]/95 backdrop-blur lg:top-0">
-            <TopNavigation />
+          <div className="sticky top-[72px] z-20 bg-gray-900/80 backdrop-blur md:top-0">
+            <TopNavigation
+              onRestartTour={tour.isSupported && !tour.isActive ? tour.restart : undefined}
+            />
           </div>
 
           <div className="flex gap-6 p-6">
@@ -204,6 +465,7 @@ export function DashboardShell({ children }: DashboardShellProps) {
             {pathname === "/dashboard" && (
               <aside className="xl:block w-[300px] space-y-6">
                 <RewardsWalletCard />
+                <CoachCard />
                 <NotificationsCard />
               </aside>
             )}
@@ -211,8 +473,10 @@ export function DashboardShell({ children }: DashboardShellProps) {
         </div>
       </div>
 
+      <OnboardingTourCard tour={tour} />
+
       <div
-        className={`fixed inset-0 z-50 lg:hidden transition-[visibility] duration-300 ${
+        className={`fixed inset-0 z-50 md:hidden transition-[visibility] duration-300 ${
           mobileOpen ? "visible" : "invisible"
         }`}
         aria-hidden={!mobileOpen}
@@ -220,7 +484,7 @@ export function DashboardShell({ children }: DashboardShellProps) {
         <button
           type="button"
           aria-label="Close navigation overlay"
-          className={`absolute inset-0 bg-[#020617]/70 backdrop-blur-sm transition-opacity duration-300 ease-out ${
+          className={`absolute inset-0 bg-black/70 backdrop-blur-sm transition-opacity duration-300 ease-out ${
             mobileOpen ? "opacity-100" : "pointer-events-none opacity-0"
           }`}
           onClick={() => setMobileOpen(false)}

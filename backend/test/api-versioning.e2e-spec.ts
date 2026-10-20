@@ -1,58 +1,92 @@
+import {
+  Controller,
+  Get,
+  INestApplication,
+  VersioningType,
+} from '@nestjs/common';
+import { Test, TestingModule } from '@nestjs/testing';
+import { Reflector } from '@nestjs/core';
+import request from 'supertest';
+import { Deprecated } from '../src/common/decorators/deprecated.decorator';
+import { DeprecationInterceptor } from '../src/common/interceptors/deprecation.interceptor';
+
 /**
- * API Versioning Configuration Test
- *
- * This file documents the API versioning configuration:
- * - VersioningType.URI is enabled in src/main.ts
- * - Global prefix is set to 'api'
- * - Default version is set to '1'
- * - All endpoints are automatically prefixed with /api/v1/
- *
- * Example endpoints:
- * - GET /api/v1/markets
- * - GET /api/v1/seasons
- * - GET /api/v1/health
- * - POST /api/v1/seasons/:id/finalize
- *
- * Old paths without versioning (e.g., /markets) will return 404.
+ * Throwaway controller exercising both a current and a deprecated route,
+ * versioned the same way production controllers are (URI versioning,
+ * default version '1' — see src/main.ts).
  */
+@Controller({ path: 'widgets', version: '1' })
+class WidgetsController {
+  @Get('current')
+  current() {
+    return { ok: true };
+  }
 
-describe('API Versioning Configuration', () => {
-  it('Versioning is enabled with VersioningType.URI', () => {
-    // Configuration is verified by successful build and compilation
-    // See src/main.ts for the implementation:
-    // app.enableVersioning({
-    //   type: VersioningType.URI,
-    //   defaultVersion: '1',
-    // });
-    expect(true).toBe(true);
+  @Get('legacy')
+  @Deprecated({
+    sunset: 'Wed, 31 Dec 2026 23:59:59 GMT',
+    link: '/docs/migration',
+  })
+  legacy() {
+    return { ok: true };
+  }
+}
+
+describe('API Versioning & Deprecation (e2e)', () => {
+  let app: INestApplication;
+
+  beforeEach(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      controllers: [WidgetsController],
+    }).compile();
+
+    app = moduleFixture.createNestApplication();
+    app.enableVersioning({
+      type: VersioningType.URI,
+      defaultVersion: '1',
+    });
+    app.setGlobalPrefix('api');
+    app.useGlobalInterceptors(new DeprecationInterceptor(app.get(Reflector)));
+    await app.init();
   });
 
-  it('Global API prefix is set to /api', () => {
-    // Configuration is verified by successful build and compilation
-    // See src/main.ts for the implementation:
-    // app.setGlobalPrefix('api');
-    expect(true).toBe(true);
+  afterEach(async () => {
+    await app.close();
   });
 
-  it('All endpoints should be prefixed with /api/v1/', () => {
-    // With VersioningType.URI and defaultVersion '1', all endpoints
-    // that don't explicitly specify a version will use v1.
-    // This means:
-    // - @Controller('markets') becomes GET /api/v1/markets
-    // - @Controller('seasons') becomes GET /api/v1/seasons
-    // - etc.
-    expect(true).toBe(true);
+  it('serves versioned routes under /api/v1/', () => {
+    return request(app.getHttpServer())
+      .get('/api/v1/widgets/current')
+      .expect(200);
   });
 
-  it('Swagger UI is available at /api/v1/docs', () => {
-    // See src/main.ts:
-    // SwaggerModule.setup('api/v1/docs', app, document);
-    expect(true).toBe(true);
+  it('returns 404 for unversioned/unprefixed paths', () => {
+    return request(app.getHttpServer()).get('/widgets/current').expect(404);
   });
 
-  it('Old paths without version prefix return 404', () => {
-    // Requests to /markets (without /api/v1 prefix) will return 404
-    // This prevents accidental access to unversioned endpoints
-    expect(true).toBe(true);
+  it('does not include Deprecation/Sunset headers on a current route', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/widgets/current')
+      .expect(200);
+
+    expect(res.headers.deprecation).toBeUndefined();
+    expect(res.headers.sunset).toBeUndefined();
+  });
+
+  it('includes Deprecation and Sunset headers on a route marked @Deprecated', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/widgets/legacy')
+      .expect(200);
+
+    expect(res.headers.deprecation).toBe('true');
+    expect(res.headers.sunset).toBe('Wed, 31 Dec 2026 23:59:59 GMT');
+  });
+
+  it('includes a Link header pointing to migration docs when configured', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/widgets/legacy')
+      .expect(200);
+
+    expect(res.headers.link).toBe('</docs/migration>; rel="deprecation"');
   });
 });

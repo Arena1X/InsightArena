@@ -6,30 +6,42 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
+  UseInterceptors,
+  ValidationPipe,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiHeader,
   ApiOperation,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { Throttle } from '@nestjs/throttler';
+import { ThrottleTier } from '../common/decorators/throttle-tier.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { DateRangeQueryDto } from '../common/dto/date-range-query.dto';
 import { Public } from '../common/decorators/public.decorator';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from '../common/enums/role.enum';
 import { BanGuard } from '../common/guards/ban.guard';
+import { OptionalIdempotencyInterceptor } from '../common/idempotency/optional-idempotency.interceptor';
+import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { User } from '../users/entities/user.entity';
 import { BulkCreateMarketsDto } from './dto/bulk-create-markets.dto';
+import { ChallengeResolutionDto } from './dto/challenge-resolution.dto';
 import { CreateCommentDto } from './dto/create-comment.dto';
+import { CreateDisputeDto } from '../disputes/dto/create-dispute.dto';
 import { CreateMarketDto } from './dto/create-market.dto';
+import { ListCommentsDto } from './dto/list-comments.dto';
+import { ProposeResolutionDto } from './dto/propose-resolution.dto';
+import { ResolveChallengeDto } from './dto/resolve-challenge.dto';
+import { UpdateMarketDto } from './dto/update-market.dto';
 import {
   ListMarketsDto,
   PaginatedMarketsResponse,
 } from './dto/list-markets.dto';
+import { PriceHistoryQueryDto } from './dto/price-history-query.dto';
 import { PredictionStatsDto } from './dto/prediction-stats.dto';
 import {
   PaginatedTrendingMarketsResponse,
@@ -39,11 +51,20 @@ import { Comment } from './entities/comment.entity';
 import { MarketTemplate } from './entities/market-template.entity';
 import { Market } from './entities/market.entity';
 import { MarketsService } from './markets.service';
+import { AnalyticsService } from '../analytics/analytics.service';
+import { MarketAnalyticsDto } from '../analytics/dto/market-analytics.dto';
+import { DisputesService } from '../disputes/disputes.service';
+import { buildPaginationMeta } from '../common/dto/pagination-query.dto';
 
 @ApiTags('Markets')
 @Controller('markets')
 export class MarketsController {
-  constructor(private readonly marketsService: MarketsService) {}
+  constructor(
+    private readonly marketsService: MarketsService,
+    private readonly analyticsService: AnalyticsService,
+    private readonly disputesService: DisputesService,
+    private readonly idempotencyService: IdempotencyService,
+  ) {}
 
   @Get('templates')
   @Public()
@@ -85,13 +106,59 @@ export class MarketsController {
     return this.marketsService.getPredictionStats(id);
   }
 
+  @Get(':id/price-history')
+  @Public()
+  @ApiOperation({ summary: 'Get price history time-series for a market' })
+  @ApiResponse({
+    status: 200,
+    description: 'Bucketed price history points over time',
+  })
+  async getPriceHistory(
+    @Param('id') id: string,
+    @Query() query: PriceHistoryQueryDto,
+  ): Promise<any[]> {
+    return this.marketsService.getPriceHistory(id, query);
+  }
+
+  @Get(':id/analytics')
+  @Public()
+  @ApiOperation({ summary: 'Get market analytics and statistics' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Market analytics including pool size, outcome distribution, and time remaining',
+    type: MarketAnalyticsDto,
+  })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  async getMarketAnalytics(
+    @Param('id') id: string,
+  ): Promise<MarketAnalyticsDto> {
+    return this.analyticsService.getMarketAnalytics(id);
+  }
+
+  // -------------------------------------------------------------------------
+  // POST /markets — with optional idempotency
+  // -------------------------------------------------------------------------
+
   @Post()
   @UseGuards(BanGuard)
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
+  @UseInterceptors(OptionalIdempotencyInterceptor)
   @ApiOperation({ summary: 'Create a new prediction market' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    description:
+      'Optional UUID. On re-submission the stored response is returned with ' +
+      'Idempotency-Replayed: true. A different body with the same key returns 422.',
+    required: false,
+  })
   @ApiResponse({ status: 201, description: 'Market created', type: Market })
   @ApiResponse({ status: 400, description: 'Validation error' })
+  @ApiResponse({
+    status: 422,
+    description: 'Idempotency-Key reused with a different request body',
+  })
   @ApiResponse({ status: 502, description: 'Soroban contract call failed' })
   async createMarket(
     @Body() dto: CreateMarketDto,
@@ -100,13 +167,24 @@ export class MarketsController {
     return this.marketsService.create(dto, user);
   }
 
+  // -------------------------------------------------------------------------
+  // POST /markets/bulk — with optional idempotency
+  // -------------------------------------------------------------------------
+
   @Post('bulk')
   @UseGuards(BanGuard)
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @ThrottleTier('write')
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
+  @UseInterceptors(OptionalIdempotencyInterceptor)
   @ApiOperation({
     summary: 'Bulk create prediction markets (max 10 per request)',
+  })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    description:
+      'Optional UUID. Idempotent replay of bulk creation is supported.',
+    required: false,
   })
   @ApiResponse({
     status: 201,
@@ -117,6 +195,10 @@ export class MarketsController {
     status: 400,
     description: 'Validation error or exceeds limit',
   })
+  @ApiResponse({
+    status: 422,
+    description: 'Idempotency-Key reused with a different request body',
+  })
   @ApiResponse({ status: 502, description: 'Soroban contract call failed' })
   async bulkCreateMarkets(
     @Body() dto: BulkCreateMarketsDto,
@@ -125,17 +207,52 @@ export class MarketsController {
     return this.marketsService.createBulk(dto.markets, user);
   }
 
+  @Patch(':id')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Update market title, description, and/or category',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Market updated',
+    type: Market,
+  })
+  @ApiResponse({ status: 400, description: 'Market has already ended' })
+  @ApiResponse({ status: 403, description: 'Not authorized to update' })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  async updateMarket(
+    @Param('id') id: string,
+    @Body() dto: UpdateMarketDto,
+    @CurrentUser() user: User,
+  ): Promise<Market> {
+    return this.marketsService.update(id, user.id, dto);
+  }
+
+  // -------------------------------------------------------------------------
+  // GET /markets — list with pagination metadata
+  // -------------------------------------------------------------------------
+
   @Get()
   @Public()
+  @ThrottleTier('read')
   @ApiOperation({ summary: 'List and filter markets with pagination' })
   @ApiResponse({
     status: 200,
-    description: 'Paginated markets list',
+    description:
+      'Paginated markets list. Returns meta.totalPages alongside results. ' +
+      'limit is bounded to 1–100; out-of-range values return 400.',
   })
+  @ApiResponse({ status: 400, description: 'Invalid pagination parameters' })
   async listMarkets(
     @Query() query: ListMarketsDto,
   ): Promise<PaginatedMarketsResponse> {
-    return this.marketsService.findAllFiltered(query);
+    const result = await this.marketsService.findAllFiltered(query);
+    return {
+      ...result,
+      totalPages: buildPaginationMeta(result.total, result.page, result.limit)
+        .totalPages,
+    };
   }
 
   @Get('featured')
@@ -150,8 +267,16 @@ export class MarketsController {
     @Query('limit') limit?: string,
   ): Promise<PaginatedMarketsResponse> {
     const pageNum = page ? parseInt(page, 10) : 1;
-    const limitNum = limit ? Math.min(parseInt(limit, 10), 50) : 20;
-    return this.marketsService.findFeaturedMarkets(pageNum, limitNum);
+    const limitNum = limit ? Math.min(parseInt(limit, 10), 100) : 20;
+    const result = await this.marketsService.findFeaturedMarkets(
+      pageNum,
+      limitNum,
+    );
+    return {
+      ...result,
+      totalPages: buildPaginationMeta(result.total, result.page, result.limit)
+        .totalPages,
+    };
   }
 
   @Get(':id')
@@ -168,22 +293,138 @@ export class MarketsController {
   }
 
   @Delete(':id')
-  @Roles(Role.Admin)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Cancel a prediction market' })
+  @ApiOperation({ summary: 'Cancel a prediction market (creator or admin)' })
   @ApiResponse({ status: 200, description: 'Market cancelled', type: Market })
+  @ApiResponse({
+    status: 400,
+    description: 'Market has already ended or is resolved',
+  })
+  @ApiResponse({ status: 403, description: 'Caller is not creator or admin' })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  @ApiResponse({ status: 502, description: 'Soroban contract call failed' })
+  async cancelMarket(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<Market> {
+    return this.marketsService.cancelMarket(id, user);
+  }
+
+  @Post(':id/pause')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Pause a prediction market (admin only)' })
+  @ApiResponse({ status: 200, description: 'Market paused', type: Market })
+  @ApiResponse({ status: 400, description: 'Market cannot be paused' })
+  @ApiResponse({ status: 403, description: 'Caller is not admin' })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  @ApiResponse({ status: 502, description: 'Soroban contract call failed' })
+  async pauseMarket(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<Market> {
+    return this.marketsService.pauseMarket(id, user);
+  }
+
+  @Post(':id/resume')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Resume a prediction market (admin only)' })
+  @ApiResponse({ status: 200, description: 'Market resumed', type: Market })
+  @ApiResponse({ status: 400, description: 'Market cannot be resumed' })
+  @ApiResponse({ status: 403, description: 'Caller is not admin' })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  @ApiResponse({ status: 502, description: 'Soroban contract call failed' })
+  async resumeMarket(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<Market> {
+    return this.marketsService.resumeMarket(id, user);
+  }
+
+  @Post(':id/propose-resolution')
+  @UseGuards(BanGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Propose a resolution outcome, starting the grace/challenge window',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Resolution proposed, market awaiting settlement',
+    type: Market,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid outcome or market has not ended',
+  })
+  @ApiResponse({ status: 403, description: 'Caller is not creator or admin' })
   @ApiResponse({ status: 404, description: 'Market not found' })
   @ApiResponse({
     status: 409,
-    description: 'Market cannot be cancelled (already resolved)',
+    description: 'Market already resolved or resolution already proposed',
   })
+  async proposeResolution(
+    @Param('id') id: string,
+    @Body() dto: ProposeResolutionDto,
+    @CurrentUser() user: User,
+  ): Promise<Market> {
+    return this.marketsService.proposeResolution(id, dto, user);
+  }
+
+  @Post(':id/challenge')
+  @UseGuards(BanGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Challenge a proposed resolution before the grace period elapses',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Challenge recorded, auto-settlement frozen pending admin review',
+    type: Market,
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'No pending resolution to challenge, or challenge window closed',
+  })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  async challengeResolution(
+    @Param('id') id: string,
+    @Body() dto: ChallengeResolutionDto,
+    @CurrentUser() user: User,
+  ): Promise<Market> {
+    return this.marketsService.challengeResolution(id, dto, user);
+  }
+
+  @Post(':id/resolve-challenge')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Resolve a challenged market (admin only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Challenge resolved and market settled',
+    type: Market,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'No active challenge, or invalid outcome',
+  })
+  @ApiResponse({ status: 403, description: 'Caller is not admin' })
+  @ApiResponse({ status: 404, description: 'Market not found' })
   @ApiResponse({ status: 502, description: 'Soroban contract call failed' })
-  async cancelMarket(@Param('id') id: string): Promise<Market> {
-    return this.marketsService.cancelMarket(id);
+  async resolveChallenge(
+    @Param('id') id: string,
+    @Body() dto: ResolveChallengeDto,
+    @CurrentUser() user: User,
+  ): Promise<Market> {
+    return this.marketsService.resolveChallenge(id, dto, user);
   }
 
   @Post(':id/comments')
   @UseGuards(BanGuard)
+  @ThrottleTier('write')
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Post a comment on a market' })
@@ -197,17 +438,41 @@ export class MarketsController {
     return this.marketsService.createComment(id, dto, user);
   }
 
+  // -------------------------------------------------------------------------
+  // GET /markets/:id/comments — paginated with metadata
+  // -------------------------------------------------------------------------
+
   @Get(':id/comments')
   @Public()
-  @ApiOperation({ summary: 'Get comments for a market' })
+  @ApiOperation({ summary: 'Get comments for a market (paginated)' })
   @ApiResponse({
     status: 200,
-    description: 'List of comments (nested structure)',
-    type: [Comment],
+    description:
+      'Paginated list of comments with total, page, limit, totalPages. ' +
+      'limit is bounded to 1–100; out-of-range values return 400.',
   })
+  @ApiResponse({ status: 400, description: 'Invalid pagination parameters' })
   @ApiResponse({ status: 404, description: 'Market not found' })
-  async getComments(@Param('id') id: string): Promise<Comment[]> {
-    return this.marketsService.getComments(id);
+  async getComments(
+    @Param('id') id: string,
+    @Query() query: ListCommentsDto,
+  ): Promise<{
+    data: Comment[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }> {
+    const result = await this.marketsService.getComments(
+      id,
+      query.page,
+      query.limit,
+    );
+    return {
+      ...result,
+      totalPages: buildPaginationMeta(result.total, result.page, result.limit)
+        .totalPages,
+    };
   }
 
   @Get(':id/report')
@@ -240,5 +505,92 @@ export class MarketsController {
   @ApiResponse({ status: 404, description: 'Market not found' })
   async removeBookmark(@Param('id') id: string, @CurrentUser() user: User) {
     return this.marketsService.removeBookmark(id, user);
+  }
+
+  // -------------------------------------------------------------------------
+  // GET /markets/:id/history — paginated via PaginationQueryDto
+  // -------------------------------------------------------------------------
+
+  @Get(':id/history')
+  @Public()
+  @ApiOperation({
+    summary: 'Get historical data for a market',
+    description:
+      'Returns pool size, participant count, and outcome probabilities over time.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Historical data points',
+  })
+  @ApiResponse({ status: 400, description: 'Invalid date range query' })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  async getMarketHistory(
+    @Param('id') id: string,
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: DateRangeQueryDto,
+  ) {
+    const { from, to } = query.resolveRange();
+    return this.analyticsService.getMarketHistory(id, from, to);
+  }
+
+  @Post(':id/dispute')
+  @UseGuards(BanGuard)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Raise a dispute for a resolved market' })
+  @ApiResponse({
+    status: 201,
+    description: 'Dispute created successfully',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Dispute window has passed or market not resolved',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Dispute already raised for this market',
+  })
+  @ApiResponse({ status: 404, description: 'Market not found' })
+  @ApiResponse({ status: 502, description: 'Soroban contract call failed' })
+  async raiseDispute(
+    @Param('id') id: string,
+    @Body() createDisputeDto: { reason: string },
+    @CurrentUser() user: User,
+  ) {
+    const disputeDto: CreateDisputeDto = {
+      market_id: id,
+      reason: createDisputeDto.reason,
+    };
+    return this.disputesService.create(disputeDto, user);
+  }
+
+  @Get('admin/settlement-failures')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get failed settlement items in dead-letter queue (admin only)',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'List of markets in the dead-letter queue with retry information',
+  })
+  @ApiResponse({ status: 403, description: 'Not authorized' })
+  async getSettlementFailures() {
+    // Assuming admin check is done via guards or service
+    return this.marketsService.getSettlementFailures();
+  }
+
+  @Post('admin/retry-settlement/:marketId')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Manually retry a failed settlement (admin only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Settlement retry initiated',
+  })
+  @ApiResponse({ status: 404, description: 'Market not found in retry queue' })
+  @ApiResponse({ status: 403, description: 'Not authorized' })
+  async retrySettlement(@Param('marketId') marketId: string) {
+    return this.marketsService.retrySettlement(marketId);
   }
 }

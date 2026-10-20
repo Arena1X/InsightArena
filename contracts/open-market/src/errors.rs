@@ -1,0 +1,229 @@
+use soroban_sdk::contracterror;
+
+#[contracterror]
+#[derive(Clone, Debug, Eq, PartialEq, Copy)]
+pub enum InsightArenaError {
+    // ── Initialization ────────────────────────────────────────────────────────
+    /// The contract `initialize` function has already been called.
+    /// Raised to prevent re-initialization from overwriting global config.
+    AlreadyInitialized = 1,
+    /// The contract has not yet been initialized.
+    /// Raised when any state-dependent function is called before `initialize`.
+    NotInitialized = 2,
+
+    // ── Authorization ─────────────────────────────────────────────────────────
+    /// The caller does not have the required role for this operation
+    /// (e.g. a non-creator attempting to resolve a market, or a non-admin
+    /// calling an admin-only function). Also covers the guardian/admin
+    /// separation of duties enforced by `config::set_paused` — pausing
+    /// requires the guardian and unpausing requires the admin, and each
+    /// role attempting the other's half reverts via `require_auth`
+    /// (surfacing as an authorization failure rather than this error code,
+    /// consistent with every other role-gated setter in `config.rs`).
+    ///
+    /// NOTE: `#[contracterror]` enums are hard-capped at 50 XDR cases
+    /// (`ScSpecUdtErrorEnumV0::cases<50>`) and this enum is already at that
+    /// limit (see `ZeroShareTransfer = 112` below) — reuse this variant
+    /// rather than adding a new one for role-check failures.
+    Unauthorized = 3,
+    /// A cryptographic signature supplied with the call could not be verified
+    /// against the expected public key or message payload.
+    InvalidSignature = 4,
+
+    // ── Market ────────────────────────────────────────────────────────────────
+    /// No market exists for the given `market_id`.
+    /// Raised on any market lookup that returns nothing from storage.
+    MarketNotFound = 10,
+    /// The market has already been resolved and its outcome is finalized.
+    /// Raised when a second resolution or conflicting write is attempted.
+    MarketAlreadyResolved = 11,
+    /// The market has not yet been resolved.
+    /// Raised when a payout claim or post-resolution action is attempted early.
+    MarketNotResolved = 12,
+    /// The current ledger timestamp is past `end_time`.
+    /// Raised when a prediction submission arrives after the market has closed.
+    /// REUSED for AMM swap deadline protection: also raised by
+    /// `liquidity::swap_outcome` when the caller-supplied `deadline` has
+    /// already passed (reserves may have moved since the trade was signed).
+    MarketExpired = 13,
+    /// The current ledger timestamp is before `start_time`.
+    /// Raised when a prediction submission arrives before the market opens.
+    MarketNotStarted = 14,
+    /// The market's `end_time` has not yet been reached.
+    /// Raised when resolution is attempted while the market is still accepting
+    /// predictions.
+    MarketStillOpen = 15,
+    /// The market has already been cancelled by an admin.
+    /// Raised when cancel_market is called a second time or when any post-cancel
+    /// mutation (prediction, resolution) is attempted.
+    MarketAlreadyCancelled = 19,
+    /// The market is not in the cancelled state.
+    /// Raised by `claim_cancel_refund` when the market has not been cancelled and
+    /// therefore no cancellation refund is available.
+    MarketNotCancelled = 28,
+    /// The predicted outcome symbol is not present in `outcome_options`.
+    /// Raised when a user submits a prediction with an unrecognised outcome.
+    InvalidOutcome = 16,
+    /// The supplied time range is logically inconsistent
+    /// (e.g. `end_time <= start_time`, or `resolution_time < end_time`).
+    InvalidTimeRange = 17,
+    /// The `creator_fee_bps` value exceeds the platform maximum of 500 bps (5%).
+    /// Raised during market creation when the requested fee is out of bounds.
+    InvalidFee = 18,
+
+    // ── Dispute ───────────────────────────────────────────────────────────────
+    /// Dispute window has closed for this market.
+    DisputeWindowClosed = 60,
+    /// A dispute has already been filed for this market.
+    DisputeAlreadyFiled = 61,
+    /// No active dispute exists for this market.
+    DisputeNotFound = 62,
+
+    // ── Prediction ────────────────────────────────────────────────────────────
+    /// No prediction exists for the given `(market_id, predictor)` pair.
+    /// Raised on lookup when the user has not yet staked in this market.
+    PredictionNotFound = 20,
+    /// The caller has already submitted a prediction for this market.
+    /// Raised to enforce the one-prediction-per-wallet-per-market rule.
+    AlreadyPredicted = 21,
+    /// The submitted stake is below the market's `min_stake` threshold.
+    /// Raised during prediction submission to enforce the minimum entry amount.
+    /// REUSED for AMM swap slippage protection: also raised by
+    /// `liquidity::swap_outcome` when the computed `amount_out` falls below
+    /// the caller-supplied `min_amount_out` guard.
+    StakeTooLow = 22,
+    /// The submitted stake exceeds the market's `max_stake` ceiling.
+    /// Raised during prediction submission to enforce the maximum entry amount.
+    StakeTooHigh = 23,
+    /// The user has already successfully claimed their payout for this market.
+    /// Raised to prevent double-claiming after `payout_claimed` is set to true.
+    PayoutAlreadyClaimed = 24,
+    /// The market has already been closed and is no longer accepting changes.
+    /// Raised when a mutation (fee update, end_time extension) is attempted after close.
+    MarketAlreadyClosed = 25,
+    /// The participant has already claimed their cancellation refund for this market.
+    /// Raised by `claim_cancel_refund` to prevent double-claiming on cancelled markets.
+    RefundAlreadyClaimed = 26,
+    /// The caller has no stake in this market and is therefore not entitled to a refund.
+    /// Raised by `claim_cancel_refund` when the address never submitted a prediction.
+    /// REUSED for anti-spam bond: also raised when `deposit_market_bond` is called
+    /// for a market that already has a bond deposited (prevents double-deposit).
+    NotAParticipant = 27,
+
+    // ── Escrow ────────────────────────────────────────────────────────────────
+    /// The contract's escrow balance is insufficient to complete the transfer.
+    /// Raised when a payout or refund exceeds the available on-chain funds.
+    /// REUSED for anti-spam bond: also raised when `create_market` is called
+    /// with `bond_amount > 0` but the creator has not transferred the required
+    /// bond into escrow (i.e. allowance/balance is insufficient).
+    InsufficientFunds = 30,
+    /// A native XLM token transfer via the Stellar asset contract failed.
+    /// Raised when the underlying `transfer` call returns an error.
+    TransferFailed = 31,
+    /// The escrow pool for this market contains no funds.
+    /// Raised when resolution or refund logic encounters a zero `total_pool`.
+    EscrowEmpty = 32,
+
+    // ── Season ────────────────────────────────────────────────────────────────
+    /// The referenced season is not currently active (`is_active` is false).
+    /// Raised when a points award or participation action targets a closed season.
+    SeasonNotActive = 40,
+    /// The season has already been finalized (`is_finalized` is true).
+    /// Raised when a second finalization or post-finalization write is attempted.
+    SeasonAlreadyFinalized = 41,
+    /// No season exists for the given `season_id`.
+    /// Raised on any season lookup that returns nothing from storage.
+    SeasonNotFound = 42,
+    /// The new season's time range overlaps with an existing non-finalized season.
+    /// Raised when creating a season that would be active simultaneously with another.
+    SeasonOverlap = 43,
+
+    // ── Invite ────────────────────────────────────────────────────────────────
+    /// The supplied invite code symbol does not exist in storage or does not
+    /// match the target market. Raised on redemption of an unrecognised code.
+    InvalidInviteCode = 50,
+    /// The invite code's `expires_at` timestamp is in the past.
+    /// Raised when a redemption attempt arrives after the expiry ledger time.
+    InviteCodeExpired = 51,
+    /// The invite code has reached its `max_uses` limit (`current_uses >= max_uses`).
+    /// Raised when a redemption attempt arrives after the usage cap is exhausted.
+    InviteCodeMaxUsed = 52,
+
+    // ── User ──────────────────────────────────────────────────────────────────
+    /// No user profile exists for the given address.
+    /// Raised when a user stats lookup finds no stored profile.
+    UserNotFound = 63,
+
+    // ── General ───────────────────────────────────────────────────────────────
+    /// An arithmetic operation produced a value outside the valid i128/u32 range.
+    /// Raised anywhere checked arithmetic (pool accumulation, payout calculation)
+    /// would otherwise silently wrap or saturate.
+    Overflow = 100,
+    /// The contract is in emergency-paused state (`DataKey::Paused` is set).
+    /// Raised at the top of any sensitive function when the pause flag is active.
+    Paused = 101,
+    /// A supplied argument fails basic validation that is not covered by a more
+    /// specific error code (e.g. empty strings, zero-length outcome lists).
+    /// REUSED by `governance::execute_proposal`: also raised when a proposal's
+    /// voting window closes with turnout below `Config::governance_quorum_bps`,
+    /// distinguishing a quorum failure from a majority failure (`Unauthorized`).
+    InvalidInput = 102,
+
+    // ── Conditional Markets ───────────────────────────────────────────────────
+    /// The maximum allowed depth for nested conditional markets has been exceeded.
+    ConditionalDepthExceeded = 103,
+    /// A conditional market's parent has not yet been resolved.
+    /// Raised when `resolve_market` is called on a child before its immediate
+    /// parent market has settled.
+    ParentNotResolved = 105,
+
+    // ── Governance Timelock ───────────────────────────────────────────────────
+    /// A passed proposal was queued but its timelock `ready_at` timestamp has not
+    /// yet elapsed. Raised when `execute_proposal` is called too early.
+    TimelockNotElapsed = 104,
+
+    // ── Reputation ────────────────────────────────────────────────────────────
+    /// The creator's reputation score is below the governance-configured
+    /// `Config::min_creator_reputation` and the creator is not present in the
+    /// `DataKey::TrustedCreator` allowlist. Raised by `market::create_market`
+    /// before any market state is persisted; a `MarketCreationDenied` event is
+    /// emitted with the attempted creator's address before this error returns.
+    InsufficientReputation = 106,
+
+    // ── Batch Operations ──────────────────────────────────────────────────────
+    /// The number of items in a batch operation exceeds the maximum allowed size.
+    BatchSizeExceeded = 107,
+
+    // ── TWAP Price Oracle ─────────────────────────────────────────────────────
+    /// `get_twap` was called with a zero-second window, which cannot produce a
+    /// meaningful average.
+    TwapEmptyWindow = 108,
+    /// Not enough retained price history to cover the requested window: either
+    /// this outcome has never had a price-changing operation, or the window's
+    /// start predates the oldest observation still held in the ring buffer
+    /// (older samples were evicted by wraparound). Raised instead of silently
+    /// truncating the window or dividing by an under-covered interval.
+    TwapInsufficientHistory = 109,
+    /// The elapsed time between the window's start and now collapsed to zero
+    /// seconds, which would require dividing the price integral by zero.
+    TwapDivideByZero = 110,
+
+    // ── Prediction Transfer ───────────────────────────────────────────────────
+    // NOTE: `#[contracterror]` enums are hard-capped at 50 XDR cases
+    // (`ScSpecUdtErrorEnumV0::cases<50>`) — this enum is now at the limit.
+    // Reuse an existing variant rather than adding a new one.
+    /// `transfer_prediction` was called with `from == to`.
+    /// A position cannot be transferred to itself.
+    SelfTransfer = 111,
+    /// `transfer_prediction` was called with `shares <= 0`.
+    /// A transfer must move a strictly positive amount.
+    /// REUSED for early position withdrawals:
+    /// - Withdrawal attempted after market lock time (MarketExpired not applicable pre-lock)
+    /// - Withdrawal amount is zero or invalid
+    /// - Withdrawal amount exceeds user's current stake
+    /// REUSED for dispute resolution guards:
+    /// - A dispute has already been resolved and cannot be settled again
+    ///   (prevents double-refund or double-slash in resolve_dispute/finalize_arbiter_vote)
+    /// - Attempted to slash a bond that has already been slashed or refunded
+    ZeroShareTransfer = 112,
+}

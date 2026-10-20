@@ -16,14 +16,12 @@ export default function StatCard({
   valueColor = "text-white",
 }: StatCardProps) {
   return (
-    <div className="bg-[#0f172a] border border-gray-700/30 rounded-2xl p-5 flex flex-col justify-between min-h-[110px]">
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-5 flex flex-col justify-between min-h-[110px]">
       <div className="flex items-start justify-between gap-2">
         <p className="text-gray-400 text-xs font-medium uppercase tracking-wider leading-tight">
           {label}
         </p>
-        {icon && (
-          <span className="text-gray-500 flex-shrink-0">{icon}</span>
-        )}
+        {icon && <span className="text-gray-500 flex-shrink-0">{icon}</span>}
       </div>
       <div className="mt-3">
         <p className={`text-2xl font-bold leading-none ${valueColor}`}>

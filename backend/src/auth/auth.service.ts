@@ -1,13 +1,26 @@
-import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  Logger,
+  OnModuleInit,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { randomBytes } from 'crypto';
+import { Cron } from '@nestjs/schedule';
+import { randomBytes, randomUUID, createHash } from 'crypto';
 import { Keypair } from '@stellar/stellar-sdk';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
+import { normalizeStellarAddress } from '../users/users.service';
+import { UserPreferences } from '../users/entities/user-preferences.entity';
+import { RefreshToken } from './entities/refresh-token.entity';
+import { AuthAuditEvent } from './entities/auth-audit-event.entity';
+
+const DEFAULT_REFRESH_TOKEN_TTL_DAYS = 30;
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit {
   private challengeCache = new Map<
     string,
     { expiresAt: number; used: boolean }
@@ -17,9 +30,42 @@ export class AuthService {
 
   constructor(
     private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
     @InjectRepository(User)
     private readonly usersRepository: Repository<User>,
+    @InjectRepository(UserPreferences)
+    private readonly preferencesRepository: Repository<UserPreferences>,
+    @InjectRepository(RefreshToken)
+    private readonly refreshTokensRepository: Repository<RefreshToken>,
+    @InjectRepository(AuthAuditEvent)
+    private readonly authAuditEventsRepository: Repository<AuthAuditEvent>,
   ) {}
+
+  onModuleInit() {
+    this.logger.log('AuthService initialized - periodic cleanup enabled');
+  }
+
+  /**
+   * Periodically cleanup expired challenges every 5 minutes.
+   * This prevents memory leaks in read-heavy load scenarios where
+   * verifySignature is called frequently without intervening generateChallenge calls.
+   */
+  @Cron('*/5 * * * *')
+  cleanupExpiredChallenges(): void {
+    const now = Date.now();
+    let removed = 0;
+    for (const [key, entry] of this.challengeCache.entries()) {
+      if (now > entry.expiresAt) {
+        this.challengeCache.delete(key);
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      this.logger.debug(
+        `Periodic cleanup removed ${removed} expired challenge(s)`,
+      );
+    }
+  }
 
   generateChallenge(stellar_address: string): string {
     const timestamp = Date.now();
@@ -34,8 +80,6 @@ export class AuthService {
       expiresAt: timestamp + this.TTL_MS,
       used: false,
     });
-
-    this.cleanupExpiredChallenges();
 
     return challenge;
   }
@@ -59,14 +103,129 @@ export class AuthService {
   async verifyChallenge(
     stellar_address: string,
     signed_challenge: string,
-  ): Promise<{ access_token: string; user: User }> {
+  ): Promise<{ access_token: string; refresh_token: string; user: User }> {
     const user = await this.verifySignature(stellar_address, signed_challenge);
 
     // Sign JWT with sub: user.id
     const payload = { sub: user.id, stellar_address: user.stellar_address };
     const access_token = await this.jwtService.signAsync(payload);
 
-    return { access_token, user };
+    // Start a brand-new refresh token family for this login session.
+    const familyId = randomUUID();
+    const { raw: refresh_token } = await this.issueRefreshToken(
+      user.id,
+      familyId,
+    );
+
+    return { access_token, refresh_token, user };
+  }
+
+  /** sha256 hex digest — fast, deterministic lookup key for a raw refresh token. */
+  private hashToken(rawToken: string): string {
+    return createHash('sha256').update(rawToken).digest('hex');
+  }
+
+  /**
+   * Mints and persists a fresh refresh token row for `userId` within
+   * `familyId`. `previousTokenId` is set when this call is part of a
+   * rotation (chains the new row back to the token it replaced).
+   */
+  private async issueRefreshToken(
+    userId: string,
+    familyId: string,
+    previousTokenId: string | null = null,
+  ): Promise<{ raw: string; entity: RefreshToken }> {
+    const raw = randomBytes(48).toString('hex');
+    const ttlDays =
+      this.configService.get<number>('REFRESH_TOKEN_TTL_DAYS') ??
+      DEFAULT_REFRESH_TOKEN_TTL_DAYS;
+    const expires_at = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000);
+
+    const entity = this.refreshTokensRepository.create({
+      user_id: userId,
+      family_id: familyId,
+      token_hash: this.hashToken(raw),
+      previous_token_id: previousTokenId,
+      expires_at,
+    });
+    const saved = await this.refreshTokensRepository.save(entity);
+
+    return { raw, entity: saved };
+  }
+
+  /**
+   * Rotates a refresh token: validates it, revokes it, and issues a new
+   * token in the same family. If the presented token was already rotated
+   * away (i.e. someone is replaying a stolen/used token), the entire
+   * session family is revoked and an audit event is recorded.
+   */
+  async rotateRefreshToken(
+    rawToken: string,
+  ): Promise<{ access_token: string; refresh_token: string }> {
+    const tokenHash = this.hashToken(rawToken);
+    const existing = await this.refreshTokensRepository.findOneBy({
+      token_hash: tokenHash,
+    });
+
+    if (!existing) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    const now = new Date();
+
+    if (existing.expires_at < now) {
+      throw new UnauthorizedException('Refresh token expired');
+    }
+
+    if (existing.revoked_at) {
+      // Reuse of an already-rotated token: treat as compromise and revoke
+      // the whole session family.
+      await this.refreshTokensRepository.update(
+        { family_id: existing.family_id, revoked_at: IsNull() },
+        { revoked_at: now },
+      );
+
+      const auditEvent = this.authAuditEventsRepository.create({
+        event_type: 'refresh_token_reuse_detected',
+        user_id: existing.user_id,
+        family_id: existing.family_id,
+        metadata: { tokenId: existing.id },
+      });
+      await this.authAuditEventsRepository.save(auditEvent);
+
+      this.logger.error(
+        `Refresh token reuse detected for family ${existing.family_id}, user ${existing.user_id} — session revoked`,
+      );
+
+      throw new UnauthorizedException(
+        'Refresh token reuse detected; session revoked',
+      );
+    }
+
+    const user = await this.usersRepository.findOneBy({
+      id: existing.user_id,
+    });
+    if (!user) {
+      throw new UnauthorizedException('User not found or has been deleted');
+    }
+
+    // Invalidate the presented token.
+    existing.revoked_at = now;
+    await this.refreshTokensRepository.save(existing);
+
+    // Issue the next token in the same family, chained to the one just used.
+    const { raw: refresh_token } = await this.issueRefreshToken(
+      user.id,
+      existing.family_id,
+      existing.id,
+    );
+
+    const payload = { sub: user.id, stellar_address: user.stellar_address };
+    const access_token = await this.jwtService.signAsync(payload);
+
+    this.logger.debug(`Refresh token rotated for user ${user.id}`);
+
+    return { access_token, refresh_token };
   }
 
   async verifySignature(
@@ -110,25 +269,36 @@ export class AuthService {
     // Mark nonce as used (replay prevention)
     entry.used = true;
 
-    // Upsert the user record
-    let user = await this.usersRepository.findOneBy({ stellar_address });
+    // Upsert the user record, keyed on the canonical address form
+    const address = normalizeStellarAddress(stellar_address);
+    let user = await this.usersRepository.findOneBy({
+      stellar_address: address,
+    });
+    const isNewUser = !user;
     if (!user) {
-      this.logger.debug(`Creating new user for ${stellar_address}`);
-      user = this.usersRepository.create({ stellar_address });
+      this.logger.debug(`Creating new user for ${address}`);
+      user = this.usersRepository.create({ stellar_address: address });
     }
     user = await this.usersRepository.save(user);
+
+    if (isNewUser) {
+      const existingPrefs = await this.preferencesRepository.findOneBy({
+        userId: user.id,
+      });
+      if (!existingPrefs) {
+        const prefs = this.preferencesRepository.create({ userId: user.id });
+        await this.preferencesRepository.save(prefs);
+      }
+    }
+
     return user;
   }
 
-  /** Finds the most recent valid (non-expired, non-used) challenge for a given address. */
+  /** Finds the most recent valid (non-expired) challenge for a given address. */
   private findValidChallengeForAddress(stellar_address: string): string | null {
     const now = Date.now();
     for (const [key, entry] of this.challengeCache.entries()) {
-      if (
-        key.endsWith(`:${stellar_address}`) &&
-        now <= entry.expiresAt &&
-        !entry.used
-      ) {
+      if (key.endsWith(`:${stellar_address}`) && now <= entry.expiresAt) {
         return key;
       }
     }
@@ -155,15 +325,6 @@ export class AuthService {
     } catch (error) {
       this.logger.error(`Error verifying signature: ${error}`);
       return false;
-    }
-  }
-
-  private cleanupExpiredChallenges(): void {
-    const now = Date.now();
-    for (const [key, entry] of this.challengeCache.entries()) {
-      if (now > entry.expiresAt) {
-        this.challengeCache.delete(key);
-      }
     }
   }
 }

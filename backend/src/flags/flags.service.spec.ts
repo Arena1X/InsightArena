@@ -1,7 +1,11 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, SelectQueryBuilder, UpdateResult } from 'typeorm';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
@@ -188,7 +192,7 @@ describe('FlagsService', () => {
       );
     });
 
-    it('should throw ForbiddenException if user already flagged the market', async () => {
+    it('should throw ConflictException if user already flagged the market', async () => {
       const createFlagDto = {
         market_id: 'market-1',
         reason: FlagReason.INAPPROPRIATE_CONTENT,
@@ -200,7 +204,108 @@ describe('FlagsService', () => {
         .mockResolvedValue(createMockFlag());
 
       await expect(service.createFlag('user-1', createFlagDto)).rejects.toThrow(
-        ForbiddenException,
+        ConflictException,
+      );
+    });
+
+    it('should allow re-flagging after flag is resolved', async () => {
+      const createFlagDto = {
+        market_id: 'market-1',
+        reason: FlagReason.MISINFORMATION,
+        description: 'This is misinformation',
+      };
+
+      jest.spyOn(marketsRepository, 'findOne').mockResolvedValue(mockMarket);
+      jest.spyOn(flagsRepository, 'findOne').mockResolvedValue(null);
+      const newFlag = {
+        ...createMockFlag(),
+        id: 'flag-2',
+        reason: FlagReason.MISINFORMATION,
+        description: 'This is misinformation',
+      };
+      jest.spyOn(flagsRepository, 'create').mockReturnValue(newFlag);
+      jest.spyOn(flagsRepository, 'save').mockResolvedValue(newFlag);
+
+      const result = await service.createFlag('user-1', createFlagDto);
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: 'flag-2',
+          market_id: 'market-1',
+          user_id: 'user-1',
+          reason: FlagReason.MISINFORMATION,
+          status: FlagStatus.PENDING,
+        }),
+      );
+      expect(flagsRepository.findOne).toHaveBeenCalledWith({
+        where: {
+          user_id: 'user-1',
+          market_id: 'market-1',
+          status: FlagStatus.PENDING,
+        },
+      });
+    });
+
+    it('should allow re-flagging after flag is dismissed', async () => {
+      const createFlagDto = {
+        market_id: 'market-1',
+        reason: FlagReason.SPAM,
+        description: 'This is spam',
+      };
+
+      jest.spyOn(marketsRepository, 'findOne').mockResolvedValue(mockMarket);
+      jest.spyOn(flagsRepository, 'findOne').mockResolvedValue(null);
+      const newFlag = {
+        ...createMockFlag(),
+        id: 'flag-3',
+        reason: FlagReason.SPAM,
+        description: 'This is spam',
+      };
+      jest.spyOn(flagsRepository, 'create').mockReturnValue(newFlag);
+      jest.spyOn(flagsRepository, 'save').mockResolvedValue(newFlag);
+
+      const result = await service.createFlag('user-1', createFlagDto);
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: 'flag-3',
+          market_id: 'market-1',
+          user_id: 'user-1',
+          reason: FlagReason.SPAM,
+          status: FlagStatus.PENDING,
+        }),
+      );
+      expect(flagsRepository.findOne).toHaveBeenCalledWith({
+        where: {
+          user_id: 'user-1',
+          market_id: 'market-1',
+          status: FlagStatus.PENDING,
+        },
+      });
+    });
+
+    it('should create first flag on market successfully', async () => {
+      const createFlagDto = {
+        market_id: 'market-1',
+        reason: FlagReason.INAPPROPRIATE_CONTENT,
+        description: 'This is inappropriate',
+      };
+
+      jest.spyOn(marketsRepository, 'findOne').mockResolvedValue(mockMarket);
+      jest.spyOn(flagsRepository, 'findOne').mockResolvedValue(null);
+      jest.spyOn(flagsRepository, 'create').mockReturnValue(createMockFlag());
+      jest.spyOn(flagsRepository, 'save').mockResolvedValue(createMockFlag());
+
+      const result = await service.createFlag('user-1', createFlagDto);
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: 'flag-1',
+          market_id: 'market-1',
+          user_id: 'user-1',
+          reason: FlagReason.INAPPROPRIATE_CONTENT,
+          status: FlagStatus.PENDING,
+        }),
       );
     });
   });
@@ -226,7 +331,9 @@ describe('FlagsService', () => {
 
       jest
         .spyOn(flagsRepository, 'createQueryBuilder')
-        .mockReturnValue(mockQueryBuilder as any);
+        .mockReturnValue(
+          mockQueryBuilder as unknown as SelectQueryBuilder<Flag>,
+        );
 
       const result = await service.listFlags(query);
 
@@ -291,7 +398,9 @@ describe('FlagsService', () => {
       jest
         .spyOn(flagsRepository, 'findOne')
         .mockResolvedValue(createMockFlag());
-      jest.spyOn(marketsRepository, 'update').mockResolvedValue({} as any);
+      jest
+        .spyOn(marketsRepository, 'update')
+        .mockResolvedValue({} as unknown as UpdateResult);
       jest.spyOn(flagsRepository, 'save').mockResolvedValue({
         ...createMockFlag(),
         status: FlagStatus.RESOLVED,
@@ -322,7 +431,9 @@ describe('FlagsService', () => {
       jest
         .spyOn(flagsRepository, 'findOne')
         .mockResolvedValue(createMockFlag());
-      jest.spyOn(usersRepository, 'update').mockResolvedValue({} as any);
+      jest
+        .spyOn(usersRepository, 'update')
+        .mockResolvedValue({} as unknown as UpdateResult);
       jest.spyOn(flagsRepository, 'save').mockResolvedValue({
         ...createMockFlag(),
         status: FlagStatus.RESOLVED,
@@ -359,7 +470,7 @@ describe('FlagsService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('should throw ForbiddenException if flag is already resolved', async () => {
+    it('should throw ConflictException if flag is already resolved', async () => {
       const resolveFlagDto = {
         action: FlagResolutionAction.DISMISS,
       };
@@ -370,7 +481,90 @@ describe('FlagsService', () => {
 
       await expect(
         service.resolveFlag('flag-1', resolveFlagDto, 'admin-1'),
-      ).rejects.toThrow(ForbiddenException);
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('should throw ConflictException if flag is already dismissed', async () => {
+      const resolveFlagDto = {
+        action: FlagResolutionAction.DISMISS,
+      };
+
+      const dismissedFlag = {
+        ...createMockFlag(),
+        status: FlagStatus.DISMISSED,
+      };
+
+      jest.spyOn(flagsRepository, 'findOne').mockResolvedValue(dismissedFlag);
+
+      await expect(
+        service.resolveFlag('flag-1', resolveFlagDto, 'admin-1'),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('should throw BadRequestException for a resolution action outside the defined enum', async () => {
+      // ResolveFlagDto's @IsEnum only takes effect behind a ValidationPipe,
+      // which nothing wires up for this route — the service itself must
+      // reject an out-of-enum value directly (see the comment in
+      // flags.service.ts above this check).
+      const resolveFlagDto = {
+        action: 'delete_everything' as FlagResolutionAction,
+      };
+
+      jest
+        .spyOn(flagsRepository, 'findOne')
+        .mockResolvedValue(createMockFlag());
+
+      await expect(
+        service.resolveFlag('flag-1', resolveFlagDto, 'admin-1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(flagsRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('resolving a pending flag with a valid status succeeds and is reflected by listFlags', async () => {
+      const resolveFlagDto = {
+        action: FlagResolutionAction.DISMISS,
+        admin_notes: 'Reviewed, no violation found',
+      };
+
+      jest
+        .spyOn(flagsRepository, 'findOne')
+        .mockResolvedValue(createMockFlag());
+      const resolved = {
+        ...createMockFlag(),
+        status: FlagStatus.DISMISSED,
+        resolution_action: FlagResolutionAction.DISMISS,
+        admin_notes: 'Reviewed, no violation found',
+        resolved_by: 'admin-1',
+        resolved_at: new Date(),
+      };
+      jest.spyOn(flagsRepository, 'save').mockResolvedValue(resolved);
+
+      const result = await service.resolveFlag(
+        'flag-1',
+        resolveFlagDto,
+        'admin-1',
+      );
+      expect(result.status).toBe(FlagStatus.DISMISSED);
+
+      // listFlags reflects the now-resolved flag when filtered by its new status.
+      const mockQueryBuilder = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[resolved], 1]),
+      };
+      jest
+        .spyOn(flagsRepository, 'createQueryBuilder')
+        .mockReturnValue(
+          mockQueryBuilder as unknown as SelectQueryBuilder<Flag>,
+        );
+
+      const listResult = await service.listFlags({
+        status: FlagStatus.DISMISSED,
+      });
+      expect(listResult.data).toEqual([resolved]);
     });
   });
 });

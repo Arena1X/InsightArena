@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsEnum,
   IsNumber,
   IsOptional,
   IsString,
@@ -15,12 +16,47 @@ import {
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 
+/**
+ * Grace-period settlement state machine, independent of the legacy
+ * `is_resolved` flag used by the immediate admin-override resolution path.
+ * PENDING -> PROPOSED -> SETTLING -> SETTLED, with PROPOSED -> CHALLENGED ->
+ * SETTLED when a challenge is raised during the grace window. SETTLING is a
+ * short-lived, crash-visible marker: MarketSettlementScheduler moves a
+ * market here once it has claimed it (advisory lock + settlement-attempt
+ * row) and before the on-chain call resolves, so a crash between those two
+ * steps leaves a durable trace instead of silently losing the market
+ * between PROPOSED and SETTLED.
+ */
+export enum MarketSettlementState {
+  PENDING = 'pending',
+  PROPOSED = 'proposed',
+  SETTLING = 'settling',
+  CHALLENGED = 'challenged',
+  SETTLED = 'settled',
+}
+
 @Entity('markets')
 @Index(['on_chain_market_id'])
 @Index(['creator'])
 @Index(['category'])
 @Index(['is_resolved'])
 @Index(['is_featured'])
+@Index(['settlement_state'])
+@Index('IDX_markets_status_sort', [
+  'is_resolved',
+  'is_cancelled',
+  'is_featured',
+  'featured_at',
+  'created_at',
+])
+@Index('IDX_markets_category_status_sort', [
+  'category',
+  'is_resolved',
+  'is_cancelled',
+  'is_featured',
+  'created_at',
+])
+@Index('IDX_markets_public_sort', ['is_public', 'is_featured', 'created_at'])
 export class Market {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -63,6 +99,38 @@ export class Market {
   @IsString()
   resolved_outcome: string;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  @IsOptional()
+  resolved_at: Date | null;
+
+  @Column({
+    type: 'enum',
+    enum: MarketSettlementState,
+    enumName: 'market_settlement_state',
+    default: MarketSettlementState.PENDING,
+  })
+  @IsEnum(MarketSettlementState)
+  settlement_state: MarketSettlementState;
+
+  @Column({ nullable: true })
+  @IsOptional()
+  @IsString()
+  proposed_outcome: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  @IsOptional()
+  resolution_proposed_at: Date | null;
+
+  @Column({ type: 'int', default: 86400 })
+  @IsNumber()
+  @Min(0)
+  grace_period_seconds: number;
+
+  @Column({ type: 'int', default: 0 })
+  @IsNumber()
+  @Min(0)
+  settlement_attempt_count: number;
+
   @Column({ default: true })
   @IsBoolean()
   is_public: boolean;
@@ -74,6 +142,10 @@ export class Market {
   @Column({ default: false })
   @IsBoolean()
   is_featured: boolean;
+
+  @Column({ default: false })
+  @IsBoolean()
+  is_paused: boolean;
 
   @Column({ type: 'timestamptz', nullable: true })
   @IsOptional()

@@ -38,3 +38,8 @@ export class FollowActionResponseDto {
   success: boolean;
   message: string;
 }
+
+export class FollowStatsResponseDto {
+  followers_count: number;
+  following_count: number;
+}

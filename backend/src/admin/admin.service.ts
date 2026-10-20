@@ -14,16 +14,41 @@ import { CompetitionParticipant } from '../competitions/entities/competition-par
 import { Competition } from '../competitions/entities/competition.entity';
 import { ListFlagsQueryDto } from '../flags/dto/list-flags-query.dto';
 import { ResolveFlagDto } from '../flags/dto/resolve-flag.dto';
+import { Flag, FlagStatus } from '../flags/entities/flag.entity';
 import { FlagsService } from '../flags/flags.service';
 import { Comment } from '../markets/entities/comment.entity';
 import { Market } from '../markets/entities/market.entity';
 import { NotificationType } from '../notifications/entities/notification.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Prediction } from '../predictions/entities/prediction.entity';
+import { ListFraudFlagsQueryDto } from '../predictions/dto/list-fraud-flags-query.dto';
+import { PredictionsService } from '../predictions/predictions.service';
 import { SorobanService } from '../soroban/soroban.service';
 import { User } from '../users/entities/user.entity';
+import { CreatorEvent } from '../matches/entities/creator-event.entity';
+import { UserFlag } from './entities/user-flag.entity';
+import { VerifiedAddress } from './entities/verified-address.entity';
+import { FeeHistory } from '../indexer/entities/fee-history.entity';
 import { ActivityLogQueryDto } from './dto/activity-log-query.dto';
+import {
+  BulkImportMarketsResponseDto,
+  BulkImportRowResult,
+} from './dto/bulk-import-markets.dto';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { CreateMarketDto } from '../markets/dto/create-market.dto';
+import { MarketsService } from '../markets/markets.service';
+import {
+  BulkUserAction,
+  BulkUserActionDto,
+  BulkUserActionErrorCode,
+  BulkUserActionResponseDto,
+  BulkUserActionResultDto,
+} from './dto/bulk-user-action.dto';
+import { DateRangeQueryDto } from './dto/date-range-query.dto';
+import { FeeStatsResponseDto } from './dto/fee-stats-response.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
+import { ListVerifiedAddressesQueryDto } from './dto/list-verified-addresses-query.dto';
 import {
   ReportFormat,
   ReportQueryDto,
@@ -32,6 +57,15 @@ import {
 import { ResolveMarketDto } from './dto/resolve-market.dto';
 import { StatsResponseDto } from './dto/stats-response.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
+
+class BulkUserActionItemError extends Error {
+  constructor(
+    readonly code: BulkUserActionErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 @Injectable()
 export class AdminService {
@@ -52,10 +86,21 @@ export class AdminService {
     private readonly competitionParticipantsRepository: Repository<CompetitionParticipant>,
     @InjectRepository(ActivityLog)
     private readonly activityLogsRepository: Repository<ActivityLog>,
+    @InjectRepository(Flag)
+    private readonly flagsRepository: Repository<Flag>,
+    @InjectRepository(CreatorEvent)
+    private readonly creatorEventRepository: Repository<CreatorEvent>,
+    @InjectRepository(VerifiedAddress)
+    private readonly verifiedAddressesRepository: Repository<VerifiedAddress>,
+    @InjectRepository(FeeHistory)
+    private readonly feeHistoryRepository: Repository<FeeHistory>,
+    private readonly marketsService: MarketsService,
+
     private readonly analyticsService: AnalyticsService,
     private readonly notificationsService: NotificationsService,
     private readonly sorobanService: SorobanService,
     private readonly flagsService: FlagsService,
+    private readonly predictionsService: PredictionsService,
   ) {}
 
   async getStats(): Promise<StatsResponseDto> {
@@ -96,6 +141,10 @@ export class AdminService {
       BigInt(100)
     ).toString();
 
+    const pending_flags = await this.flagsRepository.count({
+      where: { status: FlagStatus.PENDING },
+    });
+
     return {
       total_users,
       active_users_24h,
@@ -107,7 +156,91 @@ export class AdminService {
       total_volume_stroops,
       total_competitions,
       platform_revenue_stroops,
+      pending_flags,
     };
+  }
+
+  async getFeeStats(range: DateRangeQueryDto): Promise<FeeStatsResponseDto> {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - now.getDay());
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    const eventQb = this.creatorEventRepository.createQueryBuilder('event');
+    const countQb = this.creatorEventRepository.createQueryBuilder('event');
+
+    if (range.start_date) {
+      eventQb.andWhere('event.on_chain_created_at >= :startDate', {
+        startDate: new Date(range.start_date),
+      });
+      countQb.andWhere('event.on_chain_created_at >= :startDate', {
+        startDate: new Date(range.start_date),
+      });
+    }
+    if (range.end_date) {
+      eventQb.andWhere('event.on_chain_created_at <= :endDate', {
+        endDate: new Date(range.end_date),
+      });
+      countQb.andWhere('event.on_chain_created_at <= :endDate', {
+        endDate: new Date(range.end_date),
+      });
+    }
+
+    const totalEvents = await countQb.getCount();
+
+    const totalFeeResult = (await eventQb
+      .select('SUM(CAST(event.creation_fee_paid AS DECIMAL))', 'total')
+      .getRawOne()) as { total: string | null };
+    const totalFees = totalFeeResult?.total || '0';
+
+    const monthFeeResult = (await this.creatorEventRepository
+      .createQueryBuilder('event')
+      .select('SUM(CAST(event.creation_fee_paid AS DECIMAL))', 'total')
+      .where('event.on_chain_created_at >= :startOfMonth', { startOfMonth })
+      .getRawOne()) as { total: string | null };
+    const monthFees = monthFeeResult?.total || '0';
+
+    const weekFeeResult = (await this.creatorEventRepository
+      .createQueryBuilder('event')
+      .select('SUM(CAST(event.creation_fee_paid AS DECIMAL))', 'total')
+      .where('event.on_chain_created_at >= :startOfWeek', { startOfWeek })
+      .getRawOne()) as { total: string | null };
+    const weekFees = weekFeeResult?.total || '0';
+
+    const avgFee =
+      totalEvents > 0
+        ? (BigInt(totalFees.split('.')[0]) / BigInt(totalEvents)).toString()
+        : '0';
+
+    const feeHistory = await this.feeHistoryRepository.find({
+      order: { created_at: 'DESC' },
+      take: 10,
+    });
+
+    return {
+      current_creation_fee: await this.getCurrentCreationFee(),
+      total_fees_collected: totalFees,
+      fees_collected_this_month: monthFees,
+      fees_collected_this_week: weekFees,
+      total_events_created: totalEvents,
+      average_fee_per_event: avgFee,
+      treasury_balance: totalFees,
+      fee_history: feeHistory,
+    };
+  }
+
+  private async getCurrentCreationFee(): Promise<string> {
+    try {
+      return await this.sorobanService.getCreationFee();
+    } catch {
+      // Fallback to last fee from history
+    }
+
+    const lastFee = await this.feeHistoryRepository.findOne({
+      order: { created_at: 'DESC' },
+    });
+    return lastFee?.new_fee_stroops ?? '10000000'; // Default 0.01 XLM
   }
 
   async listUsers(query: ListUsersQueryDto) {
@@ -151,9 +284,40 @@ export class AdminService {
     };
   }
 
+  async listVerifiedAddresses(query: ListVerifiedAddressesQueryDto) {
+    const { page = 1, limit = 20, search } = query;
+    const skip = (page - 1) * limit;
+
+    const qb = this.verifiedAddressesRepository.createQueryBuilder('v');
+
+    if (search) {
+      qb.where('v.address ILIKE :search', { search: `%${search}%` });
+    }
+
+    qb.orderBy('v.verified_at', 'DESC').skip(skip).take(limit);
+
+    const [addresses, total] = await qb.getManyAndCount();
+
+    const data = addresses.map((a) => ({
+      address: a.address,
+      verified_at: a.verified_at.toISOString(),
+      verified_by: a.verified_by,
+      events_created: a.events_created,
+    }));
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
   async banUser(id: string, reason: string, adminId: string): Promise<User> {
     const user = await this.usersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
+    if (user.is_banned) throw new ConflictException('User is already banned');
 
     user.is_banned = true;
     user.ban_reason = reason;
@@ -173,6 +337,7 @@ export class AdminService {
   async unbanUser(id: string, adminId: string): Promise<User> {
     const user = await this.usersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
+    if (!user.is_banned) throw new BadRequestException('User is not banned');
 
     user.is_banned = false;
     user.ban_reason = null;
@@ -186,6 +351,142 @@ export class AdminService {
     });
 
     return user;
+  }
+
+  async bulkUserAction(
+    dto: BulkUserActionDto,
+    adminId: string,
+  ): Promise<BulkUserActionResponseDto> {
+    const results: BulkUserActionResultDto[] = [];
+
+    // Each user is processed in its own transaction so a failure (validation,
+    // constraint violation, lock timeout, etc.) only rolls back that user's
+    // changes and never aborts or leaks into the rest of the batch.
+    for (const userId of dto.user_ids) {
+      results.push(await this.applyBulkUserActionItem(userId, dto, adminId));
+    }
+
+    const succeeded = results.filter((r) => r.success).length;
+    const failed = results.length - succeeded;
+
+    this.logger.log(
+      `Admin ${adminId} performed bulk "${dto.action}" on ${dto.user_ids.length} users: ${succeeded} succeeded, ${failed} failed`,
+    );
+
+    return {
+      action: dto.action,
+      total: results.length,
+      results,
+      succeeded,
+      failed,
+    };
+  }
+
+  private async applyBulkUserActionItem(
+    userId: string,
+    dto: BulkUserActionDto,
+    adminId: string,
+  ): Promise<BulkUserActionResultDto> {
+    try {
+      if (userId === adminId && dto.action !== BulkUserAction.Unban) {
+        throw new BulkUserActionItemError(
+          BulkUserActionErrorCode.SelfActionNotAllowed,
+          `Admins cannot ${dto.action} themselves`,
+        );
+      }
+
+      await this.usersRepository.manager.transaction(async (manager) => {
+        const user = await manager.findOne(User, {
+          where: { id: userId },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!user) {
+          throw new BulkUserActionItemError(
+            BulkUserActionErrorCode.UserNotFound,
+            `User "${userId}" not found`,
+          );
+        }
+
+        switch (dto.action) {
+          case BulkUserAction.Ban:
+            if (user.is_banned) {
+              throw new BulkUserActionItemError(
+                BulkUserActionErrorCode.AlreadyBanned,
+                'User is already banned',
+              );
+            }
+            user.is_banned = true;
+            user.ban_reason = dto.reason ?? null;
+            user.banned_at = new Date();
+            user.banned_by = adminId;
+            await manager.save(user);
+            break;
+
+          case BulkUserAction.Unban:
+            if (!user.is_banned) {
+              throw new BulkUserActionItemError(
+                BulkUserActionErrorCode.NotBanned,
+                'User is not banned',
+              );
+            }
+            user.is_banned = false;
+            user.ban_reason = null;
+            user.banned_at = null;
+            user.banned_by = null;
+            await manager.save(user);
+            break;
+
+          case BulkUserAction.Flag:
+            await manager.save(
+              UserFlag,
+              manager.create(UserFlag, {
+                user_id: user.id,
+                reason: dto.reason ?? null,
+                flagged_by: adminId,
+              }),
+            );
+            break;
+        }
+
+        await manager.save(
+          ActivityLog,
+          manager.create(ActivityLog, {
+            userId: user.id,
+            actionType: `USER_BULK_${dto.action.toUpperCase()}`,
+            actionDetails: {
+              admin_id: adminId,
+              reason: dto.reason ?? null,
+            },
+          }),
+        );
+      });
+
+      return { user_id: userId, success: true };
+    } catch (err) {
+      if (err instanceof BulkUserActionItemError) {
+        return {
+          user_id: userId,
+          success: false,
+          error: err.message,
+          error_code: err.code,
+        };
+      }
+
+      // Unexpected errors (DB/driver failures) are logged in full but not
+      // surfaced to the client, so internal details don't leak.
+      this.logger.error(
+        `Bulk "${dto.action}" failed for user ${userId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        err instanceof Error ? err.stack : undefined,
+      );
+      return {
+        user_id: userId,
+        success: false,
+        error: 'Unexpected error while processing user',
+        error_code: BulkUserActionErrorCode.InternalError,
+      };
+    }
   }
 
   async updateUserRole(
@@ -255,6 +556,15 @@ export class AdminService {
     return this.flagsService.listFlags(query);
   }
 
+  /**
+   * Advisory prediction-fraud signal flags (timing clustering, counterparty
+   * concentration). Informational only - resolving/dismissing a flag here
+   * does not itself ban or restrict the flagged user.
+   */
+  async listFraudFlags(query: ListFraudFlagsQueryDto) {
+    return this.predictionsService.listFraudFlags(query);
+  }
+
   async resolveFlag(
     flagId: string,
     resolveFlagDto: ResolveFlagDto,
@@ -317,8 +627,8 @@ export class AdminService {
     await Promise.all(
       predictions.map((p) =>
         this.notificationsService.create(
-          p.user.id,
-          NotificationType.MarketResolved,
+          p.user.stellar_address,
+          NotificationType.MatchResolved,
           'Market Resolved',
           `The market "${market.title}" has been resolved. Winning outcome: ${dto.resolved_outcome}.`,
           {
@@ -343,6 +653,15 @@ export class AdminService {
         resolved_outcome: dto.resolved_outcome,
         resolution_note: dto.resolution_note ?? null,
       },
+    );
+
+    // Resolution changes this market's analytics, category/platform
+    // aggregates, and every participant's dashboard KPIs (streak/tier) —
+    // invalidate now instead of waiting out their TTL.
+    await this.analyticsService.invalidateMarketResolutionCaches(
+      market.id,
+      market.on_chain_market_id,
+      predictions.map((p) => p.user.id),
     );
 
     this.logger.log(
@@ -426,8 +745,8 @@ export class AdminService {
     await Promise.all(
       participants.map((participant) =>
         this.notificationsService.create(
-          participant.user_id,
-          NotificationType.System,
+          participant.user.stellar_address,
+          NotificationType.EventCancelled,
           'Competition Cancelled',
           `The competition "${competition.title}" has been cancelled by an administrator.${
             shouldRefund ? ' Any applicable refunds have been initiated.' : ''
@@ -613,5 +932,216 @@ export class AdminService {
     }
 
     return reportData;
+  }
+
+  async listCreatorEventsForModeration(query: {
+    status?: string;
+    creator?: string;
+    page?: number;
+    limit?: number;
+    sortBy?: string;
+    sortOrder?: 'ASC' | 'DESC';
+  }) {
+    const {
+      status = 'all',
+      creator,
+      page = 1,
+      limit = 20,
+      sortBy = 'created_at',
+      sortOrder = 'DESC',
+    } = query;
+
+    const skip = (page - 1) * limit;
+    const take = Math.min(limit, 100);
+
+    const qb = this.creatorEventRepository.createQueryBuilder('event');
+    qb.leftJoinAndSelect('event.matches', 'matches');
+
+    // Filter by status
+    if (status !== 'all') {
+      if (status === 'active') {
+        qb.andWhere('event.is_cancelled = false AND event.is_active = true');
+      } else if (status === 'cancelled') {
+        qb.andWhere('event.is_cancelled = true');
+      } else if (status === 'completed') {
+        qb.andWhere('event.is_active = false');
+      } else if (status === 'flagged') {
+        qb.leftJoinAndSelect('event.flags', 'flags');
+        qb.andWhere('flags.id IS NOT NULL');
+      }
+    }
+
+    // Filter by creator
+    if (creator) {
+      qb.andWhere('event.creator_address = :creator', {
+        creator: creator,
+      });
+    }
+
+    // Count total before pagination
+    const total = await qb.getCount();
+
+    // Apply sorting and pagination
+    qb.orderBy(`event.${sortBy}`, sortOrder).skip(skip).take(take);
+
+    const events = await qb.getMany();
+
+    // Enrich events with additional data
+    const enrichedEvents = await Promise.all(
+      events.map(async (event) => {
+        const participantCount = event.participant_count || 0;
+        const matchCount = event.match_count || 0;
+
+        // Get creator user info
+        const creatorUser = await this.usersRepository.findOne({
+          where: { stellar_address: event.creator_address },
+        });
+
+        // Get flags for this event (if any)
+        const flags: any[] = [];
+
+        // Get admin actions for this event
+        const adminActions: any[] = [];
+
+        return {
+          id: event.id,
+          title: event.title,
+          description: event.description,
+          status: event.is_cancelled
+            ? 'cancelled'
+            : event.is_active
+              ? 'active'
+              : 'completed',
+          creator: {
+            id: creatorUser?.id || '',
+            stellar_address: event.creator_address,
+            username: creatorUser?.username,
+            avatar_url: creatorUser?.avatar_url,
+            is_verified: creatorUser?.role === 'admin' || false,
+          },
+          participant_count: participantCount,
+          match_count: matchCount,
+          flags,
+          admin_actions: adminActions,
+          created_at: event.created_at.toISOString(),
+          updated_at: event.created_at.toISOString(),
+        };
+      }),
+    );
+
+    return {
+      data: enrichedEvents,
+      total,
+      page: page,
+      limit: take,
+    };
+  }
+  /**
+   * Bulk-imports markets from a CSV string. Validates each row independently
+   * via CreateMarketDto/class-validator; invalid rows are reported with
+   * reasons and do not abort the rest of the import. Each valid row is
+   * created in its own transaction via createMarketRowTransactional, so a
+   * failure on one row (validation or Soroban) never rolls back another
+   * row's already-committed market.
+   */
+  async importMarketsFromCsv(
+    csv: string,
+    userId: string,
+  ): Promise<BulkImportMarketsResponseDto> {
+    const user = await this.usersRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const lines = csv
+      .trim()
+      .split(/\r?\n/)
+      .filter((l) => l.trim().length > 0);
+    if (lines.length < 2) {
+      throw new BadRequestException(
+        'CSV must contain a header row and at least one data row',
+      );
+    }
+
+    const header = lines[0].split(',').map((h) => h.trim());
+    const dataRows = lines.slice(1);
+    const results: BulkImportRowResult[] = [];
+    let createdCount = 0;
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const rowNumber = i + 2; // +1 for header, +1 for 1-indexing
+      const cells = dataRows[i].split(',').map((c) => c.trim());
+
+      if (cells.length !== header.length) {
+        results.push({
+          row: rowNumber,
+          status: 'failed',
+          errors: [
+            'Expected ' + header.length + ' columns, got ' + cells.length,
+          ],
+        });
+        continue;
+      }
+
+      const raw: Record<string, string> = {};
+      header.forEach((col, idx) => {
+        raw[col] = cells[idx];
+      });
+
+      const plain: Record<string, unknown> = {
+        title: raw.title,
+        description: raw.description,
+        category: raw.category,
+        outcome_options: raw.outcome_options
+          ? raw.outcome_options.split(';').map((s) => s.trim())
+          : [],
+        end_time: raw.end_time,
+        resolution_time: raw.resolution_time,
+        creator_fee_bps:
+          raw.creator_fee_bps !== undefined
+            ? Number(raw.creator_fee_bps)
+            : undefined,
+        min_stake_stroops: raw.min_stake_stroops,
+        max_stake_stroops: raw.max_stake_stroops,
+        is_public:
+          raw.is_public !== undefined
+            ? raw.is_public.toLowerCase() === 'true'
+            : undefined,
+      };
+
+      const dto = plainToInstance(CreateMarketDto, plain);
+      const errors = await validate(dto as object);
+      if (errors.length > 0) {
+        const messages = errors.flatMap((e) =>
+          Object.values(e.constraints ?? {}),
+        );
+        results.push({ row: rowNumber, status: 'failed', errors: messages });
+        continue;
+      }
+
+      try {
+        const market = await this.marketsService.createMarketRowTransactional(
+          dto,
+          user,
+        );
+        results.push({
+          row: rowNumber,
+          status: 'created',
+          market_id: market.id,
+        });
+        createdCount++;
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Unknown error creating market';
+        results.push({ row: rowNumber, status: 'failed', errors: [message] });
+      }
+    }
+
+    return {
+      total: dataRows.length,
+      created_count: createdCount,
+      failed_count: dataRows.length - createdCount,
+      results,
+    };
   }
 }

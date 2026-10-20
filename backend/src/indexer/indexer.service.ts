@@ -1,0 +1,2074 @@
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { LessThan, MoreThan, Repository } from 'typeorm';
+import {
+  ContractEvent,
+  ContractEventStatus,
+} from './entities/contract-event.entity';
+import { FeeHistory } from './entities/fee-history.entity';
+import { IndexerCheckpoint } from './entities/indexer-checkpoint.entity';
+import { ChainSyncCheckpoint } from './entities/chain-sync-checkpoint.entity';
+import { ReorgEvent } from './entities/reorg-event.entity';
+import { IndexerMetricsDto } from './dto/indexer-metrics.dto';
+import { Match, WinningTeam } from '../matches/entities/match.entity';
+import { CreatorEvent } from '../matches/entities/creator-event.entity';
+import { CreatorEventLeaderboardEntry } from '../matches/entities/creator-event-leaderboard-entry.entity';
+import { CreatorEventPayout } from '../matches/entities/creator-event-payout.entity';
+import {
+  MatchPrediction,
+  PredictedOutcome,
+} from '../matches/entities/match-prediction.entity';
+import { User } from '../users/entities/user.entity';
+import { NotificationGeneratorService } from '../notifications/notification-generator.service';
+import { BroadcasterService } from '../websocket/broadcaster.service';
+import { ReconciliationService } from './reconciliation.service';
+
+export const CHECKPOINT_LEDGER_KEY = 'indexer:last_processed_ledger';
+const CHECKPOINT_LEDGER_KEY_LATEST = 'indexer:latest_contract_ledger';
+const MAX_RETRIES = 5;
+const DLQ_THRESHOLD = 5;
+const BATCH_SIZE = 100;
+// How many ledgers to roll back past the last-known-good ledger when a reorg
+// is detected. Kept configurable via INDEXER_REORG_ROLLBACK_DEPTH (shared
+// with ReconciliationService's own reorg guard) since the "right" depth
+// depends on the target network's finality characteristics.
+const DEFAULT_REORG_ROLLBACK_DEPTH = 10;
+/**
+ * Version of the event decoder's output shape. Bumped when a field is
+ * renamed or removed (never for a purely additive change - new fields are
+ * forward-compatible by construction since {@link extractEventData}'s
+ * default case passes unrecognized fields through as-is). Stamped onto
+ * every decoded event's `data` so downstream consumers can tell which
+ * decoding rules produced a given row.
+ */
+export const EVENT_DECODER_VERSION = 1;
+const BACKFILL_BATCH_SIZE = 50;
+const DEFAULT_CREATOR_EVENT_CATEGORY = 'general';
+// Matches MAX_EVENT_DURATION_SECONDS in contracts/creator-event-manager.
+const DEFAULT_EVENT_DURATION_SECONDS = 7_776_000;
+
+@Injectable()
+export class IndexerService implements OnModuleInit {
+  private readonly logger = new Logger(IndexerService.name);
+  private isRunning = false;
+  private startTime: number = Date.now();
+  private eventsProcessed = 0;
+  private lastProcessedAt = Date.now();
+  private processingRate = 0;
+  private eventTimestamps: number[] = [];
+
+  constructor(
+    private readonly configService: ConfigService,
+
+    @InjectRepository(ContractEvent)
+    private readonly contractEventRepository: Repository<ContractEvent>,
+
+    @InjectRepository(FeeHistory)
+    private readonly feeHistoryRepository: Repository<FeeHistory>,
+
+    @InjectRepository(IndexerCheckpoint)
+    private readonly checkpointRepository: Repository<IndexerCheckpoint>,
+
+    @InjectRepository(ChainSyncCheckpoint)
+    private readonly chainSyncCheckpointRepository: Repository<ChainSyncCheckpoint>,
+
+    @InjectRepository(ReorgEvent)
+    private readonly reorgEventRepository: Repository<ReorgEvent>,
+
+    @InjectRepository(CreatorEvent)
+    private readonly creatorEventRepository: Repository<CreatorEvent>,
+
+    @InjectRepository(Match)
+    private readonly matchRepository: Repository<Match>,
+
+    @InjectRepository(MatchPrediction)
+    private readonly matchPredictionRepository: Repository<MatchPrediction>,
+
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+
+    @InjectRepository(CreatorEventLeaderboardEntry)
+    private readonly creatorEventLeaderboardEntryRepository: Repository<CreatorEventLeaderboardEntry>,
+
+    @InjectRepository(CreatorEventPayout)
+    private readonly creatorEventPayoutRepository: Repository<CreatorEventPayout>,
+
+    private readonly notificationGeneratorService: NotificationGeneratorService,
+    private readonly broadcasterService: BroadcasterService,
+    private readonly reconciliationService: ReconciliationService,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.ensureCheckpoints();
+    await this.resumeFromPersistedCheckpoint();
+  }
+
+  /**
+   * Resumes the indexer from the persisted chain-sync checkpoint ledger
+   * (chain_sync_checkpoints, keyed by contract_id) instead of defaulting to
+   * genesis.
+   *
+   * The key/value checkpoint (indexer_checkpoints) is used as the working
+   * cursor during polls, but it can be missing or stale after a restart (for
+   * example when its row was wiped or the table was recreated). The
+   * chain-sync checkpoint table is created by a dedicated migration and is
+   * treated as the durable source of truth, so if it is ahead of the working
+   * cursor we adopt it. The cursor is never moved backwards here.
+   */
+  private async resumeFromPersistedCheckpoint(): Promise<void> {
+    const contractId = this.configService.get<string>('SOROBAN_CONTRACT_ID');
+    if (!contractId || contractId === 'your-contract-id-here') return;
+
+    const chainSync = await this.chainSyncCheckpointRepository.findOne({
+      where: { contract_id: contractId },
+    });
+    if (!chainSync) return;
+
+    const persistedLedger = Number(chainSync.last_indexed_ledger);
+    if (!Number.isFinite(persistedLedger) || persistedLedger <= 0) return;
+
+    const current = await this.checkpointRepository.findOne({
+      where: { key: CHECKPOINT_LEDGER_KEY },
+    });
+    const currentLedger = Number(current?.value ?? 0);
+
+    if (persistedLedger > currentLedger) {
+      await this.saveCheckpoint(CHECKPOINT_LEDGER_KEY, persistedLedger);
+      this.logger.log(
+        `Indexer resumed from persisted checkpoint ledger ${persistedLedger} (was ${currentLedger})`,
+      );
+    }
+  }
+
+  private async ensureCheckpoints(): Promise<void> {
+    const existing = await this.checkpointRepository.findOne({
+      where: { key: CHECKPOINT_LEDGER_KEY },
+    });
+    if (!existing) {
+      await this.checkpointRepository.save({
+        key: CHECKPOINT_LEDGER_KEY,
+        value: 0,
+        meta: null,
+      });
+    }
+    const existingLatest = await this.checkpointRepository.findOne({
+      where: { key: CHECKPOINT_LEDGER_KEY_LATEST },
+    });
+    if (!existingLatest) {
+      await this.checkpointRepository.save({
+        key: CHECKPOINT_LEDGER_KEY_LATEST,
+        value: 0,
+        meta: null,
+      });
+    }
+  }
+
+  @Cron(CronExpression.EVERY_30_SECONDS)
+  async pollContractEvents(): Promise<void> {
+    const contractId = this.configService.get<string>('SOROBAN_CONTRACT_ID');
+    if (!contractId || contractId === 'your-contract-id-here') {
+      return;
+    }
+
+    if (this.isRunning) {
+      this.logger.warn('Indexer poll skipped: previous poll still running');
+      return;
+    }
+
+    this.isRunning = true;
+    const batchStart = Date.now();
+
+    try {
+      const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
+      if (rpcUrl) {
+        // Detect a chain reorg before fetching new events, so a poll that
+        // starts right after a fork immediately rewinds to the fork point
+        // and re-indexes from there instead of building on top of
+        // now-orphaned ledgers.
+        await this.detectAndHandleReorg(contractId, rpcUrl);
+      }
+
+      const lastLedger = await this.getLastProcessedLedger();
+      const fromLedger = Math.max(lastLedger + 1, 1);
+
+      const { events, latestLedger } =
+        await this.fetchEventsFromContract(fromLedger);
+
+      if (latestLedger > lastLedger) {
+        await this.saveCheckpoint(CHECKPOINT_LEDGER_KEY_LATEST, latestLedger);
+      }
+
+      if (events.length === 0) {
+        if (latestLedger > lastLedger) {
+          await this.saveCheckpoint(CHECKPOINT_LEDGER_KEY, latestLedger);
+          const activeContractId = this.configService.get<string>(
+            'SOROBAN_CONTRACT_ID',
+          );
+          if (activeContractId) {
+            await this.reconciliationService.advanceCheckpoint(
+              activeContractId,
+              latestLedger,
+            );
+          }
+          if (rpcUrl) {
+            await this.persistIndexedLedgerHash(
+              contractId,
+              rpcUrl,
+              latestLedger,
+            );
+          }
+        }
+        return;
+      }
+
+      let maxProcessedLedger = lastLedger;
+      const sorted = [...events].sort(
+        (a, b) => a.ledger - b.ledger || a.log_index - b.log_index,
+      );
+
+      for (const rawEvent of sorted) {
+        try {
+          await this.storeAndProcessEvent(rawEvent);
+          this.eventsProcessed++;
+          this.recordProcessedEvent();
+          if (rawEvent.ledger > maxProcessedLedger) {
+            maxProcessedLedger = rawEvent.ledger;
+          }
+        } catch (err) {
+          this.logger.error(
+            `Failed to process event at ledger ${rawEvent.ledger}: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          );
+        }
+      }
+
+      // Advance the checkpoint only to the highest ledger that was actually
+      // processed in this batch. `latestLedger` is the chain head at query
+      // time and can be far ahead of the events this batch returned (e.g.
+      // when the RPC result was truncated by the limit), so advancing to it
+      // would skip any events between the last processed ledger and the head.
+      // The next poll resumes at finalLedger + 1 and keeps going from there.
+      const finalLedger = maxProcessedLedger;
+      await this.saveCheckpoint(CHECKPOINT_LEDGER_KEY, finalLedger);
+
+      const activeContractId = this.configService.get<string>(
+        'SOROBAN_CONTRACT_ID',
+      );
+      if (activeContractId) {
+        await this.reconciliationService.advanceCheckpoint(
+          activeContractId,
+          finalLedger,
+        );
+      }
+      if (rpcUrl) {
+        await this.persistIndexedLedgerHash(contractId, rpcUrl, finalLedger);
+      }
+
+      const elapsed = Date.now() - batchStart;
+      this.processingRate =
+        elapsed > 0
+          ? Math.round((events.length / elapsed) * 1000 * 100) / 100
+          : 0;
+      this.lastProcessedAt = Date.now();
+    } catch (error) {
+      this.logger.error('Indexer poll failed', error);
+    } finally {
+      this.isRunning = false;
+    }
+  }
+
+  private async fetchEventsFromContract(fromLedger: number): Promise<{
+    events: Array<{
+      id: string;
+      ledger: number;
+      log_index: number;
+      event_type: string;
+      data: Record<string, unknown>;
+      tx_hash: string | null;
+    }>;
+    latestLedger: number;
+  }> {
+    const rpcUrl = this.configService.get<string>('SOROBAN_RPC_URL');
+    const contractId = this.configService.get<string>('SOROBAN_CONTRACT_ID');
+
+    if (!rpcUrl || !contractId) {
+      return { events: [], latestLedger: fromLedger };
+    }
+
+    try {
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'insightarena-indexer',
+          method: 'getEvents',
+          params: {
+            startLedger: fromLedger,
+            filters: [{ type: 'contract', contractIds: [contractId] }],
+            xdrFormat: 'json',
+            limit: BATCH_SIZE,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Soroban RPC error: HTTP ${response.status}`);
+      }
+
+      const body = (await response.json()) as {
+        error?: { message?: string };
+        result?: {
+          events?: unknown[];
+          latestLedger?: number;
+        };
+      };
+
+      if (body.error) {
+        throw new Error(body.error.message ?? 'Unknown Soroban RPC error');
+      }
+
+      const rawEvents = body.result?.events ?? [];
+      const latestLedger =
+        typeof body.result?.latestLedger === 'number'
+          ? body.result.latestLedger
+          : fromLedger;
+
+      const parsed = rawEvents
+        .map((raw: unknown, index: number) => {
+          try {
+            return this.parseRawEvent(raw, index);
+          } catch (err) {
+            this.logger.warn(
+              `Skipping unparseable event at index ${index}: ${err instanceof Error ? err.message : 'Unknown error'}`,
+            );
+            return null;
+          }
+        })
+        .filter((e) => e !== null);
+
+      return { events: parsed, latestLedger };
+    } catch (error) {
+      this.logger.error('Failed to fetch events from contract', error);
+      return { events: [], latestLedger: fromLedger };
+    }
+  }
+
+  private parseRawEvent(
+    raw: unknown,
+    index: number,
+  ): {
+    id: string;
+    ledger: number;
+    log_index: number;
+    event_type: string;
+    data: Record<string, unknown>;
+    tx_hash: string | null;
+  } | null {
+    if (!raw || typeof raw !== 'object') return null;
+
+    const record = raw as Record<string, unknown>;
+    const ledger = this.toNumber(record.ledger);
+    if (ledger === null) return null;
+
+    const id =
+      typeof record.id === 'string'
+        ? record.id
+        : `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+
+    const topic = this.readTopic(record.topic ?? record.topics);
+    const value =
+      record.value && typeof record.value === 'object'
+        ? (record.value as Record<string, unknown>)
+        : ((record.data as Record<string, unknown>) ?? {});
+
+    const eventType = this.detectEventType(topic, value);
+    if (!eventType) return null;
+
+    const txHash =
+      typeof record.tx_hash === 'string'
+        ? record.tx_hash
+        : typeof record.id === 'string'
+          ? record.id
+          : null;
+
+    const data = {
+      ...this.extractEventData(eventType, value),
+      _decoder_version: EVENT_DECODER_VERSION,
+    };
+
+    return {
+      id,
+      ledger,
+      log_index: this.toNumber(record.log_index) ?? index,
+      event_type: eventType,
+      data,
+      tx_hash: txHash,
+    };
+  }
+
+  private readTopic(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((item) => {
+        const unwrapped = this.unwrapIndexerValue(item);
+        if (typeof unwrapped === 'string') return unwrapped;
+        return null;
+      })
+      .filter((item): item is string => item !== null);
+  }
+
+  private detectEventType(
+    topic: string[],
+    value: Record<string, unknown>,
+  ): string | null {
+    const lowerTopics = topic.map((t) => t.toLowerCase());
+
+    const explicitTypeCandidate = this.unwrapIndexerValue(
+      value.event ?? value.event_type,
+    );
+    const explicitType =
+      typeof explicitTypeCandidate === 'string' ? explicitTypeCandidate : null;
+
+    if (explicitType) return explicitType;
+
+    const topicStr = lowerTopics.join('.');
+    const hasTopicPair = (domain: string, action: string): boolean =>
+      lowerTopics.some(
+        (topic, index) => topic === domain && lowerTopics[index + 1] === action,
+      );
+
+    if (topicStr.includes('eventcreated') || hasTopicPair('event', 'created'))
+      return 'EventCreated';
+    if (topicStr.includes('matchadded') || hasTopicPair('match', 'created'))
+      return 'MatchAdded';
+    if (topicStr.includes('userjoined') || hasTopicPair('event', 'joined'))
+      return 'UserJoinedEvent';
+    if (
+      topicStr.includes('predictionsubmitted') ||
+      hasTopicPair('prediction', 'submitted')
+    )
+      return 'PredictionSubmitted';
+    if (
+      topicStr.includes('matchresultsubmitted') ||
+      topicStr.includes('reslvd') ||
+      hasTopicPair('match', 'result_submitted')
+    )
+      return 'MatchResultSubmitted';
+    if (
+      topicStr.includes('winnersverified') ||
+      hasTopicPair('event', 'winners_verified')
+    )
+      return 'WinnersVerified';
+    if (
+      topicStr.includes('eventfinalized') ||
+      hasTopicPair('event', 'finalized')
+    )
+      return 'EventFinalized';
+    if (
+      topicStr.includes('eventcancelled') ||
+      hasTopicPair('event', 'cancelled')
+    )
+      return 'EventCancelled';
+    if (topicStr.includes('feeupdated')) return 'FeeUpdated';
+    if (topicStr.includes('addressverified')) return 'AddressVerified';
+    if (topicStr.includes('addressunverified')) return 'AddressUnverified';
+    if (topicStr.includes('payclmd') || topicStr.includes('payoutclaimed'))
+      return 'PayoutClaimed';
+    if (
+      topicStr.includes('submitd') ||
+      topicStr.includes('predictionsubmitted')
+    )
+      return 'PredictionSubmitted';
+
+    return null;
+  }
+
+  private extractEventData(
+    eventType: string,
+    rawValue: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const base = { ...rawValue };
+
+    switch (eventType) {
+      case 'EventCreated': {
+        const eventCreated = this.readEventCreatedPayload(rawValue);
+
+        return {
+          event_id: this.readBigInt(eventCreated, 'event_id'),
+          creator: this.readStr(eventCreated, 'creator'),
+          title: this.readStr(eventCreated, 'title'),
+          description: this.readStr(eventCreated, 'description'),
+          creation_fee_paid: this.readBigInt(eventCreated, 'creation_fee_paid'),
+          created_at: this.readNum(eventCreated, 'created_at'),
+          start_time: this.readNum(eventCreated, 'start_time'),
+          end_time: this.readNum(eventCreated, 'end_time'),
+          invite_code: this.readStr(eventCreated, 'invite_code'),
+          max_participants: this.readNum(eventCreated, 'max_participants'),
+          prize_pool: this.readUnsignedBigInt(eventCreated, 'prize_pool'),
+          reward_distribution: this.readNumberArray(
+            eventCreated,
+            'reward_distribution',
+          ),
+          entry_fee: this.readUnsignedBigInt(eventCreated, 'entry_fee'),
+          category: this.normalizeCategory(
+            this.readStr(eventCreated, 'category'),
+          ),
+          banner_url: this.normalizeNullableString(
+            this.readStr(eventCreated, 'banner_url'),
+            2048,
+          ),
+          is_finalized: this.readBool(eventCreated, 'is_finalized') ?? false,
+        };
+      }
+      case 'MatchAdded':
+        return {
+          match_id: this.readBigInt(base, 'match_id'),
+          event_id: this.readBigInt(base, 'event_id'),
+          team_a: this.readStr(base, 'team_a'),
+          team_b: this.readStr(base, 'team_b'),
+          match_time: this.readNum(base, 'match_time'),
+          points_multiplier: this.readNum(base, 'points_multiplier'),
+        };
+      case 'UserJoinedEvent':
+        return {
+          user_address: this.readStr(base, 'user_address'),
+          event_id: this.readBigInt(base, 'event_id'),
+          joined_at: this.readNum(base, 'joined_at'),
+          entry_fee_paid: this.readUnsignedBigInt(base, 'entry_fee_paid'),
+        };
+      case 'PredictionSubmitted':
+        return {
+          prediction_id: this.readBigInt(base, 'prediction_id'),
+          match_id: this.readBigInt(base, 'match_id'),
+          event_id: this.readBigInt(base, 'event_id'),
+          predictor: this.readStr(base, 'predictor'),
+          predicted_outcome: this.readStr(base, 'predicted_outcome'),
+          predicted_home_score: this.readNum(base, 'predicted_home_score'),
+          predicted_away_score: this.readNum(base, 'predicted_away_score'),
+          predicted_at: this.readNum(base, 'predicted_at'),
+        };
+      case 'MatchResultSubmitted':
+        return {
+          match_id: this.readBigInt(base, 'match_id'),
+          event_id: this.readBigInt(base, 'event_id'),
+          winning_team: this.readNum(base, 'winning_team'),
+          submitted_by: this.readStr(base, 'submitted_by'),
+          submitted_at: this.readNum(base, 'submitted_at'),
+          home_score: this.readNum(base, 'home_score'),
+          away_score: this.readNum(base, 'away_score'),
+        };
+      case 'WinnersVerified':
+        return {
+          event_id: this.readBigInt(base, 'event_id'),
+          verified_at: this.readNum(base, 'verified_at'),
+          winners: Array.isArray(base.winners) ? base.winners : [],
+        };
+      case 'EventFinalized':
+        return {
+          event_id: this.readBigInt(base, 'event_id'),
+          finalized_at: this.readNum(base, 'finalized_at'),
+          // leaderboard is passed through as-is; per-entry unwrapping happens
+          // inside handleEventFinalized to keep extractEventData free of
+          // business logic.
+          leaderboard: Array.isArray(base.leaderboard) ? base.leaderboard : [],
+        };
+      case 'EventCancelled':
+        return {
+          event_id: this.readBigInt(base, 'event_id'),
+          cancelled_at: this.readNum(base, 'cancelled_at'),
+        };
+      case 'FeeUpdated':
+        return {
+          old_fee: this.readBigInt(base, 'old_fee'),
+          new_fee: this.readBigInt(base, 'new_fee'),
+          updated_by: this.readStr(base, 'updated_by'),
+          updated_at: this.readNum(base, 'updated_at'),
+        };
+      case 'AddressVerified':
+        return {
+          address: this.readStr(base, 'address'),
+          verified_at: this.readNum(base, 'verified_at'),
+        };
+      case 'AddressUnverified':
+        return {
+          address: this.readStr(base, 'address'),
+          unverified_at: this.readNum(base, 'unverified_at'),
+        };
+      default:
+        return base;
+    }
+  }
+
+  private async storeAndProcessEvent(rawEvent: {
+    id: string;
+    ledger: number;
+    log_index: number;
+    event_type: string;
+    data: Record<string, unknown>;
+    tx_hash: string | null;
+  }): Promise<void> {
+    const existing = await this.contractEventRepository.findOne({
+      where: { ledger: rawEvent.ledger, log_index: rawEvent.log_index },
+    });
+    if (existing) {
+      if (existing.status === ContractEventStatus.PROCESSED) return;
+    }
+
+    let contractEvent: ContractEvent;
+    if (existing) {
+      contractEvent = existing;
+      contractEvent.data = rawEvent.data;
+      contractEvent.tx_hash = rawEvent.tx_hash;
+    } else {
+      contractEvent = this.contractEventRepository.create({
+        ledger: rawEvent.ledger,
+        log_index: rawEvent.log_index,
+        event_type: rawEvent.event_type,
+        data: rawEvent.data,
+        tx_hash: rawEvent.tx_hash,
+        status: ContractEventStatus.PENDING,
+        retry_count: 0,
+      });
+    }
+
+    await this.contractEventRepository.save(contractEvent);
+
+    try {
+      await this.processEventByType(rawEvent.event_type, rawEvent.data);
+      contractEvent.status = ContractEventStatus.PROCESSED;
+      contractEvent.processed_at = new Date();
+      await this.contractEventRepository.save(contractEvent);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Unknown processing error';
+      contractEvent.retry_count += 1;
+
+      if (contractEvent.retry_count >= DLQ_THRESHOLD) {
+        contractEvent.status = ContractEventStatus.DLQ;
+        this.logger.warn(
+          `Event ${rawEvent.event_type} (ledger=${rawEvent.ledger}) moved to DLQ after ${contractEvent.retry_count} retries`,
+        );
+      } else {
+        contractEvent.status = ContractEventStatus.FAILED;
+      }
+
+      contractEvent.error_message = message;
+      await this.contractEventRepository.save(contractEvent);
+    }
+  }
+
+  private async processEventByType(
+    eventType: string,
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    switch (eventType) {
+      case 'EventCreated':
+        await this.handleEventCreated(data);
+        break;
+      case 'MatchAdded':
+        await this.handleMatchAdded(data);
+        break;
+      case 'UserJoinedEvent':
+        await this.handleUserJoinedEvent(data);
+        break;
+      case 'PredictionSubmitted':
+        await this.handlePredictionSubmitted(data);
+        break;
+      case 'MatchResultSubmitted':
+        await this.handleMatchResultSubmitted(data);
+        break;
+      case 'WinnersVerified':
+        void this.handleWinnersVerified(data);
+        break;
+      case 'EventFinalized':
+        await this.handleEventFinalized(data);
+        break;
+      case 'EventCancelled':
+        await this.handleEventCancelled(data);
+        break;
+      case 'FeeUpdated':
+        await this.handleFeeUpdated(data);
+        break;
+      case 'AddressVerified':
+        await this.handleAddressVerified(data);
+        break;
+      case 'AddressUnverified':
+        await this.handleAddressUnverified(data);
+        break;
+      default:
+        this.logger.debug(`No handler for event type: ${eventType}`);
+    }
+  }
+
+  private async handleEventCreated(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const onChainEventId = Number(data.event_id);
+    if (!onChainEventId) {
+      this.logger.warn('EventCreated skipped: missing event_id');
+      return;
+    }
+
+    const existing = await this.creatorEventRepository.findOne({
+      where: { on_chain_event_id: onChainEventId },
+    });
+    if (existing) return;
+
+    const createdAt = this.readUnixTimestamp(data, 'created_at') ?? new Date();
+    const startTime = this.readUnixTimestamp(data, 'start_time') ?? createdAt;
+    const parsedEndTime = this.readUnixTimestamp(data, 'end_time');
+    const endTime =
+      parsedEndTime && parsedEndTime.getTime() > startTime.getTime()
+        ? parsedEndTime
+        : new Date(startTime.getTime() + DEFAULT_EVENT_DURATION_SECONDS * 1000);
+
+    const creatorAddress = this.readStr(data, 'creator');
+    const hasOverlap = await this.hasOverlappingCampaign(
+      creatorAddress,
+      startTime,
+      endTime,
+    );
+    if (hasOverlap) {
+      this.logger.warn(
+        `EventCreated rejected: event ${onChainEventId} overlaps an existing active campaign for creator ${creatorAddress}`,
+      );
+      return;
+    }
+
+    const creatorEvent = this.creatorEventRepository.create({
+      on_chain_event_id: onChainEventId,
+      creator_address: creatorAddress,
+      title: this.readStr(data, 'title') || `Event ${onChainEventId}`,
+      description: this.readStr(data, 'description'),
+      creation_fee_paid: this.readUnsignedBigInt(data, 'creation_fee_paid'),
+      on_chain_created_at: createdAt,
+      start_time: startTime,
+      end_time: endTime,
+      prize_pool: this.readUnsignedBigInt(data, 'prize_pool'),
+      reward_distribution: this.readNumberArray(data, 'reward_distribution'),
+      entry_fee: this.readUnsignedBigInt(data, 'entry_fee'),
+      category: this.normalizeCategory(this.readStr(data, 'category')),
+      banner_url: this.normalizeNullableString(
+        this.readStr(data, 'banner_url'),
+        2048,
+      ),
+      is_finalized: this.readBool(data, 'is_finalized') ?? false,
+      is_active: true,
+      is_cancelled: false,
+      invite_code: this.readStr(data, 'invite_code') || null,
+      max_participants: this.readNum(data, 'max_participants') ?? 0,
+      participant_count: 0,
+      match_count: 0,
+    });
+
+    await this.creatorEventRepository.save(creatorEvent);
+    this.logger.log(`Indexed EventCreated: event_id=${onChainEventId}`);
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleEventCreated(data);
+    this.broadcasterService.broadcastEventCreated(data);
+  }
+
+  /**
+   * Two campaigns overlap for the same creator when their [start, end)
+   * windows intersect and the existing one is still active (not cancelled).
+   */
+  private async hasOverlappingCampaign(
+    creatorAddress: string,
+    startTime: Date,
+    endTime: Date,
+  ): Promise<boolean> {
+    if (!creatorAddress) return false;
+
+    const count = await this.creatorEventRepository
+      .createQueryBuilder('event')
+      .where('event.creator_address = :creatorAddress', { creatorAddress })
+      .andWhere('event.is_cancelled = false')
+      .andWhere('event.start_time < :endTime', { endTime })
+      .andWhere('event.end_time > :startTime', { startTime })
+      .getCount();
+
+    return count > 0;
+  }
+
+  private async handleMatchAdded(data: Record<string, unknown>): Promise<void> {
+    const onChainMatchId = Number(data.match_id);
+    const onChainEventId = Number(data.event_id);
+    if (!onChainMatchId || !onChainEventId) {
+      this.logger.warn('MatchAdded skipped: missing match_id or event_id');
+      return;
+    }
+
+    const existing = await this.matchRepository.findOne({
+      where: { on_chain_match_id: onChainMatchId },
+    });
+    if (existing) return;
+
+    const event = await this.creatorEventRepository.findOne({
+      where: { on_chain_event_id: onChainEventId },
+    });
+    if (!event) {
+      this.logger.warn(`MatchAdded skipped: event ${onChainEventId} not found`);
+      return;
+    }
+
+    let pointsMultiplier =
+      data.points_multiplier !== undefined ? Number(data.points_multiplier) : 1;
+    if (
+      pointsMultiplier < 1 ||
+      pointsMultiplier > 3 ||
+      isNaN(pointsMultiplier)
+    ) {
+      pointsMultiplier = 1;
+    }
+
+    const match = this.matchRepository.create({
+      on_chain_match_id: onChainMatchId,
+      event,
+      team_a: this.readStr(data, 'team_a') || 'Team A',
+      team_b: this.readStr(data, 'team_b') || 'Team B',
+      match_time: data.match_time
+        ? new Date(Number(data.match_time) * 1000)
+        : new Date(),
+      points_multiplier: pointsMultiplier,
+      result_submitted: false,
+      winning_team: null,
+      submitted_by: null,
+      submitted_at: null,
+      home_score: null,
+      away_score: null,
+    });
+
+    await this.matchRepository.save(match);
+
+    event.match_count += 1;
+    await this.creatorEventRepository.save(event);
+    this.logger.log(
+      `Indexed MatchAdded: match_id=${onChainMatchId} event_id=${onChainEventId}`,
+    );
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleMatchAdded(data);
+    this.broadcasterService.broadcastMatchAdded(data);
+  }
+
+  private async handleUserJoinedEvent(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const onChainEventId = Number(data.event_id);
+    const userAddress = this.readStr(data, 'user_address');
+    if (!onChainEventId || !userAddress) {
+      this.logger.warn('UserJoinedEvent skipped: missing data');
+      return;
+    }
+
+    const exists = await this.creatorEventRepository.count({
+      where: { on_chain_event_id: onChainEventId },
+    });
+    if (!exists) {
+      this.logger.warn(
+        `UserJoinedEvent skipped: event ${onChainEventId} not found`,
+      );
+      return;
+    }
+
+    const entryFeePaid = this.readUnsignedBigInt(data, 'entry_fee_paid');
+
+    // Atomic SQL update: avoids the lost-update race that a read-modify-write
+    // (findOne -> mutate in JS -> save) would hit under concurrent joins.
+    await this.creatorEventRepository
+      .createQueryBuilder()
+      .update()
+      .set({
+        participant_count: () => '"participant_count" + 1',
+        prize_pool: () => `"prize_pool" + :entryFeePaid`,
+        total_entry_fees_collected: () =>
+          `"total_entry_fees_collected" + :entryFeePaid`,
+      })
+      .where('on_chain_event_id = :onChainEventId', { onChainEventId })
+      .setParameter('entryFeePaid', entryFeePaid)
+      .execute();
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleUserJoinedEvent(data);
+    this.broadcasterService.broadcastUserJoined(data);
+  }
+
+  /**
+   * Recomputes total_entry_fees_collected for a creator event from its
+   * current participant_count and flat entry_fee (the contract charges a
+   * single flat entry_fee per event, not a per-participant amount), so this
+   * is the correct reconciliation source rather than re-deriving from
+   * on-chain participant records.
+   */
+  async recomputeEntryFeeTotals(onChainEventId: number): Promise<void> {
+    const event = await this.creatorEventRepository.findOne({
+      where: { on_chain_event_id: onChainEventId },
+    });
+    if (!event) {
+      this.logger.warn(
+        `recomputeEntryFeeTotals skipped: event ${onChainEventId} not found`,
+      );
+      return;
+    }
+
+    const recomputedTotal = (
+      BigInt(event.entry_fee ?? '0') * BigInt(event.participant_count ?? 0)
+    ).toString();
+
+    await this.creatorEventRepository
+      .createQueryBuilder()
+      .update()
+      .set({ total_entry_fees_collected: recomputedTotal })
+      .where('on_chain_event_id = :onChainEventId', { onChainEventId })
+      .execute();
+
+    this.logger.log(
+      `Recomputed total_entry_fees_collected for event_id=${onChainEventId}: ${recomputedTotal}`,
+    );
+  }
+
+  private async handlePredictionSubmitted(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const matchId = Number(data.match_id);
+    const predictorAddress = this.readStr(data, 'predictor');
+
+    if (!matchId || !predictorAddress) {
+      this.logger.warn('PredictionSubmitted skipped: missing data');
+      return;
+    }
+
+    const match = await this.matchRepository.findOne({
+      where: { on_chain_match_id: matchId },
+      relations: ['event'],
+    });
+    if (!match) {
+      this.logger.warn(
+        `PredictionSubmitted skipped: match ${matchId} not found`,
+      );
+      return;
+    }
+
+    const user = await this.userRepository.findOne({
+      where: { stellar_address: predictorAddress },
+    });
+    if (!user) {
+      this.logger.warn(
+        `PredictionSubmitted skipped: unknown user ${predictorAddress}`,
+      );
+      return;
+    }
+
+    const existing = await this.matchPredictionRepository.findOne({
+      where: {
+        match: { id: match.id },
+        user: { id: user.id },
+      },
+    });
+    if (existing) return;
+
+    const predictedHomeScore =
+      data.predicted_home_score !== undefined &&
+      data.predicted_home_score !== null
+        ? Number(data.predicted_home_score)
+        : null;
+    const predictedAwayScore =
+      data.predicted_away_score !== undefined &&
+      data.predicted_away_score !== null
+        ? Number(data.predicted_away_score)
+        : null;
+
+    let predictedOutcome: PredictedOutcome;
+    if (predictedHomeScore !== null && predictedAwayScore !== null) {
+      if (predictedHomeScore > predictedAwayScore) {
+        predictedOutcome = PredictedOutcome.TEAM_A;
+      } else if (predictedHomeScore < predictedAwayScore) {
+        predictedOutcome = PredictedOutcome.TEAM_B;
+      } else {
+        predictedOutcome = PredictedOutcome.DRAW;
+      }
+    } else {
+      const rawOutcome = this.readStr(data, 'predicted_outcome');
+      if (!rawOutcome) {
+        this.logger.warn(
+          'PredictionSubmitted skipped: no scoreline or predicted_outcome',
+        );
+        return;
+      }
+      const normalizedOutcome = rawOutcome.toUpperCase();
+      if (
+        ![
+          PredictedOutcome.TEAM_A,
+          PredictedOutcome.TEAM_B,
+          PredictedOutcome.DRAW,
+        ]
+          .map((o) => o.toString())
+          .includes(normalizedOutcome)
+      ) {
+        this.logger.warn(
+          `PredictionSubmitted skipped: invalid outcome ${rawOutcome}`,
+        );
+        return;
+      }
+      predictedOutcome = normalizedOutcome as PredictedOutcome;
+    }
+
+    const prediction = this.matchPredictionRepository.create({
+      match,
+      user,
+      predicted_outcome: predictedOutcome,
+      predicted_home_score: predictedHomeScore,
+      predicted_away_score: predictedAwayScore,
+      points_earned: 0,
+      is_correct: null,
+    });
+
+    await this.matchPredictionRepository.save(prediction);
+    this.logger.log(
+      `Indexed PredictionSubmitted: match=${matchId} user=${predictorAddress}`,
+    );
+
+    // Trigger notification
+    await this.notificationGeneratorService.handlePredictionSubmitted(data);
+    this.broadcasterService.broadcastPredictionSubmitted(data);
+  }
+
+  private async handleMatchResultSubmitted(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const matchId = Number(data.match_id);
+    if (!matchId) {
+      this.logger.warn('MatchResultSubmitted skipped: missing match_id');
+      return;
+    }
+
+    const match = await this.matchRepository.findOne({
+      where: { on_chain_match_id: matchId },
+    });
+    if (!match) {
+      this.logger.warn(
+        `MatchResultSubmitted skipped: match ${matchId} not found`,
+      );
+      return;
+    }
+
+    if (match.result_submitted) return;
+
+    const winningTeamNum = Number(data.winning_team);
+    const winningTeamMap: Record<number, WinningTeam> = {
+      0: WinningTeam.TEAM_A,
+      1: WinningTeam.TEAM_B,
+      2: WinningTeam.DRAW,
+    };
+    const winningTeam = winningTeamMap[winningTeamNum] ?? null;
+
+    if (!winningTeam) {
+      this.logger.warn(
+        `MatchResultSubmitted skipped: invalid winning_team ${winningTeamNum}`,
+      );
+      return;
+    }
+
+    match.result_submitted = true;
+    match.winning_team = winningTeam;
+    match.submitted_by = this.readStr(data, 'submitted_by');
+    match.submitted_at = data.submitted_at
+      ? new Date(Number(data.submitted_at) * 1000)
+      : new Date();
+    match.home_score =
+      data.home_score !== undefined ? Number(data.home_score) : null;
+    match.away_score =
+      data.away_score !== undefined ? Number(data.away_score) : null;
+
+    await this.matchRepository.save(match);
+
+    await this.gradePredictions(match);
+    this.logger.log(
+      `Indexed MatchResultSubmitted: match=${matchId} winner=${winningTeam}`,
+    );
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleMatchResultSubmitted(data);
+    this.broadcasterService.broadcastMatchResolved(data);
+  }
+
+  private async gradePredictions(match: Match): Promise<void> {
+    const predictions = await this.matchPredictionRepository.find({
+      where: { match: { id: match.id } },
+    });
+
+    const { home_score, away_score, winning_team, points_multiplier } = match;
+
+    for (const prediction of predictions) {
+      const outcomeCorrect =
+        String(prediction.predicted_outcome) === String(winning_team);
+      prediction.is_correct = outcomeCorrect;
+
+      if (!outcomeCorrect) {
+        prediction.points_earned = 0;
+        continue;
+      }
+
+      if (
+        home_score !== null &&
+        away_score !== null &&
+        prediction.predicted_home_score !== null &&
+        prediction.predicted_away_score !== null
+      ) {
+        const exactScore =
+          prediction.predicted_home_score === home_score &&
+          prediction.predicted_away_score === away_score;
+
+        const goalDiffCorrect =
+          prediction.predicted_home_score - prediction.predicted_away_score ===
+          home_score - away_score;
+
+        if (exactScore) {
+          prediction.points_earned = 4 * points_multiplier;
+        } else if (goalDiffCorrect) {
+          prediction.points_earned = 3 * points_multiplier;
+        } else {
+          prediction.points_earned = 1 * points_multiplier;
+        }
+      } else {
+        prediction.points_earned = 1 * points_multiplier;
+      }
+    }
+
+    if (predictions.length > 0) {
+      await this.matchPredictionRepository.save(predictions);
+    }
+  }
+
+  private async handleWinnersVerified(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    this.logger.log(
+      `WinnersVerified event received for event_id=${String(data.event_id)}`,
+    );
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleWinnersVerified(data);
+    this.broadcasterService.broadcastWinnersVerified(data);
+  }
+
+  private async handleEventFinalized(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const onChainEventId = Number(data.event_id);
+    if (!onChainEventId) {
+      this.logger.warn('EventFinalized skipped: missing event_id');
+      return;
+    }
+
+    const event = await this.creatorEventRepository.findOne({
+      where: { on_chain_event_id: onChainEventId },
+    });
+    if (!event) {
+      this.logger.warn(
+        `EventFinalized skipped: event ${onChainEventId} not found in DB`,
+      );
+      return;
+    }
+
+    const eventIdStr = String(onChainEventId);
+
+    // Idempotency guard: if any payout rows already exist for this event the
+    // entire EventFinalized payload has already been processed (payouts are
+    // created atomically per entry in the loop below). An early exit here is
+    // safe because the creation path uses the same event_id string key.
+    const existingCount = await this.creatorEventPayoutRepository.count({
+      where: { event_id: eventIdStr },
+    });
+    if (existingCount > 0) {
+      this.logger.log(
+        `EventFinalized idempotent skip: payouts already exist for event ${onChainEventId}`,
+      );
+      return;
+    }
+
+    // Mark finalized in DB in case this event was finalized by a third party
+    // (contract is permissionless) and the finalizer service has not yet run.
+    if (!event.is_finalized) {
+      event.is_finalized = true;
+      await this.creatorEventRepository.save(event);
+    }
+
+    // Reconcile total_entry_fees_collected against participant_count so any
+    // drift from missed/duplicated UserJoinedEvent processing is corrected
+    // before payouts are computed.
+    await this.recomputeEntryFeeTotals(onChainEventId);
+
+    const leaderboard: unknown[] = Array.isArray(data.leaderboard)
+      ? data.leaderboard
+      : [];
+
+    let successCount = 0;
+    for (const rawEntry of leaderboard) {
+      try {
+        await this.processLeaderboardEntry(eventIdStr, rawEntry);
+        successCount++;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        this.logger.warn(
+          `EventFinalized: failed to persist entry for event ${onChainEventId}: ${message}`,
+        );
+      }
+    }
+
+    this.logger.log(
+      `Indexed EventFinalized: event_id=${onChainEventId} entries=${successCount}/${leaderboard.length}`,
+    );
+
+    this.broadcasterService.broadcastEventFinalized(data);
+  }
+
+  /**
+   * Upserts one CreatorEventLeaderboardEntry and creates the linked
+   * CreatorEventPayout for a single participant in an EventFinalized payload.
+   *
+   * Time complexity: O(1) per entry — two indexed point-lookups + two writes.
+   * Space complexity: O(1).
+   */
+  private async processLeaderboardEntry(
+    eventIdStr: string,
+    raw: unknown,
+  ): Promise<void> {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+
+    const entry = raw as Record<string, unknown>;
+    const userAddress = this.readStr(entry, 'address');
+    const rank = this.readNum(entry, 'rank');
+    const payoutAmountStroops = this.readUnsignedBigInt(entry, 'payout_amount');
+    const totalPredictions = this.readNum(entry, 'total_predictions') ?? 0;
+    const correctPredictions = this.readNum(entry, 'correct_predictions') ?? 0;
+
+    if (!userAddress || rank === null) {
+      this.logger.warn(
+        `processLeaderboardEntry: skipping entry with missing address or rank`,
+      );
+      return;
+    }
+
+    const accuracyPercentage =
+      totalPredictions > 0
+        ? Math.round((correctPredictions / totalPredictions) * 10000) / 100
+        : 0;
+
+    const isWinner = BigInt(payoutAmountStroops) > 0n;
+
+    // Upsert leaderboard entry — the contract is the source of truth for final
+    // rankings, so we overwrite any pre-existing DB values.
+    let leaderboardEntry =
+      await this.creatorEventLeaderboardEntryRepository.findOne({
+        where: { event_id: eventIdStr, user_address: userAddress },
+      });
+
+    if (!leaderboardEntry) {
+      leaderboardEntry = this.creatorEventLeaderboardEntryRepository.create({
+        event_id: eventIdStr,
+        user_address: userAddress,
+        rank,
+        total_predictions: totalPredictions,
+        correct_predictions: correctPredictions,
+        accuracy_percentage: accuracyPercentage,
+        is_winner: isWinner,
+        completion_time: null,
+      });
+    } else {
+      leaderboardEntry.rank = rank;
+      leaderboardEntry.total_predictions = totalPredictions;
+      leaderboardEntry.correct_predictions = correctPredictions;
+      leaderboardEntry.accuracy_percentage = accuracyPercentage;
+      leaderboardEntry.is_winner = isWinner;
+    }
+
+    leaderboardEntry =
+      await this.creatorEventLeaderboardEntryRepository.save(leaderboardEntry);
+
+    // Create the payout row linked to the leaderboard entry.
+    // The idempotency check at the top of handleEventFinalized ensures we only
+    // reach this point once per event, so we use a plain insert here.
+    const payout = this.creatorEventPayoutRepository.create({
+      event_id: eventIdStr,
+      user_address: userAddress,
+      payout_amount_stroops: payoutAmountStroops,
+      is_claimed: false,
+      leaderboard_entry_id: leaderboardEntry.id,
+    });
+
+    await this.creatorEventPayoutRepository.save(payout);
+  }
+
+  private async handleEventCancelled(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const onChainEventId = Number(data.event_id);
+    if (!onChainEventId) {
+      this.logger.warn('EventCancelled skipped: missing event_id');
+      return;
+    }
+
+    const event = await this.creatorEventRepository.findOne({
+      where: { on_chain_event_id: onChainEventId },
+    });
+    if (!event) {
+      this.logger.warn(
+        `EventCancelled skipped: event ${onChainEventId} not found`,
+      );
+      return;
+    }
+
+    event.is_active = false;
+    event.is_cancelled = true;
+    await this.creatorEventRepository.save(event);
+    this.logger.log(`Indexed EventCancelled: event_id=${onChainEventId}`);
+
+    // Trigger notification
+    await this.notificationGeneratorService.handleEventCancelled(data);
+    this.broadcasterService.broadcastEventCancelled(data);
+  }
+
+  private async handleFeeUpdated(data: Record<string, unknown>): Promise<void> {
+    const oldFee = this.readStr(data, 'old_fee') || '0';
+    const newFee = this.readStr(data, 'new_fee') || '0';
+    const updatedBy = this.readStr(data, 'updated_by');
+
+    const feeHistory = this.feeHistoryRepository.create({
+      old_fee_stroops: oldFee,
+      new_fee_stroops: newFee,
+      updated_by: updatedBy || null,
+      ledger: null,
+      tx_hash: null,
+    });
+
+    await this.feeHistoryRepository.save(feeHistory);
+    this.logger.log(`Indexed FeeUpdated: old=${oldFee} new=${newFee}`);
+  }
+
+  private async handleAddressVerified(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const address = this.readStr(data, 'address');
+    if (!address) return;
+
+    const user = await this.userRepository.findOne({
+      where: { stellar_address: address },
+    });
+    if (user) {
+      user.reputation_score = (user.reputation_score ?? 0) + 1;
+      await this.userRepository.save(user);
+    }
+    this.logger.log(`Indexed AddressVerified: address=${address}`);
+  }
+
+  private async handleAddressUnverified(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const address = this.readStr(data, 'address');
+    if (!address) return;
+
+    const user = await this.userRepository.findOne({
+      where: { stellar_address: address },
+    });
+    if (user && (user.reputation_score ?? 0) > 0) {
+      user.reputation_score = Math.max(0, (user.reputation_score ?? 1) - 1);
+      await this.userRepository.save(user);
+    }
+    this.logger.log(`Indexed AddressUnverified: address=${address}`);
+  }
+
+  async reindex(fromLedger: number): Promise<void> {
+    this.logger.log(`Reindex triggered from ledger ${fromLedger}`);
+    const rewindTo = Math.max(0, fromLedger - 1);
+    await this.saveCheckpoint(CHECKPOINT_LEDGER_KEY, rewindTo);
+
+    // Rewind the persisted chain-sync checkpoint too, so a subsequent restart
+    // (which resumes from it) does not resurrect the pre-reindex position.
+    const contractId = this.configService.get<string>('SOROBAN_CONTRACT_ID');
+    if (contractId && contractId !== 'your-contract-id-here') {
+      const chainSync = await this.chainSyncCheckpointRepository.findOne({
+        where: { contract_id: contractId },
+      });
+      if (chainSync && Number(chainSync.last_indexed_ledger) > rewindTo) {
+        chainSync.last_indexed_ledger = rewindTo;
+        chainSync.last_indexed_ledger_hash = null;
+        await this.chainSyncCheckpointRepository.save(chainSync);
+      }
+    }
+  }
+
+  async triggerManualSync(): Promise<void> {
+    await this.pollContractEvents();
+  }
+
+  /**
+   * Compares the hash the chain currently reports for our last-indexed
+   * ledger against the hash we stored for that same ledger number. A
+   * mismatch means the ledger we built on has been orphaned by a reorg, so
+   * we roll back the affected ContractEvent rows and both checkpoint
+   * systems to a fork point a configurable number of ledgers behind the
+   * divergence, and record a ReorgEvent audit row capturing the depth
+   * (previous_ledger - fork_ledger) and affected range. The caller resumes
+   * polling from the rewound checkpoint immediately afterwards, so the
+   * fork-to-head range gets re-indexed from the canonical chain in the same
+   * cycle.
+   *
+   * Returns null (and makes no changes) when there is nothing to compare
+   * yet, the RPC hash lookup fails, or the stored hash still matches.
+   */
+  private async detectAndHandleReorg(
+    contractId: string,
+    rpcUrl: string,
+  ): Promise<ReorgEvent | null> {
+    const chainSync = await this.chainSyncCheckpointRepository.findOne({
+      where: { contract_id: contractId },
+    });
+    if (!chainSync) return null;
+
+    const previousLedger = Number(chainSync.last_indexed_ledger);
+    if (previousLedger <= 0 || !chainSync.last_indexed_ledger_hash) {
+      return null;
+    }
+
+    const currentHash = await this.fetchLedgerHash(rpcUrl, previousLedger);
+    if (currentHash === null) return null;
+    if (currentHash === chainSync.last_indexed_ledger_hash) return null;
+
+    const rollbackDepth =
+      this.configService.get<number>('INDEXER_REORG_ROLLBACK_DEPTH') ??
+      DEFAULT_REORG_ROLLBACK_DEPTH;
+    const forkLedger = Math.max(0, previousLedger - rollbackDepth);
+
+    const deleteResult = await this.contractEventRepository.delete({
+      ledger: MoreThan(forkLedger),
+    });
+    const rolledBackEventCount = deleteResult.affected ?? 0;
+
+    const previousHash = chainSync.last_indexed_ledger_hash;
+
+    chainSync.last_indexed_ledger = forkLedger;
+    chainSync.last_indexed_ledger_hash =
+      (await this.fetchLedgerHash(rpcUrl, forkLedger)) ?? null;
+    await this.chainSyncCheckpointRepository.save(chainSync);
+
+    // Rewind the working cursor too, so the caller's very next
+    // getLastProcessedLedger() call re-fetches from the fork point instead
+    // of continuing to build on the orphaned ledgers.
+    await this.saveCheckpoint(CHECKPOINT_LEDGER_KEY, forkLedger);
+
+    const reorgEvent = this.reorgEventRepository.create({
+      contract_id: contractId,
+      fork_ledger: forkLedger,
+      previous_ledger: previousLedger,
+      previous_hash: previousHash,
+      new_hash: currentHash,
+      rolled_back_event_count: rolledBackEventCount,
+    });
+    const saved = await this.reorgEventRepository.save(reorgEvent);
+
+    this.logger.error(
+      `Chain reorg detected for contract ${contractId}: rolled back ${rolledBackEventCount} event(s) from ledger ${previousLedger} to fork point ${forkLedger}`,
+    );
+
+    return saved;
+  }
+
+  /**
+   * Records the ledger hash for a ledger we just finished indexing, so the
+   * next poll's detectAndHandleReorg has a baseline to compare against.
+   * Creates the chain-sync checkpoint row on first use.
+   */
+  private async persistIndexedLedgerHash(
+    contractId: string,
+    rpcUrl: string,
+    ledger: number,
+  ): Promise<void> {
+    if (ledger <= 0) return;
+
+    const hash = await this.fetchLedgerHash(rpcUrl, ledger);
+    if (hash === null) return;
+
+    const chainSync = await this.getOrCreateChainSyncCheckpoint(contractId);
+    if (ledger >= Number(chainSync.last_indexed_ledger)) {
+      chainSync.last_indexed_ledger = ledger;
+    }
+    chainSync.last_indexed_ledger_hash = hash;
+    await this.chainSyncCheckpointRepository.save(chainSync);
+  }
+
+  private async getOrCreateChainSyncCheckpoint(
+    contractId: string,
+  ): Promise<ChainSyncCheckpoint> {
+    const existing = await this.chainSyncCheckpointRepository.findOne({
+      where: { contract_id: contractId },
+    });
+    if (existing) return existing;
+
+    const created = this.chainSyncCheckpointRepository.create({
+      contract_id: contractId,
+      last_indexed_ledger: 0,
+      last_indexed_ledger_hash: null,
+      chain_head_ledger: 0,
+      last_reconciled_from: 0,
+      last_reconciled_to: 0,
+      last_reconciled_at: null,
+      last_backfill_count: 0,
+    });
+    return this.chainSyncCheckpointRepository.save(created);
+  }
+
+  private async fetchLedgerHash(
+    rpcUrl: string,
+    ledger: number,
+  ): Promise<string | null> {
+    try {
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'insightarena-indexer-ledger-hash',
+          method: 'getLedgers',
+          params: {
+            startLedger: ledger,
+            limit: 1,
+          },
+        }),
+      });
+
+      if (!response.ok) return null;
+
+      const body = (await response.json()) as {
+        result?: { ledgers?: unknown[] };
+      };
+
+      const ledgers = body.result?.ledgers;
+      if (!Array.isArray(ledgers) || ledgers.length === 0) return null;
+
+      const first = ledgers[0];
+      if (!first || typeof first !== 'object') return null;
+
+      const hash = (first as Record<string, unknown>).hash;
+      return typeof hash === 'string' ? hash : null;
+    } catch {
+      this.logger.error(`Failed to fetch ledger hash for ledger ${ledger}`);
+      return null;
+    }
+  }
+
+  getEventsProcessedPerMinute(): number {
+    const cutoff = Date.now() - 60_000;
+    this.eventTimestamps = this.eventTimestamps.filter((t) => t >= cutoff);
+    return this.eventTimestamps.length;
+  }
+
+  getLastSuccessfulSyncTimestamp(): Date {
+    return new Date(this.lastProcessedAt);
+  }
+
+  private recordProcessedEvent(): void {
+    this.eventTimestamps.push(Date.now());
+    const cutoff = Date.now() - 60_000;
+    this.eventTimestamps = this.eventTimestamps.filter((t) => t >= cutoff);
+  }
+
+  async getEventsPaginated(cursor?: string, limit = 50) {
+    const query = this.contractEventRepository
+      .createQueryBuilder('event')
+      .orderBy('event.ledger', 'DESC')
+      .addOrderBy('event.log_index', 'DESC')
+      .take(limit + 1);
+
+    if (cursor) {
+      const decoded = Buffer.from(cursor, 'base64').toString('utf-8');
+      const [ledger, logIndex] = decoded.split(':').map(Number);
+      if (!isNaN(ledger) && !isNaN(logIndex)) {
+        query.andWhere(
+          '(event.ledger < :ledger OR (event.ledger = :ledger2 AND event.log_index < :logIndex))',
+          { ledger, ledger2: ledger, logIndex },
+        );
+      }
+    }
+
+    const events = await query.getMany();
+    const hasMore = events.length > limit;
+    if (hasMore) events.pop();
+
+    let nextCursor: string | null = null;
+    if (hasMore && events.length > 0) {
+      const last = events[events.length - 1];
+      nextCursor = Buffer.from(`${last.ledger}:${last.log_index}`).toString(
+        'base64',
+      );
+    }
+
+    return {
+      data: events,
+      meta: {
+        next_cursor: nextCursor,
+        has_more: hasMore,
+      },
+    };
+  }
+
+  async getMetrics(): Promise<IndexerMetricsDto> {
+    const lastLedger = await this.getLastProcessedLedger();
+    const latestLedger = await this.getLatestContractLedger();
+
+    const pendingCount = await this.contractEventRepository.count({
+      where: { status: ContractEventStatus.PENDING },
+    });
+    const failedCount = await this.contractEventRepository.count({
+      where: { status: ContractEventStatus.FAILED },
+    });
+    const dlqCount = await this.contractEventRepository.count({
+      where: { status: ContractEventStatus.DLQ },
+    });
+    const totalProcessed = await this.contractEventRepository.count({
+      where: { status: ContractEventStatus.PROCESSED },
+    });
+
+    const uptime = Math.floor((Date.now() - this.startTime) / 1000);
+
+    return {
+      events_per_second: this.processingRate,
+      lag_in_ledgers: Math.max(0, latestLedger - lastLedger),
+      total_events_processed: totalProcessed,
+      pending_events: pendingCount,
+      failed_events: failedCount,
+      dlq_events: dlqCount,
+      last_processed_ledger: lastLedger,
+      latest_contract_ledger: latestLedger,
+      is_running: this.isRunning,
+      uptime_seconds: uptime,
+    };
+  }
+
+  async retryFailedEvents(): Promise<number> {
+    const failed = await this.contractEventRepository.find({
+      where: [
+        { status: ContractEventStatus.FAILED },
+        { status: ContractEventStatus.DLQ },
+      ],
+    });
+
+    for (const event of failed) {
+      if (event.retry_count >= MAX_RETRIES) continue;
+      try {
+        await this.processEventByType(event.event_type, event.data);
+        event.status = ContractEventStatus.PROCESSED;
+        event.processed_at = new Date();
+        event.error_message = null;
+        await this.contractEventRepository.save(event);
+      } catch (err) {
+        this.logger.warn(
+          `Retry failed for event ${event.id}: ${err instanceof Error ? err.message : 'Unknown'}`,
+        );
+      }
+    }
+
+    return failed.length;
+  }
+
+  async cleanupOldEvents(retentionDays: number): Promise<number> {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - retentionDays);
+
+    const result = await this.contractEventRepository.delete({
+      created_at: LessThan(cutoff),
+      status: ContractEventStatus.PROCESSED,
+    });
+
+    return result.affected ?? 0;
+  }
+
+  /**
+   * Backfill events over a historical ledger range.
+   * Reuses existing event handlers idempotently.
+   * Already-indexed events are skipped.
+   */
+  async backfillEvents(
+    fromLedger: number,
+    toLedger: number,
+  ): Promise<{
+    total_fetched: number;
+    newly_processed: number;
+    already_indexed: number;
+    errors: number;
+    from_ledger: number;
+    to_ledger: number;
+  }> {
+    this.logger.log(`Backfill started: ledgers ${fromLedger} to ${toLedger}`);
+
+    let totalFetched = 0;
+    let newlyProcessed = 0;
+    let alreadyIndexed = 0;
+    let errors = 0;
+    let currentLedger = fromLedger;
+
+    while (currentLedger <= toLedger) {
+      const batchEnd = Math.min(currentLedger + BACKFILL_BATCH_SIZE, toLedger);
+
+      try {
+        const { events } = await this.fetchEventsFromContract(currentLedger);
+
+        if (events.length === 0) {
+          currentLedger = batchEnd + 1;
+          continue;
+        }
+
+        const sorted = [...events].sort(
+          (a, b) => a.ledger - b.ledger || a.log_index - b.log_index,
+        );
+
+        for (const rawEvent of sorted) {
+          if (rawEvent.ledger > toLedger) break;
+
+          totalFetched++;
+
+          // Check if already indexed
+          const existing = await this.contractEventRepository.findOne({
+            where: { ledger: rawEvent.ledger, log_index: rawEvent.log_index },
+          });
+
+          if (existing && existing.status === ContractEventStatus.PROCESSED) {
+            alreadyIndexed++;
+            continue;
+          }
+
+          try {
+            await this.storeAndProcessEvent(rawEvent);
+            newlyProcessed++;
+          } catch (err) {
+            errors++;
+            this.logger.error(
+              `Backfill error at ledger ${rawEvent.ledger}: ${err instanceof Error ? err.message : 'Unknown'}`,
+            );
+          }
+        }
+      } catch (err) {
+        this.logger.error(
+          `Backfill batch failed for ledgers ${currentLedger}-${batchEnd}: ${err instanceof Error ? err.message : 'Unknown'}`,
+        );
+        errors++;
+      }
+
+      currentLedger = batchEnd + 1;
+    }
+
+    const summary = {
+      total_fetched: totalFetched,
+      newly_processed: newlyProcessed,
+      already_indexed: alreadyIndexed,
+      errors,
+      from_ledger: fromLedger,
+      to_ledger: toLedger,
+    };
+
+    this.logger.log(`Backfill completed: ${JSON.stringify(summary)}`);
+    return summary;
+  }
+
+  private async getLastProcessedLedger(): Promise<number> {
+    return this.getCheckpointValue(CHECKPOINT_LEDGER_KEY);
+  }
+
+  private async getLatestContractLedger(): Promise<number> {
+    return this.getCheckpointValue(CHECKPOINT_LEDGER_KEY_LATEST);
+  }
+
+  private async getCheckpointValue(key: string): Promise<number> {
+    const cp = await this.checkpointRepository.findOne({ where: { key } });
+    if (!cp) return 0;
+    // bigint columns are returned as strings by the Postgres driver; coerce
+    // so arithmetic like `lastLedger + 1` is numeric, not string concat.
+    const parsed = Number(cp.value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private async saveCheckpoint(key: string, value: number): Promise<void> {
+    await this.checkpointRepository.upsert({ key, value, meta: null }, ['key']);
+  }
+
+  private readEventCreatedPayload(rawValue: unknown): Record<string, unknown> {
+    const base =
+      rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)
+        ? { ...(rawValue as Record<string, unknown>) }
+        : {};
+    const positional = this.readPositionalValues(rawValue);
+
+    const readValue = (key: string, positionalIndex: number): unknown => {
+      if (base[key] !== undefined) return base[key];
+      return positional[positionalIndex];
+    };
+
+    if (positional.length > 0 && positional.length <= 3) {
+      return {
+        ...base,
+        event_id: readValue('event_id', 0),
+        creator: readValue('creator', 1),
+        invite_code: readValue('invite_code', 2),
+      };
+    }
+
+    if (positional.length > 0 && positional.length <= 8) {
+      return {
+        ...base,
+        event_id: readValue('event_id', 0),
+        creator: readValue('creator', 1),
+        title: readValue('title', 2),
+        description: readValue('description', 3),
+        creation_fee_paid: readValue('creation_fee_paid', 4),
+        created_at: readValue('created_at', 5),
+        invite_code: readValue('invite_code', 6),
+        max_participants: readValue('max_participants', 7),
+      };
+    }
+
+    return {
+      ...base,
+      event_id: readValue('event_id', 0),
+      creator: readValue('creator', 1),
+      title: readValue('title', 2),
+      description: readValue('description', 3),
+      creation_fee_paid: readValue('creation_fee_paid', 4),
+      created_at: readValue('created_at', 5),
+      start_time: readValue('start_time', 6),
+      end_time: readValue('end_time', 7),
+      invite_code: readValue('invite_code', 8),
+      max_participants: readValue('max_participants', 9),
+      prize_pool: readValue('prize_pool', 10),
+      reward_distribution: readValue('reward_distribution', 11),
+      entry_fee: readValue('entry_fee', 12),
+      category: readValue('category', 13),
+      banner_url: readValue('banner_url', 14),
+      is_finalized: readValue('is_finalized', 15),
+    };
+  }
+
+  private readPositionalValues(rawValue: unknown): unknown[] {
+    const value = this.unwrapIndexerValue(rawValue);
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      if (Array.isArray(record.vec)) return record.vec;
+      if (Array.isArray(record.values)) return record.values;
+    }
+    return [];
+  }
+
+  private readBool(data: Record<string, unknown>, key: string): boolean | null {
+    const val = this.unwrapIndexerValue(data[key]);
+    if (val === null || val === undefined) return null;
+    if (typeof val === 'boolean') return val;
+    if (typeof val === 'number') {
+      if (val === 1) return true;
+      if (val === 0) return false;
+      return null;
+    }
+    if (typeof val === 'bigint') {
+      if (val === 1n) return true;
+      if (val === 0n) return false;
+      return null;
+    }
+    if (typeof val === 'string') {
+      const normalized = val.trim().toLowerCase();
+      if (['true', '1', 'yes'].includes(normalized)) return true;
+      if (['false', '0', 'no'].includes(normalized)) return false;
+    }
+    return null;
+  }
+
+  private readNumberArray(
+    data: Record<string, unknown>,
+    key: string,
+  ): number[] {
+    const unwrapped = this.unwrapIndexerValue(data[key]);
+    const val =
+      unwrapped &&
+      typeof unwrapped === 'object' &&
+      !Array.isArray(unwrapped) &&
+      Array.isArray((unwrapped as Record<string, unknown>).vec)
+        ? (unwrapped as Record<string, unknown>).vec
+        : unwrapped;
+
+    if (Array.isArray(val)) return this.normalizeNumberArray(val);
+    if (typeof val === 'string') {
+      const trimmed = val.trim();
+      if (!trimmed) return [];
+
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (Array.isArray(parsed)) return this.normalizeNumberArray(parsed);
+      } catch {
+        // Fall through to comma-separated parsing for legacy/manual payloads.
+      }
+
+      return this.normalizeNumberArray(trimmed.split(','));
+    }
+
+    return [];
+  }
+
+  private normalizeNumberArray(values: unknown[]): number[] {
+    return values
+      .map((item) => this.toNumber(item))
+      .filter(
+        (item): item is number =>
+          item !== null && Number.isSafeInteger(item) && item >= 0,
+      );
+  }
+
+  private readUnixTimestamp(
+    data: Record<string, unknown>,
+    key: string,
+  ): Date | null {
+    const seconds = this.readNum(data, key);
+    if (seconds === null || seconds <= 0 || !Number.isSafeInteger(seconds)) {
+      return null;
+    }
+
+    const milliseconds = seconds * 1000;
+    if (!Number.isFinite(milliseconds)) return null;
+
+    const date = new Date(milliseconds);
+    return Number.isFinite(date.getTime()) ? date : null;
+  }
+
+  private readUnsignedBigInt(
+    data: Record<string, unknown>,
+    key: string,
+  ): string {
+    const normalized = this.readBigInt(data, key);
+    return normalized.startsWith('-') ? '0' : normalized;
+  }
+
+  private normalizeCategory(category: string): string {
+    const normalized = category
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 100)
+      .replace(/^-+|-+$/g, '');
+
+    return normalized || DEFAULT_CREATOR_EVENT_CATEGORY;
+  }
+
+  private normalizeNullableString(
+    value: string,
+    maxLength: number,
+  ): string | null {
+    const normalized = value.trim();
+    if (!normalized) return null;
+    return normalized.slice(0, maxLength);
+  }
+
+  private readStr(data: Record<string, unknown>, key: string): string {
+    const val = this.unwrapIndexerValue(data[key]);
+    if (val === null || val === undefined) return '';
+    if (typeof val === 'string') return val;
+    if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+    if (typeof val === 'bigint' || typeof val === 'symbol') return String(val);
+    if (typeof val === 'object') {
+      try {
+        return JSON.stringify(val);
+      } catch {
+        return '';
+      }
+    }
+    return '';
+  }
+
+  private readNum(data: Record<string, unknown>, key: string): number | null {
+    return this.toNumber(data[key]);
+  }
+
+  private readBigInt(data: Record<string, unknown>, key: string): string {
+    const val = this.unwrapIndexerValue(data[key]);
+    if (val === null || val === undefined || val === '') return '0';
+
+    if (typeof val === 'bigint') return val.toString();
+    if (typeof val === 'number') {
+      if (!Number.isSafeInteger(val)) return '0';
+      return BigInt(val).toString();
+    }
+    if (typeof val === 'string') {
+      const trimmed = val.trim();
+      if (!trimmed) return '0';
+
+      try {
+        return BigInt(trimmed).toString();
+      } catch {
+        return '0';
+      }
+    }
+
+    return '0';
+  }
+
+  private toNumber(value: unknown): number | null {
+    const val = this.unwrapIndexerValue(value);
+    if (typeof val === 'number' && Number.isFinite(val)) return val;
+    if (typeof val === 'bigint') {
+      const parsed = Number(val);
+      return Number.isSafeInteger(parsed) ? parsed : null;
+    }
+    if (typeof val === 'string') {
+      const trimmed = val.trim();
+      if (!trimmed) return null;
+      const parsed = Number(trimmed);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  /**
+   * Unwraps a Soroban XDR-JSON value (e.g. `{ symbol: "..." }`,
+   * `{ value: { u64: "..." } }`) down to its plain JS value. Depth is capped
+   * so a forward-incompatible or malformed nesting shape degrades to
+   * returning the wrapper as-is rather than blowing the call stack and
+   * aborting the whole event batch.
+   */
+  private unwrapIndexerValue(value: unknown, depth = 0): unknown {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return value;
+    }
+    if (depth >= 20) {
+      this.logger.warn('unwrapIndexerValue: max unwrap depth exceeded');
+      return value;
+    }
+
+    const record = value as Record<string, unknown>;
+    if ('value' in record) {
+      return this.unwrapIndexerValue(record.value, depth + 1);
+    }
+
+    for (const key of [
+      'symbol',
+      'sym',
+      'string',
+      'str',
+      'address',
+      'u64',
+      'i64',
+      'u32',
+      'i32',
+      'u128',
+      'i128',
+      'bool',
+      'boolean',
+    ]) {
+      if (key in record) {
+        return this.unwrapIndexerValue(record[key], depth + 1);
+      }
+    }
+
+    return value;
+  }
+}

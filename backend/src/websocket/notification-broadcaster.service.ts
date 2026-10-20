@@ -1,0 +1,376 @@
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { EventsGateway } from './events.gateway';
+
+export interface NotificationPayload {
+  id: number;
+  type: string;
+  title: string;
+  message: string;
+  data?: Record<string, unknown>;
+  created_at: Date;
+}
+
+export interface PredictionResultPayload {
+  match_id: number;
+  event_id: number;
+  winning_team: string;
+  user_prediction: string;
+  is_correct: boolean;
+}
+
+export interface EventWinnerPayload {
+  event_id: number;
+  event_title: string;
+  rank: number;
+  total_winners: number;
+  correct_predictions: number;
+  total_matches: number;
+}
+
+export interface AchievementUnlockedPayload {
+  achievement_id: string;
+  type: string;
+  title: string;
+  description: string;
+  icon_url: string;
+  reward_points: number;
+  unlocked_at: Date;
+}
+
+export interface AchievementProgressPayload {
+  achievement_id: string;
+  type: string;
+  current_progress: number;
+  threshold: number;
+  progress_percentage: number;
+}
+
+interface DeliveryConfirmationEntry {
+  notificationIds: Set<number>;
+  confirmedAt: number;
+}
+
+/**
+ * Per-user fanout policy: a single user may hold many sockets (tabs,
+ * devices). Every user-targeted emit is delivered to at most
+ * `maxFanoutPerUser` of that user's sockets. When the user has more
+ * connections than the limit, the most-recently connected sockets
+ * (by `handshake.issued`) are chosen and the oldest are skipped — older
+ * tabs are the most likely to be stale/backgrounded. A user at or under
+ * the limit receives the normal room-wide emit, unchanged.
+ */
+export const MAX_FANOUT_PER_USER = 5;
+
+@Injectable()
+export class NotificationBroadcasterService implements OnModuleDestroy {
+  private readonly logger = new Logger(NotificationBroadcasterService.name);
+  private readonly batchQueue = new Map<string, NotificationPayload[]>();
+  private readonly batchInterval = 1000; // 1 second
+  private readonly maxBatchSize = 10;
+  private readonly maxFanoutPerUser = MAX_FANOUT_PER_USER;
+  private readonly confirmationTtlMs = 5 * 60 * 1000; // 5 minutes
+  private readonly confirmationCleanupIntervalMs = 60 * 1000; // 1 minute
+  private deliveryConfirmations = new Map<string, DeliveryConfirmationEntry>();
+  private batchProcessorInterval?: NodeJS.Timeout;
+  private confirmationCleanupInterval?: NodeJS.Timeout;
+
+  constructor(private readonly gateway: EventsGateway) {
+    this.startBatchProcessor();
+    this.startConfirmationCleanup();
+  }
+
+  onModuleDestroy(): void {
+    if (this.batchProcessorInterval) {
+      clearInterval(this.batchProcessorInterval);
+      this.batchProcessorInterval = undefined;
+    }
+    if (this.confirmationCleanupInterval) {
+      clearInterval(this.confirmationCleanupInterval);
+      this.confirmationCleanupInterval = undefined;
+    }
+  }
+
+  /**
+   * Send a new notification to a specific user
+   */
+  broadcastNewNotification(
+    userAddress: string,
+    notification: NotificationPayload,
+  ): void {
+    this.queueNotification(userAddress, 'notification:new', notification);
+  }
+
+  /**
+   * Notify user that a notification was marked as read
+   */
+  broadcastNotificationRead(userAddress: string, notificationId: number): void {
+    const payload = {
+      event: 'notification:read',
+      data: { notification_id: notificationId, read_at: new Date() },
+    };
+    this.emitToUser(userAddress, 'notification:read', payload);
+    this.logger.log(
+      `Broadcast notification:read → user:${userAddress} (id=${notificationId})`,
+    );
+  }
+
+  /**
+   * Notify user about a prediction result
+   */
+  broadcastPredictionResult(
+    userAddress: string,
+    result: PredictionResultPayload,
+  ): void {
+    const payload = {
+      event: 'prediction:result',
+      data: {
+        match_id: result.match_id,
+        event_id: result.event_id,
+        winning_team: result.winning_team,
+        user_prediction: result.user_prediction,
+        is_correct: result.is_correct,
+        timestamp: new Date(),
+      },
+    };
+    this.emitToUser(userAddress, 'prediction:result', payload);
+    this.logger.log(
+      `Broadcast prediction:result → user:${userAddress} (match=${result.match_id}, correct=${result.is_correct})`,
+    );
+  }
+
+  /**
+   * Notify user they won an event
+   */
+  broadcastEventWinner(userAddress: string, winner: EventWinnerPayload): void {
+    const payload = {
+      event: 'event:winner',
+      data: {
+        event_id: winner.event_id,
+        event_title: winner.event_title,
+        rank: winner.rank,
+        total_winners: winner.total_winners,
+        correct_predictions: winner.correct_predictions,
+        total_matches: winner.total_matches,
+        timestamp: new Date(),
+      },
+    };
+    this.emitToUser(userAddress, 'event:winner', payload);
+    this.logger.log(
+      `Broadcast event:winner → user:${userAddress} (event=${winner.event_id}, rank=${winner.rank})`,
+    );
+  }
+
+  /**
+   * Notify user that an achievement was unlocked
+   */
+  broadcastAchievementUnlocked(
+    userAddress: string,
+    achievement: AchievementUnlockedPayload,
+  ): void {
+    const payload = {
+      event: 'achievement:unlocked',
+      data: {
+        achievement_id: achievement.achievement_id,
+        type: achievement.type,
+        title: achievement.title,
+        description: achievement.description,
+        icon_url: achievement.icon_url,
+        reward_points: achievement.reward_points,
+        unlocked_at: achievement.unlocked_at,
+        timestamp: new Date(),
+      },
+    };
+    this.emitToUser(userAddress, 'achievement:unlocked', payload);
+    this.logger.log(
+      `Broadcast achievement:unlocked → user:${userAddress} (achievement=${achievement.achievement_id})`,
+    );
+  }
+
+  /**
+   * Notify user of updated progress toward a locked achievement
+   */
+  broadcastAchievementProgress(
+    userAddress: string,
+    progress: AchievementProgressPayload,
+  ): void {
+    const payload = {
+      event: 'achievement:progress',
+      data: {
+        achievement_id: progress.achievement_id,
+        type: progress.type,
+        current_progress: progress.current_progress,
+        threshold: progress.threshold,
+        progress_percentage: progress.progress_percentage,
+        timestamp: new Date(),
+      },
+    };
+    this.emitToUser(userAddress, 'achievement:progress', payload);
+    this.logger.log(
+      `Broadcast achievement:progress → user:${userAddress} (achievement=${progress.achievement_id}, pct=${progress.progress_percentage})`,
+    );
+  }
+
+  /**
+   * Request delivery confirmation from client
+   */
+  requestDeliveryConfirmation(
+    userAddress: string,
+    notificationId: number,
+  ): void {
+    this.emitToUser(userAddress, 'notification:confirm', {
+      notification_id: notificationId,
+    });
+  }
+
+  /**
+   * Record delivery confirmation
+   */
+  confirmDelivery(userAddress: string, notificationId: number): void {
+    const existing = this.deliveryConfirmations.get(userAddress);
+    if (existing) {
+      existing.notificationIds.add(notificationId);
+      existing.confirmedAt = Date.now();
+    } else {
+      this.deliveryConfirmations.set(userAddress, {
+        notificationIds: new Set([notificationId]),
+        confirmedAt: Date.now(),
+      });
+    }
+    this.logger.debug(
+      `Delivery confirmed: user=${userAddress}, notification=${notificationId}`,
+    );
+  }
+
+  /**
+   * Check if notification was delivered
+   */
+  isDelivered(userAddress: string, notificationId: number): boolean {
+    return (
+      this.deliveryConfirmations
+        .get(userAddress)
+        ?.notificationIds.has(notificationId) ?? false
+    );
+  }
+
+  /**
+   * Purge delivery confirmation entries that have exceeded the configured age.
+   * Recently-confirmed, still-pending entries are left untouched.
+   */
+  cleanupConfirmations(now: number = Date.now()): void {
+    for (const [userAddress, entry] of this.deliveryConfirmations) {
+      if (now - entry.confirmedAt >= this.confirmationTtlMs) {
+        this.deliveryConfirmations.delete(userAddress);
+        this.logger.debug(
+          `Purged expired delivery confirmations for user=${userAddress}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Emit `event` to a user's sockets, applying the per-user fanout cap
+   * (see MAX_FANOUT_PER_USER).
+   */
+  private emitToUser(
+    userAddress: string,
+    event: string,
+    payload: unknown,
+  ): void {
+    const room = `user:${userAddress}`;
+    const server = this.gateway.server;
+    const socketIds = server.sockets?.adapter?.rooms?.get(room);
+
+    if (!socketIds || socketIds.size <= this.maxFanoutPerUser) {
+      server.to(room).emit(event, payload);
+      return;
+    }
+
+    const targets = this.selectMostRecentSockets(socketIds);
+    server.to(targets).emit(event, payload);
+    this.logger.debug(
+      `Fanout capped for user:${userAddress} (${targets.length}/${socketIds.size} sockets)`,
+    );
+  }
+
+  /** Returns the `maxFanoutPerUser` most-recently connected socket ids. */
+  private selectMostRecentSockets(socketIds: Set<string>): string[] {
+    const connectedAt = (id: string): number =>
+      this.gateway.server.sockets.sockets.get(id)?.handshake?.issued ?? 0;
+
+    return [...socketIds]
+      .sort((a, b) => connectedAt(b) - connectedAt(a))
+      .slice(0, this.maxFanoutPerUser);
+  }
+
+  /**
+   * Queue notification for batching
+   */
+  private queueNotification(
+    userAddress: string,
+    eventType: string,
+    notification: NotificationPayload,
+  ): void {
+    const key = `${userAddress}:${eventType}`;
+    if (!this.batchQueue.has(key)) {
+      this.batchQueue.set(key, []);
+    }
+    const queue = this.batchQueue.get(key)!;
+    queue.push(notification);
+
+    // Send immediately if batch is full
+    if (queue.length >= this.maxBatchSize) {
+      this.flushBatch(userAddress, eventType);
+    }
+  }
+
+  /**
+   * Flush batched notifications
+   */
+  private flushBatch(userAddress: string, eventType: string): void {
+    const key = `${userAddress}:${eventType}`;
+    const queue = this.batchQueue.get(key);
+    if (!queue || queue.length === 0) return;
+
+    const payload = {
+      event: eventType,
+      data: {
+        notifications: queue,
+        count: queue.length,
+        timestamp: new Date(),
+      },
+    };
+
+    this.emitToUser(userAddress, eventType, payload);
+    this.logger.log(
+      `Broadcast ${eventType} → user:${userAddress} (batch=${queue.length})`,
+    );
+
+    // Request confirmation for each notification
+    queue.forEach((n) => this.requestDeliveryConfirmation(userAddress, n.id));
+
+    this.batchQueue.delete(key);
+  }
+
+  /**
+   * Process batches periodically
+   */
+  private startBatchProcessor(): void {
+    this.batchProcessorInterval = setInterval(() => {
+      for (const key of this.batchQueue.keys()) {
+        const colonIndex = key.indexOf(':');
+        const userAddress = key.substring(0, colonIndex);
+        const eventType = key.substring(colonIndex + 1);
+        this.flushBatch(userAddress, eventType);
+      }
+    }, this.batchInterval);
+  }
+
+  /**
+   * Periodically purge expired delivery confirmations
+   */
+  private startConfirmationCleanup(): void {
+    this.confirmationCleanupInterval = setInterval(() => {
+      this.cleanupConfirmations();
+    }, this.confirmationCleanupIntervalMs);
+  }
+}

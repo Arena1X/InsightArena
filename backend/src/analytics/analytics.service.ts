@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { clampAnalyticsDateRange } from '../common/dto/date-range-query.dto';
 import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.entity';
 import { Market } from '../markets/entities/market.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
@@ -22,6 +23,9 @@ import {
   CategoryStatsDto,
   CategoryAnalyticsResponseDto,
 } from './dto/category-analytics.dto';
+import { CohortDataDto, RetentionResponseDto } from './dto/retention.dto';
+import { PlatformStatsDto } from './dto/platform-stats.dto';
+import { CacheService } from '../cache/cache.service';
 
 /** Tier thresholds: Bronze < 200, Silver < 500, Gold < 1000, Platinum ≥ 1000 */
 export function predictorTierFromReputation(reputationScore: number): string {
@@ -53,7 +57,34 @@ export class AnalyticsService {
     private readonly activityLogsRepository: Repository<ActivityLog>,
     @InjectRepository(MarketHistory)
     private readonly marketHistoryRepository: Repository<MarketHistory>,
+    private readonly cacheService: CacheService,
   ) {}
+  private readonly activeSessions = new Map<string, number>();
+  private readonly IDLE_WINDOW_MS = parseInt(
+    process.env.ACTIVE_USERS_IDLE_WINDOW_MS || '300000',
+    10,
+  );
+
+  trackActiveSession(sessionId: string) {
+    this.activeSessions.set(sessionId, Date.now());
+  }
+
+  removeActiveSession(sessionId: string) {
+    this.activeSessions.delete(sessionId);
+  }
+
+  getActiveUsersCount(): number {
+    const now = Date.now();
+    let count = 0;
+    for (const [sessionId, lastActive] of this.activeSessions.entries()) {
+      if (now - lastActive > this.IDLE_WINDOW_MS) {
+        this.activeSessions.delete(sessionId);
+      } else {
+        count++;
+      }
+    }
+    return count;
+  }
 
   async logActivity(
     userId: string,
@@ -70,7 +101,17 @@ export class AnalyticsService {
     return this.activityLogsRepository.save(log);
   }
 
-  async getDashboard(user: User): Promise<DashboardKpisDto> {
+  /**
+   * Cached per-user (short TTL, since rank/streak change with live activity)
+   * since this fans out into several queries over predictions/leaderboard.
+   */
+  async getDashboardKPIs(user: User): Promise<DashboardKpisDto> {
+    return this.cacheService.getOrSet('analytics:dashboard', user.id, () =>
+      this.computeDashboardKPIs(user),
+    );
+  }
+
+  private async computeDashboardKPIs(user: User): Promise<DashboardKpisDto> {
     const fullUser = await this.usersRepository.findOne({
       where: { id: user.id },
     });
@@ -132,9 +173,18 @@ export class AnalyticsService {
   }
 
   /**
-   * Get market analytics: pool size, participant count, outcome distribution, and time remaining
+   * Get market analytics: pool size, participant count, outcome distribution, and time remaining.
+   * Cached per market id (short TTL, since pool/participant counts move with live predictions).
    */
   async getMarketAnalytics(marketId: string): Promise<MarketAnalyticsDto> {
+    return this.cacheService.getOrSet('analytics:market', marketId, () =>
+      this.computeMarketAnalytics(marketId),
+    );
+  }
+
+  private async computeMarketAnalytics(
+    marketId: string,
+  ): Promise<MarketAnalyticsDto> {
     const market = await this.marketsRepository.findOne({
       where: [{ id: marketId }, { on_chain_market_id: marketId }],
     });
@@ -192,9 +242,40 @@ export class AnalyticsService {
   }
 
   /**
-   * Get historical data for a market: prediction volume, pool size, participant growth over time
+   * Get historical data for a market: prediction volume, pool size, participant growth over time.
+   * Cached per (market, from, to, interval) combination — short TTL, since new
+   * snapshots land periodically via recordMarketSnapshot.
    */
-  async getMarketHistory(marketId: string): Promise<MarketHistoryResponseDto> {
+  async getMarketHistory(
+    marketId: string,
+    from: Date,
+    to: Date,
+    interval?: string, // TODO: Implement interval-based aggregation
+  ): Promise<MarketHistoryResponseDto> {
+    const cacheKey = `${marketId}:${from.toISOString()}:${to.toISOString()}:${interval ?? ''}`;
+    return this.cacheService.getOrSet(
+      'analytics:market-history',
+      cacheKey,
+      () => this.computeMarketHistory(marketId, from, to, interval),
+    );
+  }
+
+  private async computeMarketHistory(
+    marketId: string,
+    from: Date,
+    to: Date,
+    interval?: string,
+  ): Promise<MarketHistoryResponseDto> {
+    const clampedRange = clampAnalyticsDateRange(from, to);
+    from = clampedRange.from;
+    to = clampedRange.to;
+
+    if (interval) {
+      this.logger.debug(
+        `Interval aggregation (${interval}) requested but not yet implemented`,
+      );
+    }
+
     const market = await this.marketsRepository.findOne({
       where: [{ id: marketId }, { on_chain_market_id: marketId }],
     });
@@ -203,29 +284,29 @@ export class AnalyticsService {
       throw new NotFoundException(`Market "${marketId}" not found`);
     }
 
-    const history = await this.marketHistoryRepository.find({
-      where: { market: { id: market.id } },
-      order: { recorded_at: 'ASC' },
-    });
+    const qb = this.marketHistoryRepository
+      .createQueryBuilder('history')
+      .where('history.marketId = :marketId', { marketId: market.id });
 
-    const historyPoints = history.map((h) => ({
-      timestamp: h.recorded_at,
-      prediction_volume: h.prediction_volume,
-      pool_size_stroops: h.pool_size_stroops,
-      participant_count: h.participant_count,
-      outcome_probabilities: h.outcome_probabilities
-        ? h.outcome_probabilities.map((p) => parseFloat(p))
-        : null,
-    }));
+    qb.andWhere('history.recorded_at >= :from', { from });
+    qb.andWhere('history.recorded_at <= :to', { to });
 
-    this.logger.log(
-      `Market history retrieved for "${market.title}" (${market.id}) - ${historyPoints.length} data points`,
-    );
+    qb.orderBy('history.recorded_at', 'ASC');
+
+    const history = await qb.getMany();
 
     return {
       market_id: market.id,
       title: market.title,
-      history: historyPoints,
+      history: history.map((h) => ({
+        timestamp: h.recorded_at,
+        prediction_volume: h.prediction_volume,
+        pool_size_stroops: h.pool_size_stroops,
+        participant_count: h.participant_count,
+        outcome_probabilities: h.outcome_probabilities
+          ? h.outcome_probabilities.map((p) => parseFloat(p))
+          : null,
+      })),
       generated_at: new Date(),
     };
   }
@@ -266,9 +347,27 @@ export class AnalyticsService {
   }
 
   /**
-   * Get user performance trends over time
+   * Get user performance trends over time.
+   * Cached per (address, days) combination — short TTL, since a new
+   * prediction or resolution shifts the trend.
    */
-  async getUserTrends(address: string): Promise<UserTrendsDto> {
+  async getUserTrends(
+    address: string,
+    days: number = 30,
+  ): Promise<UserTrendsDto> {
+    return this.cacheService.getOrSet(
+      'analytics:user-trends',
+      `${address}:${days}`,
+      () => this.computeUserTrends(address, days),
+    );
+  }
+
+  private async computeUserTrends(
+    address: string,
+    days: number,
+  ): Promise<UserTrendsDto> {
+    const validDays = Math.min(Math.max(days || 30, 1), 90);
+
     const user = await this.usersRepository.findOne({
       where: { stellar_address: address },
     });
@@ -277,16 +376,26 @@ export class AnalyticsService {
       throw new NotFoundException(`User with address ${address} not found`);
     }
 
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - validDays);
+
     const predictions = await this.predictionsRepository.find({
-      where: { user: { id: user.id } },
+      where: {
+        user: { id: user.id },
+      },
       relations: ['market'],
       order: { submitted_at: 'ASC' },
     });
 
-    const accuracyTrend = this.computeAccuracyTrend(predictions);
-    const volumeTrend = this.computeVolumeTrend(predictions);
-    const profitLossTrend = this.computeProfitLossTrend(predictions);
-    const categoryPerformance = this.computeCategoryPerformance(predictions);
+    const filteredPredictions = predictions.filter(
+      (p) => p.submitted_at >= cutoffDate,
+    );
+
+    const accuracyTrend = this.computeAccuracyTrend(filteredPredictions);
+    const volumeTrend = this.computeVolumeTrend(filteredPredictions);
+    const profitLossTrend = this.computeProfitLossTrend(filteredPredictions);
+    const categoryPerformance =
+      this.computeCategoryPerformance(filteredPredictions);
 
     const bestCategory = categoryPerformance.reduce((best, current) =>
       current.accuracy_rate > (best?.accuracy_rate ?? 0) ? current : best,
@@ -406,9 +515,16 @@ export class AnalyticsService {
   }
 
   /**
-   * Get category analytics with trending calculation
+   * Get category analytics with trending calculation.
+   * Cached (with stampede protection) since this scans every market row.
    */
   async getCategoryAnalytics(): Promise<CategoryAnalyticsResponseDto> {
+    return this.cacheService.getOrSet('analytics:category', 'all', () =>
+      this.computeCategoryAnalytics(),
+    );
+  }
+
+  private async computeCategoryAnalytics(): Promise<CategoryAnalyticsResponseDto> {
     const markets = await this.marketsRepository.find();
 
     const categoryMap = new Map<
@@ -464,7 +580,13 @@ export class AnalyticsService {
     });
 
     return {
-      categories: categories.sort((a, b) => b.total_markets - a.total_markets),
+      categories: categories.sort((a, b) => {
+        const volA = BigInt(a.total_volume_stroops);
+        const volB = BigInt(b.total_volume_stroops);
+        if (volA > volB) return -1;
+        if (volA < volB) return 1;
+        return 0;
+      }),
       generated_at: new Date(),
     };
   }
@@ -473,5 +595,269 @@ export class AnalyticsService {
     if (total === 0) return false;
     const activeRatio = active / total;
     return activeRatio > 0.5;
+  }
+
+  /**
+   * Get retention analysis by cohort
+   */
+  /**
+   * Get retention analysis by cohort.
+   * Cached (with stampede protection) since this loads all users,
+   * predictions, and activity logs into memory to compute cohorts.
+   */
+  async getRetention(
+    period: 'day' | 'week' | 'month' = 'week',
+    periods: number = 8,
+  ): Promise<RetentionResponseDto> {
+    return this.cacheService.getOrSet(
+      'analytics:retention',
+      `${period}:${periods}`,
+      () => this.computeRetention(period, periods),
+    );
+  }
+
+  private async computeRetention(
+    period: 'day' | 'week' | 'month' = 'week',
+    periods: number = 8,
+  ): Promise<RetentionResponseDto> {
+    const maxPeriods = Math.min(Math.max(periods || 8, 1), 52);
+
+    const users = await this.usersRepository.find({
+      order: { created_at: 'ASC' },
+    });
+
+    // Get user activity based on prediction submissions and activity logs
+    const userActivities = new Map<string, Set<string>>();
+    const userSignupDates = new Map<string, Date>();
+
+    for (const user of users) {
+      userActivities.set(user.id, new Set());
+      userSignupDates.set(user.id, user.created_at);
+    }
+
+    // Gather prediction submission dates for activity
+    const predictions = await this.predictionsRepository.find({
+      relations: ['user'],
+    });
+    for (const p of predictions) {
+      const activities = userActivities.get(p.user.id);
+      if (activities) {
+        activities.add(p.submitted_at.toISOString().split('T')[0]);
+      }
+    }
+
+    // Gather activity log dates
+    const activityLogs = await this.activityLogsRepository.find({
+      select: ['userId', 'timestamp'],
+    });
+    for (const log of activityLogs) {
+      const activities = userActivities.get(log.userId);
+      if (activities) {
+        activities.add(log.timestamp.toISOString().split('T')[0]);
+      }
+    }
+
+    // Build cohort buckets
+    const cohortMap = new Map<string, string[]>();
+
+    for (const [userId, signupDate] of userSignupDates) {
+      const cohortKey = this.getCohortKey(signupDate, period);
+      if (!cohortMap.has(cohortKey)) {
+        cohortMap.set(cohortKey, []);
+      }
+      cohortMap.get(cohortKey)!.push(userId);
+    }
+
+    const now = new Date();
+    const cohortKeys = Array.from(cohortMap.keys()).sort();
+    const recentCohorts = cohortKeys.slice(-maxPeriods);
+
+    const cohorts: CohortDataDto[] = recentCohorts.map((cohortKey) => {
+      const cohortUserIds = cohortMap.get(cohortKey) || [];
+      const totalUsers = cohortUserIds.length;
+
+      const retentionRates: Record<string, number> = {};
+      const userCounts: Record<string, number> = {};
+
+      for (let offset = 0; offset < maxPeriods; offset++) {
+        const periodStart = this.addPeriod(
+          this.parseCohortDate(cohortKey, period),
+          offset,
+          period,
+        );
+        const periodEnd = this.addPeriod(periodStart, 1, period);
+
+        if (periodStart > now) break;
+
+        let activeInPeriod = 0;
+        for (const userId of cohortUserIds) {
+          const activities = userActivities.get(userId);
+          if (activities) {
+            for (const dateStr of activities) {
+              const activityDate = new Date(dateStr);
+              if (activityDate >= periodStart && activityDate < periodEnd) {
+                activeInPeriod++;
+                break;
+              }
+            }
+          }
+        }
+
+        userCounts[String(offset)] = activeInPeriod;
+        retentionRates[String(offset)] =
+          totalUsers > 0
+            ? Math.round((activeInPeriod / totalUsers) * 10000) / 100
+            : 0;
+      }
+
+      return {
+        cohort: cohortKey,
+        total_users: totalUsers,
+        retention_rates: retentionRates,
+        user_counts: userCounts,
+      };
+    });
+
+    return {
+      period,
+      total_users: users.length,
+      cohorts,
+      generated_at: new Date(),
+    };
+  }
+
+  private getCohortKey(date: Date, period: 'day' | 'week' | 'month'): string {
+    switch (period) {
+      case 'day':
+        return date.toISOString().split('T')[0];
+      case 'week': {
+        const d = new Date(date);
+        const dayOfWeek = d.getDay();
+        const diff = d.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+        const monday = new Date(d.setDate(diff));
+        return monday.toISOString().split('T')[0];
+      }
+      case 'month':
+        return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    }
+  }
+
+  private parseCohortDate(
+    cohortKey: string,
+    period: 'day' | 'week' | 'month',
+  ): Date {
+    switch (period) {
+      case 'day':
+        return new Date(cohortKey);
+      case 'week':
+        return new Date(cohortKey);
+      case 'month': {
+        const [year, month] = cohortKey.split('-').map(Number);
+        return new Date(year, month - 1, 1);
+      }
+    }
+  }
+
+  private addPeriod(
+    date: Date,
+    offset: number,
+    period: 'day' | 'week' | 'month',
+  ): Date {
+    const d = new Date(date);
+    switch (period) {
+      case 'day':
+        d.setDate(d.getDate() + offset);
+        break;
+      case 'week':
+        d.setDate(d.getDate() + offset * 7);
+        break;
+      case 'month':
+        d.setMonth(d.getMonth() + offset);
+        break;
+    }
+    return d;
+  }
+  /** Cached (with stampede protection) — aggregates several count/sum queries. */
+  async getPlatformStats(): Promise<PlatformStatsDto> {
+    return this.cacheService.getOrSet('analytics:platform-stats', 'all', () =>
+      this.computePlatformStats(),
+    );
+  }
+
+  private async computePlatformStats(): Promise<PlatformStatsDto> {
+    const [total_markets, total_predictions, active_markets, active_users] =
+      await Promise.all([
+        this.marketsRepository.count(),
+        this.predictionsRepository.count(),
+        this.marketsRepository.count({
+          where: { is_resolved: false, is_cancelled: false },
+        }),
+        this.usersRepository.count(),
+      ]);
+
+    const volumeResult = await this.marketsRepository
+      .createQueryBuilder('market')
+      .select('SUM(CAST(market.total_pool_stroops AS BIGINT))', 'total')
+      .getRawOne<{ total: string | null }>();
+
+    const total_volume_stroops = volumeResult?.total ?? '0';
+
+    return {
+      total_markets,
+      total_predictions,
+      total_volume_stroops,
+      active_users,
+      active_markets,
+    };
+  }
+
+  /**
+   * Invalidate cached aggregates that go stale the moment a market
+   * resolves, rather than waiting out their TTL:
+   * - this market's own analytics (looked up by either id, since callers
+   *   may key `getMarketAnalytics`/`getMarketHistory` by either one),
+   * - category analytics and platform stats, since resolution changes
+   *   active/resolved market counts,
+   * - the dashboard KPIs of every affected predictor, since resolution can
+   *   flip their streak/tier.
+   *
+   * `getMarketHistory` and `getUserTrends` are keyed by (id, date-range)
+   * and (address, days) respectively — an unbounded set of parameter
+   * combinations that can't be enumerated here, so those two are left to
+   * expire on their own short TTL instead.
+   *
+   * Called from write paths that resolve a market (e.g. admin resolution).
+   * Best-effort: failures are logged, not thrown, so a cache hiccup never
+   * blocks the write it's attached to.
+   */
+  async invalidateMarketResolutionCaches(
+    marketId: string,
+    onChainMarketId: string | null | undefined,
+    affectedUserIds: string[] = [],
+  ): Promise<void> {
+    const marketKeys = new Set([marketId]);
+    if (onChainMarketId) {
+      marketKeys.add(onChainMarketId);
+    }
+
+    const tasks = [
+      ...Array.from(marketKeys).map((key) =>
+        this.cacheService.invalidate('analytics:market', key),
+      ),
+      this.cacheService.invalidate('analytics:category', 'all'),
+      this.cacheService.invalidate('analytics:platform-stats', 'all'),
+      ...affectedUserIds.map((userId) =>
+        this.cacheService.invalidate('analytics:dashboard', userId),
+      ),
+    ];
+
+    const results = await Promise.allSettled(tasks);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        this.logger.warn(
+          `Cache invalidation failed after market resolution: ${result.reason}`,
+        );
+      }
+    }
   }
 }

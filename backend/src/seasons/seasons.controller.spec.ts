@@ -17,6 +17,7 @@ describe('SeasonsController', () => {
           useValue: {
             findAllPaginated: jest.fn(),
             findActive: jest.fn(),
+            findById: jest.fn(),
             create: jest.fn(),
             finalizeSeason: jest.fn(),
           },
@@ -65,6 +66,30 @@ describe('SeasonsController', () => {
 
       expect(service.findActive).toHaveBeenCalled();
       expect(result).toBe(active);
+    });
+  });
+
+  describe('getById', () => {
+    it('returns season by ID from the service', async () => {
+      const season = {
+        id: 'season-123',
+        season_number: 1,
+        name: 'Season 1',
+      } as Season;
+      jest.spyOn(service, 'findById').mockResolvedValue(season);
+
+      const result = await controller.getById('season-123');
+
+      expect(service.findById).toHaveBeenCalledWith('season-123');
+      expect(result).toBe(season);
+    });
+
+    it('throws NotFoundException for unknown season ID', async () => {
+      jest
+        .spyOn(service, 'findById')
+        .mockRejectedValue(new Error('Season not found'));
+
+      await expect(controller.getById('unknown-id')).rejects.toThrow();
     });
   });
 

@@ -4,6 +4,7 @@ import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 import { User } from './entities/user.entity';
 import { PublicPredictionOutcomeFilter } from './dto/list-user-predictions.dto';
+import { FeedResponseDto } from './dto/feed-response.dto';
 
 describe('UsersController', () => {
   let controller: UsersController;
@@ -34,6 +35,10 @@ describe('UsersController', () => {
           useValue: {
             findByAddress: jest.fn(),
             findPublicPredictionsByAddress: jest.fn(),
+            getMyStats: jest.fn(),
+            findUserBookmarks: jest.fn(),
+            addBookmark: jest.fn(),
+            removeBookmark: jest.fn(),
           },
         },
       ],
@@ -45,6 +50,28 @@ describe('UsersController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  describe('getMyStats', () => {
+    it('should return stats for the authenticated user', async () => {
+      const mockStats = {
+        total_predictions: 10,
+        correct_predictions: 7,
+        incorrect_predictions: 3,
+        accuracy_rate: '70.0',
+        tier: 'Bronze Predictor',
+        reputation_score: 85,
+        season_points: 100,
+        total_staked_stroops: '1000000',
+        total_winnings_stroops: '500000',
+      };
+      jest.spyOn(service, 'getMyStats').mockResolvedValue(mockStats);
+
+      const result = await controller.getMyStats(mockUser);
+
+      expect(service.getMyStats).toHaveBeenCalledWith(mockUser.id);
+      expect(result).toEqual(mockStats);
+    });
   });
 
   describe('getPublicProfile', () => {
@@ -145,6 +172,37 @@ describe('UsersController', () => {
         { page: 1, limit: 20 },
       );
       expect(result).toEqual(mockResult);
+    });
+  });
+
+  describe('createBookmark', () => {
+    it('creates a bookmark scoped to the authenticated user', async () => {
+      const bookmark = { id: 'bookmark-uuid', user: { id: mockUser.id } };
+      jest.spyOn(service, 'addBookmark').mockResolvedValue(bookmark as never);
+
+      const result = await controller.createBookmark(mockUser, {
+        market_id: 'market-uuid',
+      });
+
+      expect(service.addBookmark).toHaveBeenCalledWith(
+        mockUser.id,
+        'market-uuid',
+      );
+      expect(result).toEqual(bookmark);
+    });
+  });
+
+  describe('deleteBookmark', () => {
+    it('deletes a bookmark owned by the authenticated user', async () => {
+      jest.spyOn(service, 'removeBookmark').mockResolvedValue(undefined);
+
+      const result = await controller.deleteBookmark(mockUser, 'bookmark-uuid');
+
+      expect(service.removeBookmark).toHaveBeenCalledWith(
+        mockUser.id,
+        'bookmark-uuid',
+      );
+      expect(result).toEqual({ success: true });
     });
   });
 });

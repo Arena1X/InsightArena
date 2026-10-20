@@ -1,0 +1,671 @@
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ConflictException,
+  BadRequestException,
+} from '@nestjs/common';
+import { createHash } from 'crypto';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { CreatorEventMatch } from '../creator-events/entities/creator-event-match.entity';
+import {
+  WebhookMatchResultDto,
+  WebhookResponseDto,
+  WinningTeam,
+} from './dto/webhook-match-result.dto';
+import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import {
+  OracleSubmission,
+  SubmissionStatus,
+  SubmissionReviewStatus,
+} from './entities/oracle-submission.entity';
+import { SubmissionHistoryService } from './submission-history.service';
+import {
+  ReviewSubmissionDto,
+  ReviewDecision,
+  ReviewResultResponse,
+} from './dto/anomaly-detection.dto';
+
+const POSTGRES_UNIQUE_VIOLATION = '23505';
+
+const DEFAULT_SIGNATURE_WINDOW_MS = 5 * 60 * 1000;
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === 'object' &&
+    (error as { code?: string }).code === POSTGRES_UNIQUE_VIOLATION
+  );
+}
+
+interface QueuedSubmission {
+  id: string;
+  matchId: string;
+  winningTeam: WinningTeam;
+  confidenceScore: number;
+  dataSource: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+  retryCount: number;
+  createdAt: Date;
+  nextRetryAt: Date;
+  lastError?: string;
+}
+
+@Injectable()
+export class WebhookService {
+  private readonly logger = new Logger(WebhookService.name);
+  private readonly submissionQueue: Map<string, QueuedSubmission> = new Map();
+  private readonly MAX_RETRIES = 3;
+  private readonly RETRY_DELAYS = [60000, 300000, 900000]; // 1min, 5min, 15min
+  // Signed event ids seen within the signature window, mapped to their expiry.
+  private readonly processedEventIds: Map<string, number> = new Map();
+
+  constructor(
+    @InjectRepository(CreatorEventMatch)
+    private readonly matchRepository: Repository<CreatorEventMatch>,
+    @InjectRepository(OracleSubmission)
+    private readonly submissionRepository: Repository<OracleSubmission>,
+    private readonly configService: ConfigService,
+    private readonly submissionHistoryService: SubmissionHistoryService,
+  ) {
+    this.startRetryProcessor();
+  }
+
+  async processMatchResult(
+    dto: WebhookMatchResultDto,
+  ): Promise<WebhookResponseDto> {
+    // Reject replayed or stale payloads before doing any work (#1930).
+    const eventId = this.assertFreshSignedPayload(dto);
+
+    // A duplicate delivery of a result we already accepted is answered with
+    // the original job, before the resolved-match check, so an oracle retrying
+    // after a successful submission gets the same answer instead of a 409.
+    const idempotencyKey = this.resolveIdempotencyKey(dto);
+    const existing = await this.submissionRepository.findOne({
+      where: { idempotency_key: idempotencyKey },
+    });
+    if (existing) {
+      return this.replayDuplicate(existing, dto);
+    }
+
+    const jobId = this.generateJobId();
+
+    // Validate match exists
+    const match = await this.matchRepository.findOne({
+      where: { on_chain_match_id: dto.match_id },
+    });
+
+    if (!match) {
+      throw new NotFoundException(`Match with ID ${dto.match_id} not found`);
+    }
+
+    // Validate match hasn't been resolved
+    if (match.result_submitted) {
+      throw new ConflictException(
+        `Match ${dto.match_id} has already been resolved`,
+      );
+    }
+
+    // Validate match time has passed (allow 1 hour buffer)
+    const matchTime = new Date(match.match_time);
+    const now = new Date();
+    const timeDiff = now.getTime() - matchTime.getTime();
+    const oneHour = 60 * 60 * 1000;
+
+    if (timeDiff < -oneHour) {
+      throw new ConflictException(`Match ${dto.match_id} has not started yet`);
+    }
+
+    // Queue for submission
+    const submission: QueuedSubmission = {
+      id: jobId,
+      matchId: dto.match_id,
+      winningTeam: dto.winning_team,
+      confidenceScore: dto.confidence_score,
+      dataSource: dto.data_source,
+      timestamp: dto.timestamp,
+      metadata: dto.metadata,
+      retryCount: 0,
+      createdAt: new Date(),
+      nextRetryAt: new Date(),
+    };
+
+    // Save to database for history tracking. The unique idempotency key makes
+    // this the serialization point for concurrent duplicate calls: only one
+    // insert wins, the others replay the winner.
+    let savedSubmission: OracleSubmission | null;
+    try {
+      savedSubmission = await this.saveSubmissionToDatabase(
+        submission,
+        match,
+        idempotencyKey,
+      );
+    } catch (error) {
+      if (!isUniqueViolation(error)) {
+        throw error;
+      }
+      const winner = await this.submissionRepository.findOne({
+        where: { idempotency_key: idempotencyKey },
+      });
+      if (!winner) {
+        throw error;
+      }
+      return this.replayDuplicate(winner, dto);
+    }
+
+    this.submissionQueue.set(jobId, submission);
+    this.rememberEventId(eventId);
+
+    // Screen for statistical anomalies before any on-chain use (#1364). A
+    // flagged submission is recorded; when holding is enabled it is withheld
+    // from submission until an admin approves it via reviewSubmission.
+    if (savedSubmission) {
+      const screening =
+        await this.submissionHistoryService.screenSubmission(savedSubmission);
+
+      if (screening.held) {
+        // Do not auto-submit or retry — the submission awaits manual review.
+        this.submissionQueue.delete(jobId);
+        this.logger.warn(
+          `Match result held for manual review: job_id=${jobId}, match_id=${dto.match_id}, submission_id=${savedSubmission.id}`,
+        );
+        return {
+          job_id: jobId,
+          status: 'held',
+          message:
+            'Submission flagged as a statistical anomaly and held for manual review',
+          duplicate: false,
+          submission_id: savedSubmission.id,
+        };
+      }
+    }
+
+    this.logger.log(
+      `Match result queued for submission: job_id=${jobId}, match_id=${dto.match_id}, winning_team=${dto.winning_team}`,
+    );
+
+    // Try to submit immediately
+    await this.submitToOracle(submission);
+
+    return {
+      job_id: jobId,
+      status: 'accepted',
+      message: 'Match result queued for submission',
+      duplicate: false,
+      submission_id: savedSubmission?.id,
+    };
+  }
+
+  /**
+   * Validate the signed timestamp window and deduplicate by signed event id
+   * (#1930). Returns the event id so it can be recorded once the payload is
+   * accepted. Throws when the timestamp is missing, malformed, or outside the
+   * allowed window, or when the event id was already processed.
+   */
+  private assertFreshSignedPayload(dto: WebhookMatchResultDto): string {
+    const windowMs = this.getSignatureWindowMs();
+
+    const parsed = new Date(dto.timestamp);
+    if (!dto.timestamp || Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException(
+        'Webhook payload is missing a valid signed timestamp',
+      );
+    }
+
+    const age = Date.now() - parsed.getTime();
+    if (Math.abs(age) > windowMs) {
+      throw new ConflictException(
+        `Webhook timestamp is outside the allowed window of ${windowMs}ms`,
+      );
+    }
+
+    const eventId = this.resolveEventId(dto);
+    this.pruneExpiredEventIds();
+    if (this.processedEventIds.has(eventId)) {
+      throw new ConflictException(
+        `Webhook event ${eventId} has already been processed`,
+      );
+    }
+
+    return eventId;
+  }
+
+  private getSignatureWindowMs(): number {
+    const configured = Number(
+      this.configService.get<string | number>(
+        'ORACLE_WEBHOOK_SIGNATURE_WINDOW_MS',
+      ),
+    );
+    return Number.isFinite(configured) && configured > 0
+      ? configured
+      : DEFAULT_SIGNATURE_WINDOW_MS;
+  }
+
+  private resolveEventId(dto: WebhookMatchResultDto): string {
+    const raw =
+      dto.idempotency_key ??
+      createHash('sha256')
+        .update(
+          JSON.stringify([
+            dto.match_id,
+            dto.data_source,
+            dto.winning_team,
+            dto.confidence_score,
+            dto.timestamp,
+          ]),
+        )
+        .digest('hex');
+    return `${dto.data_source}:${raw}`;
+  }
+
+  private rememberEventId(eventId: string): void {
+    this.processedEventIds.set(
+      eventId,
+      Date.now() + this.getSignatureWindowMs(),
+    );
+  }
+
+  private pruneExpiredEventIds(): void {
+    const now = Date.now();
+    for (const [eventId, expiresAt] of this.processedEventIds.entries()) {
+      if (expiresAt <= now) {
+        this.processedEventIds.delete(eventId);
+      }
+    }
+  }
+
+  /**
+   * Key identifying one result delivery. An oracle-supplied key is scoped to
+   * its data source so two oracles cannot collide; otherwise the key is
+   * derived from the fields that define the result, so a byte-identical
+   * re-delivery maps to the same key. Both are hashed to a fixed length.
+   */
+  private resolveIdempotencyKey(dto: WebhookMatchResultDto): string {
+    const hash = (parts: unknown[]): string =>
+      createHash('sha256').update(JSON.stringify(parts)).digest('hex');
+
+    if (dto.idempotency_key) {
+      return `key:${hash([dto.data_source, dto.idempotency_key])}`;
+    }
+
+    const parsed = new Date(dto.timestamp);
+    const timestamp = Number.isNaN(parsed.getTime())
+      ? dto.timestamp
+      : parsed.toISOString();
+
+    return `payload:${hash([
+      dto.match_id,
+      dto.data_source,
+      dto.winning_team,
+      dto.confidence_score,
+      timestamp,
+    ])}`;
+  }
+
+  /**
+   * Answer a duplicate call with the original submission's state. Nothing is
+   * saved, queued, or submitted. Reusing an oracle-supplied key for a
+   * different result is a client error, not a duplicate.
+   */
+  private replayDuplicate(
+    existing: OracleSubmission,
+    dto: WebhookMatchResultDto,
+  ): WebhookResponseDto {
+    const samePayload =
+      existing.match_id === dto.match_id &&
+      existing.data_source === dto.data_source &&
+      existing.winning_team === (dto.winning_team as string) &&
+      existing.confidence_score === dto.confidence_score;
+
+    if (!samePayload) {
+      throw new ConflictException(
+        `Idempotency key already used for a different result on match ${existing.match_id}`,
+      );
+    }
+
+    this.logger.log(
+      `Duplicate match result ignored: match_id=${dto.match_id}, submission_id=${existing.id}, job_id=${existing.job_id ?? 'unknown'}`,
+    );
+
+    return {
+      job_id: existing.job_id ?? existing.id,
+      status: this.describeSubmissionState(existing),
+      message:
+        'Duplicate result delivery; returning the original submission without resubmitting',
+      duplicate: true,
+      submission_id: existing.id,
+    };
+  }
+
+  private describeSubmissionState(submission: OracleSubmission): string {
+    if (submission.review_status === SubmissionReviewStatus.HELD) {
+      return 'held';
+    }
+    if (submission.review_status === SubmissionReviewStatus.REJECTED) {
+      return 'rejected';
+    }
+    switch (submission.status) {
+      case SubmissionStatus.SUBMITTED:
+        return 'submitted';
+      case SubmissionStatus.FAILED:
+        return 'failed';
+      default:
+        return 'accepted';
+    }
+  }
+
+  private async submitToOracle(submission: QueuedSubmission): Promise<void> {
+    try {
+      // In a real implementation, this would submit to the Soroban contract
+      // For now, we'll simulate the submission by updating the match record
+      this.logger.log(
+        `Submitting match result to oracle: job_id=${submission.id}, match_id=${submission.matchId}`,
+      );
+
+      // Simulate oracle submission (replace with actual contract call)
+      await this.simulateOracleSubmission(submission);
+
+      // Remove from queue on success
+      this.submissionQueue.delete(submission.id);
+
+      this.logger.log(
+        `Successfully submitted match result: job_id=${submission.id}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to submit match result: job_id=${submission.id}, error=${error instanceof Error ? error.message : 'Unknown'}`,
+      );
+
+      // Handle retry logic
+      await this.handleRetry(
+        submission,
+        error instanceof Error ? error.message : 'Unknown error',
+      );
+    }
+  }
+
+  private async simulateOracleSubmission(
+    submission: QueuedSubmission,
+  ): Promise<void> {
+    // This is a placeholder for the actual oracle submission logic
+    // In production, this would call the Soroban contract to submit the match result
+
+    const startTime = Date.now();
+
+    // Simulate network delay
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Simulate occasional failure for testing retry logic (10% failure rate)
+    if (Math.random() < 0.1) {
+      throw new Error('Simulated oracle submission failure');
+    }
+
+    // Update match record to reflect submission
+    const match = await this.matchRepository.findOne({
+      where: { on_chain_match_id: submission.matchId },
+    });
+
+    if (match) {
+      match.result_submitted = true;
+      match.winning_team = submission.winningTeam;
+      await this.matchRepository.save(match);
+    }
+
+    const submissionTime = Date.now() - startTime;
+
+    // Update submission record in database
+    await this.updateSubmissionRecord(submission.id, {
+      status: SubmissionStatus.SUBMITTED,
+      submitted_at: new Date(),
+      transaction_hash: `tx_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`,
+      submission_time_ms: submissionTime,
+      retry_count: submission.retryCount,
+    });
+  }
+
+  private async handleRetry(
+    submission: QueuedSubmission,
+    error: string,
+  ): Promise<void> {
+    submission.retryCount++;
+    submission.lastError = error;
+
+    // Update submission record with error
+    await this.updateSubmissionRecord(submission.id, {
+      status: SubmissionStatus.FAILED,
+      error_message: error,
+      retry_count: submission.retryCount,
+    });
+
+    if (submission.retryCount >= this.MAX_RETRIES) {
+      this.logger.error(
+        `Max retries exceeded for job_id=${submission.id}, removing from queue`,
+      );
+      this.submissionQueue.delete(submission.id);
+      return;
+    }
+
+    // Calculate next retry time
+    const delay =
+      this.RETRY_DELAYS[submission.retryCount - 1] ||
+      this.RETRY_DELAYS[this.RETRY_DELAYS.length - 1];
+    submission.nextRetryAt = new Date(Date.now() + delay);
+
+    this.logger.log(
+      `Scheduling retry for job_id=${submission.id}, attempt=${submission.retryCount}/${this.MAX_RETRIES}, next_retry_at=${submission.nextRetryAt.toISOString()}`,
+    );
+  }
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  private async processRetries(): Promise<void> {
+    const now = new Date();
+    const jobsToRetry: QueuedSubmission[] = [];
+
+    for (const [, submission] of this.submissionQueue.entries()) {
+      if (submission.nextRetryAt <= now) {
+        jobsToRetry.push(submission);
+      }
+    }
+
+    if (jobsToRetry.length === 0) {
+      return;
+    }
+
+    this.logger.log(`Processing ${jobsToRetry.length} retry attempts`);
+
+    for (const submission of jobsToRetry) {
+      await this.submitToOracle(submission);
+    }
+  }
+
+  private startRetryProcessor(): void {
+    this.logger.log('Webhook retry processor started');
+  }
+
+  /**
+   * Persist the submission. Storage failures are logged and swallowed so the
+   * result is still attempted, except a unique violation on the idempotency
+   * key, which is rethrown so the caller can replay the original submission.
+   */
+  private async saveSubmissionToDatabase(
+    submission: QueuedSubmission,
+    match: CreatorEventMatch,
+    idempotencyKey: string,
+  ): Promise<OracleSubmission | null> {
+    try {
+      const dbSubmission = this.submissionRepository.create({
+        job_id: submission.id,
+        idempotency_key: idempotencyKey,
+        match_id: submission.matchId,
+        team_a: match.team_a,
+        team_b: match.team_b,
+        winning_team: submission.winningTeam,
+        confidence_score: submission.confidenceScore,
+        data_source: submission.dataSource,
+        result_timestamp: new Date(submission.timestamp),
+        metadata: submission.metadata,
+        status: SubmissionStatus.PENDING,
+        retry_count: 0,
+      });
+
+      const saved = await this.submissionRepository.save(dbSubmission);
+      this.logger.log(`Submission saved to database: job_id=${submission.id}`);
+      return saved;
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw error;
+      }
+      this.logger.error(
+        `Failed to save submission to database: ${error instanceof Error ? error.message : 'Unknown'}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Approve or reject a submission that anomaly detection held for manual
+   * review (#1364).
+   *
+   * Only a submission in `HELD` review status may be reviewed. Approving marks
+   * it `APPROVED` and queues it for on-chain submission — the manual approval
+   * is the gate that lets a flagged value be used. Rejecting marks it
+   * `REJECTED` and `FAILED` so it is never submitted.
+   */
+  async reviewSubmission(
+    submissionId: string,
+    dto: ReviewSubmissionDto,
+  ): Promise<ReviewResultResponse> {
+    const submission = await this.submissionRepository.findOne({
+      where: { id: submissionId },
+    });
+
+    if (!submission) {
+      throw new NotFoundException(`Submission ${submissionId} not found`);
+    }
+
+    if (submission.review_status !== SubmissionReviewStatus.HELD) {
+      throw new ConflictException(
+        `Submission ${submissionId} is not held for review (status: ${submission.review_status})`,
+      );
+    }
+
+    submission.reviewed_by = dto.reviewer;
+    submission.reviewed_at = new Date();
+
+    if (dto.decision === ReviewDecision.REJECT) {
+      submission.review_status = SubmissionReviewStatus.REJECTED;
+      submission.status = SubmissionStatus.FAILED;
+      submission.error_message = dto.note
+        ? `Rejected in manual review: ${dto.note}`
+        : 'Rejected in manual review';
+      await this.submissionRepository.save(submission);
+
+      this.logger.warn(
+        `Held submission rejected: submission_id=${submissionId}, reviewer=${dto.reviewer ?? 'unknown'}`,
+      );
+
+      return {
+        submission_id: submissionId,
+        review_status: submission.review_status,
+        submitted: false,
+        message: 'Submission rejected; it will not be submitted on-chain',
+      };
+    }
+
+    // Requeue the approved submission for on-chain use. The record is
+    // re-pointed at the new job so status updates and duplicate replays
+    // track it.
+    const requeuedJobId = this.generateJobId();
+    submission.review_status = SubmissionReviewStatus.APPROVED;
+    submission.job_id = requeuedJobId;
+    await this.submissionRepository.save(submission);
+
+    this.logger.log(
+      `Held submission approved: submission_id=${submissionId}, reviewer=${dto.reviewer ?? 'unknown'}`,
+    );
+
+    const requeued: QueuedSubmission = {
+      id: requeuedJobId,
+      matchId: submission.match_id,
+      winningTeam: submission.winning_team,
+      confidenceScore: submission.confidence_score,
+      dataSource: submission.data_source,
+      timestamp: submission.result_timestamp.toISOString(),
+      metadata: submission.metadata,
+      retryCount: 0,
+      createdAt: new Date(),
+      nextRetryAt: new Date(),
+    };
+    this.submissionQueue.set(requeued.id, requeued);
+    await this.submitToOracle(requeued);
+
+    return {
+      submission_id: submissionId,
+      review_status: submission.review_status,
+      submitted: true,
+      message: 'Submission approved and queued for on-chain submission',
+    };
+  }
+
+  private async updateSubmissionRecord(
+    jobId: string,
+    updates: Partial<OracleSubmission>,
+  ): Promise<void> {
+    try {
+      const submission = await this.submissionRepository.findOne({
+        where: { job_id: jobId },
+      });
+
+      if (submission) {
+        Object.assign(submission, updates);
+        await this.submissionRepository.save(submission);
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to update submission record: ${error instanceof Error ? error.message : 'Unknown'}`,
+      );
+    }
+  }
+
+  private generateJobId(): string {
+    return `job_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+  }
+
+  getQueueStatus(): {
+    total: number;
+    pending: number;
+    retrying: number;
+    jobs: Array<{
+      id: string;
+      matchId: string;
+      retryCount: number;
+      nextRetryAt: Date;
+      lastError?: string;
+    }>;
+  } {
+    const jobs = Array.from(this.submissionQueue.values()).map((job) => ({
+      id: job.id,
+      matchId: job.matchId,
+      retryCount: job.retryCount,
+      nextRetryAt: job.nextRetryAt,
+      lastError: job.lastError,
+    }));
+
+    const pending = jobs.filter((j) => j.retryCount === 0).length;
+    const retrying = jobs.filter((j) => j.retryCount > 0).length;
+
+    return {
+      total: jobs.length,
+      pending,
+      retrying,
+      jobs,
+    };
+  }
+
+  getJobStatus(jobId: string): QueuedSubmission | null {
+    return this.submissionQueue.get(jobId) || null;
+  }
+}

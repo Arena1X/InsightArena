@@ -1,4 +1,6 @@
 import Header from '@/component/Header';
+import Footer from "@/component/Footer";
+import PageBackground from "@/component/PageBackground";
 import React from 'react';
 
 const TermsPage = () => {
@@ -33,58 +35,67 @@ const TermsPage = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-gray-300">
-      <Header />
-      <div className="max-w-6xl mx-auto px-6 py-20">
-        
-        {/* Header Section */}
-        <header className="mb-16 border-b border-gray-800 pb-8">
-          <h1 className="text-4xl font-extrabold text-white mb-4">Terms of Service</h1>
-          <p className="text-gray-500 font-mono text-sm uppercase tracking-wider">Last Updated: {lastUpdated}</p>
-        </header>
+    <PageBackground>
+      <div className="flex min-h-screen flex-col">
+        <Header />
+        <main className="flex-1">
+          <div className="mx-auto max-w-6xl px-6 py-20 pt-28">
+            <header className="mb-16 border-b border-white/10 pb-8">
+              <h1 className="mb-4 text-4xl font-extrabold text-white">
+                Terms of Service
+              </h1>
+              <p className="font-mono text-sm uppercase tracking-wider text-gray-300/70">
+                Last Updated: {lastUpdated}
+              </p>
+            </header>
 
-        <div className="flex flex-col lg:flex-row gap-16">
-          
-          {/* Table of Contents - Sidebar */}
-          <aside className="lg:w-1/4">
-            <nav className="sticky top-28 bg-[#111] p-6 rounded-xl border border-gray-800">
-              <h2 className="text-white font-bold mb-6 text-xs uppercase tracking-widest text-orange-500">Navigation</h2>
-              <ul className="space-y-4">
+            <div className="flex flex-col gap-16 lg:flex-row">
+              <aside className="lg:w-1/4">
+                <nav className="sticky top-28 rounded-xl border border-white/10 bg-[#111726] p-6">
+                  <h2 className="mb-6 text-xs font-bold uppercase tracking-widest text-orange-500">
+                    Navigation
+                  </h2>
+                  <ul className="space-y-4">
+                    {sections.map((section) => (
+                      <li key={section.id}>
+                        <a
+                          href={`#${section.id}`}
+                          className="block text-sm text-gray-200 hover:text-orange-500 transition-colors duration-200"
+                        >
+                          {section.title}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </nav>
+              </aside>
+
+              <article className="space-y-16 lg:w-3/4">
                 {sections.map((section) => (
-                  <li key={section.id}>
-                    <a 
-                      href={`#${section.id}`} 
-                      className="text-sm hover:text-orange-500 transition-colors duration-200 block"
-                    >
+                  <section
+                    key={section.id}
+                    id={section.id}
+                    className="scroll-mt-28"
+                  >
+                    <h2 className="mb-6 border-l-4 border-orange-500 pl-4 text-2xl font-bold text-white">
                       {section.title}
-                    </a>
-                  </li>
+                    </h2>
+                    <p className="text-lg leading-relaxed text-gray-300/80">
+                      {section.content}
+                    </p>
+                  </section>
                 ))}
-              </ul>
-            </nav>
-          </aside>
 
-          {/* Legal Content */}
-          <article className="lg:w-3/4 space-y-16">
-            {sections.map((section) => (
-              <section key={section.id} id={section.id} className="scroll-mt-28">
-                <h2 className="text-2xl font-bold text-white mb-6 border-l-4 border-orange-500 pl-4">
-                  {section.title}
-                </h2>
-                <p className="text-lg leading-relaxed text-gray-400">
-                  {section.content}
-                </p>
-              </section>
-            ))}
-            
-            <footer className="pt-12 border-t border-gray-800 italic text-sm text-gray-500">
-              For legal inquiries, contact: legal@insightarena.com
-            </footer>
-          </article>
-          
-        </div>
+                <footer className="border-t border-white/10 pt-12 text-sm italic text-gray-300/70">
+                  For legal inquiries, contact: legal@insightarena.com
+                </footer>
+              </article>
+            </div>
+          </div>
+        </main>
+        <Footer />
       </div>
-    </div>
+    </PageBackground>
   );
 };
 

@@ -1,10 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { JwtModule } from '@nestjs/jwt';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { AchievementsModule } from './achievements/achievements.module';
 import { AdminModule } from './admin/admin.module';
@@ -13,29 +14,71 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { CommonModule } from './common/common.module';
+import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { CompetitionsModule } from './competitions/competitions.module';
+import { CreatorEventsModule } from './creator-events/creator-events.module';
 import { validate } from './config/env.validation';
 import { FlagsModule } from './flags/flags.module';
 import { HealthModule } from './health/health.module';
+import { IndexerModule } from './indexer/indexer.module';
 import { LeaderboardModule } from './leaderboard/leaderboard.module';
 import { MarketsModule } from './markets/markets.module';
+import { MatchesModule } from './matches/matches.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { OracleModule } from './oracle/oracle.module';
 import { PredictionsModule } from './predictions/predictions.module';
 import { SearchModule } from './search/search.module';
 import { SeasonsModule } from './seasons/seasons.module';
 import { SorobanModule } from './soroban/soroban.module';
 import { UsersModule } from './users/users.module';
+import { DisputesModule } from './disputes/disputes.module';
+import { ContractModule } from './contract/contract.module';
+import { CacheWarmingModule } from './cache/cache-warming.module';
+import { WebsocketModule } from './websocket/websocket.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
+import { AccountModule } from './account/account.module';
+import { TieredThrottlerGuard } from './common/guards/tiered-throttler.guard';
 
 @Module({
   imports: [
-    ThrottlerModule.forRoot([
-      {
-        ttl: 60000,
-        limit: 100,
-      },
-    ]),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      validate,
+      envFilePath: '.env',
+    }),
+
+    ThrottlerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        throttlers: [
+          {
+            name: 'default',
+            ttl:
+              configService.get<number>('RATE_LIMIT_DEFAULT_TTL_MS') ?? 60_000,
+            limit: configService.get<number>('RATE_LIMIT_DEFAULT_LIMIT') ?? 100,
+          },
+          {
+            name: 'auth',
+            ttl: configService.get<number>('RATE_LIMIT_AUTH_TTL_MS') ?? 60_000,
+            limit: configService.get<number>('RATE_LIMIT_AUTH_LIMIT') ?? 10,
+          },
+          {
+            name: 'read',
+            ttl: configService.get<number>('RATE_LIMIT_READ_TTL_MS') ?? 60_000,
+            limit: configService.get<number>('RATE_LIMIT_READ_LIMIT') ?? 200,
+          },
+          {
+            name: 'write',
+            ttl: configService.get<number>('RATE_LIMIT_WRITE_TTL_MS') ?? 60_000,
+            limit: configService.get<number>('RATE_LIMIT_WRITE_LIMIT') ?? 30,
+          },
+        ],
+        setHeaders: true,
+      }),
+    }),
     LoggerModule.forRoot({
       pinoHttp: {
         level: process.env.NODE_ENV !== 'production' ? 'debug' : 'info',
@@ -47,12 +90,6 @@ import { UsersModule } from './users/users.module';
       },
     }),
     ScheduleModule.forRoot(),
-
-    ConfigModule.forRoot({
-      isGlobal: true,
-      validate,
-      envFilePath: '.env',
-    }),
 
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -74,16 +111,33 @@ import { UsersModule } from './users/users.module';
     MarketsModule,
     PredictionsModule,
     CompetitionsModule,
+    CreatorEventsModule,
     SeasonsModule,
     AnalyticsModule,
     LeaderboardModule,
     NotificationsModule,
+    OracleModule,
     SorobanModule,
     AdminModule,
     AchievementsModule,
     SearchModule,
     CommonModule,
     FlagsModule,
+    DisputesModule,
+    MatchesModule,
+    IndexerModule,
+    ContractModule,
+    CacheWarmingModule,
+    WebsocketModule,
+    WebhooksModule,
+    AccountModule,
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.get<string>('JWT_SECRET'),
+      }),
+    }),
   ],
 
   controllers: [AppController],
@@ -91,7 +145,7 @@ import { UsersModule } from './users/users.module';
     AppService,
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: TieredThrottlerGuard,
     },
     {
       provide: APP_GUARD,
@@ -100,6 +154,13 @@ import { UsersModule } from './users/users.module';
     {
       provide: APP_GUARD,
       useClass: RolesGuard,
+    },
+    {
+      // Globally honor Idempotency-Key on mutating requests (POST/PUT/PATCH/DELETE).
+      // GET and other read-only methods pass through untouched.
+      // Requests without the header also pass through — the header is optional.
+      provide: APP_INTERCEPTOR,
+      useClass: IdempotencyInterceptor,
     },
   ],
 })

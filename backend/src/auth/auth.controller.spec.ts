@@ -1,4 +1,5 @@
 import { UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { User } from '../users/entities/user.entity';
 import { AuthController } from './auth.controller';
@@ -14,11 +15,17 @@ const mockAuthService = () => ({
     ),
   verifyChallenge: jest.fn(),
   verifyStellarSignature: jest.fn(),
+  rotateRefreshToken: jest.fn(),
+});
+
+const mockConfigService = () => ({
+  get: jest.fn().mockReturnValue('7d'),
 });
 
 describe('AuthController', () => {
   let controller: AuthController;
   let authService: ReturnType<typeof mockAuthService>;
+  let configService: ReturnType<typeof mockConfigService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -27,13 +34,15 @@ describe('AuthController', () => {
         { provide: AuthService, useValue: mockAuthService() },
         {
           provide: RateLimitService,
-          useValue: { getRateLimitStatus: jest.fn() },
+          useValue: { getStatus: jest.fn() },
         },
+        { provide: ConfigService, useValue: mockConfigService() },
       ],
     }).compile();
 
     controller = module.get<AuthController>(AuthController);
     authService = module.get(AuthService);
+    configService = module.get(ConfigService);
   });
 
   describe('generateChallenge', () => {
@@ -132,6 +141,88 @@ describe('AuthController', () => {
       const result = controller.verifyWallet(dto);
 
       expect(result).toEqual({ verified: false });
+    });
+  });
+
+  describe('refreshToken', () => {
+    const dto = { refresh_token: 'raw-refresh-token' };
+
+    it('should return new access token and refresh token with expiry', async () => {
+      authService.rotateRefreshToken.mockResolvedValue({
+        access_token: 'new.jwt.token',
+        refresh_token: 'new-refresh-token',
+      });
+
+      const result = await controller.refreshToken(dto);
+
+      expect(result.access_token).toBe('new.jwt.token');
+      expect(result.refresh_token).toBe('new-refresh-token');
+      expect(result.expires_at).toBeDefined();
+      expect(authService.rotateRefreshToken).toHaveBeenCalledWith(
+        'raw-refresh-token',
+      );
+    });
+
+    it('should calculate correct expiry timestamp for 7d token', async () => {
+      authService.rotateRefreshToken.mockResolvedValue({
+        access_token: 'new.jwt.token',
+        refresh_token: 'new-refresh-token',
+      });
+      configService.get.mockReturnValue('7d');
+
+      const before = Date.now();
+      const result = await controller.refreshToken(dto);
+      const after = Date.now();
+
+      const expiresAt = new Date(result.expires_at).getTime();
+      const expected7Days = 7 * 24 * 60 * 60 * 1000;
+
+      expect(expiresAt).toBeGreaterThanOrEqual(before + expected7Days);
+      expect(expiresAt).toBeLessThanOrEqual(after + expected7Days);
+    });
+
+    it('should propagate UnauthorizedException if the refresh token is invalid', async () => {
+      authService.rotateRefreshToken.mockRejectedValue(
+        new UnauthorizedException('Invalid refresh token'),
+      );
+
+      await expect(controller.refreshToken(dto)).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('should propagate UnauthorizedException on reuse detection', async () => {
+      authService.rotateRefreshToken.mockRejectedValue(
+        new UnauthorizedException(
+          'Refresh token reuse detected; session revoked',
+        ),
+      );
+
+      await expect(controller.refreshToken(dto)).rejects.toThrow(
+        'Refresh token reuse detected; session revoked',
+      );
+    });
+
+    it('should handle different expiry formats', async () => {
+      authService.rotateRefreshToken.mockResolvedValue({
+        access_token: 'new.jwt.token',
+        refresh_token: 'new-refresh-token',
+      });
+
+      // Test 24h format
+      configService.get.mockReturnValue('24h');
+      const result24h = await controller.refreshToken(dto);
+      expect(result24h.expires_at).toBeDefined();
+
+      // Test 60m format
+      configService.get.mockReturnValue('60m');
+      const result60m = await controller.refreshToken(dto);
+      expect(result60m.expires_at).toBeDefined();
+
+      // Test 3600s format
+      configService.get.mockReturnValue('3600s');
+      const result3600s = await controller.refreshToken(dto);
+      expect(result3600s.expires_at).toBeDefined();
     });
   });
 });

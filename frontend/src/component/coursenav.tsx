@@ -14,15 +14,28 @@ import tradingicon from "../../public/assets/tradingIcon.svg";
 import airdropicon from "../../public/assets/airdropIcon.svg";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-const Navbar = () => {
+import { CourseLesson, getResumeLesson, getViewedLessonIds, markLessonViewed } from "../lib/utils";
+
+interface NavbarProps {
+  courseId?: string;
+  lessons?: CourseLesson[];
+}
+
+const Navbar = ({ courseId = "crypto-101", lessons = [] }: NavbarProps) => {
   const router = useRouter();
+  const [viewedLessonIds, setViewedLessonIds] = useState<string[]>([]);
   const [isCoursesOpen, setIsCoursesOpen] = useState(false);
   const [isResourcesOpen, setIsResourcesOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const resumeLesson = getResumeLesson(courseId, lessons);
+
+  React.useEffect(() => {
+    setViewedLessonIds(getViewedLessonIds(courseId));
+  }, [courseId]);
 
   return (
     <nav
-      className="bg-black border-1 rounded-lg border-white text-white px-6 py-4 flex justify-between w-full items-center m-auto mt-4 "
+      className="bg-black border rounded-lg border-white text-white px-6 py-4 flex justify-between w-full items-center m-auto mt-4 "
       aria-label="Courses navigation"
     >
       <Link href="/" className="text-[2rem] font-bold">Stark Academy</Link>
@@ -55,6 +68,16 @@ const Navbar = () => {
               open={isCoursesOpen}
               onClose={() => setIsCoursesOpen(false)}
             />
+          )}
+          {resumeLesson && (
+            <Link
+              href={resumeLesson.href}
+              onClick={() => setViewedLessonIds(markLessonViewed(courseId, resumeLesson.id))}
+              className="mt-3 block border-t border-gray-800 pt-3 text-sm text-purple-300 hover:text-white"
+            >
+              Resume where you left off
+              <span className="ml-2 text-gray-400">{viewedLessonIds.length}/{lessons.length}</span>
+            </Link>
           )}
         </div>
 

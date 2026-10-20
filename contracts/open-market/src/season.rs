@@ -1,0 +1,849 @@
+use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
+use crate::errors::InsightArenaError;
+use crate::escrow;
+use crate::storage_types::{
+    DataKey, LeaderboardEntry, LeaderboardSnapshot, RewardPayout, Season, UserProfile,
+    VestingSchedule,
+};
+
+use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
+
+// ── Leaderboard helpers (merged from leaderboard.rs) ─────────────────────────
+
+/// `stake_bonus = floor(stake_xlm / 10)` → `floor(stake_stroops / 10^8 stroops)`.
+const STROOPS_PER_STAKE_POINT: i128 = 100_000_000;
+
+/// Fetch a leaderboard snapshot for a specific season.
+pub fn get_leaderboard_snapshot(
+    env: &Env,
+    season_id: u32,
+) -> Result<LeaderboardSnapshot, InsightArenaError> {
+    let key = DataKey::Leaderboard(season_id);
+    env.storage()
+        .persistent()
+        .get(&key)
+        .ok_or(InsightArenaError::SeasonNotFound)
+}
+
+/// Store a leaderboard snapshot.
+pub fn store_snapshot(env: &Env, snapshot: &LeaderboardSnapshot) {
+    let key = DataKey::Leaderboard(snapshot.season_id);
+    env.storage().persistent().set(&key, snapshot);
+}
+
+/// Pure function: calculate season points from stake and prediction accuracy.
+///
+/// `season_points = (base_points + stake_bonus) * (correct / total) * 2`
+pub fn calculate_points(stake_amount: i128, correct: u32, total: u32) -> u32 {
+    if total == 0 {
+        return 0;
+    }
+    let correct = correct.min(total) as i128;
+    let total = total as i128;
+    let stake = stake_amount.max(0_i128);
+    let stake_bonus = stake / STROOPS_PER_STAKE_POINT;
+    let sum = 100_i128.saturating_add(stake_bonus);
+    let numer = sum.saturating_mul(correct).saturating_mul(2_i128);
+    let res = numer / total;
+    if res < 0 {
+        return 0;
+    }
+    if res > u32::MAX as i128 {
+        u32::MAX
+    } else {
+        res as u32
+    }
+}
+
+/// Returns season points for `user` in `season_id`.
+/// - Finalized seasons: points from the leaderboard snapshot.
+/// - Active season: live `UserProfile::season_points`.
+/// - Unknown users: `0`. Never panics.
+pub fn get_user_season_points(env: &Env, user: Address, season_id: u32) -> u32 {
+    let Some(season) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, Season>(&DataKey::Season(season_id))
+    else {
+        return 0;
+    };
+
+    if season.is_finalized {
+        if let Ok(snapshot) = get_leaderboard_snapshot(env, season_id) {
+            for e in snapshot.entries.iter() {
+                if e.user == user {
+                    return e.points;
+                }
+            }
+        }
+        return 0;
+    }
+
+    let is_live_season = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u32>(&DataKey::ActiveSeason)
+        .map(|id| id == season_id)
+        .unwrap_or_else(|| {
+            get_active_season(env)
+                .map(|s| s.season_id == season_id)
+                .unwrap_or(false)
+        });
+
+    if is_live_season {
+        return env
+            .storage()
+            .persistent()
+            .get::<DataKey, UserProfile>(&DataKey::User(user))
+            .map(|p| p.season_points)
+            .unwrap_or(0);
+    }
+
+    if let Ok(snapshot) = get_leaderboard_snapshot(env, season_id) {
+        for e in snapshot.entries.iter() {
+            if e.user == user {
+                return e.points;
+            }
+        }
+    }
+
+    0
+}
+
+fn bump_season(env: &Env, season_id: u32) {
+    config::extend_season_ttl(env, season_id);
+}
+
+fn bump_leaderboard(env: &Env, season_id: u32) {
+    config::extend_season_ttl(env, season_id);
+}
+
+fn bump_season_count(env: &Env) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::SeasonCount,
+        PERSISTENT_THRESHOLD,
+        PERSISTENT_BUMP,
+    );
+}
+
+fn bump_user_list(env: &Env) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::UserList,
+        PERSISTENT_THRESHOLD,
+        PERSISTENT_BUMP,
+    );
+}
+
+fn bump_active_season(env: &Env) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::ActiveSeason,
+        PERSISTENT_THRESHOLD,
+        PERSISTENT_BUMP,
+    );
+}
+
+fn season_count(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SeasonCount)
+        .unwrap_or(0)
+}
+
+fn store_season_count(env: &Env, count: u32) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::SeasonCount, &count);
+    bump_season_count(env);
+}
+
+fn get_user_list(env: &Env) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserList)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn store_user_list(env: &Env, users: &Vec<Address>) {
+    env.storage().persistent().set(&DataKey::UserList, users);
+    bump_user_list(env);
+}
+
+pub(crate) fn track_user_profile(env: &Env, address: &Address) {
+    let mut users = get_user_list(env);
+    if users.iter().any(|user| user == *address) {
+        bump_user_list(env);
+        return;
+    }
+
+    users.push_back(address.clone());
+    store_user_list(env, &users);
+
+    let has_predictions = env
+        .storage()
+        .persistent()
+        .get::<DataKey, UserProfile>(&DataKey::User(address.clone()))
+        .map(|profile| profile.total_predictions > 0)
+        .unwrap_or(false);
+
+    if has_predictions {
+        if let Some(mut season) = get_active_season(env) {
+            season.participant_count = season.participant_count.saturating_add(1);
+            store_season(env, &season);
+        }
+    }
+}
+
+pub fn load_season(env: &Env, season_id: u32) -> Result<Season, InsightArenaError> {
+    let season = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Season(season_id))
+        .ok_or(InsightArenaError::SeasonNotFound)?;
+    bump_season(env, season_id);
+    Ok(season)
+}
+
+fn store_season(env: &Env, season: &Season) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Season(season.season_id), season);
+    bump_season(env, season.season_id);
+}
+
+fn store_leaderboard_snapshot(env: &Env, snapshot: &LeaderboardSnapshot) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Leaderboard(snapshot.season_id), snapshot);
+    bump_leaderboard(env, snapshot.season_id);
+}
+
+fn fixed_share_bps(rank: u32) -> Option<u32> {
+    match rank {
+        1 => Some(4_000),
+        2 => Some(2_000),
+        3 => Some(1_000),
+        _ => None,
+    }
+}
+
+fn distribute_proportional_pool(
+    env: &Env,
+    entries: &Vec<LeaderboardEntry>,
+    pool: i128,
+) -> Result<Vec<RewardPayout>, InsightArenaError> {
+    let mut payouts = Vec::new(env);
+    if entries.is_empty() || pool == 0 {
+        return Ok(payouts);
+    }
+
+    let mut total_points: u32 = 0;
+    for entry in entries.iter() {
+        total_points = total_points
+            .checked_add(entry.points)
+            .ok_or(InsightArenaError::Overflow)?;
+    }
+
+    if total_points == 0 {
+        let first = entries.get(0).ok_or(InsightArenaError::InvalidInput)?;
+        payouts.push_back(RewardPayout {
+            rank: first.rank,
+            user: first.user,
+            amount: pool,
+        });
+        return Ok(payouts);
+    }
+
+    let mut distributed = 0_i128;
+    let last_index = entries.len().saturating_sub(1);
+
+    let mut index = 0_u32;
+    for entry in entries.iter() {
+        let amount = if index == last_index {
+            pool.checked_sub(distributed)
+                .ok_or(InsightArenaError::Overflow)?
+        } else {
+            pool.checked_mul(entry.points as i128)
+                .ok_or(InsightArenaError::Overflow)?
+                .checked_div(total_points as i128)
+                .ok_or(InsightArenaError::Overflow)?
+        };
+
+        distributed = distributed
+            .checked_add(amount)
+            .ok_or(InsightArenaError::Overflow)?;
+
+        payouts.push_back(RewardPayout {
+            rank: entry.rank,
+            user: entry.user,
+            amount,
+        });
+        index = index.checked_add(1).ok_or(InsightArenaError::Overflow)?;
+    }
+
+    Ok(payouts)
+}
+
+fn merge_reward_payouts(
+    env: &Env,
+    payouts: Vec<RewardPayout>,
+) -> Result<Vec<RewardPayout>, InsightArenaError> {
+    let mut merged = Vec::new(env);
+
+    for payout in payouts.iter() {
+        let mut found = false;
+
+        let mut idx = 0_u32;
+        while idx < merged.len() {
+            let mut existing: RewardPayout =
+                merged.get(idx).ok_or(InsightArenaError::InvalidInput)?;
+            if existing.user == payout.user {
+                existing.amount = existing
+                    .amount
+                    .checked_add(payout.amount)
+                    .ok_or(InsightArenaError::Overflow)?;
+                merged.set(idx, existing);
+                found = true;
+                break;
+            }
+            idx = idx.checked_add(1).ok_or(InsightArenaError::Overflow)?;
+        }
+
+        if !found {
+            merged.push_back(payout);
+        }
+    }
+
+    Ok(merged)
+}
+
+fn compute_reward_payouts(
+    env: &Env,
+    snapshot: &LeaderboardSnapshot,
+    reward_pool: i128,
+) -> Result<Vec<RewardPayout>, InsightArenaError> {
+    if snapshot.entries.is_empty() {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
+    let mut raw_payouts = Vec::new(env);
+    let mut fixed_allocated = 0_i128;
+    let mut variable_entries = Vec::new(env);
+    let mut podium_entries = Vec::new(env);
+
+    for entry in snapshot.entries.iter() {
+        if entry.rank > 10 {
+            break;
+        }
+
+        if let Some(share_bps) = fixed_share_bps(entry.rank) {
+            let amount = reward_pool
+                .checked_mul(share_bps as i128)
+                .ok_or(InsightArenaError::Overflow)?
+                .checked_div(10_000)
+                .ok_or(InsightArenaError::Overflow)?;
+
+            fixed_allocated = fixed_allocated
+                .checked_add(amount)
+                .ok_or(InsightArenaError::Overflow)?;
+
+            raw_payouts.push_back(RewardPayout {
+                rank: entry.rank,
+                user: entry.user.clone(),
+                amount,
+            });
+            podium_entries.push_back(entry.clone());
+        } else {
+            variable_entries.push_back(entry.clone());
+        }
+    }
+
+    let remaining_pool = reward_pool
+        .checked_sub(fixed_allocated)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    let proportional_entries = if variable_entries.is_empty() {
+        podium_entries
+    } else {
+        variable_entries
+    };
+
+    let proportional = distribute_proportional_pool(env, &proportional_entries, remaining_pool)?;
+    for payout in proportional.iter() {
+        raw_payouts.push_back(payout);
+    }
+
+    merge_reward_payouts(env, raw_payouts)
+}
+
+fn emit_season_created(
+    env: &Env,
+    season_id: u32,
+    start_time: u64,
+    end_time: u64,
+    reward_pool: i128,
+) {
+    env.events().publish(
+        (symbol_short!("season"), symbol_short!("created")),
+        (season_id, start_time, end_time, reward_pool),
+    );
+}
+
+pub fn emit_leaderboard_updated(env: &Env, season_id: u32, updated_at: u64) {
+    env.events().publish(
+        (symbol_short!("lead"), symbol_short!("updtd")),
+        (season_id, updated_at),
+    );
+}
+
+fn emit_season_finalized(
+    env: &Env,
+    season_id: u32,
+    top_winner: &Address,
+    payouts: &Vec<RewardPayout>,
+) {
+    env.events().publish(
+        (symbol_short!("season"), symbol_short!("finalzd")),
+        (season_id, top_winner.clone(), payouts.clone()),
+    );
+}
+
+pub fn create_season(
+    env: &Env,
+    admin: Address,
+    start_time: u64,
+    end_time: u64,
+    reward_pool: i128,
+) -> Result<u32, InsightArenaError> {
+    config::ensure_not_paused(env)?;
+    let cfg = config::get_config(env)?;
+    cfg.admin.require_auth();
+    if admin != cfg.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    if end_time <= start_time {
+        return Err(InsightArenaError::InvalidTimeRange);
+    }
+
+    let total = season_count(env);
+    let mut season_id = 1_u32;
+    while season_id <= total {
+        if let Some(season) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Season>(&DataKey::Season(season_id))
+        {
+            if !season.is_finalized && season.start_time < end_time && start_time < season.end_time
+            {
+                return Err(InsightArenaError::SeasonOverlap);
+            }
+        }
+        season_id = season_id.saturating_add(1);
+    }
+
+    let season_id = season_count(env)
+        .checked_add(1)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    escrow::lock_stake(env, &admin, reward_pool)?;
+
+    let now = env.ledger().timestamp();
+    let mut season = Season::new(season_id, start_time, end_time, reward_pool);
+    season.is_active = start_time <= now && now < end_time;
+    store_season(env, &season);
+    store_season_count(env, season_id);
+
+    store_leaderboard_snapshot(
+        env,
+        &LeaderboardSnapshot {
+            season_id,
+            updated_at: now,
+            entries: Vec::new(env),
+        },
+    );
+
+    emit_season_created(env, season_id, start_time, end_time, reward_pool);
+    Ok(season_id)
+}
+
+pub fn get_season(env: &Env, season_id: u32) -> Result<Season, InsightArenaError> {
+    load_season(env, season_id)
+}
+
+pub fn get_active_season(env: &Env) -> Option<Season> {
+    let now = env.ledger().timestamp();
+    let mut season_id = 1_u32;
+    let total = season_count(env);
+
+    while season_id <= total {
+        if let Some(mut season) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Season>(&DataKey::Season(season_id))
+        {
+            let is_active =
+                !season.is_finalized && season.start_time <= now && now < season.end_time;
+            if season.is_active != is_active {
+                season.is_active = is_active;
+                store_season(env, &season);
+            } else {
+                bump_season(env, season_id);
+            }
+
+            if is_active {
+                return Some(season);
+            }
+        }
+        season_id = season_id.saturating_add(1);
+    }
+
+    None
+}
+
+pub fn update_leaderboard(
+    env: &Env,
+    admin: Address,
+    season_id: u32,
+    entries: Vec<LeaderboardEntry>,
+) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(env)?;
+    let cfg = config::get_config(env)?;
+    cfg.admin.require_auth();
+    if admin != cfg.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    let season = load_season(env, season_id)?;
+    if season.is_finalized {
+        return Err(InsightArenaError::SeasonAlreadyFinalized);
+    }
+
+    if entries.len() > 100 {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
+    let mut expected_rank = 1_u32;
+    for entry in entries.iter() {
+        if entry.rank != expected_rank {
+            return Err(InsightArenaError::InvalidInput);
+        }
+        expected_rank = expected_rank
+            .checked_add(1)
+            .ok_or(InsightArenaError::Overflow)?;
+    }
+
+    let updated_at = env.ledger().timestamp();
+
+    // Call the persistence layer in leaderboard.rs
+    store_snapshot(
+        env,
+        &LeaderboardSnapshot {
+            season_id,
+            updated_at,
+            entries,
+        },
+    );
+
+    emit_leaderboard_updated(env, season_id, updated_at);
+    Ok(())
+}
+
+pub fn get_leaderboard(
+    env: &Env,
+    season_id: u32,
+) -> Result<LeaderboardSnapshot, InsightArenaError> {
+    load_season(env, season_id)?;
+
+    let snapshot = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Leaderboard(season_id))
+        .ok_or(InsightArenaError::SeasonNotFound)?;
+    bump_leaderboard(env, season_id);
+    Ok(snapshot)
+}
+
+pub fn get_season_participants(
+    env: &Env,
+    season_id: u32,
+) -> Result<Vec<Address>, InsightArenaError> {
+    let snapshot = get_leaderboard(env, season_id)?;
+    let mut participants = Vec::new(env);
+
+    for entry in snapshot.entries.iter() {
+        if entry.points == 0 {
+            continue;
+        }
+
+        if !participants.iter().any(|user| user == entry.user) {
+            participants.push_back(entry.user);
+        }
+    }
+
+    Ok(participants)
+}
+
+pub fn finalize_season(env: &Env, admin: Address, season_id: u32) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(env)?;
+    let cfg = config::get_config(env)?;
+    cfg.admin.require_auth();
+    if admin != cfg.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    let mut season = load_season(env, season_id)?;
+    if season.is_finalized {
+        return Err(InsightArenaError::SeasonAlreadyFinalized);
+    }
+    if env.ledger().timestamp() < season.end_time {
+        return Err(InsightArenaError::SeasonNotActive);
+    }
+
+    let snapshot = get_leaderboard(env, season_id)?;
+    let payouts = compute_reward_payouts(env, &snapshot, season.reward_pool)?;
+
+    let now = env.ledger().timestamp();
+
+    let mut total_distributed = 0_i128;
+    for payout in payouts.iter() {
+        if payout.amount > 0 {
+            store_vesting_schedule(
+                env,
+                season_id,
+                &payout.user,
+                payout.amount,
+                cfg.vesting_tranche_count,
+                cfg.vesting_interval_seconds,
+                now,
+            );
+        }
+        total_distributed = total_distributed
+            .checked_add(payout.amount)
+            .ok_or(InsightArenaError::Overflow)?;
+    }
+
+    if total_distributed != season.reward_pool {
+        return Err(InsightArenaError::Overflow);
+    }
+
+    let winner = snapshot
+        .entries
+        .get(0)
+        .ok_or(InsightArenaError::InvalidInput)?
+        .user;
+
+    season.is_finalized = true;
+    season.is_active = false;
+    season.top_winner = Some(winner.clone());
+    store_season(env, &season);
+
+    emit_season_finalized(env, season_id, &winner, &payouts);
+    Ok(())
+}
+
+pub fn reset_season_points(
+    env: &Env,
+    admin: Address,
+    new_season_id: u32,
+) -> Result<u32, InsightArenaError> {
+    config::ensure_not_paused(env)?;
+    let cfg = config::get_config(env)?;
+    cfg.admin.require_auth();
+    if admin != cfg.admin {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    let mut new_season = load_season(env, new_season_id)?;
+    if new_season.is_finalized {
+        return Err(InsightArenaError::SeasonAlreadyFinalized);
+    }
+
+    let total = season_count(env);
+    let mut season_id = 1_u32;
+    while season_id <= total {
+        if let Some(mut season) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Season>(&DataKey::Season(season_id))
+        {
+            let should_be_active = season_id == new_season_id;
+            if season.is_active != should_be_active {
+                season.is_active = should_be_active;
+                store_season(env, &season);
+            } else {
+                bump_season(env, season_id);
+            }
+        }
+        season_id = season_id.saturating_add(1);
+    }
+
+    new_season.is_active = true;
+    store_season(env, &new_season);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::ActiveSeason, &new_season_id);
+    bump_active_season(env);
+
+    let users = get_user_list(env);
+    let mut reset_count = 0_u32;
+    for address in users.iter() {
+        let user_key = DataKey::User(address.clone());
+        if let Some(mut profile) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, UserProfile>(&user_key)
+        {
+            profile.season_points = 0;
+            env.storage().persistent().set(&user_key, &profile);
+            reset_count = reset_count
+                .checked_add(1)
+                .ok_or(InsightArenaError::Overflow)?;
+        }
+    }
+
+    Ok(reset_count)
+}
+
+// ── Season Reward Vesting ─────────────────────────────────────────────────────
+//
+// `finalize_season` no longer pays winners in one lump sum; instead each
+// winner's reward is split into equally-spaced tranches (see
+// `Config::vesting_tranche_count` / `vesting_interval_seconds`), claimable
+// one-by-one as they unlock via `claim_vested_reward`. The awarded funds
+// were already locked into escrow at `create_season` time, so vesting only
+// gates *when* they can be pulled back out — it does not move any funds
+// itself.
+//
+// Keyed by a raw `(Symbol, u32, Address)` tuple rather than a `DataKey`
+// variant, since `DataKey` is already at its 50-variant XDR cap (see
+// `reputation::trusted_creator_key` for the established precedent).
+
+fn vesting_key(season_id: u32, user: &Address) -> (Symbol, u32, Address) {
+    (symbol_short!("vest"), season_id, user.clone())
+}
+
+fn get_vesting_schedule_raw(env: &Env, season_id: u32, user: &Address) -> Option<VestingSchedule> {
+    env.storage().persistent().get(&vesting_key(season_id, user))
+}
+
+fn store_vesting_schedule_raw(env: &Env, schedule: &VestingSchedule) {
+    let key = vesting_key(schedule.season_id, &schedule.user);
+    env.storage().persistent().set(&key, schedule);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn store_vesting_schedule(
+    env: &Env,
+    season_id: u32,
+    user: &Address,
+    total_amount: i128,
+    tranche_count: u32,
+    interval_seconds: u64,
+    start_time: u64,
+) {
+    let schedule = VestingSchedule {
+        season_id,
+        user: user.clone(),
+        total_amount,
+        tranche_count,
+        interval_seconds,
+        start_time,
+        claimed_tranches: 0,
+        claimed_amount: 0,
+    };
+    store_vesting_schedule_raw(env, &schedule);
+}
+
+fn emit_vesting_claimed(env: &Env, season_id: u32, user: &Address, amount: i128, claimed_tranches: u32) {
+    env.events().publish(
+        (symbol_short!("vest"), symbol_short!("claimed")),
+        (season_id, user.clone(), amount, claimed_tranches),
+    );
+}
+
+/// Number of tranches currently unlocked for a schedule, capped at
+/// `tranche_count`. Tranche `i` (0-indexed) unlocks at
+/// `start_time + (i + 1) * interval_seconds`.
+fn unlocked_tranche_count(schedule: &VestingSchedule, now: u64) -> u32 {
+    if now < schedule.start_time || schedule.interval_seconds == 0 {
+        return 0;
+    }
+    let elapsed = now - schedule.start_time;
+    let unlocked = elapsed / schedule.interval_seconds;
+    if unlocked > schedule.tranche_count as u64 {
+        schedule.tranche_count
+    } else {
+        unlocked as u32
+    }
+}
+
+/// Return the vesting schedule for `user` in `season_id`, tracking claimed
+/// vs. unclaimed tranches. Read-only; does not mutate storage.
+pub fn get_vesting_schedule(
+    env: &Env,
+    season_id: u32,
+    user: Address,
+) -> Result<VestingSchedule, InsightArenaError> {
+    get_vesting_schedule_raw(env, season_id, &user).ok_or(InsightArenaError::NotAParticipant)
+}
+
+/// Claim every currently-unlocked, not-yet-claimed tranche of `user`'s
+/// season reward. Returns the amount transferred (`0` if nothing new has
+/// unlocked since the last claim — this is not an error, since polling is
+/// expected).
+///
+/// # Errors
+/// - `NotAParticipant` — reused to mean no vesting schedule exists for this
+///   `(season_id, user)` pair (error enum is at its 50-case cap).
+/// - `TimelockNotElapsed` if no new tranche has unlocked since the last claim.
+pub fn claim_vested_reward(
+    env: &Env,
+    user: Address,
+    season_id: u32,
+) -> Result<i128, InsightArenaError> {
+    config::ensure_not_paused(env)?;
+    user.require_auth();
+
+    let mut schedule =
+        get_vesting_schedule_raw(env, season_id, &user).ok_or(InsightArenaError::NotAParticipant)?;
+
+    let now = env.ledger().timestamp();
+    let unlocked = unlocked_tranche_count(&schedule, now);
+    let claimable_tranches = unlocked.saturating_sub(schedule.claimed_tranches);
+    if claimable_tranches == 0 {
+        return Err(InsightArenaError::TimelockNotElapsed);
+    }
+
+    // The last tranche absorbs the remainder of integer-division so the sum
+    // of every claim across the schedule always equals `total_amount` exactly.
+    let amount = if unlocked >= schedule.tranche_count {
+        schedule
+            .total_amount
+            .checked_sub(schedule.claimed_amount)
+            .ok_or(InsightArenaError::Overflow)?
+    } else {
+        let per_tranche = schedule.total_amount / (schedule.tranche_count as i128);
+        per_tranche
+            .checked_mul(claimable_tranches as i128)
+            .ok_or(InsightArenaError::Overflow)?
+    };
+
+    if amount > 0 {
+        escrow::release_payout(env, &user, amount)?;
+    }
+
+    schedule.claimed_tranches = unlocked;
+    schedule.claimed_amount = schedule
+        .claimed_amount
+        .checked_add(amount)
+        .ok_or(InsightArenaError::Overflow)?;
+    store_vesting_schedule_raw(env, &schedule);
+
+    emit_vesting_claimed(env, season_id, &user, amount, schedule.claimed_tranches);
+
+    Ok(amount)
+}

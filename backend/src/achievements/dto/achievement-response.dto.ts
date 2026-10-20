@@ -25,4 +25,13 @@ export class AchievementResponseDto {
 
   @ApiProperty({ nullable: true })
   unlocked_at: Date | null;
+
+  @ApiProperty({ minimum: 0, maximum: 100 })
+  progress_percentage: number;
+
+  @ApiProperty({ nullable: true })
+  current_progress: number | null;
+
+  @ApiProperty({ nullable: true })
+  threshold: number | null;
 }

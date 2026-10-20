@@ -1,0 +1,207 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { DisputesController } from './disputes.controller';
+import { DisputesService } from './disputes.service';
+import { Dispute, DisputeStatus } from './entities/dispute.entity';
+import { DisputeEvidence } from './entities/dispute-evidence.entity';
+import { User } from '../users/entities/user.entity';
+import { CreateDisputeDto } from './dto/create-dispute.dto';
+import { AttachEvidenceDto } from './dto/attach-evidence.dto';
+
+describe('DisputesController', () => {
+  let controller: DisputesController;
+  let service: DisputesService;
+
+  const mockUser: User = {
+    id: 'user-123',
+    email: 'test@example.com',
+    username: 'testuser',
+    role: 'user',
+    created_at: new Date(),
+    updated_at: new Date(),
+  } as User;
+
+  const mockMarket = {
+    id: 'market-123',
+    on_chain_market_id: 'chain-market-123',
+    is_resolved: true,
+    resolution_time: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000),
+  } as any;
+
+  const mockDispute: Dispute = {
+    id: 'dispute-123',
+    marketId: 'market-123',
+    disputantId: 'user-123',
+    reason: 'Test dispute reason',
+    status: DisputeStatus.PENDING,
+    market: mockMarket,
+    disputant: mockUser,
+    createdAt: new Date(),
+  } as Dispute;
+
+  beforeEach(async () => {
+    const mockDisputesService = {
+      create: jest.fn(),
+      findOne: jest.fn(),
+      findAll: jest.fn(),
+      findByMarket: jest.fn(),
+      attachEvidence: jest.fn(),
+      listEvidence: jest.fn(),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      controllers: [DisputesController],
+      providers: [
+        {
+          provide: DisputesService,
+          useValue: mockDisputesService,
+        },
+      ],
+    }).compile();
+
+    controller = module.get<DisputesController>(DisputesController);
+    service = module.get<DisputesService>(DisputesService);
+  });
+
+  it('should be defined', () => {
+    expect(controller).toBeDefined();
+  });
+
+  describe('create', () => {
+    const createDisputeDto: CreateDisputeDto = {
+      market_id: 'market-123',
+      reason: 'Test dispute reason',
+    };
+
+    it('should create a dispute', async () => {
+      jest.spyOn(service, 'create').mockResolvedValue(mockDispute);
+
+      const result = await controller.create(createDisputeDto, mockUser);
+
+      expect(result).toEqual(mockDispute);
+      expect(service.create).toHaveBeenCalledWith(createDisputeDto, mockUser);
+    });
+  });
+
+  describe('findOne', () => {
+    it('should return a dispute', async () => {
+      jest.spyOn(service, 'findOne').mockResolvedValue(mockDispute);
+
+      const result = await controller.findOne('dispute-123');
+
+      expect(result).toEqual(mockDispute);
+      expect(service.findOne).toHaveBeenCalledWith('dispute-123');
+    });
+  });
+
+  describe('findAll', () => {
+    it('should return disputes with pagination metadata', async () => {
+      const mockResult = {
+        disputes: [mockDispute],
+        next_cursor: null,
+        has_more: false,
+        limit: 20,
+        counts_by_status: { pending: 1, resolved: 0 },
+      };
+      jest.spyOn(service, 'findAll').mockResolvedValue(mockResult);
+
+      const query = { limit: 20 } as any;
+      const result = await controller.findAll(query);
+
+      expect(result).toEqual(mockResult);
+      expect(service.findAll).toHaveBeenCalledWith(query);
+    });
+
+    it('should pass status filter through to the service', async () => {
+      const mockResult = {
+        disputes: [mockDispute],
+        next_cursor: null,
+        has_more: false,
+        limit: 10,
+        counts_by_status: { pending: 1, resolved: 0 },
+      };
+      jest.spyOn(service, 'findAll').mockResolvedValue(mockResult);
+
+      const query = { status: DisputeStatus.PENDING, limit: 10 } as any;
+      await controller.findAll(query);
+
+      expect(service.findAll).toHaveBeenCalledWith(query);
+    });
+  });
+
+  describe('findByMarket', () => {
+    it('should return disputes for a market', async () => {
+      jest.spyOn(service, 'findByMarket').mockResolvedValue([mockDispute]);
+
+      const result = await controller.findByMarket('market-123');
+
+      expect(result).toEqual([mockDispute]);
+      expect(service.findByMarket).toHaveBeenCalledWith('market-123');
+    });
+  });
+
+  describe('attachEvidence', () => {
+    const attachEvidenceDto: AttachEvidenceDto = {
+      fileUrl: 'https://storage.example.com/evidence/screenshot.png',
+      fileName: 'screenshot.png',
+      mimeType: 'image/png',
+      sizeBytes: 204800,
+    };
+
+    const mockEvidence: DisputeEvidence = {
+      id: 'evidence-123',
+      disputeId: 'dispute-123',
+      uploadedById: 'user-123',
+      fileUrl: attachEvidenceDto.fileUrl,
+      fileName: attachEvidenceDto.fileName,
+      mimeType: attachEvidenceDto.mimeType,
+      sizeBytes: attachEvidenceDto.sizeBytes,
+      description: null,
+      createdAt: new Date(),
+    } as DisputeEvidence;
+
+    it('should attach evidence to a dispute', async () => {
+      jest.spyOn(service, 'attachEvidence').mockResolvedValue(mockEvidence);
+
+      const result = await controller.attachEvidence(
+        'dispute-123',
+        attachEvidenceDto,
+        mockUser,
+      );
+
+      expect(result).toEqual(mockEvidence);
+      expect(service.attachEvidence).toHaveBeenCalledWith(
+        'dispute-123',
+        attachEvidenceDto,
+        mockUser,
+      );
+    });
+  });
+
+  describe('listEvidence', () => {
+    const mockEvidenceList: DisputeEvidence[] = [
+      {
+        id: 'evidence-123',
+        disputeId: 'dispute-123',
+        uploadedById: 'user-123',
+        fileUrl: 'https://storage.example.com/evidence/screenshot.png',
+        fileName: 'screenshot.png',
+        mimeType: 'image/png',
+        sizeBytes: 204800,
+        description: null,
+        createdAt: new Date(),
+      } as DisputeEvidence,
+    ];
+
+    it('should list evidence for a dispute', async () => {
+      jest.spyOn(service, 'listEvidence').mockResolvedValue(mockEvidenceList);
+
+      const result = await controller.listEvidence('dispute-123', mockUser);
+
+      expect(result).toEqual(mockEvidenceList);
+      expect(service.listEvidence).toHaveBeenCalledWith(
+        'dispute-123',
+        mockUser,
+      );
+    });
+  });
+});

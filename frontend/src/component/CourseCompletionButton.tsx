@@ -1,7 +1,11 @@
 import React, { useState } from 'react';
 import CourseCompletionModal from './CourseCompletionModal';
 
-const CourseCompletionButton = () => {
+interface CourseCompletionButtonProps {
+  courseId?: string;
+}
+
+const CourseCompletionButton = ({ courseId }: CourseCompletionButtonProps) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   return (
@@ -13,12 +17,13 @@ const CourseCompletionButton = () => {
         View Course Completion
       </button>
 
-      <CourseCompletionModal 
+      <CourseCompletionModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
+        courseId={courseId}
       />
     </>
   );
 };
 
-export default CourseCompletionButton; 
+export default CourseCompletionButton;

@@ -1,4 +1,11 @@
-import { IsOptional, IsDateString, IsUUID, IsInt, Min } from 'class-validator';
+import {
+  IsOptional,
+  IsDateString,
+  IsUUID,
+  IsInt,
+  Min,
+  Max,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -18,6 +25,20 @@ export class LeaderboardHistoryQueryDto {
   @IsUUID()
   user_id?: string;
 
+  @ApiPropertyOptional({ description: 'Filter by Stellar address' })
+  @IsOptional()
+  address?: string;
+
+  @ApiPropertyOptional({
+    description: 'Number of days for history (max 90)',
+    default: 30,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  days?: number;
+
   @ApiPropertyOptional({ description: 'Page number', default: 1 })
   @IsOptional()
   @Type(() => Number)
@@ -25,11 +46,16 @@ export class LeaderboardHistoryQueryDto {
   @Min(1)
   page?: number;
 
-  @ApiPropertyOptional({ description: 'Items per page', default: 20 })
+  @ApiPropertyOptional({
+    description: 'Items per page (max 100)',
+    default: 20,
+    maximum: 100,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(100)
   limit?: number;
 }
 
@@ -68,6 +94,34 @@ export class LeaderboardHistoryEntryResponse {
 export class PaginatedLeaderboardHistoryResponse {
   @ApiProperty({ type: [LeaderboardHistoryEntryResponse] })
   data: LeaderboardHistoryEntryResponse[];
+
+  @ApiProperty()
+  total: number;
+
+  @ApiProperty()
+  page: number;
+
+  @ApiProperty()
+  limit: number;
+}
+
+export class AddressHistoryPointResponse {
+  @ApiProperty()
+  snapshot_date: Date;
+
+  @ApiProperty()
+  rank: number;
+
+  @ApiProperty()
+  reputation_score: number;
+
+  @ApiProperty()
+  season_points: number;
+}
+
+export class PaginatedAddressHistoryResponse {
+  @ApiProperty({ type: [AddressHistoryPointResponse] })
+  data: AddressHistoryPointResponse[];
 
   @ApiProperty()
   total: number;

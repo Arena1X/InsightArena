@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -7,6 +7,7 @@ import { Market } from '../markets/entities/market.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { User } from '../users/entities/user.entity';
 import { SystemState } from './entities/system-state.entity';
+import { ReconciliationService } from '../indexer/reconciliation.service';
 
 const LAST_LEDGER_KEY = 'soroban:last_processed_ledger';
 
@@ -25,6 +26,8 @@ export class SorobanListener {
     private readonly usersRepository: Repository<User>,
     @InjectRepository(SystemState)
     private readonly systemStateRepository: Repository<SystemState>,
+    @Optional()
+    private readonly reconciliationService?: ReconciliationService,
   ) {}
 
   @Cron(CronExpression.EVERY_30_SECONDS)
@@ -66,9 +69,16 @@ export class SorobanListener {
         }
       }
 
-      await this.persistLastProcessedLedger(
-        Math.max(maxProcessedLedger, latestLedger),
-      );
+      const finalLedger = Math.max(maxProcessedLedger, latestLedger);
+      await this.persistLastProcessedLedger(finalLedger);
+
+      const contractId = process.env.SOROBAN_CONTRACT_ID;
+      if (contractId && this.reconciliationService) {
+        await this.reconciliationService.advanceCheckpoint(
+          contractId,
+          finalLedger,
+        );
+      }
     } catch (error) {
       this.logger.error('Failed to poll Soroban events', error);
     } finally {

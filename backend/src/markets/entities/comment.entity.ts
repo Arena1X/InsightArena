@@ -43,6 +43,13 @@ export class Comment {
   @Column({ type: 'text', nullable: true })
   moderation_reason: string | null;
 
+  /** Soft-hidden automatically by the spam/profanity filter at creation time. */
+  @Column({ default: false })
+  is_flagged: boolean;
+
+  @Column({ type: 'text', nullable: true })
+  flagged_reason: string | null;
+
   @CreateDateColumn()
   created_at: Date;
 

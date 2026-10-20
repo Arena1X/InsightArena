@@ -24,9 +24,9 @@ describe('DELETE /notifications/:id (E2E)', () => {
   };
 
   const mockNotification: Partial<Notification> = {
-    id: 'notif-uuid-1',
-    user_id: 'user-uuid-1',
-    type: NotificationType.System,
+    id: 1,
+    user_address: 'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
+    type: NotificationType.EventCreated,
     title: 'Test',
     message: 'Test message',
   };

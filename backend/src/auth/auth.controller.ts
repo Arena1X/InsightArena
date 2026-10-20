@@ -6,7 +6,6 @@ import {
   HttpStatus,
   Post,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { RateLimitService } from './rate-limit.service';
 import { GenerateChallengeDto } from './dto/generate-challenge.dto';
@@ -14,21 +13,29 @@ import { VerifyChallengeDto } from './dto/verify-challenge.dto';
 import { VerifyWalletDto } from './dto/verify-wallet.dto';
 import { RateLimitStatusDto } from './dto/rate-limit-status.dto';
 import {
+  RefreshTokenResponseDto,
+  RotateRefreshTokenDto,
+} from './dto/refresh-token.dto';
+import {
   ApiBearerAuth,
   ApiOperation,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Public } from '../common/decorators/public.decorator';
 import { User } from '../users/entities/user.entity';
+import { ConfigService } from '@nestjs/config';
+import { ThrottleTier } from '../common/decorators/throttle-tier.decorator';
 
 @ApiTags('Auth')
-@Throttle({ default: { limit: 10, ttl: 60000 } })
+@ThrottleTier('auth')
 @Controller('auth')
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly rateLimitService: RateLimitService,
+    private readonly configService: ConfigService,
   ) {}
 
   @Post('challenge')
@@ -69,13 +76,71 @@ export class AuthController {
   })
   @ApiResponse({
     status: 200,
-    description: 'Current rate limit status',
-    type: RateLimitStatusDto,
+    description: 'Current rate limit status per tier',
   })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async getRateLimitStatus(
     @CurrentUser() user: User,
-  ): Promise<RateLimitStatusDto> {
+  ): Promise<Record<string, RateLimitStatusDto>> {
     return this.rateLimitService.getStatus(user.id);
+  }
+
+  @Public()
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Rotate a refresh token',
+    description:
+      'Exchanges a valid refresh token for a new access token and a new refresh token, invalidating the presented refresh token. Reusing an already-rotated refresh token revokes the entire session family.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'New access token and refresh token issued',
+    type: RefreshTokenResponseDto,
+  })
+  @ApiResponse({
+    status: 401,
+    description:
+      'Unauthorized - invalid, expired, or reused refresh token, or user deleted',
+  })
+  async refreshToken(
+    @Body() dto: RotateRefreshTokenDto,
+  ): Promise<RefreshTokenResponseDto> {
+    const { access_token, refresh_token } =
+      await this.authService.rotateRefreshToken(dto.refresh_token);
+
+    // Calculate expiry timestamp
+    const expiresIn = this.configService.get<string>('JWT_EXPIRES_IN') || '7d';
+    const expiresMs = this.parseExpiryToMs(expiresIn);
+    const expires_at = new Date(Date.now() + expiresMs).toISOString();
+
+    return { access_token, refresh_token, expires_at };
+  }
+
+  /**
+   * Parse JWT_EXPIRES_IN format (e.g., '7d', '24h', '3600s') to milliseconds
+   */
+  private parseExpiryToMs(expiry: string): number {
+    const match = expiry.match(/^(\d+)([dhms])$/);
+    if (!match) {
+      // Default to 7 days if format is invalid
+      return 7 * 24 * 60 * 60 * 1000;
+    }
+
+    const value = parseInt(match[1], 10);
+    const unit = match[2];
+
+    switch (unit) {
+      case 'd':
+        return value * 24 * 60 * 60 * 1000;
+      case 'h':
+        return value * 60 * 60 * 1000;
+      case 'm':
+        return value * 60 * 1000;
+      case 's':
+        return value * 1000;
+      default:
+        return 7 * 24 * 60 * 60 * 1000;
+    }
   }
 }
