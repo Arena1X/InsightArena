@@ -236,6 +236,27 @@ fn emit_batch_payout_complete(env: &Env, market_id: u64, caller: &Address, proce
     );
 }
 
+/// Calculate payout breakdown for a single winner ensuring value conservation.
+///
+/// This function computes the payout components using checked arithmetic
+/// throughout to prevent overflow and ensure that the sum of all payouts  
+/// plus fees equals the pool within rounding tolerance.
+///
+/// # Arguments
+/// * `stake_amount` - The winner's original stake
+/// * `winning_pool` - Total stakes on the winning outcome
+/// * `loser_pool` - Total stakes on losing outcomes
+/// * `protocol_fee_bps` - Protocol fee in basis points (1/10000)
+/// * `creator_fee_bps` - Creator fee in basis points (1/10000)
+///
+/// # Returns
+/// `(net_payout, protocol_fee, creator_fee)` - All amounts in stroops
+///
+/// # Value Conservation
+/// Due to integer division rounding, individual payouts may differ by ±1 stroop
+/// from the theoretical proportional share. However, the sum of all net_payouts
+/// plus all fees across all winners will equal `loser_pool` within a tolerance
+/// of ±N stroops where N is the number of winners (one rounding error per winner).
 fn compute_payout_breakdown(
     stake_amount: i128,
     winning_pool: i128,
@@ -1128,69 +1149,6 @@ pub fn list_market_predictions(env: &Env, market_id: u64) -> Vec<Prediction> {
     }
 
     results
-}
-
-/// Calculate payout breakdown for a single winner ensuring value conservation.
-///
-/// This function computes the payout components using checked arithmetic
-/// throughout to prevent overflow and ensure that the sum of all payouts  
-/// plus fees equals the pool within rounding tolerance.
-///
-/// # Arguments
-/// * `stake_amount` - The winner's original stake
-/// * `winning_pool` - Total stakes on the winning outcome
-/// * `loser_pool` - Total stakes on losing outcomes
-/// * `protocol_fee_bps` - Protocol fee in basis points (1/10000)
-/// * `creator_fee_bps` - Creator fee in basis points (1/10000)
-///
-/// # Returns
-/// `(net_payout, protocol_fee, creator_fee)` - All amounts in stroops
-///
-/// # Value Conservation
-/// Due to integer division rounding, individual payouts may differ by ±1 stroop
-/// from the theoretical proportional share. However, the sum of all net_payouts
-/// plus all fees across all winners will equal `loser_pool` within a tolerance
-/// of ±N stroops where N is the number of winners (one rounding error per winner).
-fn compute_payout_breakdown(
-    stake_amount: i128,
-    winning_pool: i128,
-    loser_pool: i128,
-    protocol_fee_bps: u32,
-    creator_fee_bps: u32,
-) -> Result<(i128, i128, i128), InsightArenaError> {
-    // Calculate the winner's share of the loser pool using checked arithmetic
-    let winner_share = stake_amount
-        .checked_mul(loser_pool)
-        .ok_or(InsightArenaError::Overflow)?
-        .checked_div(winning_pool)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    // Gross payout = original stake + share of loser pool
-    let gross_payout = stake_amount
-        .checked_add(winner_share)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    // Calculate fees using checked arithmetic
-    let protocol_fee = gross_payout
-        .checked_mul(protocol_fee_bps as i128)
-        .ok_or(InsightArenaError::Overflow)?
-        .checked_div(10_000)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    let creator_fee = gross_payout
-        .checked_mul(creator_fee_bps as i128)
-        .ok_or(InsightArenaError::Overflow)?
-        .checked_div(10_000)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    // Net payout after deducting both fees
-    let net_payout = gross_payout
-        .checked_sub(protocol_fee)
-        .ok_or(InsightArenaError::Overflow)?
-        .checked_sub(creator_fee)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    Ok((net_payout, protocol_fee, creator_fee))
 }
 
 /// Claim the payout for a previously submitted winning prediction.
