@@ -451,3 +451,21 @@ describe('EmailService — queueing and preferences', () => {
     ).rejects.toThrow(/Missing required email template variables/);
   });
 });
+
+describe('EmailService — #1935 retry and exponential backoff cap', () => {
+  it('treats HTTP 408 Request Timeout as a transient error', () => {
+    expect(
+      isTransientError(new Error('SendGrid error (408): request timeout')),
+    ).toBe(true);
+  });
+
+  it('caps exponential backoff at maxDelayMs and clamps negative attempt indices', () => {
+    const capped = computeBackoffDelay(1000, 10, 8000);
+    expect(capped).toBeGreaterThanOrEqual(6400);
+    expect(capped).toBeLessThanOrEqual(8000);
+
+    const clamped = computeBackoffDelay(1000, -2, 8000);
+    expect(clamped).toBeGreaterThanOrEqual(800);
+    expect(clamped).toBeLessThanOrEqual(1200);
+  });
+});

@@ -101,8 +101,10 @@ export function isNetworkError(error: unknown): boolean {
  *
  * SendGrid wraps errors as: `"SendGrid error (STATUS): body"`
  */
+const DEFAULT_RETRY_MAX_DELAY_MS = 60000;
+
 export function isTransientHttpStatus(status: number): boolean {
-  return status === 429 || (status >= 500 && status <= 599);
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
 }
 
 /**
@@ -144,10 +146,15 @@ export function isTransientError(error: unknown): boolean {
 export function computeBackoffDelay(
   baseDelayMs: number,
   attemptIndex: number,
+  maxDelayMs = DEFAULT_RETRY_MAX_DELAY_MS,
 ): number {
-  const exponential = baseDelayMs * Math.pow(4, attemptIndex);
+  const safeAttempt = Math.max(0, attemptIndex);
+  const exponential = Math.min(
+    baseDelayMs * Math.pow(4, safeAttempt),
+    maxDelayMs,
+  );
   const jitter = exponential * JITTER_FACTOR * (Math.random() * 2 - 1);
-  return Math.max(0, Math.round(exponential + jitter));
+  return Math.max(0, Math.min(maxDelayMs, Math.round(exponential + jitter)));
 }
 
 @Injectable()
