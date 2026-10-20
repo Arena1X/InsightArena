@@ -72,6 +72,7 @@ export class CompetitionsService {
       description: dto.description,
       start_time: new Date(dto.start_time),
       end_time: new Date(dto.end_time),
+      join_deadline: dto.join_deadline ? new Date(dto.join_deadline) : undefined,
       prize_pool_stroops: dto.prize_pool_stroops,
       max_participants: dto.max_participants ?? undefined,
       visibility: dto.visibility,
@@ -363,8 +364,24 @@ export class CompetitionsService {
       throw new BadRequestException('Competition has been cancelled');
     }
 
-    // Check if competition is active
     const now = new Date();
+
+    // Check join deadline if defined.
+    // Documented boundary policy: The join deadline is inclusive [start, join_deadline].
+    // Requests up to and including the exact deadline timestamp (now.getTime() <= deadline.getTime()) are accepted.
+    // Requests strictly after the deadline (now.getTime() > deadline.getTime()) are rejected with a clear error containing the deadline.
+    const rawDeadline =
+      competition.join_deadline ?? (competition as any).joinDeadline;
+    if (rawDeadline) {
+      const deadline = new Date(rawDeadline);
+      if (now.getTime() > deadline.getTime()) {
+        throw new BadRequestException(
+          `Cannot join competition: join deadline (${deadline.toISOString()}) has passed`,
+        );
+      }
+    }
+
+    // Check if competition is active
     if (now >= competition.end_time) {
       throw new BadRequestException('Competition has already ended');
     }

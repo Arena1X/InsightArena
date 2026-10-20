@@ -197,6 +197,152 @@ export class AchievementsService {
   }
 
   /**
+   * Updates achievement progress monotonically and awards the achievement exactly once
+   * when crossing the threshold.
+   *
+   * Guarantees:
+   * 1. Monotonicity: Progress never decreases. Out-of-order events with lower progress are ignored.
+   * 2. Award-once: Crossing the threshold awards exactly once. Replayed events never double-award.
+   */
+  async recordProgress(
+    user: User,
+    achievement: Achievement,
+    value: number,
+  ): Promise<{ userAchievement: UserAchievement; awarded: boolean }> {
+    const existing = await this.userAchievementsRepository.findOne({
+      where: {
+        user: { id: user.id },
+        achievement: { id: achievement.id },
+      },
+    });
+
+    if (existing) {
+      // Replayed events do not double-award an achievement
+      if (existing.is_unlocked) {
+        // Monotonic: if event value is higher, update current_value, but never decrease
+        if (value > existing.current_value) {
+          existing.current_value = value;
+          await this.userAchievementsRepository.save(existing);
+        }
+        return { userAchievement: existing, awarded: false };
+      }
+
+      // Out-of-order events never decrease progress
+      const newProgress = Math.max(existing.current_value, value);
+      existing.current_value = newProgress;
+
+      // Crossing a threshold awards exactly once
+      if (newProgress >= achievement.threshold) {
+        existing.is_unlocked = true;
+        existing.unlocked_at = new Date();
+        const saved = await this.userAchievementsRepository.save(existing);
+        await this.notifyAchievementUnlocked(user, achievement);
+        return { userAchievement: saved, awarded: true };
+      }
+
+      const saved = await this.userAchievementsRepository.save(existing);
+      this.broadcastProgress(user, achievement, newProgress);
+      return { userAchievement: saved, awarded: false };
+    }
+
+    // New user achievement entry
+    const initialProgress = Math.max(0, value);
+    const crossesThreshold = initialProgress >= achievement.threshold;
+
+    if (crossesThreshold) {
+      const awarded = await this.awardAchievementOnce(
+        user,
+        achievement,
+        initialProgress,
+      );
+      if (awarded) {
+        await this.notifyAchievementUnlocked(user, achievement);
+      }
+      const saved =
+        (await this.userAchievementsRepository.findOne({
+          where: {
+            user: { id: user.id },
+            achievement: { id: achievement.id },
+          },
+        })) ??
+        this.userAchievementsRepository.create({
+          user,
+          achievement,
+          is_unlocked: true,
+          current_value: initialProgress,
+          unlocked_at: new Date(),
+        });
+      return { userAchievement: saved, awarded };
+    }
+
+    // Threshold not yet reached: create in-progress entry
+    const newEntry = this.userAchievementsRepository.create({
+      user,
+      achievement,
+      is_unlocked: false,
+      current_value: initialProgress,
+      unlocked_at: null,
+    });
+    const saved = await this.userAchievementsRepository.save(newEntry);
+    this.broadcastProgress(user, achievement, initialProgress);
+    return { userAchievement: saved, awarded: false };
+  }
+
+  async updateProgress(
+    userId: string,
+    achievementIdOrType: string,
+    value: number,
+  ): Promise<{ userAchievement: UserAchievement; awarded: boolean }> {
+    const user = await this.usersRepository.findOne({
+      where: [{ id: userId }, { stellar_address: userId }],
+    });
+    if (!user) {
+      throw new NotFoundException(`User "${userId}" not found`);
+    }
+
+    const achievement = await this.achievementsRepository.findOne({
+      where: [
+        { id: achievementIdOrType },
+        { type: achievementIdOrType as AchievementType },
+      ],
+    });
+    if (!achievement) {
+      throw new NotFoundException(
+        `Achievement "${achievementIdOrType}" not found`,
+      );
+    }
+
+    return this.recordProgress(user, achievement, value);
+  }
+
+  private broadcastProgress(
+    user: User,
+    achievement: Achievement,
+    currentProgress: number,
+  ): void {
+    if (!user.stellar_address) return;
+    const threshold = achievement.threshold;
+    const progress_percentage =
+      threshold > 0
+        ? Math.min(
+            100,
+            Math.round((currentProgress / threshold) * 10000) / 100,
+          )
+        : 100;
+
+    this.notificationBroadcaster.broadcastAchievementProgress(
+      user.stellar_address,
+      {
+        achievement_id: achievement.id,
+        type: achievement.type,
+        current_progress: currentProgress,
+        threshold,
+        progress_percentage,
+      },
+    );
+  }
+
+  /**
    * Atomically inserts the (user, achievement) unlock row, relying on the
    * UQ_user_achievement DB constraint to guard against concurrent triggers.
    * Returns true only for the call that actually performed the insert, so

@@ -291,4 +291,102 @@ describe('AchievementsService', () => {
       expect(unlockedTypes()).not.toContain(AchievementType.ACCURACY_90);
     });
   });
+
+  describe('monotonic progress and award-once semantics (#1951)', () => {
+    const achievement: Achievement = {
+      id: 'ach-pred-10',
+      type: AchievementType.CORRECT_PREDICTIONS_10,
+      title: 'Rising Star',
+      description: 'Get 10 correct predictions',
+      threshold: 10,
+      reward_points: 50,
+      icon_url: 'star.png',
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+
+    beforeEach(() => {
+      userAchievementsRepository.save.mockImplementation(async (entity: any) => ({
+        id: entity.id ?? 'ua-1',
+        ...entity,
+      }));
+      userAchievementsRepository.create.mockImplementation((entity: any) => ({
+        id: 'ua-1',
+        ...entity,
+      }));
+    });
+
+    it('out-of-order events never decrease progress', async () => {
+      // User currently has progress of 7
+      const existing: UserAchievement = {
+        id: 'ua-1',
+        userId: mockUser.id,
+        achievementId: achievement.id,
+        user: mockUser,
+        achievement,
+        is_unlocked: false,
+        current_value: 7,
+        unlocked_at: null,
+      };
+      userAchievementsRepository.findOne.mockResolvedValue(existing);
+
+      // An out-of-order event arrives reporting an older value of 4
+      const result = await service.recordProgress(mockUser, achievement, 4);
+
+      expect(result.userAchievement.current_value).toBe(7);
+      expect(result.awarded).toBe(false);
+      expect(notificationsService.create).not.toHaveBeenCalled();
+    });
+
+    it('crossing a threshold awards exactly once', async () => {
+      const existing: UserAchievement = {
+        id: 'ua-1',
+        userId: mockUser.id,
+        achievementId: achievement.id,
+        user: mockUser,
+        achievement,
+        is_unlocked: false,
+        current_value: 8,
+        unlocked_at: null,
+      };
+      userAchievementsRepository.findOne.mockResolvedValue(existing);
+
+      // Value reaches 10, crossing the threshold
+      const result = await service.recordProgress(mockUser, achievement, 10);
+
+      expect(result.awarded).toBe(true);
+      expect(result.userAchievement.is_unlocked).toBe(true);
+      expect(result.userAchievement.current_value).toBe(10);
+      expect(notificationsService.create).toHaveBeenCalledTimes(1);
+      expect(
+        notificationBroadcaster.broadcastAchievementUnlocked,
+      ).toHaveBeenCalledTimes(1);
+    });
+
+    it('replayed events do not double-award an achievement', async () => {
+      const unlockedDate = new Date('2026-05-01');
+      const alreadyUnlocked: UserAchievement = {
+        id: 'ua-1',
+        userId: mockUser.id,
+        achievementId: achievement.id,
+        user: mockUser,
+        achievement,
+        is_unlocked: true,
+        current_value: 10,
+        unlocked_at: unlockedDate,
+      };
+      userAchievementsRepository.findOne.mockResolvedValue(alreadyUnlocked);
+
+      // Replayed event with threshold value 10
+      const result1 = await service.recordProgress(mockUser, achievement, 10);
+      expect(result1.awarded).toBe(false);
+      expect(notificationsService.create).not.toHaveBeenCalled();
+
+      // Another replayed event with higher value 12
+      const result2 = await service.recordProgress(mockUser, achievement, 12);
+      expect(result2.awarded).toBe(false);
+      expect(result2.userAchievement.current_value).toBe(12);
+      expect(notificationsService.create).not.toHaveBeenCalled();
+    });
+  });
 });

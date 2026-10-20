@@ -570,6 +570,93 @@ describe('CompetitionsService', () => {
         1,
       );
     });
+
+    describe('join deadline enforcement (#1949)', () => {
+      const fixedNow = new Date('2026-06-01T12:00:00.000Z');
+      const deadline = new Date('2026-06-01T12:00:00.000Z');
+
+      beforeEach(() => {
+        jest.useFakeTimers();
+        jest.setSystemTime(fixedNow);
+
+        mockParticipantsRepository.findOne.mockResolvedValue(null);
+        mockParticipantsRepository.create.mockImplementation((v) => v);
+        mockParticipantsRepository.save.mockImplementation((v) =>
+          Promise.resolve({ id: 'participant-1', ...v }),
+        );
+        mockRepository.increment.mockResolvedValue(undefined);
+      });
+
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      it('a join before deadline succeeds', async () => {
+        // System time is 1 second before deadline
+        jest.setSystemTime(new Date(deadline.getTime() - 1000));
+
+        mockRepository.findOne.mockResolvedValue({
+          ...mockCompetition,
+          id: 'comp-uuid-1',
+          join_deadline: deadline,
+          end_time: new Date(deadline.getTime() + 1000 * 60 * 60),
+          is_cancelled: false,
+          max_participants: 0,
+        });
+
+        const result = await service.joinCompetition(
+          'comp-uuid-1',
+          mockUser as User,
+        );
+
+        expect(result.id).toBe('participant-1');
+        expect(mockParticipantsRepository.save).toHaveBeenCalled();
+      });
+
+      it('a join exactly at the boundary follows the documented rule (inclusive boundary succeeds)', async () => {
+        // System time equals the exact join deadline timestamp
+        jest.setSystemTime(new Date(deadline.getTime()));
+
+        mockRepository.findOne.mockResolvedValue({
+          ...mockCompetition,
+          id: 'comp-uuid-1',
+          join_deadline: deadline,
+          end_time: new Date(deadline.getTime() + 1000 * 60 * 60),
+          is_cancelled: false,
+          max_participants: 0,
+        });
+
+        const result = await service.joinCompetition(
+          'comp-uuid-1',
+          mockUser as User,
+        );
+
+        expect(result.id).toBe('participant-1');
+        expect(mockParticipantsRepository.save).toHaveBeenCalled();
+      });
+
+      it('a join after deadline is rejected with a clear error containing the deadline', async () => {
+        // System time is 1 millisecond after deadline
+        jest.setSystemTime(new Date(deadline.getTime() + 1));
+
+        mockRepository.findOne.mockResolvedValue({
+          ...mockCompetition,
+          id: 'comp-uuid-1',
+          join_deadline: deadline,
+          end_time: new Date(deadline.getTime() + 1000 * 60 * 60),
+          is_cancelled: false,
+          max_participants: 0,
+        });
+
+        await expect(
+          service.joinCompetition('comp-uuid-1', mockUser as User),
+        ).rejects.toThrow(
+          `Cannot join competition: join deadline (${deadline.toISOString()}) has passed`,
+        );
+
+        expect(mockParticipantsRepository.save).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe('cancel', () => {
