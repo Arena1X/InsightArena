@@ -25,6 +25,7 @@ type CacheWarmResult = Omit<WarmMetrics, 'duration_ms'>;
 export class CacheWarmingService {
   private readonly logger = new Logger(CacheWarmingService.name);
   private readonly strategy: CacheWarmingStrategy;
+  private isWarming = false;
 
   constructor(
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
@@ -36,6 +37,10 @@ export class CacheWarmingService {
     this.strategy = getCacheWarmingStrategy(configService);
   }
 
+  isWarmCycleRunning(): boolean {
+    return this.isWarming;
+  }
+
   @Cron('0 */10 * * * *')
   async warmFrequentlyAccessedData(): Promise<CacheWarmResult> {
     if (!this.strategy.enabled) {
@@ -43,35 +48,47 @@ export class CacheWarmingService {
       return { warmed: [], failed: [] };
     }
 
+    if (this.isWarming) {
+      this.logger.warn(
+        'Cache warming skipped because a previous cycle is still running',
+      );
+      return { warmed: [], failed: [] };
+    }
+
+    this.isWarming = true;
     const start = Date.now();
     this.logger.log('Cache warming started');
     const result: CacheWarmResult = { warmed: [], failed: [] };
 
-    const [, trendingEvents] = await Promise.all([
-      this.runSubWarmer('warmActiveEvents', () =>
-        this.warmActiveEvents(result),
-      ),
-      this.runSubWarmer('warmTrendingEvents', () =>
-        this.warmTrendingEvents(result),
-      ),
-      this.runSubWarmer('warmPlatformStatistics', () =>
-        this.warmPlatformStatistics(result),
-      ),
-      this.runSubWarmer('warmLeaderboard', () =>
-        this.warmLeaderboard(result),
-      ),
-    ]);
+    try {
+      const [, trendingEvents] = await Promise.all([
+        this.runSubWarmer('warmActiveEvents', () =>
+          this.warmActiveEvents(result),
+        ),
+        this.runSubWarmer('warmTrendingEvents', () =>
+          this.warmTrendingEvents(result),
+        ),
+        this.runSubWarmer('warmPlatformStatistics', () =>
+          this.warmPlatformStatistics(result),
+        ),
+        this.runSubWarmer('warmLeaderboard', () =>
+          this.warmLeaderboard(result),
+        ),
+      ]);
 
-    await this.runSubWarmer('warmPopularEventDetails', () =>
-      this.warmPopularEventDetails(result, trendingEvents?.data ?? []),
-    );
+      await this.runSubWarmer('warmPopularEventDetails', () =>
+        this.warmPopularEventDetails(result, trendingEvents?.data ?? []),
+      );
 
-    const duration_ms = Date.now() - start;
-    this.logger.log(
-      `Cache warming finished: warmed=${result.warmed.length}, failed=${result.failed.length}, duration=${duration_ms}ms`,
-    );
+      const duration_ms = Date.now() - start;
+      this.logger.log(
+        `Cache warming finished: warmed=${result.warmed.length}, failed=${result.failed.length}, duration=${duration_ms}ms`,
+      );
 
-    return result;
+      return result;
+    } finally {
+      this.isWarming = false;
+    }
   }
 
   /**

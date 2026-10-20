@@ -142,9 +142,8 @@ describe('CacheWarmingService', () => {
     expect(result.warmed).toContain(CACHE_WARMING_KEYS.activeEvents);
     expect(result.warmed).toContain(CACHE_WARMING_KEYS.platformStatistics);
     expect(result.warmed).toContain(
-      CACHE_WARMING_KEYS.popularEventDetail('popular-1'),
+      CACHE_WARMING_KEYS.leaderboardTopN(10, null),
     );
-    expect(result.warmed).toContain(CACHE_WARMING_KEYS.leaderboardTopN(10, null));
   });
 
   it('reports no failures when all sub-warmers succeed', async () => {
@@ -174,5 +173,45 @@ describe('CacheWarmingService', () => {
 
     expect(result).toEqual({ warmed: [], failed: [] });
     expect(cacheManager.set).not.toHaveBeenCalled();
+  });
+
+  it('skips an overlapping trigger while a warm cycle is still running (#1936)', async () => {
+    let resolveActiveEvents!: (value: { data: never[]; total: number }) => void;
+    marketsService.findAllFiltered.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveActiveEvents = resolve;
+        }),
+    );
+
+    const firstCycle = service.warmFrequentlyAccessedData();
+    expect(service.isWarmCycleRunning()).toBe(true);
+
+    const overlappingCycle = await service.warmFrequentlyAccessedData();
+    expect(overlappingCycle).toEqual({ warmed: [], failed: [] });
+    expect(marketsService.findAllFiltered).toHaveBeenCalledTimes(1);
+
+    resolveActiveEvents({ data: [], total: 0 });
+    const firstResult = await firstCycle;
+    expect(firstResult.warmed).toContain(CACHE_WARMING_KEYS.activeEvents);
+    expect(service.isWarmCycleRunning()).toBe(false);
+  });
+
+  it('releases the concurrency lock on completion and on error so sequential cycles run normally (#1936)', async () => {
+    marketsService.findAllFiltered.mockRejectedValueOnce(
+      new Error('transient error'),
+    );
+
+    const first = await service.warmFrequentlyAccessedData();
+    expect(service.isWarmCycleRunning()).toBe(false);
+    expect(first.failed).toEqual([
+      { key: CACHE_WARMING_KEYS.activeEvents, reason: 'transient error' },
+    ]);
+
+    const second = await service.warmFrequentlyAccessedData();
+    expect(service.isWarmCycleRunning()).toBe(false);
+    expect(second.failed).toEqual([]);
+    expect(second.warmed).toContain(CACHE_WARMING_KEYS.activeEvents);
+    expect(marketsService.findAllFiltered).toHaveBeenCalledTimes(2);
   });
 });
