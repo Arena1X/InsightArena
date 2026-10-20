@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import {
   User,
   Bell,
@@ -16,6 +16,7 @@ import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   type NotificationPreferences,
 } from "@/lib/api";
+import { useUnsavedChangesWarning } from "@/hooks/useUnsavedChangesWarning";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -99,14 +100,25 @@ function Divider() {
 
 // ── Sections ──────────────────────────────────────────────────────────────────
 
-function ProfileSettings() {
+function ProfileSettings({ onDirtyChange }: { onDirtyChange: (isDirty: boolean) => void }) {
+  const [initialValues] = useState({ username: "You_Arena", avatarUrl: "", bio: "" });
   const [username, setUsername] = useState("You_Arena");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [bio, setBio] = useState("");
   const [saved, setSaved] = useState(false);
 
+  const isDirty =
+    username !== initialValues.username ||
+    avatarUrl !== initialValues.avatarUrl ||
+    bio !== initialValues.bio;
+
+  useEffect(() => {
+    onDirtyChange(isDirty);
+  }, [isDirty, onDirtyChange]);
+
   function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    // In real app, this would save to API
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
@@ -173,7 +185,7 @@ function ProfileSettings() {
   );
 }
 
-function NotificationSettings() {
+function NotificationSettings({ onDirtyChange }: { onDirtyChange: (isDirty: boolean) => void }) {
   const [initialPrefs, setInitialPrefs] = useState<NotificationPreferences>(
     DEFAULT_NOTIFICATION_PREFERENCES,
   );
@@ -224,6 +236,11 @@ function NotificationSettings() {
     rewards !== initialPrefs.rewards ||
     disputes !== initialPrefs.disputes ||
     digests !== initialPrefs.digests;
+
+  // Report dirty state to parent
+  useEffect(() => {
+    onDirtyChange(isDirty);
+  }, [isDirty, onDirtyChange]);
 
   // Dirty-state guard warning on navigation away with unsaved changes
   useEffect(() => {
@@ -361,12 +378,26 @@ function NotificationSettings() {
 }
 
 
-function PrivacySettings() {
+function PrivacySettings({ onDirtyChange }: { onDirtyChange: (isDirty: boolean) => void }) {
+  const [initialPrefs] = useState({
+    showPredictions: true,
+    showWinRate: true,
+    showOnLeaderboard: true,
+  });
   const [prefs, setPrefs] = useState({
     showPredictions: true,
     showWinRate: true,
     showOnLeaderboard: true,
   });
+
+  const isDirty =
+    prefs.showPredictions !== initialPrefs.showPredictions ||
+    prefs.showWinRate !== initialPrefs.showWinRate ||
+    prefs.showOnLeaderboard !== initialPrefs.showOnLeaderboard;
+
+  useEffect(() => {
+    onDirtyChange(isDirty);
+  }, [isDirty, onDirtyChange]);
 
   function toggle(key: keyof typeof prefs) {
     setPrefs((p) => ({ ...p, [key]: !p[key] }));
@@ -490,6 +521,17 @@ function SidebarNav({ active }: { active: string }) {
 
 export default function SettingsPage() {
   const [activeSection, setActiveSection] = useState("profile");
+  const [profileDirty, setProfileDirty] = useState(false);
+  const [notificationsDirty, setNotificationsDirty] = useState(false);
+  const [privacyDirty, setPrivacyDirty] = useState(false);
+
+  const hasUnsavedChanges = profileDirty || notificationsDirty || privacyDirty;
+
+  // Use the unsaved changes warning hook
+  useUnsavedChangesWarning(
+    hasUnsavedChanges,
+    "You have unsaved changes. Are you sure you want to leave?"
+  );
 
   useEffect(() => {
     // Create IntersectionObserver to track which section is visible
@@ -551,9 +593,9 @@ export default function SettingsPage() {
 
         {/* Content */}
         <div className="flex-1 min-w-0 space-y-6">
-          <ProfileSettings />
-          <NotificationSettings />
-          <PrivacySettings />
+          <ProfileSettings onDirtyChange={setProfileDirty} />
+          <NotificationSettings onDirtyChange={setNotificationsDirty} />
+          <PrivacySettings onDirtyChange={setPrivacyDirty} />
           <DangerZone />
         </div>
       </div>

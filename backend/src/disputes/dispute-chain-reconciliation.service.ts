@@ -12,8 +12,13 @@ import {
   SorobanOnChainDispute,
   SorobanService,
 } from '../soroban/soroban.service';
+import { NotificationGeneratorService } from '../notifications/notification-generator.service';
+import { User } from '../users/entities/user.entity';
+import { Role } from '../common/enums/role.enum';
 
 const DEFAULT_RECONCILE_BATCH_SIZE = 50;
+const DEFAULT_DRIFT_ALERT_THRESHOLD = 5;
+const DEFAULT_CRITICAL_DRIFT_THRESHOLD = 10;
 
 export enum DisputeChainMismatchKind {
   /** Local row has no on-chain ID but the contract holds a dispute. Corrected. */
@@ -42,6 +47,9 @@ export interface DisputeChainReconciliationReport {
   corrected: number;
   failedMarkets: string[];
   mismatches: DisputeChainMismatch[];
+  driftDetected: boolean;
+  driftSeverity: 'none' | 'warning' | 'critical';
+  driftPercentage: number;
   startedAt: string;
   finishedAt: string;
 }
@@ -66,8 +74,11 @@ export class DisputeChainReconciliationService {
   constructor(
     @InjectRepository(Dispute)
     private readonly disputesRepository: Repository<Dispute>,
+    @InjectRepository(User)
+    private readonly usersRepository: Repository<User>,
     private readonly sorobanService: SorobanService,
     private readonly configService: ConfigService,
+    private readonly notificationGenerator: NotificationGeneratorService,
   ) {}
 
   @Cron('0 30 * * * *')
@@ -101,6 +112,9 @@ export class DisputeChainReconciliationService {
       corrected: 0,
       failedMarkets: [],
       mismatches: [],
+      driftDetected: false,
+      driftSeverity: 'none',
+      driftPercentage: 0,
       startedAt: startedAt.toISOString(),
       finishedAt: startedAt.toISOString(),
     };
@@ -132,6 +146,14 @@ export class DisputeChainReconciliationService {
 
         if (marketIds.length < batchSize) break;
       }
+
+      // Calculate drift metrics
+      this.calculateDriftMetrics(report);
+
+      // Send drift alert if threshold exceeded
+      if (report.driftDetected) {
+        await this.sendDriftAlert(report);
+      }
     } finally {
       report.finishedAt = new Date().toISOString();
       this.lastReport = report;
@@ -142,7 +164,8 @@ export class DisputeChainReconciliationService {
       this.logger.warn(
         `Dispute chain reconciliation: ${report.mismatches.length} mismatches ` +
           `(${report.corrected} corrected), ${report.failedMarkets.length} ` +
-          `markets unreadable, across ${report.disputesChecked} disputes`,
+          `markets unreadable, across ${report.disputesChecked} disputes. ` +
+          `Drift: ${report.driftSeverity} (${report.driftPercentage.toFixed(2)}%)`,
       );
     }
 

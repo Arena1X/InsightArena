@@ -16,6 +16,7 @@ import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { Public } from '../common/decorators/public.decorator';
 import { Scopes } from '../common/decorators/scopes.decorator';
 import { ApiKeyGuard } from '../common/guards/api-key.guard';
+import { CacheService } from '../cache/cache.service';
 import { ListMarketsDto } from './dto/list-markets.dto';
 import {
   PaginatedPublicMarketsResponseDto,
@@ -33,7 +34,12 @@ import { MarketsService } from './markets.service';
 @SkipThrottle({ default: true, auth: true })
 @Throttle({ public: {} })
 export class PublicMarketsController {
-  constructor(private readonly marketsService: MarketsService) {}
+  private readonly CACHE_NAMESPACE = 'public:markets';
+
+  constructor(
+    private readonly marketsService: MarketsService,
+    private readonly cacheService: CacheService,
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -52,17 +58,27 @@ export class PublicMarketsController {
   async list(
     @Query() query: ListMarketsDto,
   ): Promise<PaginatedPublicMarketsResponseDto> {
-    const result = await this.marketsService.findAllFiltered({
-      ...query,
-      is_public: true,
-    });
+    // Generate cache key based on query parameters
+    const cacheKey = `list:${JSON.stringify(query)}`;
 
-    return {
-      ...result,
-      data: (result.data as Market[]).map((market) =>
-        PublicMarketResponseDto.fromEntity(market),
-      ),
-    };
+    // Use CacheService with stampede protection
+    return this.cacheService.getOrSet(
+      this.CACHE_NAMESPACE,
+      cacheKey,
+      async () => {
+        const result = await this.marketsService.findAllFiltered({
+          ...query,
+          is_public: true,
+        });
+
+        return {
+          ...result,
+          data: (result.data as Market[]).map((market) =>
+            PublicMarketResponseDto.fromEntity(market),
+          ),
+        };
+      },
+    );
   }
 
   @Get(':id')
@@ -81,10 +97,22 @@ export class PublicMarketsController {
   @ApiResponse({ status: 404, description: 'Public market not found' })
   @ApiResponse({ status: 429, description: 'Public API rate limit exceeded' })
   async get(@Param('id') id: string): Promise<PublicMarketResponseDto> {
-    const market = await this.marketsService.findByIdOrOnChainId(id);
-    if (!market.is_public) {
-      throw new NotFoundException(`Public market with ID "${id}" not found`);
-    }
-    return PublicMarketResponseDto.fromEntity(market);
+    const cacheKey = `detail:${id}`;
+
+    // Use CacheService with stampede protection
+    return this.cacheService.getOrSet(
+      this.CACHE_NAMESPACE,
+      cacheKey,
+      async () => {
+        const market = await this.marketsService.findByIdOrOnChainId(id);
+        if (!market.is_public) {
+          throw new NotFoundException(
+            `Public market with ID "${id}" not found`,
+          );
+        }
+
+        return PublicMarketResponseDto.fromEntity(market);
+      },
+    );
   }
 }

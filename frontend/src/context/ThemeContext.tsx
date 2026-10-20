@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
 } from "react";
@@ -40,6 +41,8 @@ export const THEME_STORAGE_KEY = "insightarena.theme.v1";
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "insightarena.sidebar-collapsed.v1";
 
 const CYCLE: ThemeMode[] = ["light", "dark", "system"];
+const useIsomorphicLayoutEffect =
+  typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 // ---------------------------------------------------------------------------
 // Pure helpers (no side-effects, safe to call on server)
@@ -98,17 +101,20 @@ function readStoredSidebarCollapsed(): boolean | null {
 // ---------------------------------------------------------------------------
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  // Start with "system" as the SSR-safe default; hydration script handles the
-  // visual state before React takes over, so there is no flash.
+  // Keep the server and first client snapshots stable; the head script and
+  // layout effect apply the persisted preference before the browser paints.
   const [mode, setModeState] = useState<ThemeMode>("system");
+  const [systemTheme, setSystemTheme] = useState<Theme>("dark");
   const [sidebarCollapsed, setSidebarCollapsedState] = useState(false);
 
-  // Restore persisted mode on first client render.
-  useEffect(() => {
+  // Restore persisted mode before paint, matching the pre-hydration document class.
+  useIsomorphicLayoutEffect(() => {
     const stored = readStoredMode();
     const initial = stored ?? "system";
+    const systemPreference = getSystemPreference();
+    setSystemTheme(systemPreference);
     setModeState(initial);
-    applyThemeToDocument(resolveTheme(initial));
+    applyThemeToDocument(initial === "system" ? systemPreference : initial);
   }, []);
 
   // Restore sidebar preference.
@@ -122,12 +128,12 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     if (typeof window === "undefined") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const handler = (e: MediaQueryListEvent) => {
-      // Re-read mode inside the handler so we always get the latest value.
+      const nextTheme = e.matches ? "dark" : "light";
+      setSystemTheme(nextTheme);
       setModeState((currentMode) => {
         if (currentMode === "system") {
-          applyThemeToDocument(e.matches ? "dark" : "light");
+          applyThemeToDocument(nextTheme);
         }
-        // State value itself doesn't change — only the DOM class does.
         return currentMode;
       });
     };
@@ -137,6 +143,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   const setTheme = useCallback((next: ThemeMode) => {
     setModeState(next);
+    if (next === "system") setSystemTheme(getSystemPreference());
     applyThemeToDocument(resolveTheme(next));
     persistMode(next);
   }, []);
@@ -173,7 +180,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Derive the resolved theme for consumers that only care about light/dark.
-  const theme: Theme = resolveTheme(mode);
+  const theme: Theme = mode === "system" ? systemTheme : mode;
 
   const value = useMemo(
     () => ({

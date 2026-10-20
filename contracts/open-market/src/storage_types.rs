@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, BytesN, Env, Map, String, Symbol, Vec};
+﻿use soroban_sdk::{contracttype, Address, BytesN, Env, Map, String, Symbol, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -117,6 +117,11 @@ pub enum DataKey {
     // `TreasuryBalance` singleton was removed here to make room for this key.
     /// Keyed by (market_id, predictor). Stores a committed prediction (hash + amount, awaiting reveal).
     CommitmentPrediction(u64, Address),
+    /// Keyed by market_id. Tracks the cumulative protocol fees accrued for a
+    /// single market. The global `Treasury` singleton always equals the sum of
+    /// all per-market `MarketFees` values; `withdraw_protocol_fees` zeroes the
+    /// per-market entry and deducts from the global balance atomically.
+    MarketFees(u64),
 }
 
 /// Lifecycle state of a governance proposal, derived from its stored flags and
@@ -1323,3 +1328,4 @@ impl Winner {
         self.total_correct_predictions > other.total_correct_predictions
     }
 }
+

@@ -494,8 +494,22 @@ export class MarketsService {
   async resolveMarket(id: string, outcome: string): Promise<Market> {
     const market = await this.findByIdOrOnChainId(id);
 
+    // Double-resolve guard: check if market is already resolved
     if (market.is_resolved) {
-      throw new ConflictException('Market is already resolved');
+      this.logger.warn(
+        `Attempt to resolve already resolved market "${market.title}" (${market.id}). Current outcome: ${market.resolved_outcome}`,
+      );
+      throw new ConflictException(
+        `Market is already resolved with outcome "${market.resolved_outcome}"`,
+      );
+    }
+
+    // Additional settlement state check for grace-period workflow
+    if (market.settlement_state === MarketSettlementState.SETTLED) {
+      this.logger.warn(
+        `Attempt to resolve market "${market.title}" (${market.id}) that is already in SETTLED state`,
+      );
+      throw new ConflictException('Market settlement is already finalized');
     }
 
     if (!market.outcome_options.includes(outcome)) {
