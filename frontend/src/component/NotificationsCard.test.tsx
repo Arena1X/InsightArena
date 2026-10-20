@@ -6,10 +6,20 @@
  *  2. "Mark all as read" clears the unread badge across every category.
  */
 
-import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-
+import { describe, expect, it, vi, afterEach } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import NotificationsCard from "./NotificationsCard";
+import { NotificationProvider } from "@/context/NotificationContext";
+import * as apiModule from "@/lib/api";
+
+// Mock the API module
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual("@/lib/api");
+  return {
+    ...actual,
+    markAllNotificationsAsRead: vi.fn(),
+  };
+});
 
 const notifications = [
   {
@@ -38,9 +48,23 @@ const notifications = [
   },
 ];
 
+function renderWithProvider(component: React.ReactElement) {
+  return render(
+    <NotificationProvider>
+      {component}
+    </NotificationProvider>
+  );
+}
+
 describe("NotificationsCard", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("filters the list when a category tab is selected", () => {
-    render(<NotificationsCard notifications={notifications} />);
+    renderWithProvider(
+      <NotificationsCard notifications={notifications} />
+    );
 
     expect(screen.getByText("Your BTC prediction settles in 3 hours")).toBeVisible();
     expect(screen.getByText("Rewards from Weekend Market Clash claimable")).toBeVisible();
@@ -54,7 +78,9 @@ describe("NotificationsCard", () => {
   });
 
   it("marks every notification as read and clears unread counts across all tabs", () => {
-    render(<NotificationsCard notifications={notifications} />);
+    renderWithProvider(
+      <NotificationsCard notifications={notifications} />
+    );
 
     const markAllButton = screen.getByRole("button", { name: "Mark all as read" });
     fireEvent.click(markAllButton);
@@ -63,3 +89,4 @@ describe("NotificationsCard", () => {
     expect(screen.queryByText("3", { selector: "span" })).not.toBeInTheDocument();
   });
 });
+
