@@ -418,10 +418,7 @@ describe('LeaderboardService', () => {
         'entry.reputation_score',
         'DESC',
       );
-      expect(mockQb.addOrderBy).toHaveBeenCalledWith(
-        'entry.user_id',
-        'ASC',
-      );
+      expect(mockQb.addOrderBy).toHaveBeenCalledWith('entry.user_id', 'ASC');
     });
 
     it('returns identical order across repeated reads of unchanged data', async () => {
@@ -445,7 +442,7 @@ describe('LeaderboardService', () => {
 
     it('leaves a single clear leader unaffected by the tie-break', async () => {
       const leader = makeTiedEntry('user-leader', 200);
-      const runnerUp = makeTiedEntry('user-runner', 100);
+      const runnerUp = makeTiedEntry('user-runner', 100, { rank: 2 });
       mockQb.getManyAndCount.mockResolvedValue([[leader, runnerUp], 2]);
 
       const result = await service.getLeaderboard({ page: 1, limit: 20 });
@@ -586,9 +583,7 @@ describe('LeaderboardService', () => {
 
   describe('getHistoryForAddress', () => {
     beforeEach(() => {
-      mockUsersService.findByAddress = jest
-        .fn()
-        .mockResolvedValue(mockUser as User);
+      mockUsersService.findByAddress = jest.fn().mockResolvedValue(mockUser);
     });
 
     it('caps limit at 100 and applies offset pagination', async () => {
@@ -666,12 +661,8 @@ describe('LeaderboardService', () => {
 
   describe('getUserRank', () => {
     it('should return user rank and stats by stellar address', async () => {
-      mockUsersService.findByAddress = jest
-        .fn()
-        .mockResolvedValue(mockUser as User);
-      mockEntryRepository.findOne = jest
-        .fn()
-        .mockResolvedValue(mockEntry as LeaderboardEntry);
+      mockUsersService.findByAddress = jest.fn().mockResolvedValue(mockUser);
+      mockEntryRepository.findOne = jest.fn().mockResolvedValue(mockEntry);
 
       const result = await service.getUserRank(
         'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
@@ -696,9 +687,7 @@ describe('LeaderboardService', () => {
     });
 
     it('should throw NotFoundException if no leaderboard entry', async () => {
-      mockUsersService.findByAddress = jest
-        .fn()
-        .mockResolvedValue(mockUser as User);
+      mockUsersService.findByAddress = jest.fn().mockResolvedValue(mockUser);
       mockEntryRepository.findOne = jest.fn().mockResolvedValue(null);
 
       await expect(
@@ -707,12 +696,8 @@ describe('LeaderboardService', () => {
     });
 
     it('should compute accuracy_rate correctly for getUserRank', async () => {
-      mockUsersService.findByAddress = jest
-        .fn()
-        .mockResolvedValue(mockUser as User);
-      mockEntryRepository.findOne = jest
-        .fn()
-        .mockResolvedValue(mockEntry as LeaderboardEntry);
+      mockUsersService.findByAddress = jest.fn().mockResolvedValue(mockUser);
+      mockEntryRepository.findOne = jest.fn().mockResolvedValue(mockEntry);
 
       const result = await service.getUserRank(
         'GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN',
@@ -795,9 +780,7 @@ describe('LeaderboardService', () => {
     });
 
     it('should return snapshots ordered ascending with signed rank_delta', async () => {
-      mockUsersService.findByAddress = jest
-        .fn()
-        .mockResolvedValue(mockUser as User);
+      mockUsersService.findByAddress = jest.fn().mockResolvedValue(mockUser);
       const capturedAt1 = new Date('2026-07-01T00:00:00Z');
       const capturedAt2 = new Date('2026-07-02T00:00:00Z');
       mockSnapshotRepository.find = jest.fn().mockResolvedValue([
@@ -1195,6 +1178,104 @@ describe('LeaderboardService', () => {
       expect(
         LeaderboardService.getIsoWeekId(new Date('2025-12-31T00:00:00Z')),
       ).toBe('2026-W01');
+    });
+  });
+
+  describe('snapshot consistency during recompute (#1932)', () => {
+    it('returns the complete prior snapshot for concurrent reads during recompute and atomically swaps after completion', async () => {
+      const priorEntryA = {
+        ...mockEntry,
+        id: 'entry-a',
+        user_id: 'user-a',
+        rank: 1,
+        reputation_score: 500,
+        user: { ...mockUser, id: 'user-a', username: 'alice' } as User,
+      } as LeaderboardEntry;
+      const priorEntryB = {
+        ...mockEntry,
+        id: 'entry-b',
+        user_id: 'user-b',
+        rank: 2,
+        reputation_score: 400,
+        user: { ...mockUser, id: 'user-b', username: 'bob' } as User,
+      } as LeaderboardEntry;
+
+      mockQb.getManyAndCount.mockResolvedValueOnce([
+        [priorEntryA, priorEntryB],
+        2,
+      ]);
+
+      const updatedUsers: Partial<User>[] = [
+        {
+          ...mockUser,
+          id: 'user-b',
+          username: 'bob',
+          reputation_score: 900,
+          season_points: 100,
+          total_predictions: 10,
+          correct_predictions: 9,
+          total_winnings_stroops: '9000000',
+        },
+        {
+          ...mockUser,
+          id: 'user-a',
+          username: 'alice',
+          reputation_score: 500,
+          season_points: 80,
+          total_predictions: 10,
+          correct_predictions: 5,
+          total_winnings_stroops: '5000000',
+        },
+      ];
+      mockUsersService.findAll.mockResolvedValue(updatedUsers);
+
+      let resolveTransaction!: () => void;
+      const transactionGate = new Promise<void>((resolve) => {
+        resolveTransaction = resolve;
+      });
+
+      mockDataSource.transaction.mockImplementationOnce(
+        async (cb: (manager: unknown) => Promise<void>) => {
+          const mockManager = {
+            findOne: jest.fn().mockResolvedValue(null),
+            create: jest.fn((_, dto: unknown) => dto),
+            save: jest.fn().mockResolvedValue({}),
+          };
+          await cb(mockManager);
+          await transactionGate;
+        },
+      );
+
+      const recomputePromise = service.recalculateRanks();
+
+      // Wait a microtask so recalculateRanks captures the prior snapshot and enters the transaction
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Read during recompute returns the complete prior snapshot (user-a rank 1, user-b rank 2)
+      const duringRead = await service.getLeaderboard({ page: 1, limit: 20 });
+      expect(
+        duringRead.data.map((e) => ({ id: e.user_id, rank: e.rank })),
+      ).toEqual([
+        { id: 'user-a', rank: 1 },
+        { id: 'user-b', rank: 2 },
+      ]);
+      const duringTopN = await service.getTopN(2);
+      expect(duringTopN.map((e) => ({ id: e.user_id, rank: e.rank }))).toEqual([
+        { id: 'user-a', rank: 1 },
+        { id: 'user-b', rank: 2 },
+      ]);
+
+      // Complete recompute -> atomic swap to new snapshot (user-b rank 1, user-a rank 2)
+      resolveTransaction();
+      await recomputePromise;
+
+      const afterSnapshot = service.getActiveGlobalSnapshot();
+      expect(
+        afterSnapshot?.map((e) => ({ id: e.user_id, rank: e.rank })),
+      ).toEqual([
+        { id: 'user-b', rank: 1 },
+        { id: 'user-a', rank: 2 },
+      ]);
     });
   });
 });

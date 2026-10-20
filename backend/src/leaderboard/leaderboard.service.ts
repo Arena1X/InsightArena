@@ -97,6 +97,15 @@ export class LeaderboardService {
   /** Insights are week-scoped; TTL is only a safety net so nothing lives indefinitely. */
   private readonly COACH_CACHE_TTL_MS = 8 * 24 * 60 * 60 * 1000;
 
+  /**
+   * Snapshot consistency state during recalculateRanks() (#1932):
+   * Concurrent reads while recomputing are served from the frozen prior snapshot,
+   * and atomically swapped to the newly computed snapshot upon completion.
+   */
+  private isRecomputing = false;
+  private recomputePriorSnapshot: LeaderboardEntryResponse[] | null = null;
+  private latestGlobalSnapshot: LeaderboardEntryResponse[] | null = null;
+
   constructor(
     @InjectRepository(LeaderboardEntry)
     private readonly leaderboardRepository: Repository<LeaderboardEntry>,
@@ -119,6 +128,20 @@ export class LeaderboardService {
     const page = query.page ?? 1;
     const limit = Math.min(query.limit ?? 20, 100);
     const skip = (page - 1) * limit;
+
+    if (
+      this.isRecomputing &&
+      !query.season_id &&
+      this.recomputePriorSnapshot !== null
+    ) {
+      const slice = this.recomputePriorSnapshot.slice(skip, skip + limit);
+      return {
+        data: slice,
+        total: this.recomputePriorSnapshot.length,
+        page,
+        limit,
+      };
+    }
 
     const qb = this.leaderboardRepository
       .createQueryBuilder('entry')
@@ -365,8 +388,9 @@ export class LeaderboardService {
       .addOrderBy('entry.user_id', 'ASC');
 
     if (query.cursor) {
-      const { score, rank, createdAtMs, userId } =
-        this.decodeLeaderboardCursor(query.cursor);
+      const { score, rank, createdAtMs, userId } = this.decodeLeaderboardCursor(
+        query.cursor,
+      );
       const scoreColumn = query.season_id
         ? 'entry.season_points'
         : 'entry.reputation_score';
@@ -445,6 +469,13 @@ export class LeaderboardService {
     seasonId?: string,
   ): Promise<LeaderboardEntryResponse[]> {
     const limit = Math.min(n, 20);
+    if (
+      this.isRecomputing &&
+      !seasonId &&
+      this.recomputePriorSnapshot !== null
+    ) {
+      return this.recomputePriorSnapshot.slice(0, limit);
+    }
     const cacheKey = CACHE_WARMING_KEYS.leaderboardTopN(
       limit,
       seasonId ?? null,
@@ -536,51 +567,102 @@ export class LeaderboardService {
    * Recalculate all leaderboard ranks based on current user stats.
    * Called by the hourly cron job.
    */
+  getActiveGlobalSnapshot(): LeaderboardEntryResponse[] | null {
+    if (this.isRecomputing && this.recomputePriorSnapshot !== null) {
+      return this.recomputePriorSnapshot;
+    }
+    return this.latestGlobalSnapshot;
+  }
+
   async recalculateRanks(): Promise<void> {
     const start = Date.now();
     this.logger.log('Starting leaderboard rank recalculation...');
 
-    const users = await this.usersService.findAll();
-
-    // Sort users by reputation_score descending for global ranking.
-    // Deterministic tie-break: score DESC, then earliest qualifying
-    // prediction (created_at ASC), then stable user_id ASC.
-    const sorted = [...users].sort((a, b) => {
-      if (b.reputation_score !== a.reputation_score) {
-        return b.reputation_score - a.reputation_score;
+    // Capture the complete prior snapshot before mutating ranks so concurrent
+    // reads during recompute never observe a half-updated board (#1932).
+    if (this.latestGlobalSnapshot !== null) {
+      this.recomputePriorSnapshot = [...this.latestGlobalSnapshot];
+    } else {
+      try {
+        const currentPage = await this.getLeaderboard({ page: 1, limit: 100 });
+        this.recomputePriorSnapshot = [...currentPage.data];
+      } catch {
+        this.recomputePriorSnapshot = [];
       }
-      const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0;
-      const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0;
-      if (aCreated !== bCreated) {
-        return aCreated - bCreated;
-      }
-      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-    });
+    }
+    this.isRecomputing = true;
 
-    await this.dataSource.transaction(async (manager) => {
-      for (let i = 0; i < sorted.length; i++) {
-        const user = sorted[i];
-        const rank = i + 1;
+    try {
+      const users = await this.usersService.findAll();
 
-        await this.upsertEntry(manager, {
-          user_id: user.id,
-          season_id: undefined,
-          rank,
-          reputation_score: user.reputation_score,
-          season_points: user.season_points,
-          total_predictions: user.total_predictions,
-          correct_predictions: user.correct_predictions,
-          total_winnings_stroops: user.total_winnings_stroops,
-        });
-      }
-    });
+      // Sort users by reputation_score descending for global ranking.
+      // Deterministic tie-break: score DESC, then earliest qualifying
+      // prediction (created_at ASC), then stable user_id ASC.
+      const sorted = [...users].sort((a, b) => {
+        if (b.reputation_score !== a.reputation_score) {
+          return b.reputation_score - a.reputation_score;
+        }
+        const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0;
+        if (aCreated !== bCreated) {
+          return aCreated - bCreated;
+        }
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
 
-    const elapsed = Date.now() - start;
-    this.logger.log(
-      `Leaderboard recalculation complete: ${sorted.length} users updated in ${elapsed}ms`,
-    );
+      const nextSnapshot: LeaderboardEntryResponse[] = sorted.map(
+        (user, index) => {
+          const accuracyRate =
+            user.total_predictions > 0
+              ? (
+                  (user.correct_predictions / user.total_predictions) *
+                  100
+                ).toFixed(1)
+              : '0.0';
+          return {
+            rank: index + 1,
+            user_id: user.id,
+            username: user.username ?? null,
+            stellar_address: user.stellar_address ?? '',
+            reputation_score: user.reputation_score,
+            accuracy_rate: accuracyRate,
+            total_winnings_stroops: user.total_winnings_stroops,
+            season_points: user.season_points,
+          };
+        },
+      );
 
-    await this.invalidateLeaderboardCache();
+      await this.dataSource.transaction(async (manager) => {
+        for (let i = 0; i < sorted.length; i++) {
+          const user = sorted[i];
+          const rank = i + 1;
+
+          await this.upsertEntry(manager, {
+            user_id: user.id,
+            season_id: undefined,
+            rank,
+            reputation_score: user.reputation_score,
+            season_points: user.season_points,
+            total_predictions: user.total_predictions,
+            correct_predictions: user.correct_predictions,
+            total_winnings_stroops: user.total_winnings_stroops,
+          });
+        }
+      });
+
+      // Atomic snapshot swap once all rows are committed
+      this.latestGlobalSnapshot = nextSnapshot;
+
+      const elapsed = Date.now() - start;
+      this.logger.log(
+        `Leaderboard recalculation complete: ${sorted.length} users updated in ${elapsed}ms`,
+      );
+
+      await this.invalidateLeaderboardCache();
+    } finally {
+      this.isRecomputing = false;
+      this.recomputePriorSnapshot = null;
+    }
   }
 
   /**
