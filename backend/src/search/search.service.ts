@@ -25,7 +25,10 @@ import {
   FuzzySearchItemDto,
   FuzzySearchResponseDto,
 } from './dto/fuzzy-search.dto';
-import { escapeLikeWildcards } from './dto/search-query.dto';
+import {
+  escapeLikeWildcards,
+  sanitizeSearchInput,
+} from './dto/search-query.dto';
 import {
   MAX_SUGGEST_LIMIT,
   MIN_SUGGEST_PREFIX_LENGTH,
@@ -98,7 +101,21 @@ export class SearchService {
     const limit = Math.min(dto.limit ?? 20, 50);
     const skip = (page - 1) * limit;
     const searchType = dto.type ?? SearchType.All;
-    const query = dto.query;
+    const query = sanitizeSearchInput(dto.query ?? '');
+
+    if (!query) {
+      return {
+        markets: [],
+        users: [],
+        competitions: [],
+        total: 0,
+        total_markets: 0,
+        total_users: 0,
+        total_competitions: 0,
+        page,
+        limit,
+      };
+    }
 
     const [
       [markets, total_markets],
@@ -132,7 +149,7 @@ export class SearchService {
   }
 
   async getSuggestions(q: string): Promise<SuggestionsResponseDto> {
-    const term = q?.trim() ?? '';
+    const term = sanitizeSearchInput(q);
     if (term.length < 1) {
       return { markets: [], users: [] };
     }
@@ -145,8 +162,11 @@ export class SearchService {
         .createQueryBuilder('market')
         .select('market.title')
         .where('market.is_public = :isPublic', { isPublic: true })
-        .andWhere('market.title ILIKE :term', { term: `${escapedTerm}%` })
+        .andWhere("market.title ILIKE :term ESCAPE '\\'", {
+          term: `${escapedTerm}%`,
+        })
         .orderBy('market.title', 'ASC')
+        .addOrderBy('market.id', 'ASC')
         .limit(5)
         .getMany(),
       this.usersRepository
@@ -154,8 +174,11 @@ export class SearchService {
         .select('user.username')
         .where('user.is_banned = :banned', { banned: false })
         .andWhere('user.username IS NOT NULL')
-        .andWhere('user.username ILIKE :term', { term: `${escapedTerm}%` })
+        .andWhere("user.username ILIKE :term ESCAPE '\\'", {
+          term: `${escapedTerm}%`,
+        })
         .orderBy('user.username', 'ASC')
+        .addOrderBy('user.id', 'ASC')
         .limit(5)
         .getMany(),
     ]);
@@ -172,7 +195,7 @@ export class SearchService {
    * and results for popular prefixes are cached briefly to absorb repeat keystrokes.
    */
   async suggest(dto: SuggestQueryDto): Promise<SuggestResponseDto> {
-    const prefix = dto.q?.trim() ?? '';
+    const prefix = sanitizeSearchInput(dto.q ?? '');
     if (prefix.length < MIN_SUGGEST_PREFIX_LENGTH) {
       return { suggestions: [] };
     }
@@ -205,7 +228,12 @@ export class SearchService {
       ...users,
       ...competitions,
     ]
-      .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label))
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          (a.label ?? '').localeCompare(b.label ?? '') ||
+          a.id.localeCompare(b.id),
+      )
       .slice(0, limit)
       .map(({ id, label, type: itemType }) => ({ id, label, type: itemType }));
 
@@ -223,10 +251,13 @@ export class SearchService {
       .select(['market.id', 'market.title'])
       .addSelect('similarity(market.title, :prefix)', 'score')
       .where('market.is_public = :isPublic', { isPublic: true })
-      .andWhere('market.title ILIKE :pattern', { pattern: `${prefix}%` })
+      .andWhere("market.title ILIKE :pattern ESCAPE '\\'", {
+        pattern: `${prefix}%`,
+      })
       .setParameter('prefix', prefix)
       .orderBy('score', 'DESC')
       .addOrderBy('market.title', 'ASC')
+      .addOrderBy('market.id', 'ASC')
       .limit(limit)
       .getMany();
 
@@ -248,10 +279,13 @@ export class SearchService {
       .addSelect('similarity(user.username, :prefix)', 'score')
       .where('user.is_banned = :banned', { banned: false })
       .andWhere('user.username IS NOT NULL')
-      .andWhere('user.username ILIKE :pattern', { pattern: `${prefix}%` })
+      .andWhere("user.username ILIKE :pattern ESCAPE '\\'", {
+        pattern: `${prefix}%`,
+      })
       .setParameter('prefix', prefix)
       .orderBy('score', 'DESC')
       .addOrderBy('user.username', 'ASC')
+      .addOrderBy('user.id', 'ASC')
       .limit(limit)
       .getMany();
 
@@ -274,10 +308,13 @@ export class SearchService {
       .where('competition.visibility = :visibility', {
         visibility: CompetitionVisibility.Public,
       })
-      .andWhere('competition.title ILIKE :pattern', { pattern: `${prefix}%` })
+      .andWhere("competition.title ILIKE :pattern ESCAPE '\\'", {
+        pattern: `${prefix}%`,
+      })
       .setParameter('prefix', prefix)
       .orderBy('score', 'DESC')
       .addOrderBy('competition.title', 'ASC')
+      .addOrderBy('competition.id', 'ASC')
       .limit(limit)
       .getMany();
 
@@ -294,7 +331,10 @@ export class SearchService {
    * ones and filters by a configurable similarity threshold.
    */
   async fuzzySearch(dto: FuzzySearchDto): Promise<FuzzySearchResponseDto> {
-    const query = dto.query;
+    const query = sanitizeSearchInput(dto.query ?? '');
+    if (!query) {
+      return { data: [], total: 0, query: dto.query ?? '' };
+    }
     const threshold = dto.threshold ?? 0.1;
     const limit = Math.min(dto.limit ?? 20, 50);
 
@@ -305,10 +345,15 @@ export class SearchService {
     ]);
 
     const all: FuzzySearchItemDto[] = [...markets, ...users, ...competitions]
-      .sort((a, b) => b.similarity - a.similarity)
+      .sort(
+        (a, b) =>
+          b.similarity - a.similarity ||
+          (a.title ?? '').localeCompare(b.title ?? '') ||
+          a.id.localeCompare(b.id),
+      )
       .slice(0, limit);
 
-    return { data: all, total: all.length, query };
+    return { data: all, total: all.length, query: dto.query };
   }
 
   private async fuzzySearchMarkets(
@@ -331,6 +376,7 @@ export class SearchService {
       .setParameter('query', query)
       .orderBy('sim', 'DESC')
       .addOrderBy('market.title', 'ASC')
+      .addOrderBy('market.id', 'ASC')
       .take(limit)
       .getMany();
 
@@ -361,6 +407,7 @@ export class SearchService {
       .setParameter('query', query)
       .orderBy('sim', 'DESC')
       .addOrderBy('user.username', 'ASC')
+      .addOrderBy('user.id', 'ASC')
       .take(limit)
       .getMany();
 
@@ -398,6 +445,7 @@ export class SearchService {
       .setParameter('query', query)
       .orderBy('sim', 'DESC')
       .addOrderBy('competition.title', 'ASC')
+      .addOrderBy('competition.id', 'ASC')
       .take(limit)
       .getMany();
 
@@ -419,6 +467,10 @@ export class SearchService {
     skip: number,
     limit: number,
   ): Promise<[MarketSearchResult[], number]> {
+    if (!query?.trim()) {
+      return [[], 0];
+    }
+
     // Phase 1: full-text search with ranking + headline
     const ftsQb = this.marketsRepository
       .createQueryBuilder('market')
@@ -540,19 +592,29 @@ export class SearchService {
     skip: number,
     limit: number,
   ): MarketSearchResult[] {
-    return raw.slice(skip, skip + limit).map((m) => ({
-      id: m.id,
-      title: m.title,
-      description: m.description,
-      category: m.category,
-      is_resolved: m.is_resolved,
-      is_public: m.is_public,
-      participant_count: m.participant_count,
-      created_at: m.created_at,
-      relevance_score:
-        parseFloat(m.fts_rank ?? '0') + parseFloat(m.trgm_score ?? '0'),
-      highlight: m.headline ?? m.title,
-    }));
+    return raw
+      .map((m) => ({
+        id: m.id,
+        title: m.title,
+        description: m.description,
+        category: m.category,
+        is_resolved: m.is_resolved,
+        is_public: m.is_public,
+        participant_count: m.participant_count,
+        created_at: m.created_at,
+        relevance_score:
+          parseFloat(m.fts_rank ?? '0') + parseFloat(m.trgm_score ?? '0'),
+        highlight: m.headline ?? m.title,
+      }))
+      .sort((a, b) => {
+        if (b.relevance_score !== a.relevance_score) {
+          return b.relevance_score - a.relevance_score;
+        }
+        const titleCmp = (a.title ?? '').localeCompare(b.title ?? '');
+        if (titleCmp !== 0) return titleCmp;
+        return a.id.localeCompare(b.id);
+      })
+      .slice(skip, skip + limit);
   }
 
   // ---------------------------------------------------------------------------
@@ -564,6 +626,10 @@ export class SearchService {
     skip: number,
     limit: number,
   ): Promise<[UserSearchResult[], number]> {
+    if (!query?.trim()) {
+      return [[], 0];
+    }
+
     const ftsQb = this.usersRepository
       .createQueryBuilder('user')
       .select([
@@ -668,17 +734,27 @@ export class SearchService {
     skip: number,
     limit: number,
   ): UserSearchResult[] {
-    return raw.slice(skip, skip + limit).map((u) => ({
-      id: u.id,
-      username: u.username,
-      stellar_address: u.stellar_address,
-      avatar_url: u.avatar_url,
-      reputation_score: u.reputation_score,
-      total_predictions: u.total_predictions,
-      relevance_score:
-        parseFloat(u.fts_rank ?? '0') + parseFloat(u.trgm_score ?? '0'),
-      highlight: u.headline ?? u.username ?? u.stellar_address,
-    }));
+    return raw
+      .map((u) => ({
+        id: u.id,
+        username: u.username,
+        stellar_address: u.stellar_address,
+        avatar_url: u.avatar_url,
+        reputation_score: u.reputation_score,
+        total_predictions: u.total_predictions,
+        relevance_score:
+          parseFloat(u.fts_rank ?? '0') + parseFloat(u.trgm_score ?? '0'),
+        highlight: u.headline ?? u.username ?? u.stellar_address,
+      }))
+      .sort((a, b) => {
+        if (b.relevance_score !== a.relevance_score) {
+          return b.relevance_score - a.relevance_score;
+        }
+        const userCmp = (a.username ?? '').localeCompare(b.username ?? '');
+        if (userCmp !== 0) return userCmp;
+        return a.id.localeCompare(b.id);
+      })
+      .slice(skip, skip + limit);
   }
 
   // ---------------------------------------------------------------------------
@@ -690,6 +766,10 @@ export class SearchService {
     skip: number,
     limit: number,
   ): Promise<[CompetitionSearchResult[], number]> {
+    if (!query?.trim()) {
+      return [[], 0];
+    }
+
     const ftsQb = this.competitionsRepository
       .createQueryBuilder('competition')
       .select([
@@ -815,7 +895,16 @@ export class SearchService {
   async searchCreatorEvents(
     params: CreatorEventSearchParams,
   ): Promise<CreatorEventSearchResult> {
-    const searchTerm = params.query.trim();
+    const rawSearch = params.query?.trim() ?? '';
+    if (!rawSearch) {
+      return { data: [], total: 0 };
+    }
+
+    const searchTerm = sanitizeSearchInput(rawSearch);
+    if (!searchTerm) {
+      return { data: [], total: 0 };
+    }
+
     const tsQuery = `websearch_to_tsquery('english', :searchTerm)`;
     const escapedTerm = escapeLikeWildcards(searchTerm);
 
@@ -854,15 +943,26 @@ export class SearchService {
     const { entities, raw } = await qb
       .orderBy('search_rank', 'DESC')
       .addOrderBy('creatorEvent.created_at', 'DESC')
+      .addOrderBy('creatorEvent.id', 'ASC')
       .skip(params.skip)
       .take(params.limit)
       .getRawAndEntities<{ search_rank?: string | number }>();
 
     return {
-      data: entities.map((event, index) => ({
-        event,
-        searchRank: Number(raw[index]?.search_rank ?? 0),
-      })),
+      data: entities
+        .map((event, index) => ({
+          event,
+          searchRank: Number(raw[index]?.search_rank ?? 0),
+        }))
+        .sort((a, b) => {
+          if (b.searchRank !== a.searchRank) {
+            return b.searchRank - a.searchRank;
+          }
+          const timeA = new Date(a.event.created_at).getTime();
+          const timeB = new Date(b.event.created_at).getTime();
+          if (timeB !== timeA) return timeB - timeA;
+          return a.event.id.localeCompare(b.event.id);
+        }),
       total,
     };
   }
@@ -911,18 +1011,28 @@ export class SearchService {
     skip: number,
     limit: number,
   ): CompetitionSearchResult[] {
-    return raw.slice(skip, skip + limit).map((c) => ({
-      id: c.id,
-      title: c.title,
-      description: c.description,
-      start_time: c.start_time,
-      end_time: c.end_time,
-      participant_count: c.participant_count,
-      visibility: c.visibility,
-      relevance_score:
-        parseFloat(c.fts_rank ?? '0') + parseFloat(c.trgm_score ?? '0'),
-      highlight: c.headline ?? c.title,
-    }));
+    return raw
+      .map((c) => ({
+        id: c.id,
+        title: c.title,
+        description: c.description,
+        start_time: c.start_time,
+        end_time: c.end_time,
+        participant_count: c.participant_count,
+        visibility: c.visibility,
+        relevance_score:
+          parseFloat(c.fts_rank ?? '0') + parseFloat(c.trgm_score ?? '0'),
+        highlight: c.headline ?? c.title,
+      }))
+      .sort((a, b) => {
+        if (b.relevance_score !== a.relevance_score) {
+          return b.relevance_score - a.relevance_score;
+        }
+        const titleCmp = (a.title ?? '').localeCompare(b.title ?? '');
+        if (titleCmp !== 0) return titleCmp;
+        return a.id.localeCompare(b.id);
+      })
+      .slice(skip, skip + limit);
   }
 
   /**

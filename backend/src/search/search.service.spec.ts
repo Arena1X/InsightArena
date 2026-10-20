@@ -1011,4 +1011,283 @@ describe('SearchService', () => {
       expect(count).toBe(0);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Search Query Injection Hardening (Issue #1953)
+  // -------------------------------------------------------------------------
+
+  describe('Search Query Injection Hardening', () => {
+    it('handles empty or whitespace query safely without executing queries', async () => {
+      const emptyResult = await service.search({
+        query: '   ',
+        type: SearchType.All,
+      });
+
+      expect(emptyResult.total).toBe(0);
+      expect(emptyResult.markets).toEqual([]);
+      expect(emptyResult.users).toEqual([]);
+      expect(emptyResult.competitions).toEqual([]);
+      expect(marketQb.getManyAndCount).not.toHaveBeenCalled();
+      expect(userQb.getManyAndCount).not.toHaveBeenCalled();
+      expect(competitionQb.getManyAndCount).not.toHaveBeenCalled();
+    });
+
+    it('a query containing special operators cannot change the query structure', async () => {
+      // Query with injection/operator symbols: &, |, !, :, *, quotes, etc.
+      await service.search({
+        query: "bitcoin & test | !dangerous:* 'DROP TABLE--",
+        type: SearchType.Markets,
+      });
+
+      expect(marketQb.setParameter).toHaveBeenCalledWith(
+        'query',
+        expect.not.stringContaining('&'),
+      );
+      expect(marketQb.setParameter).toHaveBeenCalledWith(
+        'query',
+        expect.not.stringContaining('|'),
+      );
+      expect(marketQb.setParameter).toHaveBeenCalledWith(
+        'query',
+        expect.not.stringContaining('!'),
+      );
+    });
+
+    it('normal terms return expected results', async () => {
+      const result = await service.search({
+        query: 'bitcoin',
+        type: SearchType.Markets,
+      });
+
+      expect(result.markets).toHaveLength(1);
+      expect(result.markets[0].title).toBe('Bitcoin price prediction');
+      expect(marketQb.getManyAndCount).toHaveBeenCalled();
+    });
+
+    it('creator events search handles empty/whitespace query safely', async () => {
+      const result = await service.searchCreatorEvents({
+        query: '   ',
+        skip: 0,
+        limit: 10,
+      });
+
+      expect(result.total).toBe(0);
+      expect(result.data).toEqual([]);
+      expect(creatorEventQb.getRawAndEntities).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Search Result Relevance Ranking Determinism (Issue #1954)
+  // -------------------------------------------------------------------------
+
+  describe('Search Result Relevance Ranking Determinism', () => {
+    it('equal-relevance results order deterministically by secondary key', async () => {
+      const marketA = {
+        ...mockMarket,
+        id: 'market-b',
+        title: 'Beta Market',
+        fts_rank: '0.5',
+        trgm_score: '0.2',
+      } as unknown as Market;
+
+      const marketB = {
+        ...mockMarket,
+        id: 'market-a',
+        title: 'Alpha Market',
+        fts_rank: '0.5',
+        trgm_score: '0.2',
+      } as unknown as Market;
+
+      // Mock returns Beta first, then Alpha
+      marketQb = makeQb([marketA, marketB], 2);
+
+      const module = await Test.createTestingModule({
+        providers: [
+          SearchService,
+          {
+            provide: getRepositoryToken(Market),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(marketQb),
+            },
+          },
+          {
+            provide: getRepositoryToken(User),
+            useValue: { createQueryBuilder: jest.fn().mockReturnValue(userQb) },
+          },
+          {
+            provide: getRepositoryToken(Competition),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(competitionQb),
+            },
+          },
+          {
+            provide: getRepositoryToken(CreatorEvent),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(creatorEventQb),
+            },
+          },
+          {
+            provide: CACHE_MANAGER,
+            useValue: mockCacheManager,
+          },
+          {
+            provide: DataSource,
+            useValue: mockDataSource,
+          },
+        ],
+      }).compile();
+
+      const searchSvc = module.get<SearchService>(SearchService);
+
+      const result = await searchSvc.search({
+        query: 'market',
+        type: SearchType.Markets,
+      });
+
+      // Both have identical relevance (0.7). Deterministic secondary sort by title puts Alpha first
+      expect(result.markets[0].title).toBe('Alpha Market');
+      expect(result.markets[1].title).toBe('Beta Market');
+    });
+
+    it('repeated identical queries return identical order', async () => {
+      const marketA = {
+        ...mockMarket,
+        id: 'market-2',
+        title: 'Market 2',
+        fts_rank: '0.4',
+        trgm_score: '0.1',
+      } as unknown as Market;
+
+      const marketB = {
+        ...mockMarket,
+        id: 'market-1',
+        title: 'Market 1',
+        fts_rank: '0.4',
+        trgm_score: '0.1',
+      } as unknown as Market;
+
+      marketQb = makeQb([marketA, marketB], 2);
+
+      const module = await Test.createTestingModule({
+        providers: [
+          SearchService,
+          {
+            provide: getRepositoryToken(Market),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(marketQb),
+            },
+          },
+          {
+            provide: getRepositoryToken(User),
+            useValue: { createQueryBuilder: jest.fn().mockReturnValue(userQb) },
+          },
+          {
+            provide: getRepositoryToken(Competition),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(competitionQb),
+            },
+          },
+          {
+            provide: getRepositoryToken(CreatorEvent),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(creatorEventQb),
+            },
+          },
+          {
+            provide: CACHE_MANAGER,
+            useValue: mockCacheManager,
+          },
+          {
+            provide: DataSource,
+            useValue: mockDataSource,
+          },
+        ],
+      }).compile();
+
+      const searchSvc = module.get<SearchService>(SearchService);
+
+      const firstRun = await searchSvc.search({
+        query: 'market',
+        type: SearchType.Markets,
+      });
+      const secondRun = await searchSvc.search({
+        query: 'market',
+        type: SearchType.Markets,
+      });
+
+      expect(firstRun.markets.map((m) => m.id)).toEqual(
+        secondRun.markets.map((m) => m.id),
+      );
+    });
+
+    it('higher-relevance results still rank above lower ones', async () => {
+      const highRel = {
+        ...mockMarket,
+        id: 'market-z',
+        title: 'Zeta Market',
+        fts_rank: '0.9',
+        trgm_score: '0.5',
+      } as unknown as Market;
+
+      const lowRel = {
+        ...mockMarket,
+        id: 'market-a',
+        title: 'Alpha Market',
+        fts_rank: '0.2',
+        trgm_score: '0.1',
+      } as unknown as Market;
+
+      marketQb = makeQb([lowRel, highRel], 2);
+
+      const module = await Test.createTestingModule({
+        providers: [
+          SearchService,
+          {
+            provide: getRepositoryToken(Market),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(marketQb),
+            },
+          },
+          {
+            provide: getRepositoryToken(User),
+            useValue: { createQueryBuilder: jest.fn().mockReturnValue(userQb) },
+          },
+          {
+            provide: getRepositoryToken(Competition),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(competitionQb),
+            },
+          },
+          {
+            provide: getRepositoryToken(CreatorEvent),
+            useValue: {
+              createQueryBuilder: jest.fn().mockReturnValue(creatorEventQb),
+            },
+          },
+          {
+            provide: CACHE_MANAGER,
+            useValue: mockCacheManager,
+          },
+          {
+            provide: DataSource,
+            useValue: mockDataSource,
+          },
+        ],
+      }).compile();
+
+      const searchSvc = module.get<SearchService>(SearchService);
+
+      const result = await searchSvc.search({
+        query: 'market',
+        type: SearchType.Markets,
+      });
+
+      expect(result.markets[0].id).toBe('market-z');
+      expect(result.markets[1].id).toBe('market-a');
+      expect(result.markets[0].relevance_score).toBeGreaterThan(
+        result.markets[1].relevance_score,
+      );
+    });
+  });
 });

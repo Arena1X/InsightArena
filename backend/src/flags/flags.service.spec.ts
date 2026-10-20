@@ -15,7 +15,11 @@ import {
   FlagResolutionAction,
   FlagStatus,
 } from './entities/flag.entity';
-import { FlagsService } from './flags.service';
+import {
+  FlagsService,
+  calculateRolloutBucket,
+  isUserInRollout,
+} from './flags.service';
 
 describe('FlagsService', () => {
   let service: FlagsService;
@@ -565,6 +569,66 @@ describe('FlagsService', () => {
         status: FlagStatus.DISMISSED,
       });
       expect(listResult.data).toEqual([resolved]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Feature Flag Percentage Rollout Bucketing Stability (Issue #1956)
+  // -------------------------------------------------------------------------
+
+  describe('Feature Flag Percentage Rollout Bucketing Stability', () => {
+    it("a user's bucket is identical across repeated evaluations", () => {
+      const flagKey = 'new_ui_feature';
+      const userId = 'user-abc-123';
+
+      const firstBucket = service.getRolloutBucket(flagKey, userId);
+      const secondBucket = service.getRolloutBucket(flagKey, userId);
+      const thirdBucket = calculateRolloutBucket(flagKey, userId);
+
+      expect(firstBucket).toBe(secondBucket);
+      expect(firstBucket).toBe(thirdBucket);
+      expect(firstBucket).toBeGreaterThanOrEqual(0);
+      expect(firstBucket).toBeLessThan(100);
+    });
+
+    it('raising the percentage only adds users, never removes previously-included ones (monotonic)', () => {
+      const flagKey = 'dark_mode_rollout';
+      const userIds = Array.from({ length: 100 }, (_, i) => `user-${i}`);
+
+      const includedAt10 = new Set(
+        userIds.filter((uid) => service.isUserInRollout(flagKey, uid, 10)),
+      );
+      const includedAt30 = new Set(
+        userIds.filter((uid) => service.isUserInRollout(flagKey, uid, 30)),
+      );
+      const includedAt75 = new Set(
+        userIds.filter((uid) => service.isUserInRollout(flagKey, uid, 75)),
+      );
+
+      // Every user in 10% must also be in 30%
+      for (const uid of includedAt10) {
+        expect(includedAt30.has(uid)).toBe(true);
+      }
+
+      // Every user in 30% must also be in 75%
+      for (const uid of includedAt30) {
+        expect(includedAt75.has(uid)).toBe(true);
+      }
+    });
+
+    it('0% includes nobody and 100% includes everyone', () => {
+      const flagKey = 'critical_infra';
+      const userIds = Array.from({ length: 50 }, (_, i) => `user-${i}`);
+
+      for (const uid of userIds) {
+        expect(service.isUserInRollout(flagKey, uid, 0)).toBe(false);
+        expect(isUserInRollout(flagKey, uid, 0)).toBe(false);
+        expect(service.isUserInRollout(flagKey, uid, -10)).toBe(false);
+
+        expect(service.isUserInRollout(flagKey, uid, 100)).toBe(true);
+        expect(isUserInRollout(flagKey, uid, 100)).toBe(true);
+        expect(service.isUserInRollout(flagKey, uid, 120)).toBe(true);
+      }
     });
   });
 });
