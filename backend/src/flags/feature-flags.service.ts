@@ -15,6 +15,7 @@ import {
 } from './entities/feature-flag.entity';
 import { CreateFeatureFlagDto } from './dto/create-feature-flag.dto';
 import { FlagEvaluationCacheService } from './flag-evaluation-cache.service';
+import { calculateRolloutBucket, isUserInRollout } from './flags.service';
 import * as crypto from 'crypto';
 
 export interface ResolvedFlagDto {
@@ -118,6 +119,12 @@ export class FeatureFlagsService {
 
     const saved = await this.featureFlagsRepository.save(flag);
 
+    // Invalidate evaluation cache for the updated flag
+    this.evaluationCache.invalidate(before.key as string);
+    if (saved.key !== before.key) {
+      this.evaluationCache.invalidate(saved.key);
+    }
+
     const onlyToggled =
       Object.keys(changes).length > 0 &&
       Object.keys(changes).every((field) => field === 'is_enabled');
@@ -144,6 +151,9 @@ export class FeatureFlagsService {
     if (result.affected === 0) {
       throw new NotFoundException(`Feature flag "${id}" not found`);
     }
+
+    // Invalidate evaluation cache for the deleted flag
+    this.evaluationCache.invalidate(flag.key);
 
     await this.writeAuditEntry(
       actorId,
@@ -299,13 +309,7 @@ export class FeatureFlagsService {
   }
 
   private evaluatePercentage(flag: FeatureFlag, user: User): boolean {
-    const percentage = Math.min(100, Math.max(0, flag.rollout_percentage));
-    if (percentage <= 0) return false;
-    if (percentage >= 100) return true;
-
-    // Deterministic bucketing using a hash of flag key + user ID
-    const bucket = this.deterministicBucket(flag.key, user.id);
-    return bucket < percentage;
+    return isUserInRollout(flag.key, user.id, flag.rollout_percentage);
   }
 
   private evaluateAttribute(flag: FeatureFlag, user: User): boolean {
@@ -384,16 +388,10 @@ export class FeatureFlagsService {
 
   /**
    * Deterministic bucketing for percentage rollout.
-   * Uses SHA-256 hash of flag key + user ID to ensure a stable 0-100 bucket per user.
+   * Delegates to calculateRolloutBucket using SHA-256 hash of flag key + user ID.
    */
   private deterministicBucket(flagKey: string, userId: string): number {
-    const hash = crypto
-      .createHash('sha256')
-      .update(`${flagKey}:${userId}`)
-      .digest('hex');
-    const first8 = hash.substring(0, 8);
-    const intVal = parseInt(first8, 16);
-    return intVal % 100;
+    return calculateRolloutBucket(flagKey, userId);
   }
 }
 

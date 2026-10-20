@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import * as crypto from 'crypto';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
@@ -13,6 +14,44 @@ import { CreateFlagDto } from './dto/create-flag.dto';
 import { ListFlagsQueryDto } from './dto/list-flags-query.dto';
 import { ResolveFlagDto } from './dto/resolve-flag.dto';
 import { Flag, FlagResolutionAction, FlagStatus } from './entities/flag.entity';
+
+/**
+ * Deterministic bucketing for feature flag percentage rollouts.
+ * Uses SHA-256 hash of (flag key, user id) to compute a stable 0-99 bucket.
+ * Monotonic: users in bucket B are included whenever percentage > B.
+ *
+ * @param flagKey - The key of the feature flag
+ * @param userId - The ID of the user being evaluated
+ * @returns An integer in [0, 99] representing the user's bucket
+ */
+export function calculateRolloutBucket(flagKey: string, userId: string): number {
+  const hash = crypto
+    .createHash('sha256')
+    .update(`${flagKey}:${userId}`)
+    .digest('hex');
+  const first8 = hash.substring(0, 8);
+  const intVal = parseInt(first8, 16);
+  return intVal % 100;
+}
+
+/**
+ * Evaluates whether a user is included in a percentage rollout.
+ * Guarantees:
+ * - 0% includes nobody
+ * - 100% includes everyone
+ * - Monotonicity: raising the percentage only adds users, never removes previously-included ones
+ * - Stability: identical evaluations across requests
+ */
+export function isUserInRollout(
+  flagKey: string,
+  userId: string,
+  rolloutPercentage: number,
+): boolean {
+  const clamped = Math.min(100, Math.max(0, rolloutPercentage));
+  if (clamped <= 0) return false;
+  if (clamped >= 100) return true;
+  return calculateRolloutBucket(flagKey, userId) < clamped;
+}
 
 @Injectable()
 export class FlagsService {
@@ -25,6 +64,24 @@ export class FlagsService {
     private readonly marketsRepository: Repository<Market>,
     private readonly analyticsService: AnalyticsService,
   ) {}
+
+  /**
+   * Deterministically buckets a user for percentage rollouts using SHA-256 of (flag key, user id).
+   */
+  getRolloutBucket(flagKey: string, userId: string): number {
+    return calculateRolloutBucket(flagKey, userId);
+  }
+
+  /**
+   * Evaluates percentage rollout inclusion for a user.
+   */
+  isUserInRollout(
+    flagKey: string,
+    userId: string,
+    rolloutPercentage: number,
+  ): boolean {
+    return isUserInRollout(flagKey, userId, rolloutPercentage);
+  }
 
   async createFlag(
     userId: string,

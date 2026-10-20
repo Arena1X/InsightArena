@@ -1,6 +1,10 @@
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
-import { SearchQueryDto, escapeLikeWildcards } from './search-query.dto';
+import {
+  SearchQueryDto,
+  escapeLikeWildcards,
+  sanitizeSearchInput,
+} from './search-query.dto';
 
 describe('SearchQueryDto', () => {
   async function validateDto(data: any): Promise<string[]> {
@@ -174,5 +178,43 @@ describe('escapeLikeWildcards', () => {
 
   it('escapes consecutive wildcards', async () => {
     expect(escapeLikeWildcards('test%_%pattern')).toBe('test\\%\\_\\%pattern');
+  });
+
+  it('escapes backslash characters', async () => {
+    expect(escapeLikeWildcards('path\\name')).toBe('path\\\\name');
+    expect(escapeLikeWildcards('path\\%name_test')).toBe(
+      'path\\\\\\%name\\_test',
+    );
+  });
+});
+
+describe('sanitizeSearchInput', () => {
+  it('neutralizes query operators', () => {
+    expect(sanitizeSearchInput('bitcoin & ethereum | !doge:*')).toBe(
+      'bitcoin ethereum doge',
+    );
+    expect(sanitizeSearchInput('(bitcoin OR ethereum) <-> solana')).toBe(
+      'bitcoin OR ethereum solana',
+    );
+  });
+
+  it('neutralizes quotes and backslashes', () => {
+    expect(sanitizeSearchInput('"exact phrase" \\injection')).toBe(
+      'exact phrase injection',
+    );
+  });
+
+  it('handles empty and whitespace input safely', () => {
+    expect(sanitizeSearchInput('')).toBe('');
+    expect(sanitizeSearchInput('   ')).toBe('');
+    expect(sanitizeSearchInput(null as any)).toBe('');
+    expect(sanitizeSearchInput(undefined as any)).toBe('');
+  });
+
+  it('preserves legitimate search terms', () => {
+    expect(sanitizeSearchInput('bitcoin price')).toBe('bitcoin price');
+    expect(sanitizeSearchInput('premier league 2026')).toBe(
+      'premier league 2026',
+    );
   });
 });
