@@ -162,6 +162,117 @@ export class SeasonsService {
     return season;
   }
 
+  /**
+   * Deterministically checks if a timestamp falls within a season's boundary.
+   * Documented boundary policy: half-open interval [starts_at, ends_at)
+   * - Inclusive of starts_at (starts_at <= timestamp)
+   * - Exclusive of ends_at (timestamp < ends_at)
+   */
+  isTimestampInSeason(timestamp: Date | string, season: Season): boolean {
+    const t = new Date(timestamp).getTime();
+    const start = new Date(season.starts_at).getTime();
+    const end = new Date(season.ends_at).getTime();
+    return t >= start && t < end;
+  }
+
+  /**
+   * Deterministically attributes a prediction to a season according to the documented boundary rule.
+   *
+   * Documented policy:
+   * 1. A prediction's season attribution is determined by when it was submitted/placed
+   *    (`submitted_at` or `created_at`), NOT when it was resolved.
+   * 2. Predictions made before a rollover (submitted_at < prior_season.ends_at) score in that prior
+   *    season, even if the prediction is resolved after the rollover has already completed.
+   * 3. Boundary policy: [starts_at, ends_at) — inclusive of starts_at, exclusive of ends_at.
+   *    An event submitted at the exact rollover timestamp (t === ends_at === next_season.starts_at)
+   *    belongs to the new season, not the prior season.
+   */
+  async attributePredictionToSeason(
+    prediction: {
+      id?: string;
+      submitted_at?: Date | string;
+      created_at?: Date | string;
+      resolved_at?: Date | string | null;
+      timestamp?: Date | string;
+    },
+    candidateSeasons?: Season[],
+  ): Promise<Season | null> {
+    const submissionTime =
+      prediction.submitted_at ??
+      prediction.created_at ??
+      prediction.timestamp;
+
+    if (!submissionTime) {
+      return null;
+    }
+
+    const t = new Date(submissionTime).getTime();
+    const seasons =
+      candidateSeasons ??
+      (await this.seasonsRepository.find({
+        order: { starts_at: 'ASC' },
+      }));
+
+    for (const s of seasons) {
+      if (this.isTimestampInSeason(t, s)) {
+        return s;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Alias for attributePredictionToSeason
+   */
+  async attributePrediction(
+    prediction: {
+      id?: string;
+      submitted_at?: Date | string;
+      created_at?: Date | string;
+      resolved_at?: Date | string | null;
+      timestamp?: Date | string;
+    },
+    candidateSeasons?: Season[],
+  ): Promise<Season | null> {
+    return this.attributePredictionToSeason(prediction, candidateSeasons);
+  }
+
+  /**
+   * Scores a prediction for its attributed season, ensuring that:
+   * 1. Predictions placed before rollover score in the prior season even when resolved after rollover.
+   * 2. Boundary timestamps follow the [starts_at, ends_at) half-open policy.
+   */
+  async scorePredictionForSeason(
+    prediction: {
+      userId?: string;
+      user_id?: string;
+      submitted_at?: Date | string;
+      created_at?: Date | string;
+      resolved_at?: Date | string | null;
+      is_correct?: boolean;
+    },
+    points: number = 10,
+    candidateSeasons?: Season[],
+  ): Promise<{
+    season: Season | null;
+    pointsAwarded: number;
+    attributedSeasonNumber: number | null;
+  }> {
+    const season = await this.attributePredictionToSeason(
+      prediction,
+      candidateSeasons,
+    );
+
+    const isCorrect = prediction.is_correct ?? true;
+    const pointsAwarded = season && isCorrect ? points : 0;
+
+    return {
+      season,
+      pointsAwarded,
+      attributedSeasonNumber: season ? season.season_number : null,
+    };
+  }
+
   async create(dto: CreateSeasonDto): Promise<Season> {
     const startsAt = new Date(dto.start_time);
     const endsAt = new Date(dto.end_time);

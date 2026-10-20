@@ -799,4 +799,94 @@ describe('AnalyticsService', () => {
       expect(marketsRepository.find).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe('analytics event aggregation bucket alignment (#1952)', () => {
+    const from = new Date('2026-06-01T00:00:00.000Z');
+    const to = new Date('2026-06-01T04:00:00.000Z'); // 4 hours window
+    const oneHourMs = 60 * 60 * 1000;
+
+    it('an edge-timestamp event lands in exactly one bucket', () => {
+      // Event exactly on the boundary between bucket 0 [00:00, 01:00) and bucket 1 [01:00, 02:00)
+      const edgeTimestamp = new Date('2026-06-01T01:00:00.000Z');
+      const events = [
+        { id: 'e1', timestamp: edgeTimestamp, value: 10 },
+      ];
+
+      const result = service.aggregateEventsByTimeBucket(events, {
+        from,
+        to,
+        interval: 'hour',
+        fillEmptyBuckets: true,
+      });
+
+      expect(result.buckets).toHaveLength(4);
+      // Bucket 0 [00:00, 01:00): edgeTimestamp is exclusive (< 01:00 is false), so count is 0
+      expect(result.buckets[0].count).toBe(0);
+      expect(result.buckets[0].events).toHaveLength(0);
+
+      // Bucket 1 [01:00, 02:00): edgeTimestamp is inclusive (>= 01:00 is true), so count is 1
+      expect(result.buckets[1].count).toBe(1);
+      expect(result.buckets[1].events[0].id).toBe('e1');
+
+      // Other buckets have 0
+      expect(result.buckets[2].count).toBe(0);
+      expect(result.buckets[3].count).toBe(0);
+
+      // Exactly one bucket holds the event
+      const bucketsWithEvent = result.buckets.filter((b) => b.count > 0);
+      expect(bucketsWithEvent).toHaveLength(1);
+    });
+
+    it('sum of buckets equals the ungrouped total', () => {
+      const events = [
+        { id: 'e1', timestamp: new Date('2026-06-01T00:15:00.000Z'), value: 5 },
+        { id: 'e2', timestamp: new Date('2026-06-01T01:00:00.000Z'), value: 12 },
+        { id: 'e3', timestamp: new Date('2026-06-01T01:45:00.000Z'), value: 8 },
+        { id: 'e4', timestamp: new Date('2026-06-01T03:30:00.000Z'), value: 20 },
+      ];
+
+      const expectedTotalCount = events.length;
+      const expectedTotalValue = events.reduce((sum, e) => sum + e.value, 0);
+
+      const result = service.aggregateEventsByTimeBucket(events, {
+        from,
+        to,
+        intervalMs: oneHourMs,
+        valueField: 'value',
+      });
+
+      const bucketCountSum = result.buckets.reduce((sum, b) => sum + b.count, 0);
+      const bucketValueSum = result.buckets.reduce((sum, b) => sum + b.total_value, 0);
+
+      expect(bucketCountSum).toBe(expectedTotalCount);
+      expect(result.total_count).toBe(expectedTotalCount);
+      expect(bucketValueSum).toBe(expectedTotalValue);
+      expect(result.total_value).toBe(expectedTotalValue);
+    });
+
+    it('empty buckets are represented as zero, not omitted where continuity is required', () => {
+      // Only 1 event in bucket 2 [02:00, 03:00)
+      const events = [
+        { id: 'e-only', timestamp: new Date('2026-06-01T02:30:00.000Z'), value: 50 },
+      ];
+
+      const result = service.aggregateEventsByTimeBucket(events, {
+        from,
+        to,
+        interval: 'hour',
+        fillEmptyBuckets: true,
+      });
+
+      // All 4 buckets must be present to maintain time series continuity
+      expect(result.buckets).toHaveLength(4);
+      expect(result.buckets[0].count).toBe(0);
+      expect(result.buckets[0].total_value).toBe(0);
+      expect(result.buckets[1].count).toBe(0);
+      expect(result.buckets[1].total_value).toBe(0);
+      expect(result.buckets[2].count).toBe(1);
+      expect(result.buckets[2].total_value).toBe(50);
+      expect(result.buckets[3].count).toBe(0);
+      expect(result.buckets[3].total_value).toBe(0);
+    });
+  });
 });

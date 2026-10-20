@@ -1203,4 +1203,117 @@ describe('SeasonsService', () => {
       expect(reconcileResult.missingRecipients).toEqual([]);
     });
   });
+
+  describe('season rollover boundary scoring (#1950)', () => {
+    const rolloverTime = new Date('2026-07-01T00:00:00.000Z');
+
+    const season1: Season = {
+      id: 'season-1',
+      season_number: 1,
+      name: 'Season 1',
+      starts_at: new Date('2026-04-01T00:00:00.000Z'),
+      ends_at: rolloverTime,
+      reward_pool_stroops: '1000',
+      is_active: false,
+      is_finalized: true,
+      participant_count: 50,
+      top_winner: null,
+      on_chain_season_id: '1',
+      soroban_tx_hash: null,
+      rollover_processed_at: rolloverTime,
+      created_at: new Date('2026-04-01T00:00:00.000Z'),
+      updated_at: rolloverTime,
+    };
+
+    const season2: Season = {
+      id: 'season-2',
+      season_number: 2,
+      name: 'Season 2',
+      starts_at: rolloverTime,
+      ends_at: new Date('2026-10-01T00:00:00.000Z'),
+      reward_pool_stroops: '1000',
+      is_active: true,
+      is_finalized: false,
+      participant_count: 0,
+      top_winner: null,
+      on_chain_season_id: '2',
+      soroban_tx_hash: null,
+      rollover_processed_at: null,
+      created_at: rolloverTime,
+      updated_at: rolloverTime,
+    };
+
+    const allSeasons = [season1, season2];
+
+    beforeEach(() => {
+      seasonsRepository.find.mockResolvedValue(allSeasons);
+    });
+
+    it('a prediction made before rollover scores in the prior season', async () => {
+      const prediction = {
+        id: 'pred-1',
+        submitted_at: new Date(rolloverTime.getTime() - 60_000), // 1 min before rollover
+        resolved_at: new Date(rolloverTime.getTime() + 60_000), // resolved after rollover
+        is_correct: true,
+      };
+
+      const result = await service.scorePredictionForSeason(
+        prediction,
+        15,
+        allSeasons,
+      );
+
+      expect(result.season?.id).toBe(season1.id);
+      expect(result.attributedSeasonNumber).toBe(1);
+      expect(result.pointsAwarded).toBe(15);
+    });
+
+    it('a prediction resolved after rollover is attributed per the rule', async () => {
+      const predBeforeRollover = {
+        id: 'pred-2',
+        submitted_at: new Date(rolloverTime.getTime() - 10_000),
+        resolved_at: new Date('2026-07-05T12:00:00.000Z'), // days after rollover
+      };
+
+      const attrBefore = await service.attributePredictionToSeason(
+        predBeforeRollover,
+        allSeasons,
+      );
+      expect(attrBefore?.id).toBe(season1.id);
+
+      const predAfterRollover = {
+        id: 'pred-3',
+        submitted_at: new Date(rolloverTime.getTime() + 10_000),
+        resolved_at: new Date('2026-07-05T12:00:00.000Z'),
+      };
+
+      const attrAfter = await service.attributePredictionToSeason(
+        predAfterRollover,
+        allSeasons,
+      );
+      expect(attrAfter?.id).toBe(season2.id);
+    });
+
+    it('boundary-exact timestamps follow the documented inclusive/exclusive policy', async () => {
+      // 1 ms before rollover: belongs to season 1 (t < season1.ends_at)
+      const justBefore = {
+        submitted_at: new Date(rolloverTime.getTime() - 1),
+      };
+      const attrJustBefore = await service.attributePredictionToSeason(
+        justBefore,
+        allSeasons,
+      );
+      expect(attrJustBefore?.id).toBe(season1.id);
+
+      // Exact rollover boundary: season1 ends_at is exclusive (< ends_at), season2 starts_at is inclusive (>= starts_at)
+      const exactBoundary = {
+        submitted_at: rolloverTime,
+      };
+      const attrBoundary = await service.attributePredictionToSeason(
+        exactBoundary,
+        allSeasons,
+      );
+      expect(attrBoundary?.id).toBe(season2.id);
+    });
+  });
 });
