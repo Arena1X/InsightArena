@@ -51,7 +51,7 @@ describe('DigestService', () => {
   const mockNotification: Partial<Notification> = {
     title: 'Test',
     message: 'Test message',
-  } as Partial<Notification>;
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -511,6 +511,47 @@ describe('DigestService', () => {
 
       expect(notificationRepo.find).not.toHaveBeenCalled();
       expect(emailService.queueEmail).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Timezone Alignment & DST Transitions (#1933)', () => {
+    it('falls back to UTC when timezone is unset, empty, or invalid', () => {
+      expect(service.resolveTimezone(undefined)).toBe('UTC');
+      expect(service.resolveTimezone(null)).toBe('UTC');
+      expect(service.resolveTimezone('   ')).toBe('UTC');
+      expect(service.resolveTimezone('Invalid/Zone_Name')).toBe('UTC');
+      expect(service.resolveTimezone('America/New_York')).toBe(
+        'America/New_York',
+      );
+    });
+
+    it('aligns windowStart to the exact local hour across US spring-forward DST boundary', () => {
+      // 2024-03-10 is US spring-forward (23-hour day in America/New_York).
+      // At 2024-03-10T12:00:00Z it is 08:00 EDT (UTC-4).
+      // One local calendar day earlier at 08:00 EST (UTC-5) is 2024-03-09T13:00:00Z (23 hours earlier).
+      const now = new Date('2024-03-10T12:00:00Z');
+      const windowStart = service.computeLocalWindowStart(
+        now,
+        'America/New_York',
+        1,
+      );
+      expect(windowStart.toISOString()).toBe('2024-03-09T13:00:00.000Z');
+    });
+
+    it('aligns windowStart to the exact local hour across US fall-back DST boundary without duplicate or skipped period key', () => {
+      // 2024-11-03 is US fall-back (25-hour day in America/New_York).
+      // At 2024-11-03T13:00:00Z it is 08:00 EST (UTC-5).
+      // One local calendar day earlier at 08:00 EDT (UTC-4) is 2024-11-02T12:00:00Z (25 hours earlier).
+      const now = new Date('2024-11-03T13:00:00Z');
+      const windowStart = service.computeLocalWindowStart(
+        now,
+        'America/New_York',
+        1,
+      );
+      expect(windowStart.toISOString()).toBe('2024-11-02T12:00:00.000Z');
+      expect(service['getLocalDailyPeriodKey'](now, 'America/New_York')).toBe(
+        '2024-11-03',
+      );
     });
   });
 });

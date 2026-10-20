@@ -161,8 +161,9 @@ export class DigestService {
     timezone: string,
     hour: number,
   ): Promise<void> {
-    const periodKey = this.getLocalDailyPeriodKey(now, timezone);
-    const windowStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const safeTz = this.resolveTimezone(timezone);
+    const periodKey = this.getLocalDailyPeriodKey(now, safeTz);
+    const windowStart = this.computeLocalWindowStart(now, safeTz, 1);
     this.logger.log(
       `Running daily digest for ${timezone} @ ${hour}:00 local, period ${periodKey}`,
     );
@@ -174,8 +175,9 @@ export class DigestService {
     timezone: string,
     hour: number,
   ): Promise<void> {
-    const periodKey = this.getLocalWeeklyPeriodKey(now, timezone);
-    const windowStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const safeTz = this.resolveTimezone(timezone);
+    const periodKey = this.getLocalWeeklyPeriodKey(now, safeTz);
+    const windowStart = this.computeLocalWindowStart(now, safeTz, 7);
     this.logger.log(
       `Running weekly digest for ${timezone} @ ${hour}:00 local, period ${periodKey}`,
     );
@@ -305,6 +307,40 @@ export class DigestService {
   // Using Intl.DateTimeFormat with an explicit `timeZone` rather than a
   // manual UTC-offset table means DST transitions are handled correctly for
   // free — the JS engine's ICU data already knows every zone's rules.
+
+  /**
+   * Resolves a user timezone string, falling back to 'UTC' when unset or invalid.
+   */
+  resolveTimezone(timezone?: string | null): string {
+    const trimmed = timezone?.trim();
+    if (!trimmed) return 'UTC';
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: trimmed }).format(
+        new Date(0),
+      );
+      return trimmed;
+    } catch {
+      return 'UTC';
+    }
+  }
+
+  /**
+   * Computes a timezone-aligned window start `days` local calendar days prior
+   * to `now` at the same local hour, avoiding 23h/25h DST drift.
+   */
+  computeLocalWindowStart(now: Date, timezone: string, days: number): Date {
+    const safeTz = this.resolveTimezone(timezone);
+    const localHour = this.getLocalHour(now, safeTz);
+    // Start from the nominal 24h*days delta and adjust by up to +-2 hours if DST shifted localHour
+    const candidate = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    for (const deltaHours of [0, -1, 1, -2, 2]) {
+      const adjusted = new Date(candidate.getTime() + deltaHours * 3600 * 1000);
+      if (this.getLocalHour(adjusted, safeTz) === localHour) {
+        return adjusted;
+      }
+    }
+    return candidate;
+  }
 
   /** The local hour-of-day (0-23) in `timezone` at instant `date`. */
   private getLocalHour(date: Date, timezone: string): number {
