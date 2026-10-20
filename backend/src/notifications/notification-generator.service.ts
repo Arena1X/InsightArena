@@ -43,6 +43,7 @@ export class NotificationGeneratorService implements OnModuleDestroy {
   private readonly notificationQueue: Array<NotificationBatch> = [];
   private isProcessing = false;
   private readonly BATCH_SIZE = 50;
+  private batchSizeLimit = 50;
   private readonly FLUSH_INTERVAL = 5000; // 5 seconds
   private queueProcessorInterval?: NodeJS.Timeout;
 
@@ -360,8 +361,9 @@ export class NotificationGeneratorService implements OnModuleDestroy {
     const title = input.escalated
       ? 'Dispute SLA Breached — Escalated'
       : 'Dispute SLA Breached';
-    const message = `Dispute for market "${input.marketTitle}" missed its SLA deadline (${input.slaDeadline.toISOString()})${input.escalated ? ' and has been escalated' : ''
-      }.`;
+    const message = `Dispute for market "${input.marketTitle}" missed its SLA deadline (${input.slaDeadline.toISOString()})${
+      input.escalated ? ' and has been escalated' : ''
+    }.`;
 
     const notifications = input.recipientAddresses.map((address) => ({
       userAddress: address,
@@ -451,18 +453,20 @@ export class NotificationGeneratorService implements OnModuleDestroy {
     }>,
   ): Promise<void> {
     // Filter notifications based on category preferences
-    const filteredNotifications = await this.filterNotificationsByPreferences(
-      notifications,
-    );
+    const filteredNotifications =
+      await this.filterNotificationsByPreferences(notifications);
 
     if (filteredNotifications.length === 0) {
-      this.logger.debug('All notifications filtered out by category preferences');
+      this.logger.debug(
+        'All notifications filtered out by category preferences',
+      );
       return;
     }
 
+    const chunkSize = Math.max(1, this.batchSizeLimit);
     // Split into batches
-    for (let i = 0; i < filteredNotifications.length; i += this.BATCH_SIZE) {
-      const batch = filteredNotifications.slice(i, i + this.BATCH_SIZE);
+    for (let i = 0; i < filteredNotifications.length; i += chunkSize) {
+      const batch = filteredNotifications.slice(i, i + chunkSize);
       this.notificationQueue.push({ notifications: batch });
     }
   }
@@ -493,6 +497,14 @@ export class NotificationGeneratorService implements OnModuleDestroy {
     }
   }
 
+  setBatchSizeLimit(limit: number): void {
+    this.batchSizeLimit = Math.max(1, Math.floor(limit));
+  }
+
+  getBatchSizeLimit(): number {
+    return this.batchSizeLimit;
+  }
+
   private async createNotificationsBatch(
     notifications: Array<{
       userAddress: string;
@@ -501,21 +513,37 @@ export class NotificationGeneratorService implements OnModuleDestroy {
       message: string;
       data?: Record<string, unknown>;
     }>,
+    chunkSize = this.batchSizeLimit,
   ): Promise<void> {
     if (notifications.length === 0) return;
 
-    const entities = notifications.map((n) =>
-      this.notificationsRepository.create({
-        user_address: n.userAddress,
-        type: n.type,
-        title: n.title,
-        message: n.message,
-        data: n.data ?? null,
-      }),
-    );
+    const effectiveChunkSize = Math.max(1, Math.floor(chunkSize));
+    for (
+      let offset = 0;
+      offset < notifications.length;
+      offset += effectiveChunkSize
+    ) {
+      const chunk = notifications.slice(offset, offset + effectiveChunkSize);
+      const entities = chunk.map((n) =>
+        this.notificationsRepository.create({
+          user_address: n.userAddress,
+          type: n.type,
+          title: n.title,
+          message: n.message,
+          data: n.data ?? null,
+        }),
+      );
 
-    await this.notificationsRepository.save(entities);
-    this.logger.log(`Batch created ${notifications.length} notifications`);
+      try {
+        await this.notificationsRepository.save(entities);
+        this.logger.log(`Batch created ${chunk.length} notifications`);
+      } catch (error) {
+        this.logger.error(
+          `Error saving notification batch chunk (${chunk.length} items)`,
+          error,
+        );
+      }
+    }
   }
 
   private async shouldSendNotification(

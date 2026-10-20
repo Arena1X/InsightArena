@@ -11,6 +11,7 @@ import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { User } from '../users/entities/user.entity';
 
 describe('NotificationGeneratorService', () => {
+  let module: TestingModule;
   let service: NotificationGeneratorService;
   let notificationsRepository: Repository<Notification>;
   let creatorEventRepository: Repository<CreatorEvent>;
@@ -62,7 +63,7 @@ describe('NotificationGeneratorService', () => {
   } as Match;
 
   beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
+    module = await Test.createTestingModule({
       providers: [
         NotificationGeneratorService,
         {
@@ -144,7 +145,7 @@ describe('NotificationGeneratorService', () => {
         title: 'Test Event',
       };
 
-      jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser as any);
+      jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
       jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
       jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
 
@@ -206,7 +207,7 @@ describe('NotificationGeneratorService', () => {
 
       jest
         .spyOn(creatorEventRepository, 'findOne')
-        .mockResolvedValue(mockCreatorEvent as any);
+        .mockResolvedValue(mockCreatorEvent);
       jest
         .spyOn(service as any, 'getEventParticipants')
         .mockResolvedValue(['GABC123', 'GDEF456']);
@@ -245,8 +246,8 @@ describe('NotificationGeneratorService', () => {
 
       jest
         .spyOn(creatorEventRepository, 'findOne')
-        .mockResolvedValue(mockCreatorEvent as any);
-      jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser as any);
+        .mockResolvedValue(mockCreatorEvent);
+      jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
       jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
       jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
 
@@ -265,7 +266,7 @@ describe('NotificationGeneratorService', () => {
         predicted_outcome: 'TEAM_A',
       };
 
-      jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser as any);
+      jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
       jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
       jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
 
@@ -293,9 +294,7 @@ describe('NotificationGeneratorService', () => {
         },
       ];
 
-      jest
-        .spyOn(matchRepository, 'findOne')
-        .mockResolvedValue(mockMatch as any);
+      jest.spyOn(matchRepository, 'findOne').mockResolvedValue(mockMatch);
       jest
         .spyOn(matchPredictionRepository, 'find')
         .mockResolvedValue(mockPredictions as any);
@@ -332,7 +331,7 @@ describe('NotificationGeneratorService', () => {
 
       jest
         .spyOn(creatorEventRepository, 'findOne')
-        .mockResolvedValue(mockCreatorEvent as any);
+        .mockResolvedValue(mockCreatorEvent);
       jest
         .spyOn(matchRepository, 'find')
         .mockResolvedValue([mockMatchWithPrediction] as any);
@@ -354,7 +353,7 @@ describe('NotificationGeneratorService', () => {
 
       jest
         .spyOn(creatorEventRepository, 'findOne')
-        .mockResolvedValue(mockCreatorEvent as any);
+        .mockResolvedValue(mockCreatorEvent);
       jest
         .spyOn(service as any, 'getEventParticipants')
         .mockResolvedValue(['GABC123', 'GDEF456']);
@@ -469,9 +468,7 @@ describe('NotificationGeneratorService', () => {
 
     describe('shouldQueueNotification', () => {
       it('should return true when user has no category preference (default opt-in)', async () => {
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(mockUser as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
         jest
           .spyOn(categoryPreferencesRepository, 'findOne')
           .mockResolvedValue(null);
@@ -485,9 +482,7 @@ describe('NotificationGeneratorService', () => {
       });
 
       it('should return true when category is enabled', async () => {
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(mockUser as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
         jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
           id: 'pref-1',
           userId: 'user-1',
@@ -506,9 +501,7 @@ describe('NotificationGeneratorService', () => {
       });
 
       it('should return false when category is disabled (in_app: false)', async () => {
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(mockUser as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
         jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
           id: 'pref-1',
           userId: 'user-1',
@@ -538,9 +531,7 @@ describe('NotificationGeneratorService', () => {
       });
 
       it('should return true for notification types without category mapping', async () => {
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(mockUser as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
 
         const result = await service['shouldQueueNotification'](
           'GABC123',
@@ -581,9 +572,7 @@ describe('NotificationGeneratorService', () => {
           },
         ];
 
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(mockUser as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
         jest
           .spyOn(categoryPreferencesRepository, 'findOne')
           .mockImplementation((query: any) => {
@@ -633,9 +622,7 @@ describe('NotificationGeneratorService', () => {
           },
         ];
 
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(mockUser as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
         jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
           id: 'pref-1',
           userId: 'user-1',
@@ -661,9 +648,7 @@ describe('NotificationGeneratorService', () => {
           },
         ];
 
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(mockUser as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
         jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
           id: 'pref-1',
           userId: 'user-1',
@@ -682,9 +667,7 @@ describe('NotificationGeneratorService', () => {
 
     describe('queueNotification with category filtering', () => {
       it('should not queue notification when category is disabled', async () => {
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(mockUser as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
         jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
           id: 'pref-1',
           userId: 'user-1',
@@ -701,8 +684,12 @@ describe('NotificationGeneratorService', () => {
           message: 'Test message',
         });
 
-        jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
-        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+        jest
+          .spyOn(notificationsRepository, 'create')
+          .mockReturnValue({} as any);
+        jest
+          .spyOn(notificationsRepository, 'save')
+          .mockResolvedValue({} as any);
 
         await service.flushQueue();
 
@@ -710,9 +697,7 @@ describe('NotificationGeneratorService', () => {
       });
 
       it('should queue notification when category is enabled', async () => {
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(mockUser as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
         jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
           id: 'pref-1',
           userId: 'user-1',
@@ -729,8 +714,12 @@ describe('NotificationGeneratorService', () => {
           message: 'Test message',
         });
 
-        jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
-        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+        jest
+          .spyOn(notificationsRepository, 'create')
+          .mockReturnValue({} as any);
+        jest
+          .spyOn(notificationsRepository, 'save')
+          .mockResolvedValue({} as any);
 
         await service.flushQueue();
 
@@ -761,9 +750,7 @@ describe('NotificationGeneratorService', () => {
           },
         ];
 
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(mockUser as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
         jest
           .spyOn(categoryPreferencesRepository, 'findOne')
           .mockImplementation((query: any) => {
@@ -781,7 +768,9 @@ describe('NotificationGeneratorService', () => {
         const createSpy = jest
           .spyOn(notificationsRepository, 'create')
           .mockReturnValue({} as any);
-        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+        jest
+          .spyOn(notificationsRepository, 'save')
+          .mockResolvedValue({} as any);
 
         await service['queueBatchNotifications'](notifications);
         await service.flushQueue();
@@ -800,9 +789,7 @@ describe('NotificationGeneratorService', () => {
           },
         ];
 
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(mockUser as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser);
         jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
           id: 'pref-1',
           userId: 'user-1',
@@ -812,8 +799,12 @@ describe('NotificationGeneratorService', () => {
           push: false,
         } as any);
 
-        jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
-        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+        jest
+          .spyOn(notificationsRepository, 'create')
+          .mockReturnValue({} as any);
+        jest
+          .spyOn(notificationsRepository, 'save')
+          .mockResolvedValue({} as any);
 
         await service['queueBatchNotifications'](notifications);
         await service.flushQueue();
@@ -835,9 +826,7 @@ describe('NotificationGeneratorService', () => {
           id: 'user-1',
         };
 
-        jest
-          .spyOn(userRepository, 'findOne')
-          .mockResolvedValue(userWithPrefs as any);
+        jest.spyOn(userRepository, 'findOne').mockResolvedValue(userWithPrefs);
         jest.spyOn(categoryPreferencesRepository, 'findOne').mockResolvedValue({
           id: 'pref-1',
           userId: 'user-1',
@@ -847,8 +836,12 @@ describe('NotificationGeneratorService', () => {
           push: false,
         } as any);
 
-        jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
-        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+        jest
+          .spyOn(notificationsRepository, 'create')
+          .mockReturnValue({} as any);
+        jest
+          .spyOn(notificationsRepository, 'save')
+          .mockResolvedValue({} as any);
 
         await service.handleEventCreated(data);
         await service.flushQueue();
@@ -866,7 +859,7 @@ describe('NotificationGeneratorService', () => {
 
         jest
           .spyOn(creatorEventRepository, 'findOne')
-          .mockResolvedValue(mockCreatorEvent as any);
+          .mockResolvedValue(mockCreatorEvent);
         jest
           .spyOn(service as any, 'getEventParticipants')
           .mockResolvedValue(['GABC123', 'GDEF456']);
@@ -885,8 +878,12 @@ describe('NotificationGeneratorService', () => {
           push: false,
         } as any);
 
-        jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
-        jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+        jest
+          .spyOn(notificationsRepository, 'create')
+          .mockReturnValue({} as any);
+        jest
+          .spyOn(notificationsRepository, 'save')
+          .mockResolvedValue({} as any);
 
         await service.handleMatchAdded(data);
         await service.flushQueue();
@@ -894,6 +891,74 @@ describe('NotificationGeneratorService', () => {
         // No notifications should be created since category is disabled for both users
         expect(notificationsRepository.create).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('Batch Size Limit (#1934)', () => {
+    it('processes a batch smaller than the limit in one pass', async () => {
+      service.setBatchSizeLimit(50);
+      const saveSpy = jest
+        .spyOn(notificationsRepository, 'save')
+        .mockResolvedValue([] as unknown as Notification);
+
+      const batch = Array.from({ length: 4 }, (_, idx) => ({
+        userAddress: `GUSER${idx}`,
+        type: NotificationType.EventCreated,
+        title: 'Event',
+        message: 'Created',
+      }));
+
+      await service['createNotificationsBatch'](batch);
+      expect(saveSpy).toHaveBeenCalledTimes(1);
+      expect(saveSpy.mock.calls[0][0]).toHaveLength(4);
+    });
+
+    it('splits a batch larger than the limit into sequential chunks', async () => {
+      service.setBatchSizeLimit(3);
+      const callSizes: number[] = [];
+      jest
+        .spyOn(notificationsRepository, 'save')
+        .mockImplementation((entities: unknown) => {
+          callSizes.push(Array.isArray(entities) ? entities.length : 1);
+          return Promise.resolve(entities as Notification);
+        });
+
+      const batch = Array.from({ length: 7 }, (_, idx) => ({
+        userAddress: `GUSER${idx}`,
+        type: NotificationType.EventCreated,
+        title: 'Event',
+        message: 'Created',
+      }));
+
+      await service['createNotificationsBatch'](batch);
+      expect(callSizes).toEqual([3, 3, 1]);
+    });
+
+    it('isolates failure in one chunk so remaining chunks still complete', async () => {
+      service.setBatchSizeLimit(2);
+      const savedChunks: number[] = [];
+      let attempt = 0;
+
+      jest
+        .spyOn(notificationsRepository, 'save')
+        .mockImplementation((entities: unknown) => {
+          attempt += 1;
+          if (attempt === 1) {
+            return Promise.reject(new Error('chunk 1 db error'));
+          }
+          savedChunks.push(Array.isArray(entities) ? entities.length : 1);
+          return Promise.resolve(entities as Notification);
+        });
+
+      const batch = Array.from({ length: 5 }, (_, idx) => ({
+        userAddress: `GUSER${idx}`,
+        type: NotificationType.EventCreated,
+        title: 'Event',
+        message: 'Created',
+      }));
+
+      await service['createNotificationsBatch'](batch);
+      expect(savedChunks).toEqual([2, 1]);
     });
   });
 });
