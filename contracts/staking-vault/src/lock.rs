@@ -83,6 +83,15 @@ pub fn enforce_lock_period(now: u64, unlock_at: u64) -> Result<(), StakingError>
 }
 
 /// Calculate early-exit penalty amount using checked arithmetic.
+///
+/// # Issue #2035
+/// The penalty is computed as `amount * penalty_bps / 10_000` using
+/// `checked_mul` and `checked_div` so that neither operation can overflow
+/// or produce an incorrect result. A `penalty_bps` of `0` returns `0`
+/// without touching the arithmetic path. Configurations above
+/// `MAX_PENALTY_BPS` (100%) are rejected up front so the penalty can never
+/// exceed the principal.
+///
 /// Returns the penalty amount to be deducted from the withdrawal.
 pub fn calculate_penalty(amount: i128, penalty_bps: u32) -> Result<i128, StakingError> {
     if penalty_bps > MAX_PENALTY_BPS {

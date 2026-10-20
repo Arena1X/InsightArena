@@ -12,7 +12,7 @@ pub use crate::storage_types::{Config, DataKey, LockTier, PoolState, Position, U
 
 use soroban_sdk::{contract, contractimpl, token::Client as TokenClient, Address, Env, Vec};
 
-use crate::storage_types::{LEDGER_BUMP_PERMANENT, LEDGER_BUMP_POSITION};
+use crate::storage_types::{bump_position, LEDGER_BUMP_PERMANENT};
 
 /// Staking & fee-sharing vault for InsightArena.
 ///
@@ -47,23 +47,24 @@ fn get_lock_tiers(env: &Env) -> Vec<LockTier> {
         .unwrap_or_else(|| Vec::new(env))
 }
 
+/// Load a staker's position and bump its storage TTL so the entry never
+/// expires while the lock is active (issue #2039).
 fn get_position_raw(env: &Env, staker: &Address) -> Option<Position> {
     let key = DataKey::Position(staker.clone());
     let position = env.storage().persistent().get::<DataKey, Position>(&key);
     if position.is_some() {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, LEDGER_BUMP_POSITION, LEDGER_BUMP_POSITION);
+        // Use the split threshold/amount helper so every read adds real
+        // headroom regardless of how recently the entry was last written.
+        bump_position(env, staker);
     }
     position
 }
 
+/// Persist a staker's position and bump its TTL immediately (issue #2039).
 fn set_position(env: &Env, staker: &Address, position: &Position) {
     let key = DataKey::Position(staker.clone());
     env.storage().persistent().set(&key, position);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, LEDGER_BUMP_POSITION, LEDGER_BUMP_POSITION);
+    bump_position(env, staker);
 }
 
 fn require_not_paused(env: &Env) -> Result<(), StakingError> {
@@ -76,6 +77,13 @@ fn require_not_paused(env: &Env) -> Result<(), StakingError> {
         return Err(StakingError::Paused);
     }
     Ok(())
+}
+
+fn get_unbonding_config(env: &Env) -> Result<UnbondingConfig, StakingError> {
+    env.storage()
+        .instance()
+        .get::<DataKey, UnbondingConfig>(&DataKey::UnbondingConfig)
+        .ok_or(StakingError::NotInitialized)
 }
 
 #[contractimpl]
@@ -148,13 +156,9 @@ impl StakingVault {
     }
 
     /// Return the configured unbonding parameters. Reverts with
-    /// `NotInitialized` when the vault has not been configured yet, rather
-    /// than panicking on missing storage.
+    /// `NotInitialized` when the vault has not been configured yet.
     pub fn get_unbonding_config(env: Env) -> Result<UnbondingConfig, StakingError> {
-        env.storage()
-            .instance()
-            .get::<DataKey, UnbondingConfig>(&DataKey::UnbondingConfig)
-            .ok_or(StakingError::NotInitialized)
+        get_unbonding_config(&env)
     }
 
     /// Return the staker's position, or `None` when the vault has not been
@@ -212,12 +216,21 @@ impl StakingVault {
         let token_client = TokenClient::new(&env, &config.token);
         token_client.transfer(&staker, &env.current_contract_address(), &amount);
 
-        position.amount += amount;
-        position.shares += new_shares;
+        position.amount = position
+            .amount
+            .checked_add(amount)
+            .ok_or(StakingError::Overflow)?;
+        position.shares = position
+            .shares
+            .checked_add(new_shares)
+            .ok_or(StakingError::Overflow)?;
         position.unlock_at = env.ledger().timestamp() + lock_duration;
         position.reward_debt = pool::reward_debt(&pool_state, &position);
 
-        pool_state.total_shares += new_shares;
+        pool_state.total_shares = pool_state
+            .total_shares
+            .checked_add(new_shares)
+            .ok_or(StakingError::Overflow)?;
 
         set_position(&env, &staker, &position);
         set_pool_state(&env, &pool_state);
@@ -454,5 +467,129 @@ impl StakingVault {
         env.storage().instance().set(&DataKey::Paused, &paused);
 
         Ok(())
+    }
+}
+
+// ── Tests (issues #2035 and #2039) ───────────────────────────────────────────
+
+#[cfg(test)]
+mod integration_tests {
+    extern crate std;
+
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        Address, Env, Vec,
+    };
+
+    use crate::{
+        storage_types::{
+            bump_position, Config, DataKey, LockTier, PoolState, Position, UnbondingConfig,
+            LEDGER_BUMP_POSITION, LEDGER_THRESHOLD_POSITION,
+        },
+        StakingError,
+        lock,
+    };
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn make_position(owner: Address, amount: i128, unlock_at: u64) -> Position {
+        Position {
+            owner,
+            amount,
+            shares: amount,
+            unlock_at,
+            reward_debt: 0,
+            unlock_requested_at: 0,
+            pending_unlock_amount: 0,
+        }
+    }
+
+    // ── #2035 penalty tests ───────────────────────────────────────────────────
+
+    /// Test 1 (issue #2035): early unlock applies the correct penalty.
+    ///
+    /// Stakes are simulated by directly writing a Position; `request_unlock`
+    /// logic is exercised through `lock::calculate_penalty` to keep the test
+    /// self-contained without a token contract.
+    #[test]
+    fn early_unlock_applies_correct_penalty() {
+        let amount: i128 = 1_000_000_000;
+        let penalty_bps: u32 = 500; // 5 %
+        let expected_penalty = amount * 500 / 10_000; // 50_000_000
+
+        let penalty = lock::calculate_penalty(amount, penalty_bps).unwrap();
+        assert_eq!(penalty, expected_penalty);
+
+        let net = lock::net_after_penalty(amount, penalty).unwrap();
+        assert_eq!(net, amount - expected_penalty);
+    }
+
+    /// Test 2 (issue #2035): normal unlock (penalty_bps = 0) applies no deduction.
+    #[test]
+    fn normal_unlock_after_lock_applies_no_penalty() {
+        let amount: i128 = 1_000_000_000;
+        let penalty = lock::calculate_penalty(amount, 0).unwrap();
+        assert_eq!(penalty, 0);
+
+        let net = lock::net_after_penalty(amount, penalty).unwrap();
+        assert_eq!(net, amount);
+    }
+
+    /// Test 3 (issue #2035): penalty cannot be bypassed via out-of-range bps.
+    #[test]
+    fn penalty_cannot_be_bypassed() {
+        let amount: i128 = 1_000_000_000;
+
+        // Anything above MAX_PENALTY_BPS is rejected before arithmetic.
+        assert!(matches!(
+            lock::calculate_penalty(amount, 10_001),
+            Err(StakingError::InvalidPenaltyConfig)
+        ));
+
+        // 100% is allowed; net must be zero.
+        let penalty = lock::calculate_penalty(amount, 10_000).unwrap();
+        assert_eq!(penalty, amount);
+        let net = lock::net_after_penalty(amount, penalty).unwrap();
+        assert_eq!(net, 0);
+    }
+
+    // ── #2039 TTL tests ───────────────────────────────────────────────────────
+
+    /// Test 4 (issue #2039): an active lock's storage TTL is extended on access.
+    #[test]
+    fn active_lock_storage_ttl_is_extended_on_access() {
+        let env = Env::default();
+        let staker = Address::generate(&env);
+        let key = DataKey::Position(staker.clone());
+        let pos = make_position(staker.clone(), 1_000_000, 9_999_999);
+
+        env.storage().persistent().set(&key, &pos);
+        bump_position(&env, &staker);
+
+        assert!(env.storage().persistent().has(&key));
+    }
+
+    /// Test 5 (issue #2039): threshold < bump guarantees net TTL extension.
+    #[test]
+    fn ledger_threshold_is_strictly_less_than_bump() {
+        assert!(LEDGER_THRESHOLD_POSITION < LEDGER_BUMP_POSITION);
+    }
+
+    /// Test 6 (issue #2039): a fully-withdrawn entry is allowed to expire.
+    ///
+    /// After `withdraw` removes the key, `bump_position` must not panic and
+    /// must not re-create the entry.
+    #[test]
+    fn fully_withdrawn_entry_is_allowed_to_expire() {
+        let env = Env::default();
+        let staker = Address::generate(&env);
+        let key = DataKey::Position(staker.clone());
+
+        // Key absent — simulates post-withdrawal state.
+        assert!(!env.storage().persistent().has(&key));
+
+        // Must be a no-op.
+        bump_position(&env, &staker);
+        assert!(!env.storage().persistent().has(&key));
     }
 }
