@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, Bug, Home, RefreshCcw } from "lucide-react";
 
 import { AppNotFound, isNotFoundError } from "@/component/app-not-found";
+import { classifyError } from "@/component/error-classifier";
 import { Button } from "@/component/ui/button";
 
 const ISSUE_TRACKER_URL = "https://github.com/Arena1X/InsightArena/issues/new";
@@ -53,6 +54,7 @@ export function RouteErrorState({
   const router = useRouter();
   const [isRetrying, startTransition] = useTransition();
   const notFound = isNotFoundError(error);
+  const classified = classifyError(error);
 
   useEffect(() => {
     if (notFound) return;
@@ -92,14 +94,19 @@ export function RouteErrorState({
           </div>
 
           <p className="mt-6 text-xs font-semibold uppercase tracking-[0.3em] text-[#43c3be]">
-            Something Went Wrong
+            {classified.headline}
           </p>
           <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
             {routeLabel} hit an unexpected problem
           </h1>
           <p className="mt-4 text-sm leading-7 text-[#97a0b5] sm:text-base">
-            {description}
+            {classified.detail}
           </p>
+          {description && classified.errorClass === "unknown" ? (
+            <p className="mt-2 text-xs leading-6 text-[#6f7891]">
+              {description}
+            </p>
+          ) : null}
 
           <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
             <Button

@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RouteErrorState, buildErrorReportUrl } from "./route-error-state";
+import { classifyError } from "./error-classifier";
 
 const refresh = vi.fn();
 
@@ -117,5 +118,125 @@ describe("RouteErrorState", () => {
 
     expect(screen.getByText("Dashboard hit an unexpected problem")).toBeInTheDocument();
     expect(screen.queryByText("Page Not Found")).not.toBeInTheDocument();
+  });
+});
+
+describe("classifyError", () => {
+  it("classifies a network TypeError as 'network' with the connection headline", () => {
+    const err = Object.assign(new TypeError("Failed to fetch"), {});
+    const result = classifyError(err);
+    expect(result.errorClass).toBe("network");
+    expect(result.headline).toBe("Connection Problem");
+  });
+
+  it("classifies a 401 status error as 'auth'", () => {
+    const err = Object.assign(new Error("Unauthorized"), { status: 401 });
+    const result = classifyError(err);
+    expect(result.errorClass).toBe("auth");
+    expect(result.headline).toBe("Access Denied");
+  });
+
+  it("classifies a 403 status error as 'auth'", () => {
+    const err = Object.assign(new Error("Forbidden"), { status: 403 });
+    const result = classifyError(err);
+    expect(result.errorClass).toBe("auth");
+  });
+
+  it("classifies a 500 status error as 'server'", () => {
+    const err = Object.assign(new Error("Internal Server Error"), { status: 500 });
+    const result = classifyError(err);
+    expect(result.errorClass).toBe("server");
+    expect(result.headline).toBe("Server Error");
+  });
+
+  it("classifies a 503 status error as 'server'", () => {
+    const err = Object.assign(new Error("Service Unavailable"), { status: 503 });
+    const result = classifyError(err);
+    expect(result.errorClass).toBe("server");
+  });
+
+  it("classifies a timeout message error as 'timeout'", () => {
+    const err = new Error("Request timed out after 30s");
+    const result = classifyError(err);
+    expect(result.errorClass).toBe("timeout");
+    expect(result.headline).toBe("Request Timed Out");
+  });
+
+  it("classifies a chunk-load error by message", () => {
+    const err = new Error("Loading chunk 42 failed");
+    const result = classifyError(err);
+    expect(result.errorClass).toBe("chunk-load");
+    expect(result.headline).toBe("Update Available");
+  });
+
+  it("classifies an unknown error with the generic headline", () => {
+    const err = new Error("Something obscure");
+    const result = classifyError(err);
+    expect(result.errorClass).toBe("unknown");
+    expect(result.headline).toBe("Something Went Wrong");
+  });
+
+  it("classifies a 408 status error as 'timeout'", () => {
+    const err = Object.assign(new Error("Timeout"), { status: 408 });
+    const result = classifyError(err);
+    expect(result.errorClass).toBe("timeout");
+  });
+});
+
+describe("RouteErrorState error-class messages", () => {
+  beforeEach(() => {
+    refresh.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows the connection headline for a network TypeError", () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const err = Object.assign(new TypeError("Failed to fetch"), {});
+    renderState(err);
+    expect(screen.getByText("Connection Problem")).toBeInTheDocument();
+    expect(screen.getByText("Check your internet connection and try again.")).toBeInTheDocument();
+  });
+
+  it("shows the server error headline for a 500 error", () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const err = Object.assign(new Error("Server exploded"), { status: 500 });
+    renderState(err);
+    expect(screen.getByText("Server Error")).toBeInTheDocument();
+    expect(screen.getByText("Our servers ran into an issue. We've been notified and are working on a fix.")).toBeInTheDocument();
+  });
+
+  it("shows the update available headline for a chunk-load error", () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const err = new Error("Loading chunk 7 failed");
+    renderState(err);
+    expect(screen.getByText("Update Available")).toBeInTheDocument();
+  });
+
+  it("shows the access denied headline for a 401 error", () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const err = Object.assign(new Error("Unauthorized"), { status: 401 });
+    renderState(err);
+    expect(screen.getByText("Access Denied")).toBeInTheDocument();
+  });
+
+  it("shows caller description only for unknown errors", () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const err = new Error("Something obscure");
+    renderState(err);
+    // The generic detail from classifyError is shown
+    expect(screen.getByText("An unexpected error occurred. Retrying usually fixes this.")).toBeInTheDocument();
+    // The caller description is also shown for unknown errors
+    expect(screen.getByText("Please retry.")).toBeInTheDocument();
+  });
+
+  it("does not show caller description for known error classes", () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const err = Object.assign(new Error("Server exploded"), { status: 500 });
+    renderState(err);
+    // The caller description 'Please retry.' should NOT appear for known errors
+    expect(screen.queryByText("Please retry.")).not.toBeInTheDocument();
   });
 });
