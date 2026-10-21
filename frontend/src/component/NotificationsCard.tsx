@@ -4,15 +4,7 @@ import { useMemo, useState } from "react";
 import { TrendingUp, Trophy, Gift, Users, Bell, Megaphone } from "lucide-react";
 import { EmptyState } from "@/component/ui/empty-state";
 import { Tabs, TabsList, TabsTrigger } from "@/component/ui/tabs";
-
-interface NotificationItem {
-  id: string;
-  type: "market" | "competition" | "reward" | "social" | "dispute" | "system";
-  icon: "trend" | "trophy" | "gift" | "users" | "megaphone";
-  message: string;
-  timestamp: string;
-  isRead: boolean;
-}
+import { useNotifications, type NotificationItem } from "@/context/NotificationContext";
 
 type NotificationCategory = "all" | "predictions" | "rewards" | "disputes" | "system";
 
@@ -39,42 +31,6 @@ function categoryForType(type: NotificationItem["type"]): Exclude<NotificationCa
       return "system";
   }
 }
-
-// Mock data matching the Figma design
-const mockNotifications: NotificationItem[] = [
-  {
-    id: "1",
-    type: "market",
-    icon: "trend",
-    message: "Your BTC prediction settles in 3 hours",
-    timestamp: "2h ago",
-    isRead: false,
-  },
-  {
-    id: "2",
-    type: "competition",
-    icon: "trophy",
-    message: "You moved up 3 spots on leaderboard",
-    timestamp: "5h ago",
-    isRead: false,
-  },
-  {
-    id: "3",
-    type: "reward",
-    icon: "gift",
-    message: "Rewards from Weekend Market Clash claimable",
-    timestamp: "1d ago",
-    isRead: true,
-  },
-  {
-    id: "4",
-    type: "social",
-    icon: "users",
-    message: "Invite to Crypto Elite League",
-    timestamp: "1d ago",
-    isRead: true,
-  },
-];
 
 const iconMap = {
   trend: TrendingUp,
@@ -105,9 +61,13 @@ interface NotificationsCardProps {
 }
 
 export default function NotificationsCard({
-  notifications: initialNotifications = mockNotifications,
+  notifications: initialNotifications,
 }: NotificationsCardProps) {
-  const [notifications, setNotifications] = useState(initialNotifications);
+  const context = useNotifications();
+  // Use prop if provided (for testing), otherwise use context
+  const notifications = initialNotifications ?? context.notifications;
+  const contextUnreadCount = context.unreadCount;
+  
   const [activeCategory, setActiveCategory] = useState<NotificationCategory>("all");
   const [markAllError, setMarkAllError] = useState<string | null>(null);
 
@@ -135,17 +95,17 @@ export default function NotificationsCard({
   const unreadCount = unreadCountByCategory.all;
 
   async function handleMarkAllRead() {
-    const previous = notifications;
     setMarkAllError(null);
-    setNotifications((current) => current.map((n) => ({ ...n, isRead: true })));
 
     try {
-      // No dedicated "mark all read" endpoint exists yet; this is the
-      // integration point for one once the backend adds it.
-      await Promise.resolve();
-    } catch {
-      setNotifications(previous);
-      setMarkAllError("Couldn't mark notifications as read. Please try again.");
+      // Call the context's markAllAsRead which handles optimistic update and rollback
+      await context.markAllAsRead();
+    } catch (error) {
+      setMarkAllError(
+        error instanceof Error
+          ? error.message
+          : "Couldn't mark notifications as read. Please try again.",
+      );
     }
   }
 

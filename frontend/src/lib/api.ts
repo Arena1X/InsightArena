@@ -918,3 +918,21 @@ export function getCreatorMarkets(
     options,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /api/notifications/mark-all-read` — marks all notifications as read.
+ * Integration point: once the backend adds this endpoint, the call will succeed.
+ */
+export async function markAllNotificationsAsRead(
+  options?: ApiOptions,
+): Promise<void> {
+  return apiClient.post<void>(
+    '/api/notifications/mark-all-read',
+    undefined,
+    options,
+  );
+}

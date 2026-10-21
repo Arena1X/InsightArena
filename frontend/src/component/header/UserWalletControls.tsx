@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Bell, ChevronDown, Copy } from "lucide-react";
 import { RefObject } from "react";
 import { truncateAddress, truncateAddressForDropdown } from "./navLinks";
+import { useNotifications } from "@/context/NotificationContext";
 
 type UserWalletControlsProps = {
   address: string | null | undefined;
@@ -34,6 +35,7 @@ export function UserWalletControls({
   onDisconnect,
   setIsDropdownOpen,
 }: UserWalletControlsProps) {
+  const { unreadCount } = useNotifications();
   return (
     <>
       <Link
@@ -57,10 +59,12 @@ export function UserWalletControls({
         className="relative hidden md:inline-flex items-center text-gray-200 hover:text-white"
       >
         <Bell className="h-5 w-5" />
-        <span className="absolute -top-1 -right-1 flex h-2 w-2">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-500" />
-        </span>
+        {unreadCount > 0 && (
+          <span className="absolute -top-1 -right-1 flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-500" />
+          </span>
+        )}
       </Link>
       {isRestoring && !isAuthenticated ? (
         <div className="hidden md:inline-flex items-center gap-2 rounded-lg border border-white/10 bg-[#111726] px-6 py-2 text-sm font-semibold text-gray-400">
