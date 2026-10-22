@@ -725,14 +725,10 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
 export async function getNotificationPreferences(
   options?: ApiOptions,
 ): Promise<NotificationPreferences> {
-  try {
-    return await apiClient.get<NotificationPreferences>(
-      '/api/users/preferences/notifications',
-      options,
-    );
-  } catch {
-    return DEFAULT_NOTIFICATION_PREFERENCES;
-  }
+  return apiClient.get<NotificationPreferences>(
+    '/api/users/preferences/notifications',
+    options,
+  );
 }
 
 /** `PATCH /api/users/preferences/notifications` */
@@ -740,15 +736,11 @@ export async function updateNotificationPreferences(
   preferences: NotificationPreferences,
   options?: ApiOptions,
 ): Promise<NotificationPreferences> {
-  try {
-    return await apiClient.patch<NotificationPreferences>(
-      '/api/users/preferences/notifications',
-      preferences,
-      options,
-    );
-  } catch {
-    return preferences;
-  }
+  return apiClient.patch<NotificationPreferences>(
+    '/api/users/preferences/notifications',
+    preferences,
+    options,
+  );
 }
 
 // ---------------------------------------------------------------------------
