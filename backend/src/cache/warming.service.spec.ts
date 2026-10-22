@@ -141,7 +141,8 @@ describe('CacheWarmingService', () => {
     // Remaining sub-warmers still ran despite the thrown error.
     expect(result.warmed).toContain(CACHE_WARMING_KEYS.activeEvents);
     expect(result.warmed).toContain(CACHE_WARMING_KEYS.platformStatistics);
-    expect(result.warmed).toContain(
+    // Popular event details are derived from trending results, so none are warmed.
+    expect(result.warmed).not.toContain(
       CACHE_WARMING_KEYS.popularEventDetail('popular-1'),
     );
     expect(result.warmed).toContain(CACHE_WARMING_KEYS.leaderboardTopN(10, null));
