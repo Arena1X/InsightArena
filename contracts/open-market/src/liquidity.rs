@@ -532,6 +532,55 @@ pub fn get_market_twap(
     get_twap(env, market_id, outcome, window_seconds)
 }
 
+/// Settlement guard against spot-price manipulation.
+///
+/// Rejects when the outcome's spot reserve deviates from its TWAP over
+/// `TWAP_SETTLEMENT_WINDOW_SECONDS` by more than `TWAP_SETTLEMENT_MAX_DEVIATION_BPS`.
+/// A large trade right before settlement moves the spot immediately but barely
+/// moves the TWAP, so the mismatch is caught here. Markets without a pool, or
+/// without retained history covering the window, are not checked.
+pub fn validate_settlement_price(
+    env: &Env,
+    market_id: u64,
+    outcome: Symbol,
+) -> Result<(), InsightArenaError> {
+    if !env
+        .storage()
+        .persistent()
+        .has(&DataKey::LiquidityPool(market_id))
+    {
+        return Ok(());
+    }
+
+    let spot = get_outcome_price(env, market_id, outcome.clone())?;
+    let twap = match get_twap(
+        env,
+        market_id,
+        outcome,
+        config::TWAP_SETTLEMENT_WINDOW_SECONDS,
+    ) {
+        Ok(twap) => twap,
+        Err(InsightArenaError::TwapInsufficientHistory) => return Ok(()),
+        Err(err) => return Err(err),
+    };
+
+    let deviation = spot
+        .checked_sub(twap)
+        .and_then(|d| d.checked_abs())
+        .ok_or(InsightArenaError::Overflow)?;
+    let lhs = deviation
+        .checked_mul(10_000)
+        .ok_or(InsightArenaError::Overflow)?;
+    let rhs = twap
+        .checked_mul(config::TWAP_SETTLEMENT_MAX_DEVIATION_BPS as i128)
+        .ok_or(InsightArenaError::Overflow)?;
+
+    if lhs > rhs {
+        return Err(InsightArenaError::InvalidInput);
+    }
+    Ok(())
+}
+
 // ── Impermanent Loss Accounting ───────────────────────────────────────────────
 //
 // Scope: this contract's AMM pool is generalized to N outcomes

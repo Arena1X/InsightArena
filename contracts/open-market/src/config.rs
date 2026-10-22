@@ -161,6 +161,11 @@ pub const MIN_EARLY_EXIT_FEE_BPS: u32 = 0;
 /// Maximum early exit fee in basis points (100%). Inclusive: `0..=10_000`.
 pub const MAX_EARLY_EXIT_FEE_BPS: u32 = 10_000;
 
+/// Trailing window (seconds) of the TWAP used to sanity-check the spot price at settlement.
+pub const TWAP_SETTLEMENT_WINDOW_SECONDS: u64 = 3_600;
+/// Max allowed |spot - TWAP| / TWAP at settlement, in basis points (20%).
+pub const TWAP_SETTLEMENT_MAX_DEVIATION_BPS: u32 = 2_000;
+
 // ── Storage-specific TTL constants (merged from ttl.rs) ───────────────────────
 // ~30 days at ~6s/ledger for frequently accessed market state.
 pub const LEDGER_BUMP_MARKET: u32 = 432_000;

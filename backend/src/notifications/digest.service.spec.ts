@@ -192,6 +192,44 @@ describe('DigestService', () => {
     });
   });
 
+  // ── Timezone-correct windowing ──────────────────────────────────────────
+
+  describe('digest window start', () => {
+    it('starts at the previous local digest hour, not a fixed 24h earlier, across DST', async () => {
+      const runDigests = jest
+        .spyOn(service as any, 'runDigests')
+        .mockResolvedValue(undefined);
+
+      // 2024-03-10 08:00 EDT (after spring-forward). The previous digest was
+      // 2024-03-09 08:00 EST = 13:00 UTC, which is 25h earlier, not 24h.
+      await service.sendDailyDigests(
+        new Date('2024-03-10T12:00:00Z'),
+        'America/New_York',
+        8,
+      );
+
+      expect(runDigests.mock.calls[0][2]).toEqual(
+        new Date('2024-03-09T13:00:00Z'),
+      );
+    });
+
+    it('matches a fixed 24h window in UTC', async () => {
+      const runDigests = jest
+        .spyOn(service as any, 'runDigests')
+        .mockResolvedValue(undefined);
+
+      await service.sendDailyDigests(
+        new Date('2024-01-15T08:00:00Z'),
+        'UTC',
+        8,
+      );
+
+      expect(runDigests.mock.calls[0][2]).toEqual(
+        new Date('2024-01-14T08:00:00Z'),
+      );
+    });
+  });
+
   // ── Frequency selection & timezone bucketing ────────────────────────────
 
   describe('handleHourlyCheck', () => {

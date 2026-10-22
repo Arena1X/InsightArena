@@ -901,6 +901,9 @@ pub fn resolve_market(
         return Err(InsightArenaError::InvalidOutcome);
     }
 
+    // Reject settlement if the spot price has been pushed far from its TWAP.
+    crate::liquidity::validate_settlement_price(&env, market_id, resolved_outcome.clone())?;
+
     market.is_resolved = true;
     market.resolved_outcome = Some(resolved_outcome.clone());
     market.resolved_at = Some(now);
