@@ -228,11 +228,69 @@ export class MatchesService {
 
     const saved = await this.matchRepository.save(match);
 
+    await this.scorePredictions(saved);
+
     this.logger.log(
       `Result submitted for match ${match.id}: ${match.team_a} ${dto.home_score} - ${dto.away_score} ${match.team_b} (${dto.winning_team}) by ${submittedBy}`,
     );
 
     return saved;
+  }
+
+  /**
+   * Update the points multiplier for a match. Rejects changes after the
+   * result has been submitted because predictions are already scored.
+   */
+  async updateMultiplier(matchId: string, multiplier: number): Promise<Match> {
+    const match = await this.matchRepository.findOne({
+      where: { id: matchId },
+    });
+
+    if (!match) {
+      throw new NotFoundException(`Match with ID "${matchId}" not found`);
+    }
+
+    if (match.result_submitted) {
+      throw new ConflictException(
+        `Cannot change points_multiplier for match "${match.id}" — predictions have already been scored`,
+      );
+    }
+
+    match.points_multiplier = multiplier;
+    return this.matchRepository.save(match);
+  }
+
+  private static readonly BASE_CORRECT_POINTS = 1;
+
+  /**
+   * Score every prediction for a match after its result is submitted.
+   * Sets `is_correct` and computes `points_earned = base * multiplier`.
+   */
+  private async scorePredictions(match: Match): Promise<void> {
+    const predictions = await this.matchPredictionRepository.find({
+      where: { match: { id: match.id } },
+    });
+
+    if (predictions.length === 0) {
+      return;
+    }
+
+    const multiplier = match.points_multiplier ?? 1;
+
+    for (const prediction of predictions) {
+      const correct =
+        prediction.predicted_outcome === (match.winning_team as string);
+      prediction.is_correct = correct;
+      prediction.points_earned = correct
+        ? MatchesService.BASE_CORRECT_POINTS * multiplier
+        : 0;
+    }
+
+    await this.matchPredictionRepository.save(predictions);
+
+    this.logger.log(
+      `Scored ${predictions.length} prediction(s) for match ${match.id} (multiplier=${multiplier})`,
+    );
   }
 
   private validateResultConsistency(dto: SubmitMatchResultDto): void {
