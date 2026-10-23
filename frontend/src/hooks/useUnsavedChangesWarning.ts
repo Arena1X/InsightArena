@@ -24,9 +24,54 @@ export function useUnsavedChangesWarning(
       }
     };
 
+    const handleLinkClick = (e: MouseEvent) => {
+      if (
+        !hasUnsavedChanges ||
+        e.defaultPrevented ||
+        e.button !== 0 ||
+        e.metaKey ||
+        e.ctrlKey ||
+        e.shiftKey ||
+        e.altKey ||
+        !(e.target instanceof Element)
+      ) {
+        return;
+      }
+
+      const link = e.target.closest<HTMLAnchorElement>("a[href]");
+      if (
+        !link ||
+        link.hasAttribute("download") ||
+        (link.target && link.target !== "_self")
+      ) {
+        return;
+      }
+
+      const destination = new URL(link.href, window.location.href);
+      if (
+        destination.origin !== window.location.origin ||
+        (destination.pathname === window.location.pathname &&
+          destination.search === window.location.search)
+      ) {
+        return;
+      }
+
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (window.confirm(message)) {
+        router.push(
+          `${destination.pathname}${destination.search}${destination.hash}`,
+        );
+      }
+    };
+
     window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [hasUnsavedChanges, message]);
+    document.addEventListener("click", handleLinkClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("click", handleLinkClick, true);
+    };
+  }, [hasUnsavedChanges, message, router]);
 
   // Provide a method to navigate with confirmation
   const navigateWithConfirmation = useCallback(
