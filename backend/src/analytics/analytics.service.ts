@@ -485,7 +485,6 @@ export class AnalyticsService {
       to,
     };
   }
-  }
 
   /**
    * Record market snapshot for historical tracking

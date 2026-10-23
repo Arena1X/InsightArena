@@ -41,6 +41,7 @@ export interface OracleDivergenceNotificationInput {
 export class NotificationGeneratorService implements OnModuleDestroy {
   private readonly logger = new Logger(NotificationGeneratorService.name);
   private readonly notificationQueue: Array<NotificationBatch> = [];
+  private readonly claimedNotificationKeys = new Set<string>();
   private isProcessing = false;
   private readonly BATCH_SIZE = 50;
   private readonly FLUSH_INTERVAL = 5000; // 5 seconds
@@ -434,7 +435,25 @@ export class NotificationGeneratorService implements OnModuleDestroy {
       return;
     }
 
+    if (!this.claimNotificationKey(notification)) return;
+
     this.notificationQueue.push({ notifications: [notification] });
+  }
+
+  /**
+   * Returns true the first time a given notification (type, recipient, and
+   * event data) is seen, false for any repeat. Keeps re-delivered events from
+   * creating duplicate notification rows.
+   */
+  private claimNotificationKey(notification: {
+    userAddress: string;
+    type: NotificationType;
+    data?: Record<string, unknown>;
+  }): boolean {
+    const key = `${notification.type}:${notification.userAddress}:${JSON.stringify(notification.data ?? {})}`;
+    if (this.claimedNotificationKeys.has(key)) return false;
+    this.claimedNotificationKeys.add(key);
+    return true;
   }
 
   /**
@@ -451,9 +470,9 @@ export class NotificationGeneratorService implements OnModuleDestroy {
     }>,
   ): Promise<void> {
     // Filter notifications based on category preferences
-    const filteredNotifications = await this.filterNotificationsByPreferences(
-      notifications,
-    );
+    const filteredNotifications = (
+      await this.filterNotificationsByPreferences(notifications)
+    ).filter((notification) => this.claimNotificationKey(notification));
 
     if (filteredNotifications.length === 0) {
       this.logger.debug('All notifications filtered out by category preferences');

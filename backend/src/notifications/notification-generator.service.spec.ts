@@ -155,6 +155,24 @@ describe('NotificationGeneratorService', () => {
       expect(notificationsRepository.create).toHaveBeenCalled();
     });
 
+    it('creates only one notification when the same event is delivered twice', async () => {
+      const data = {
+        event_id: 1,
+        creator: 'GABC123',
+        title: 'Test Event',
+      };
+
+      jest.spyOn(userRepository, 'findOne').mockResolvedValue(mockUser as any);
+      jest.spyOn(notificationsRepository, 'create').mockReturnValue({} as any);
+      jest.spyOn(notificationsRepository, 'save').mockResolvedValue({} as any);
+
+      await service.handleEventCreated(data);
+      await service.handleEventCreated(data);
+      await service.flushQueue();
+
+      expect(notificationsRepository.create).toHaveBeenCalledTimes(1);
+    });
+
     it('should skip notification if user has disabled event_created_notifications', async () => {
       const data = {
         event_id: 1,

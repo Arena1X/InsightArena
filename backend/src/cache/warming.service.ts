@@ -25,6 +25,7 @@ type CacheWarmResult = Omit<WarmMetrics, 'duration_ms'>;
 export class CacheWarmingService {
   private readonly logger = new Logger(CacheWarmingService.name);
   private readonly strategy: CacheWarmingStrategy;
+  private isWarming = false;
 
   constructor(
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
@@ -38,6 +39,20 @@ export class CacheWarmingService {
 
   @Cron('0 */10 * * * *')
   async warmFrequentlyAccessedData(): Promise<CacheWarmResult> {
+    if (this.isWarming) {
+      this.logger.warn('Cache warming skipped: previous cycle still running');
+      return { warmed: [], failed: [] };
+    }
+
+    this.isWarming = true;
+    try {
+      return await this.runWarmCycle();
+    } finally {
+      this.isWarming = false;
+    }
+  }
+
+  private async runWarmCycle(): Promise<CacheWarmResult> {
     if (!this.strategy.enabled) {
       this.logger.debug('Cache warming skipped because it is disabled');
       return { warmed: [], failed: [] };

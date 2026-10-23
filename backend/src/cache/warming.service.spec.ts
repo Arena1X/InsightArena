@@ -141,7 +141,8 @@ describe('CacheWarmingService', () => {
     // Remaining sub-warmers still ran despite the thrown error.
     expect(result.warmed).toContain(CACHE_WARMING_KEYS.activeEvents);
     expect(result.warmed).toContain(CACHE_WARMING_KEYS.platformStatistics);
-    expect(result.warmed).toContain(
+    // Popular event details are derived from trending results, so none are warmed.
+    expect(result.warmed).not.toContain(
       CACHE_WARMING_KEYS.popularEventDetail('popular-1'),
     );
     expect(result.warmed).toContain(CACHE_WARMING_KEYS.leaderboardTopN(10, null));
@@ -152,6 +153,31 @@ describe('CacheWarmingService', () => {
 
     expect(result.failed).toEqual([]);
     expect(result.warmed.length).toBeGreaterThan(0);
+  });
+
+  it('does not overlap warm cycles; a call during a running cycle is skipped', async () => {
+    let releaseFirstCycle: () => void = () => undefined;
+    marketsService.findAllFiltered.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseFirstCycle = () => resolve({ data: [], total: 0 });
+        }),
+    );
+
+    const first = service.warmFrequentlyAccessedData();
+    const overlapping = await service.warmFrequentlyAccessedData();
+
+    expect(overlapping).toEqual({ warmed: [], failed: [] });
+    // Only the first cycle ran its loaders.
+    expect(marketsService.findAllFiltered).toHaveBeenCalledTimes(1);
+
+    releaseFirstCycle();
+    const firstResult = await first;
+    expect(firstResult.failed).toEqual([]);
+
+    // Lock is released once the running cycle finishes.
+    const next = await service.warmFrequentlyAccessedData();
+    expect(next.warmed.length).toBeGreaterThan(0);
   });
 
   it('skips warming when disabled by config', async () => {
