@@ -190,6 +190,8 @@ function NotificationSettings({ onDirtyChange }: { onDirtyChange: (isDirty: bool
     DEFAULT_NOTIFICATION_PREFERENCES,
   );
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -200,6 +202,8 @@ function NotificationSettings({ onDirtyChange }: { onDirtyChange: (isDirty: bool
 
   useEffect(() => {
     let isMounted = true;
+    setLoading(true);
+    setLoadError(null);
     getNotificationPreferences()
       .then((prefs) => {
         if (isMounted) {
@@ -208,15 +212,22 @@ function NotificationSettings({ onDirtyChange }: { onDirtyChange: (isDirty: bool
           setLoading(false);
         }
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (isMounted) {
-          setLoading(false);
+          setLoadError(
+            err instanceof Error
+              ? err.message
+              : "Failed to load notification preferences.",
+          );
         }
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
       });
     return () => {
       isMounted = false;
     };
-  }, [reset]);
+  }, [reset, loadAttempt]);
 
   const predictions =
     values.predictions !== undefined
@@ -281,6 +292,7 @@ function NotificationSettings({ onDirtyChange }: { onDirtyChange: (isDirty: bool
   function handleReset() {
     reset(initialPrefs);
     setError(null);
+    setSaveSuccess(false);
   }
 
   return (
@@ -291,6 +303,17 @@ function NotificationSettings({ onDirtyChange }: { onDirtyChange: (isDirty: bool
     >
       {loading ? (
         <div className="py-4 text-sm text-gray-400">Loading preferences...</div>
+      ) : loadError ? (
+        <div className="space-y-3" role="alert">
+          <p className="text-sm text-red-400">{loadError}</p>
+          <button
+            type="button"
+            onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+            className="px-3 py-1.5 rounded-md border border-white/10 bg-white/5 text-xs font-medium text-gray-300 hover:bg-white/10 transition"
+          >
+            Retry
+          </button>
+        </div>
       ) : (
         <form onSubmit={handleSave} className="space-y-4">
           <div className="divide-y divide-white/5">
