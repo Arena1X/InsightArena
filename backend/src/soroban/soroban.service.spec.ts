@@ -616,4 +616,89 @@ describe('SorobanService', () => {
       expect(result.tx_hash).toBe(mockTxHash);
     });
   });
+
+  describe('RPC timeout and bounded retry wrapper (#1276)', () => {
+    it('retries idempotent read operations on per-call timeout and succeeds when a retry resolves in time', async () => {
+      const fastService = await buildService({
+        SOROBAN_RPC_TIMEOUT_MS: 30,
+        SOROBAN_RPC_MAX_RETRIES: 2,
+        SOROBAN_RPC_RETRY_BASE_DELAY_MS: 5,
+      });
+
+      const getHealthSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'getHealth')
+        // First 2 attempts hang past the 30ms timeout
+        .mockImplementationOnce(() => new Promise(() => {}))
+        .mockImplementationOnce(() => new Promise(() => {}))
+        // Third attempt (retry #2) resolves immediately
+        .mockResolvedValueOnce({ status: 'healthy' } as never);
+
+      await expect(fastService.testConnection()).resolves.toBe(true);
+      expect(getHealthSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it('surfaces a typed SorobanUnavailableError when read retries are exhausted on timeout', async () => {
+      const fastService = await buildService({
+        SOROBAN_RPC_TIMEOUT_MS: 25,
+        SOROBAN_RPC_MAX_RETRIES: 2,
+        SOROBAN_RPC_RETRY_BASE_DELAY_MS: 5,
+      });
+
+      const getHealthSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'getHealth')
+        .mockImplementation(() => new Promise(() => {}));
+
+      await expect(fastService.testConnection()).rejects.toThrow(
+        SorobanUnavailableError,
+      );
+      // 1 initial attempt + 2 retries = 3 total calls
+      expect(getHealthSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it('surfaces SorobanUnavailableError when transaction submission exhausts all non-blind retry attempts on timeout', async () => {
+      const fastService = await buildService({
+        SOROBAN_RPC_TIMEOUT_MS: 25,
+        SOROBAN_RPC_MAX_RETRIES: 1,
+        SOROBAN_RPC_RETRY_BASE_DELAY_MS: 5,
+      });
+
+      jest.spyOn(SorobanRpc.Server.prototype, 'getAccount').mockResolvedValue({
+        sequenceNumber: () => '1',
+        accountId: () => testServerKeypair.publicKey(),
+        incrementSequenceNumber: () => {},
+      } as never);
+
+      jest
+        .spyOn(SorobanRpc.Server.prototype, 'simulateTransaction')
+        .mockResolvedValue({
+          results: [{}],
+          transactionData: new SorobanDataBuilder(),
+          result: { auth: [] },
+          minResourceFee: '100',
+          _parsed: true,
+        } as never);
+
+      const sendTransactionSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'sendTransaction')
+        .mockImplementation(() => new Promise(() => {}));
+
+      const getTransactionSpy = jest
+        .spyOn(SorobanRpc.Server.prototype, 'getTransaction')
+        .mockResolvedValue({
+          status: SorobanRpc.Api.GetTransactionStatus.NOT_FOUND,
+        } as never);
+
+      await expect(
+        fastService.refundCompetitionParticipant(
+          testKeypair.publicKey(),
+          'comp_123',
+          '1000000',
+        ),
+      ).rejects.toThrow(SorobanUnavailableError);
+
+      // Checked status by hash before resending, and stopped after 1 + 1 = 2 attempts
+      expect(getTransactionSpy).toHaveBeenCalledTimes(2);
+      expect(sendTransactionSpy).toHaveBeenCalledTimes(2);
+    });
+  });
 });
