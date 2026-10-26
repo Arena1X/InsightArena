@@ -426,6 +426,62 @@ export function estimateCashOut(input: CashOutEstimateInput): CashOutEstimate {
   };
 }
 
+export const DEFAULT_PLATFORM_FEE_BPS = 250;
+export const DEFAULT_CREATOR_FEE_BPS = 100;
+export const PRICE_IMPACT_WARNING_THRESHOLD_PCT = 5;
+
+export interface OrderPreviewInput {
+  stake: number;
+  odds: number;
+  poolLiquidity: number;
+  platformFeeBps?: number;
+  creatorFeeBps?: number;
+}
+
+export interface OrderPreview {
+  platformFee: number;
+  creatorFee: number;
+  netStake: number;
+  netCost: number;
+  estimatedShares: number;
+  estimatedPayout: number;
+  estimatedPriceImpactPct: number | null;
+  warnsAboutPriceImpact: boolean;
+}
+
+/** Estimates a prediction order from current odds and the available pool depth. */
+export function calculateOrderPreview(input: OrderPreviewInput): OrderPreview {
+  const stake = Number(input.stake);
+  const odds = Number(input.odds);
+  const liquidity = Number(input.poolLiquidity);
+  const safeStake = Number.isFinite(stake) ? Math.max(0, stake) : 0;
+  const safeOdds = Number.isFinite(odds) ? Math.max(0, odds) : 0;
+  const platformRate = Math.max(0, input.platformFeeBps ?? DEFAULT_PLATFORM_FEE_BPS);
+  const creatorRate = Math.max(0, input.creatorFeeBps ?? DEFAULT_CREATOR_FEE_BPS);
+  const platformFee = (safeStake * platformRate) / 10_000;
+  const creatorFee = (safeStake * creatorRate) / 10_000;
+  const netStake = Math.max(0, safeStake - platformFee - creatorFee);
+  const estimatedShares = safeOdds > 0 ? netStake * safeOdds : 0;
+  const estimatedPayout = estimatedShares;
+  const estimatedPriceImpactPct =
+    Number.isFinite(liquidity) && liquidity > 0
+      ? (netStake / (liquidity + netStake)) * 100
+      : null;
+
+  return {
+    platformFee,
+    creatorFee,
+    netStake,
+    netCost: safeStake,
+    estimatedShares,
+    estimatedPayout,
+    estimatedPriceImpactPct,
+    warnsAboutPriceImpact:
+      estimatedPriceImpactPct !== null &&
+      estimatedPriceImpactPct > PRICE_IMPACT_WARNING_THRESHOLD_PCT,
+  };
+}
+
 export function formatXlm(amount: number, digits = 2): string {
   if (!Number.isFinite(amount)) return "—";
   return `${amount.toFixed(digits)} XLM`;

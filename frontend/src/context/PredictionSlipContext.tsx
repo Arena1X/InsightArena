@@ -16,6 +16,8 @@ export interface SlipItem {
   outcome: string;
   odds: number;
   amount: number;
+  marketProbability?: number;
+  poolLiquidity?: number;
 }
 
 export interface PredictionSlipContextValue {
@@ -30,6 +32,7 @@ export interface PredictionSlipContextValue {
   addItem: (item: Omit<SlipItem, "amount">) => void;
   removeItem: (marketId: string) => void;
   updateAmount: (marketId: string, amount: number) => void;
+  updateOutcome: (marketId: string, outcome: "Yes" | "No") => void;
   restoreItem: (item: SlipItem) => void;
   clearSlip: () => void;
 }
@@ -46,6 +49,7 @@ const DEFAULT_CONTEXT_VALUE: PredictionSlipContextValue = {
   addItem: () => {},
   removeItem: () => {},
   updateAmount: () => {},
+  updateOutcome: () => {},
   restoreItem: () => {},
   clearSlip: () => {},
 };
@@ -105,7 +109,13 @@ export function PredictionSlipProvider({
       if (existing) {
         return prev.map((i) =>
           i.marketId === item.marketId
-            ? { ...i, outcome: item.outcome, odds: item.odds }
+            ? {
+                ...i,
+                outcome: item.outcome,
+                odds: item.odds,
+                marketProbability: item.marketProbability,
+                poolLiquidity: item.poolLiquidity,
+              }
             : i,
         );
       }
@@ -123,6 +133,22 @@ export function PredictionSlipProvider({
       prev.map((i) =>
         i.marketId === marketId ? { ...i, amount: Math.max(1, amount) } : i,
       ),
+    );
+  }, []);
+
+  const updateOutcome = useCallback((marketId: string, outcome: "Yes" | "No") => {
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.marketId !== marketId) return item;
+        const storedProbability = item.marketProbability ?? (1 / item.odds);
+        const yesProbability = Math.min(1, Math.max(0, storedProbability));
+        const probability = outcome === "Yes" ? yesProbability : 1 - yesProbability;
+        return {
+          ...item,
+          outcome,
+          odds: probability > 0 ? 1 / probability : 0,
+        };
+      }),
     );
   }, []);
 
@@ -165,6 +191,7 @@ export function PredictionSlipProvider({
       addItem,
       removeItem,
       updateAmount,
+      updateOutcome,
       restoreItem,
       clearSlip,
     }),
@@ -179,6 +206,7 @@ export function PredictionSlipProvider({
       addItem,
       removeItem,
       updateAmount,
+      updateOutcome,
       restoreItem,
       clearSlip,
     ],
