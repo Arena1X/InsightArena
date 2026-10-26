@@ -97,6 +97,16 @@ export class LeaderboardService {
   /** Insights are week-scoped; TTL is only a safety net so nothing lives indefinitely. */
   private readonly COACH_CACHE_TTL_MS = 8 * 24 * 60 * 60 * 1000;
 
+  /**
+   * Complete, immutable in-memory snapshot of the global leaderboard.
+   * During `recalculateRanks()`, concurrent reads are served from the frozen
+   * prior snapshot until all new ranks are computed and committed, at which
+   * point the reference is swapped atomically so readers never observe a
+   * partially recomputed board (#1932).
+   */
+  private activeGlobalSnapshot: readonly LeaderboardEntry[] | null = null;
+  private recomputingGlobal = false;
+
   constructor(
     @InjectRepository(LeaderboardEntry)
     private readonly leaderboardRepository: Repository<LeaderboardEntry>,
@@ -120,34 +130,45 @@ export class LeaderboardService {
     const limit = Math.min(query.limit ?? 20, 100);
     const skip = (page - 1) * limit;
 
-    const qb = this.leaderboardRepository
-      .createQueryBuilder('entry')
-      .leftJoinAndSelect('entry.user', 'user');
+    let entries: LeaderboardEntry[];
+    let total: number;
 
-    if (query.season_id) {
-      qb.where('entry.season_id = :season_id', { season_id: query.season_id });
-      qb.orderBy('entry.season_points', 'DESC');
+    if (!query.season_id && (this.recomputingGlobal || this.activeGlobalSnapshot !== null)) {
+      const snapshot = this.activeGlobalSnapshot ?? [];
+      entries = snapshot.slice(skip, skip + limit);
+      total = snapshot.length;
     } else {
-      qb.where('entry.season_id IS NULL');
-      qb.orderBy('entry.reputation_score', 'DESC');
+      const qb = this.leaderboardRepository
+        .createQueryBuilder('entry')
+        .leftJoinAndSelect('entry.user', 'user');
+
+      if (query.season_id) {
+        qb.where('entry.season_id = :season_id', { season_id: query.season_id });
+        qb.orderBy('entry.season_points', 'DESC');
+      } else {
+        qb.where('entry.season_id IS NULL');
+        qb.orderBy('entry.reputation_score', 'DESC');
+      }
+
+      // Deterministic tie-break: score DESC, then earliest qualifying
+      // prediction (created_at ASC), then stable user_id ASC.
+      qb.addOrderBy('entry.rank', 'ASC')
+        .addOrderBy('entry.created_at', 'ASC')
+        .addOrderBy('entry.user_id', 'ASC')
+        .skip(skip)
+        .take(limit);
+
+      [entries, total] = await qb.getManyAndCount();
     }
-
-    // Deterministic tie-break: score DESC, then earliest qualifying
-    // prediction (created_at ASC), then stable user_id ASC.
-    qb.addOrderBy('entry.rank', 'ASC')
-      .addOrderBy('entry.created_at', 'ASC')
-      .addOrderBy('entry.user_id', 'ASC')
-      .skip(skip)
-      .take(limit);
-
-    const [entries, total] = await qb.getManyAndCount();
 
     const priorRanks = await this.getLatestSnapshotRanks(
       entries.map((entry) => entry.user_id),
       query.season_id,
     );
 
-    const data: LeaderboardEntryResponse[] = entries.map((entry) => {
+    const data: LeaderboardEntryResponse[] = entries.map((entry, index) => {
+      const rank =
+        entry.rank && entry.rank > index ? entry.rank : skip + index + 1;
       const accuracyRate =
         entry.total_predictions > 0
           ? (
@@ -159,7 +180,7 @@ export class LeaderboardService {
       const priorRank = priorRanks.get(entry.user_id);
 
       return {
-        rank: entry.rank,
+        rank,
         user_id: entry.user_id,
         username: entry.user?.username ?? null,
         stellar_address: entry.user?.stellar_address ?? '',
@@ -167,7 +188,7 @@ export class LeaderboardService {
         accuracy_rate: accuracyRate,
         total_winnings_stroops: entry.total_winnings_stroops,
         season_points: entry.season_points,
-        rank_delta: priorRank !== undefined ? priorRank - entry.rank : null,
+        rank_delta: priorRank !== undefined ? priorRank - rank : null,
       };
     });
 
@@ -339,52 +360,85 @@ export class LeaderboardService {
       query.cursor ? 1 : 0,
     );
 
-    const cached =
-      await this.cacheManager.get<PaginatedCursorResponse>(cacheKey);
-    if (cached && !query.cursor) {
-      this.logger.debug(`Cache hit for cursor pagination: ${cacheKey}`);
-      return cached;
+    if (!this.recomputingGlobal) {
+      const cached =
+        await this.cacheManager.get<PaginatedCursorResponse>(cacheKey);
+      if (cached && !query.cursor) {
+        this.logger.debug(`Cache hit for cursor pagination: ${cacheKey}`);
+        return cached;
+      }
     }
 
-    const qb = this.leaderboardRepository
-      .createQueryBuilder('entry')
-      .leftJoinAndSelect('entry.user', 'user');
+    let entries: LeaderboardEntry[];
 
-    if (query.season_id) {
-      qb.where('entry.season_id = :season_id', { season_id: query.season_id });
-      qb.orderBy('entry.season_points', 'DESC');
+    if (!query.season_id && (this.recomputingGlobal || this.activeGlobalSnapshot !== null)) {
+      const snapshot = this.activeGlobalSnapshot ?? [];
+      if (query.cursor) {
+        const { score, rank, createdAtMs, userId } =
+          this.decodeLeaderboardCursor(query.cursor);
+        entries = snapshot
+          .filter((entry) => {
+            const entryScore = entry.reputation_score;
+            const entryCreatedAtMs = entry.created_at
+              ? new Date(entry.created_at).getTime()
+              : 0;
+            return (
+              entryScore < score ||
+              (entryScore === score && entry.rank > rank) ||
+              (entryScore === score &&
+                entry.rank === rank &&
+                entryCreatedAtMs > createdAtMs) ||
+              (entryScore === score &&
+                entry.rank === rank &&
+                entryCreatedAtMs === createdAtMs &&
+                entry.user_id > userId)
+            );
+          })
+          .slice(0, limit + 1);
+      } else {
+        entries = snapshot.slice(0, limit + 1);
+      }
     } else {
-      qb.where('entry.season_id IS NULL');
-      qb.orderBy('entry.reputation_score', 'DESC');
+      const qb = this.leaderboardRepository
+        .createQueryBuilder('entry')
+        .leftJoinAndSelect('entry.user', 'user');
+
+      if (query.season_id) {
+        qb.where('entry.season_id = :season_id', { season_id: query.season_id });
+        qb.orderBy('entry.season_points', 'DESC');
+      } else {
+        qb.where('entry.season_id IS NULL');
+        qb.orderBy('entry.reputation_score', 'DESC');
+      }
+
+      // Deterministic tie-break: score DESC, then earliest qualifying
+      // prediction (created_at ASC), then stable user_id ASC.
+      qb.addOrderBy('entry.rank', 'ASC')
+        .addOrderBy('entry.created_at', 'ASC')
+        .addOrderBy('entry.user_id', 'ASC');
+
+      if (query.cursor) {
+        const { score, rank, createdAtMs, userId } =
+          this.decodeLeaderboardCursor(query.cursor);
+        const scoreColumn = query.season_id
+          ? 'entry.season_points'
+          : 'entry.reputation_score';
+        qb.andWhere(
+          `(${scoreColumn} < :score
+            OR (${scoreColumn} = :score AND entry.rank > :rank)
+            OR (${scoreColumn} = :score AND entry.rank = :rank AND entry.created_at > :createdAt)
+            OR (${scoreColumn} = :score AND entry.rank = :rank AND entry.created_at = :createdAt AND entry.user_id > :userId))`,
+          {
+            score,
+            rank,
+            createdAt: new Date(createdAtMs),
+            userId,
+          },
+        );
+      }
+
+      entries = await qb.take(limit + 1).getMany();
     }
-
-    // Deterministic tie-break: score DESC, then earliest qualifying
-    // prediction (created_at ASC), then stable user_id ASC.
-    qb.addOrderBy('entry.rank', 'ASC')
-      .addOrderBy('entry.created_at', 'ASC')
-      .addOrderBy('entry.user_id', 'ASC');
-
-    if (query.cursor) {
-      const { score, rank, createdAtMs, userId } =
-        this.decodeLeaderboardCursor(query.cursor);
-      const scoreColumn = query.season_id
-        ? 'entry.season_points'
-        : 'entry.reputation_score';
-      qb.andWhere(
-        `(${scoreColumn} < :score
-          OR (${scoreColumn} = :score AND entry.rank > :rank)
-          OR (${scoreColumn} = :score AND entry.rank = :rank AND entry.created_at > :createdAt)
-          OR (${scoreColumn} = :score AND entry.rank = :rank AND entry.created_at = :createdAt AND entry.user_id > :userId))`,
-        {
-          score,
-          rank,
-          createdAt: new Date(createdAtMs),
-          userId,
-        },
-      );
-    }
-
-    const entries = await qb.take(limit + 1).getMany();
 
     const hasMore = entries.length > limit;
     const data = entries.slice(0, limit).map((entry) => {
@@ -428,7 +482,7 @@ export class LeaderboardService {
       limit,
     };
 
-    if (!query.cursor) {
+    if (!query.cursor && !this.recomputingGlobal) {
       await this.cacheManager.set(cacheKey, result, this.CACHE_TTL_MS);
       this.logger.debug(`Cached cursor pagination page: ${cacheKey}`);
     }
@@ -450,33 +504,41 @@ export class LeaderboardService {
       seasonId ?? null,
     );
 
-    const cached =
-      await this.cacheManager.get<LeaderboardEntryResponse[]>(cacheKey);
-    if (cached) {
-      this.logger.debug(`Cache hit for top ${limit}: ${cacheKey}`);
-      return cached;
+    if (seasonId || !this.recomputingGlobal) {
+      const cached =
+        await this.cacheManager.get<LeaderboardEntryResponse[]>(cacheKey);
+      if (cached) {
+        this.logger.debug(`Cache hit for top ${limit}: ${cacheKey}`);
+        return cached;
+      }
     }
 
-    const qb = this.leaderboardRepository
-      .createQueryBuilder('entry')
-      .leftJoinAndSelect('entry.user', 'user');
+    let entries: LeaderboardEntry[];
 
-    if (seasonId) {
-      qb.where('entry.season_id = :seasonId', { seasonId });
-      qb.orderBy('entry.season_points', 'DESC');
+    if (!seasonId && (this.recomputingGlobal || this.activeGlobalSnapshot !== null)) {
+      entries = (this.activeGlobalSnapshot ?? []).slice(0, limit);
     } else {
-      qb.where('entry.season_id IS NULL');
-      qb.orderBy('entry.reputation_score', 'DESC');
+      const qb = this.leaderboardRepository
+        .createQueryBuilder('entry')
+        .leftJoinAndSelect('entry.user', 'user');
+
+      if (seasonId) {
+        qb.where('entry.season_id = :seasonId', { seasonId });
+        qb.orderBy('entry.season_points', 'DESC');
+      } else {
+        qb.where('entry.season_id IS NULL');
+        qb.orderBy('entry.reputation_score', 'DESC');
+      }
+
+      // Deterministic tie-break: score DESC, then earliest qualifying
+      // prediction (created_at ASC), then stable user_id ASC.
+      qb.addOrderBy('entry.rank', 'ASC')
+        .addOrderBy('entry.created_at', 'ASC')
+        .addOrderBy('entry.user_id', 'ASC')
+        .take(limit);
+
+      entries = await qb.getMany();
     }
-
-    // Deterministic tie-break: score DESC, then earliest qualifying
-    // prediction (created_at ASC), then stable user_id ASC.
-    qb.addOrderBy('entry.rank', 'ASC')
-      .addOrderBy('entry.created_at', 'ASC')
-      .addOrderBy('entry.user_id', 'ASC')
-      .take(limit);
-
-    const entries = await qb.getMany();
 
     const data = entries.map((entry) => {
       const accuracyRate =
@@ -499,10 +561,52 @@ export class LeaderboardService {
       };
     });
 
-    await this.cacheManager.set(cacheKey, data, this.CACHE_TTL_MS);
-    this.logger.debug(`Cached top ${limit} leaderboard: ${cacheKey}`);
+    if (seasonId || !this.recomputingGlobal) {
+      await this.cacheManager.set(cacheKey, data, this.CACHE_TTL_MS);
+      this.logger.debug(`Cached top ${limit} leaderboard: ${cacheKey}`);
+    }
 
     return data;
+  }
+
+  /**
+   * Captures the complete current global leaderboard snapshot before a
+   * recomputation begins, so concurrent readers never observe partial state.
+   */
+  private async captureGlobalSnapshot(): Promise<readonly LeaderboardEntry[]> {
+    if (this.activeGlobalSnapshot !== null) {
+      return this.activeGlobalSnapshot;
+    }
+
+    const found = await this.leaderboardRepository.find?.({
+      where: { season_id: IsNull() },
+      relations: ['user'],
+      order: { rank: 'ASC' },
+    });
+    if (Array.isArray(found)) {
+      return Object.freeze([...found]);
+    }
+
+    const qb = this.leaderboardRepository
+      .createQueryBuilder('entry')
+      .leftJoinAndSelect('entry.user', 'user')
+      .where('entry.season_id IS NULL')
+      .orderBy('entry.reputation_score', 'DESC')
+      .addOrderBy('entry.rank', 'ASC')
+      .addOrderBy('entry.created_at', 'ASC')
+      .addOrderBy('entry.user_id', 'ASC');
+
+    const many = await qb.getMany?.();
+    if (Array.isArray(many)) {
+      return Object.freeze([...many]);
+    }
+
+    const manyAndCount = await qb.getManyAndCount?.();
+    if (Array.isArray(manyAndCount?.[0])) {
+      return Object.freeze([...manyAndCount[0]]);
+    }
+
+    return Object.freeze([]);
   }
 
   /**
@@ -535,52 +639,92 @@ export class LeaderboardService {
   /**
    * Recalculate all leaderboard ranks based on current user stats.
    * Called by the hourly cron job.
+   *
+   * Serves concurrent reads from the frozen prior snapshot until all new
+   * ranks are computed and committed, then atomically swaps the active
+   * snapshot (#1932).
    */
   async recalculateRanks(): Promise<void> {
     const start = Date.now();
     this.logger.log('Starting leaderboard rank recalculation...');
 
-    const users = await this.usersService.findAll();
+    const priorSnapshot = await this.captureGlobalSnapshot();
+    this.activeGlobalSnapshot = priorSnapshot;
+    this.recomputingGlobal = true;
 
-    // Sort users by reputation_score descending for global ranking.
-    // Deterministic tie-break: score DESC, then earliest qualifying
-    // prediction (created_at ASC), then stable user_id ASC.
-    const sorted = [...users].sort((a, b) => {
-      if (b.reputation_score !== a.reputation_score) {
-        return b.reputation_score - a.reputation_score;
-      }
-      const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0;
-      const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0;
-      if (aCreated !== bCreated) {
-        return aCreated - bCreated;
-      }
-      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-    });
+    try {
+      const users = await this.usersService.findAll();
 
-    await this.dataSource.transaction(async (manager) => {
+      // Sort users by reputation_score descending for global ranking.
+      // Deterministic tie-break: score DESC, then earliest qualifying
+      // prediction (created_at ASC), then stable user_id ASC.
+      const sorted = [...users].sort((a, b) => {
+        if (b.reputation_score !== a.reputation_score) {
+          return b.reputation_score - a.reputation_score;
+        }
+        const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0;
+        if (aCreated !== bCreated) {
+          return aCreated - bCreated;
+        }
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
+
+      const nextSnapshot: LeaderboardEntry[] = [];
+
+      await this.dataSource.transaction(async (manager) => {
+        for (let i = 0; i < sorted.length; i++) {
+          const user = sorted[i];
+          const rank = i + 1;
+
+          await this.upsertEntry(manager, {
+            user_id: user.id,
+            season_id: undefined,
+            rank,
+            reputation_score: user.reputation_score,
+            season_points: user.season_points,
+            total_predictions: user.total_predictions,
+            correct_predictions: user.correct_predictions,
+            total_winnings_stroops: user.total_winnings_stroops,
+          });
+        }
+      });
+
       for (let i = 0; i < sorted.length; i++) {
         const user = sorted[i];
-        const rank = i + 1;
-
-        await this.upsertEntry(manager, {
-          user_id: user.id,
-          season_id: undefined,
-          rank,
-          reputation_score: user.reputation_score,
-          season_points: user.season_points,
-          total_predictions: user.total_predictions,
-          correct_predictions: user.correct_predictions,
-          total_winnings_stroops: user.total_winnings_stroops,
-        });
+        nextSnapshot.push(
+          Object.freeze({
+            id: `entry-${user.id}`,
+            user_id: user.id,
+            user,
+            season_id: null as unknown as string,
+            season: null as unknown as LeaderboardEntry['season'],
+            rank: i + 1,
+            reputation_score: user.reputation_score ?? 0,
+            season_points: user.season_points ?? 0,
+            total_predictions: user.total_predictions ?? 0,
+            correct_predictions: user.correct_predictions ?? 0,
+            total_winnings_stroops: user.total_winnings_stroops ?? '0',
+            created_at: user.created_at ?? new Date(0),
+            updated_at: new Date(),
+          }),
+        );
       }
-    });
 
-    const elapsed = Date.now() - start;
-    this.logger.log(
-      `Leaderboard recalculation complete: ${sorted.length} users updated in ${elapsed}ms`,
-    );
+      // Atomically swap to the newly computed snapshot only after the full
+      // recomputation and DB transaction have succeeded.
+      this.activeGlobalSnapshot = Object.freeze(nextSnapshot);
+      this.recomputingGlobal = false;
 
-    await this.invalidateLeaderboardCache();
+      const elapsed = Date.now() - start;
+      this.logger.log(
+        `Leaderboard recalculation complete: ${sorted.length} users updated in ${elapsed}ms`,
+      );
+
+      await this.invalidateLeaderboardCache();
+    } finally {
+      this.recomputingGlobal = false;
+    }
   }
 
   /**
@@ -679,9 +823,14 @@ export class LeaderboardService {
       );
     }
 
-    const entry = await this.leaderboardRepository.findOne({
-      where: { user_id: user.id, season_id: IsNull() },
-    });
+    const entry =
+      this.recomputingGlobal || this.activeGlobalSnapshot !== null
+        ? ((this.activeGlobalSnapshot ?? []).find(
+            (e) => e.user_id === user.id,
+          ) ?? null)
+        : await this.leaderboardRepository.findOne({
+            where: { user_id: user.id, season_id: IsNull() },
+          });
 
     if (!entry) {
       throw new NotFoundException(
