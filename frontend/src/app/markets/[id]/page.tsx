@@ -132,6 +132,8 @@ export default function MarketDetailPage() {
       category: market.category,
       outcome: "Yes",
       odds: market.probability > 0 ? 1 / market.probability : 2,
+      marketProbability: market.probability,
+      poolLiquidity: market.totalStaked,
     });
     openSlip();
   }, [market, addItem, openSlip]);

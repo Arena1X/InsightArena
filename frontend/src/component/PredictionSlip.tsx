@@ -2,7 +2,13 @@
 
 import { X, Minus, Plus, ShoppingCart, Loader2, Check } from "lucide-react";
 import { usePredictionSlip } from "@/context/PredictionSlipContext";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { useDebounce } from "@/hooks/useDebounce";
+import {
+  calculateOrderPreview,
+  DEFAULT_CREATOR_FEE_BPS,
+  DEFAULT_PLATFORM_FEE_BPS,
+} from "@/lib/utils";
 
 export function PredictionSlipFloatingButton() {
   const { itemCount, toggleSlip, isOpen } = usePredictionSlip();
@@ -25,17 +31,40 @@ export function PredictionSlipPanel() {
   const {
     items,
     totalStake,
-    totalPayout,
     itemCount,
     isOpen,
     closeSlip,
     removeItem,
     updateAmount,
+    updateOutcome,
     clearSlip,
   } = usePredictionSlip();
 
   const [isConfirming, setIsConfirming] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const debouncedItems = useDebounce(items, 300);
+  const previews = useMemo(
+    () =>
+      new Map(
+        debouncedItems.map((item) => [
+          item.marketId,
+          calculateOrderPreview({
+            stake: item.amount,
+            odds: item.odds,
+            poolLiquidity: item.poolLiquidity ?? 0,
+          }),
+        ]),
+      ),
+    [debouncedItems],
+  );
+  const estimatedPayout = useMemo(
+    () =>
+      debouncedItems.reduce(
+        (sum, item) => sum + (previews.get(item.marketId)?.estimatedPayout ?? 0),
+        0,
+      ),
+    [debouncedItems, previews],
+  );
 
   if (!isOpen) return null;
 
@@ -124,6 +153,23 @@ export function PredictionSlipPanel() {
                           {item.odds.toFixed(2)}x
                         </span>
                       </div>
+                      <label className="mt-3 block text-xs text-slate-400">
+                        Outcome
+                        <select
+                          aria-label={`Outcome for ${item.marketTitle}`}
+                          value={item.outcome}
+                          onChange={(event) =>
+                            updateOutcome(
+                              item.marketId,
+                              event.target.value as "Yes" | "No",
+                            )
+                          }
+                          className="ml-2 rounded border border-white/10 bg-slate-950 px-2 py-1 text-white"
+                        >
+                          <option value="Yes">Yes</option>
+                          <option value="No">No</option>
+                        </select>
+                      </label>
                     </div>
                     <button
                       onClick={() => removeItem(item.marketId)}
@@ -169,9 +215,55 @@ export function PredictionSlipPanel() {
                       <Plus className="h-4 w-4" />
                     </button>
                     <span className="w-16 text-right text-sm font-medium text-slate-300">
-                      {(item.amount * item.odds).toFixed(0)} XLM
+                      {(previews.get(item.marketId)?.estimatedPayout ?? item.amount * item.odds).toFixed(0)} XLM
                     </span>
                   </div>
+                  {previews.has(item.marketId) && (
+                    <div
+                      className="mt-3 space-y-1 border-t border-white/5 pt-3 text-xs text-slate-400"
+                      aria-live="polite"
+                    >
+                      <div className="flex justify-between">
+                        <span>Estimated shares</span>
+                        <span className="text-white">
+                          {previews.get(item.marketId)!.estimatedShares.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>
+                          Platform fee ({(DEFAULT_PLATFORM_FEE_BPS / 100).toFixed(2)}%)
+                        </span>
+                        <span>{previews.get(item.marketId)!.platformFee.toFixed(2)} XLM</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>
+                          Creator fee ({(DEFAULT_CREATOR_FEE_BPS / 100).toFixed(2)}%)
+                        </span>
+                        <span>{previews.get(item.marketId)!.creatorFee.toFixed(2)} XLM</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Net cost</span>
+                        <span>{previews.get(item.marketId)!.netCost.toFixed(2)} XLM</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>After fees</span>
+                        <span>{previews.get(item.marketId)!.netStake.toFixed(2)} XLM</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Estimated price impact</span>
+                        <span>
+                          {previews.get(item.marketId)!.estimatedPriceImpactPct === null
+                            ? "Unavailable"
+                            : `${previews.get(item.marketId)!.estimatedPriceImpactPct!.toFixed(2)}%`}
+                        </span>
+                      </div>
+                      {previews.get(item.marketId)!.warnsAboutPriceImpact && (
+                        <p role="alert" className="pt-1 text-amber-300">
+                          High price impact. Consider lowering your stake.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -186,13 +278,13 @@ export function PredictionSlipPanel() {
               <div className="flex justify-between text-sm">
                 <span className="text-slate-400">Est. Payout</span>
                 <span className="font-semibold text-emerald-400">
-                  {totalPayout.toFixed(2)} XLM
+                  {estimatedPayout.toFixed(2)} XLM
                 </span>
               </div>
               <div className="flex justify-between text-sm border-t border-white/5 pt-3">
                 <span className="text-slate-400">Profit</span>
                 <span className="font-semibold text-emerald-400">
-                  +{(totalPayout - totalStake).toFixed(2)} XLM
+                  +{(estimatedPayout - totalStake).toFixed(2)} XLM
                 </span>
               </div>
               <button
