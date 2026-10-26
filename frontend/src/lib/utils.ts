@@ -805,3 +805,49 @@ const ONBOARDING_STORAGE_PREFIX = "insightarena.onboarding.v2";
 export function getOnboardingStorageKey(userId?: string | null): string {
   return `${ONBOARDING_STORAGE_PREFIX}:${userId || "anonymous"}`;
 }
+
+// ── UTC Epoch & DST-Safe Countdown Parsing (#1592) ──────────────────────────
+
+const ISO_DATETIME_WITHOUT_TZ_RE =
+  /^[+-]?\d{4,6}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+const NUMERIC_EPOCH_STRING_RE = /^-?\d+(?:\.\d+)?$/;
+
+/**
+ * Normalizes a target date (`string | Date | number`) to UTC epoch milliseconds.
+ *
+ * - Numbers are treated directly as UTC epoch milliseconds.
+ * - `Date` instances use `.getTime()` (UTC epoch milliseconds).
+ * - ISO-8601 date-time strings that omit an explicit timezone offset (e.g.
+ *   `"2024-03-10T02:30:00"` or `"2024-03-10 02:30:00"`) are normalized with a
+ *   trailing `"Z"` so `Date.parse` never interprets them in the browser's local
+ *   timezone or shifts them across local DST boundaries.
+ */
+export function parseUtcEpochMs(targetDate: string | Date | number): number {
+  if (typeof targetDate === "number") {
+    return Number.isFinite(targetDate) ? targetDate : Number.NaN;
+  }
+
+  if (targetDate instanceof Date) {
+    return targetDate.getTime();
+  }
+
+  if (typeof targetDate !== "string") {
+    return Number.NaN;
+  }
+
+  const trimmed = targetDate.trim();
+  if (!trimmed) {
+    return Number.NaN;
+  }
+
+  if (NUMERIC_EPOCH_STRING_RE.test(trimmed)) {
+    const numeric = Number(trimmed);
+    return Number.isFinite(numeric) ? numeric : Number.NaN;
+  }
+
+  const normalized = ISO_DATETIME_WITHOUT_TZ_RE.test(trimmed)
+    ? `${trimmed.replace(" ", "T")}Z`
+    : trimmed;
+
+  return Date.parse(normalized);
+}

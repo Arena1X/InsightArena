@@ -1,18 +1,10 @@
 import { useState, useEffect } from "react";
+import { parseUtcEpochMs } from "../lib/utils";
 
 const MILLISECONDS_PER_SECOND = 1000;
 const SECONDS_PER_MINUTE = 60;
 const MINUTES_PER_HOUR = 60;
 const HOURS_PER_DAY = 24;
-
-const EMPTY_COUNTDOWN: CountdownTime = {
-  days: 0,
-  hours: 0,
-  minutes: 0,
-  seconds: 0,
-  isExpired: true,
-  totalSeconds: 0,
-};
 
 export interface CountdownTime {
   days: number;
@@ -21,21 +13,74 @@ export interface CountdownTime {
   seconds: number;
   isExpired: boolean;
   totalSeconds: number;
+  /** Granular day count alias (#1592). */
+  readonly d: number;
+  /** Granular hour count alias (0–23) (#1592). */
+  readonly h: number;
+  /** Granular minute count alias (0–59) (#1592). */
+  readonly m: number;
+  /** Granular second count alias (0–59) (#1592). */
+  readonly s: number;
+  /** Remaining duration in milliseconds, clamped to >= 0 (#1592). */
+  readonly remainingMs: number;
+  /** Pre-formatted compact countdown label. */
+  readonly label: string;
 }
+
+export interface UseCountdownOptions {
+  frozen?: boolean;
+}
+
+function attachCountdownAliases(
+  base: {
+    days: number;
+    hours: number;
+    minutes: number;
+    seconds: number;
+    isExpired: boolean;
+    totalSeconds: number;
+  },
+  remainingMs: number,
+): CountdownTime {
+  const target = { ...base } as CountdownTime;
+  Object.defineProperties(target, {
+    d: { value: base.days, enumerable: false, configurable: false },
+    h: { value: base.hours, enumerable: false, configurable: false },
+    m: { value: base.minutes, enumerable: false, configurable: false },
+    s: { value: base.seconds, enumerable: false, configurable: false },
+    remainingMs: { value: remainingMs, enumerable: false, configurable: false },
+    label: {
+      get: () => formatCountdown(target),
+      enumerable: false,
+      configurable: false,
+    },
+  });
+  return target;
+}
+
+const EMPTY_COUNTDOWN: CountdownTime = attachCountdownAliases(
+  {
+    days: 0,
+    hours: 0,
+    minutes: 0,
+    seconds: 0,
+    isExpired: true,
+    totalSeconds: 0,
+  },
+  0,
+);
 
 function getTargetEpochMilliseconds(
   targetDate: string | Date | number,
 ): number {
-  if (typeof targetDate === "number") {
-    return targetDate;
-  }
-
-  return typeof targetDate === "string"
-    ? Date.parse(targetDate)
-    : targetDate.getTime();
+  return parseUtcEpochMs(targetDate);
 }
 
-/** Calculate a countdown using only UTC epoch timestamps. */
+/**
+ * Calculate a countdown using only UTC epoch timestamps.
+ * Never mixes local-offset Date getters, so local timezone and DST transitions
+ * cannot skew remaining durations.
+ */
 export function calculateCountdown(
   targetDate: string | Date | number,
   now = Date.now(),
@@ -43,7 +88,7 @@ export function calculateCountdown(
   const target = getTargetEpochMilliseconds(targetDate);
   const difference = target - now;
 
-  if (!Number.isFinite(difference) || difference <= 0) {
+  if (!Number.isFinite(target) || !Number.isFinite(now) || !Number.isFinite(difference) || difference <= 0) {
     return EMPTY_COUNTDOWN;
   }
 
@@ -51,14 +96,22 @@ export function calculateCountdown(
   const secondsPerHour = SECONDS_PER_MINUTE * MINUTES_PER_HOUR;
   const secondsPerDay = secondsPerHour * HOURS_PER_DAY;
 
-  return {
-    days: Math.floor(totalSeconds / secondsPerDay),
-    hours: Math.floor((totalSeconds % secondsPerDay) / secondsPerHour),
-    minutes: Math.floor((totalSeconds % secondsPerHour) / SECONDS_PER_MINUTE),
-    seconds: totalSeconds % SECONDS_PER_MINUTE,
-    isExpired: false,
-    totalSeconds,
-  };
+  const days = Math.floor(totalSeconds / secondsPerDay);
+  const hours = Math.floor((totalSeconds % secondsPerDay) / secondsPerHour);
+  const minutes = Math.floor((totalSeconds % secondsPerHour) / SECONDS_PER_MINUTE);
+  const seconds = totalSeconds % SECONDS_PER_MINUTE;
+
+  return attachCountdownAliases(
+    {
+      days,
+      hours,
+      minutes,
+      seconds,
+      isExpired: false,
+      totalSeconds,
+    },
+    difference,
+  );
 }
 
 /**
@@ -72,10 +125,15 @@ export function calculateCountdown(
  */
 export function useCountdown(
   targetDate: string | Date | number,
-  frozen = false,
+  frozenOrOptions: boolean | UseCountdownOptions = false,
 ): CountdownTime {
+  const frozen =
+    typeof frozenOrOptions === "boolean"
+      ? frozenOrOptions
+      : Boolean(frozenOrOptions?.frozen);
+
   const [time, setTime] = useState<CountdownTime>(() =>
-    calculateCountdown(targetDate),
+    frozen ? EMPTY_COUNTDOWN : calculateCountdown(targetDate),
   );
 
   useEffect(() => {
@@ -85,7 +143,16 @@ export function useCountdown(
     }
 
     const calculateTime = () => {
-      setTime(calculateCountdown(targetDate));
+      setTime((prev) => {
+        const next = calculateCountdown(targetDate);
+        if (
+          prev.totalSeconds === next.totalSeconds &&
+          prev.isExpired === next.isExpired
+        ) {
+          return prev;
+        }
+        return next;
+      });
     };
 
     calculateTime();
