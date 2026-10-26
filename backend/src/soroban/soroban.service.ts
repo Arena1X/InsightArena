@@ -31,6 +31,7 @@ const PERMANENT_ERROR_PATTERNS = [
   /txBadAuth/,
   /txInsufficientBalance/,
   /txBadSeq/,
+  /txFailed/,
 ];
 
 export function isTransientSorobanError(error: unknown): boolean {
@@ -166,10 +167,10 @@ export interface SorobanFinalizeEventResult {
   tx_hash: string;
 }
 
-const DEFAULT_RPC_TIMEOUT_MS = 10_000;
-const DEFAULT_RPC_MAX_RETRIES = 2;
+export const DEFAULT_RPC_TIMEOUT_MS = 10_000;
+export const DEFAULT_RPC_MAX_RETRIES = 2;
 /** Base delay for read-retry and post-ambiguity resend backoff — short by design (see #1). */
-const RPC_RETRY_BASE_DELAY_MS = 250;
+export const DEFAULT_RPC_RETRY_BASE_DELAY_MS = 250;
 
 /**
  * Fee estimation policy.
@@ -212,10 +213,14 @@ export class SorobanService {
   private readonly rpcServer: SorobanRpc.Server;
   private readonly rpcTimeoutMs: number;
   private readonly rpcMaxRetries: number;
+  private readonly rpcRetryBaseDelayMs: number;
   private readonly fallbackFeeStroops: number;
   private readonly maxFeeStroops: number;
   /** Most recent successfully estimated fee, reused as the fallback. */
   private lastKnownFeeStroops: number | null = null;
+  /** Mirrored on-chain market status updated only after confirmed pause/resume transactions. */
+  private readonly marketStatuses = new Map<string, string>();
+  private readonly previousMarketStatuses = new Map<string, string>();
 
   constructor(private readonly configService: ConfigService) {
     this.contractId =
@@ -235,6 +240,11 @@ export class SorobanService {
       this.configService,
       'SOROBAN_RPC_MAX_RETRIES',
       DEFAULT_RPC_MAX_RETRIES,
+    );
+    this.rpcRetryBaseDelayMs = readNonNegativeIntConfig(
+      this.configService,
+      'SOROBAN_RPC_RETRY_BASE_DELAY_MS',
+      DEFAULT_RPC_RETRY_BASE_DELAY_MS,
     );
     this.maxFeeStroops = Math.max(
       MIN_BASE_FEE_STROOPS,
@@ -266,6 +276,18 @@ export class SorobanService {
 
   getRpcClient(): SorobanRpc.Server {
     return this.rpcServer;
+  }
+
+  getRpcTimeoutMs(): number {
+    return this.rpcTimeoutMs;
+  }
+
+  getRpcMaxRetries(): number {
+    return this.rpcMaxRetries;
+  }
+
+  getMarketStatus(marketOnChainId: string): string {
+    return this.marketStatuses.get(marketOnChainId) ?? 'open';
   }
 
   /**
@@ -868,7 +890,7 @@ export class SorobanService {
   }
 
   async pauseMarket(marketOnChainId: string): Promise<{ tx_hash: string }> {
-    return this.withSorobanErrorHandling('pauseMarket', () => {
+    return this.withSorobanErrorHandling('pauseMarket', async () => {
       this.logger.log(`Soroban pauseMarket: market=${marketOnChainId}`);
 
       const serverKeypair = Keypair.fromSecret(this.serverSecretKey);
@@ -876,18 +898,77 @@ export class SorobanService {
         `pauseMarket signed by admin: ${serverKeypair.publicKey()}`,
       );
 
-      const tx_hash = Buffer.from(`pause:${marketOnChainId}:${Date.now()}`)
-        .toString('hex')
-        .padEnd(64, '0')
-        .slice(0, 64);
+      const serverAccount = await this.callRpc('pauseMarket:getAccount', () =>
+        this.rpcServer.getAccount(serverKeypair.publicKey()),
+      );
+      const contract = new Contract(this.contractId);
+      const tx = new TransactionBuilder(serverAccount, {
+        fee: await this.estimateFee(),
+        networkPassphrase:
+          this.network === 'testnet' ? Networks.TESTNET : Networks.PUBLIC,
+      })
+        .addOperation(
+          contract.call('pause_market', nativeToScVal(marketOnChainId)),
+        )
+        .setTimeout(30)
+        .build();
 
-      this.logger.log(`pauseMarket submitted: tx_hash=${tx_hash}`);
-      return Promise.resolve({ tx_hash });
+      const simulation = await this.callRpc(
+        'pauseMarket:simulateTransaction',
+        () => this.rpcServer.simulateTransaction(tx),
+      );
+      if (SorobanRpc.Api.isSimulationError(simulation)) {
+        throw new Error(`Simulation failed: ${simulation.error}`);
+      }
+
+      const assembledTx = SorobanRpc.assembleTransaction(
+        tx,
+        simulation,
+      ).build();
+      assembledTx.sign(serverKeypair);
+
+      const response = await this.sendTransactionWithRetry(
+        assembledTx,
+        'pauseMarket',
+      );
+
+      const getTxStatus = () =>
+        this.callRpc('pauseMarket:getTransaction', () =>
+          this.rpcServer.getTransaction(response.hash),
+        );
+      let statusResponse = await getTxStatus();
+      let attempts = 0;
+      while (
+        statusResponse.status ===
+          SorobanRpc.Api.GetTransactionStatus.NOT_FOUND &&
+        attempts < 10
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        statusResponse = await getTxStatus();
+        attempts++;
+      }
+
+      if (
+        statusResponse.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS
+      ) {
+        throw new Error(
+          `Transaction failed with status ${statusResponse.status}`,
+        );
+      }
+
+      const priorStatus = this.getMarketStatus(marketOnChainId);
+      if (priorStatus !== 'paused') {
+        this.previousMarketStatuses.set(marketOnChainId, priorStatus);
+      }
+      this.marketStatuses.set(marketOnChainId, 'paused');
+
+      this.logger.log(`pauseMarket confirmed: tx_hash=${response.hash}`);
+      return { tx_hash: response.hash };
     });
   }
 
   async resumeMarket(marketOnChainId: string): Promise<{ tx_hash: string }> {
-    return this.withSorobanErrorHandling('resumeMarket', () => {
+    return this.withSorobanErrorHandling('resumeMarket', async () => {
       this.logger.log(`Soroban resumeMarket: market=${marketOnChainId}`);
 
       const serverKeypair = Keypair.fromSecret(this.serverSecretKey);
@@ -895,13 +976,70 @@ export class SorobanService {
         `resumeMarket signed by admin: ${serverKeypair.publicKey()}`,
       );
 
-      const tx_hash = Buffer.from(`resume:${marketOnChainId}:${Date.now()}`)
-        .toString('hex')
-        .padEnd(64, '0')
-        .slice(0, 64);
+      const serverAccount = await this.callRpc('resumeMarket:getAccount', () =>
+        this.rpcServer.getAccount(serverKeypair.publicKey()),
+      );
+      const contract = new Contract(this.contractId);
+      const tx = new TransactionBuilder(serverAccount, {
+        fee: await this.estimateFee(),
+        networkPassphrase:
+          this.network === 'testnet' ? Networks.TESTNET : Networks.PUBLIC,
+      })
+        .addOperation(
+          contract.call('resume_market', nativeToScVal(marketOnChainId)),
+        )
+        .setTimeout(30)
+        .build();
 
-      this.logger.log(`resumeMarket submitted: tx_hash=${tx_hash}`);
-      return Promise.resolve({ tx_hash });
+      const simulation = await this.callRpc(
+        'resumeMarket:simulateTransaction',
+        () => this.rpcServer.simulateTransaction(tx),
+      );
+      if (SorobanRpc.Api.isSimulationError(simulation)) {
+        throw new Error(`Simulation failed: ${simulation.error}`);
+      }
+
+      const assembledTx = SorobanRpc.assembleTransaction(
+        tx,
+        simulation,
+      ).build();
+      assembledTx.sign(serverKeypair);
+
+      const response = await this.sendTransactionWithRetry(
+        assembledTx,
+        'resumeMarket',
+      );
+
+      const getTxStatus = () =>
+        this.callRpc('resumeMarket:getTransaction', () =>
+          this.rpcServer.getTransaction(response.hash),
+        );
+      let statusResponse = await getTxStatus();
+      let attempts = 0;
+      while (
+        statusResponse.status ===
+          SorobanRpc.Api.GetTransactionStatus.NOT_FOUND &&
+        attempts < 10
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        statusResponse = await getTxStatus();
+        attempts++;
+      }
+
+      if (
+        statusResponse.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS
+      ) {
+        throw new Error(
+          `Transaction failed with status ${statusResponse.status}`,
+        );
+      }
+
+      const restoredStatus =
+        this.previousMarketStatuses.get(marketOnChainId) ?? 'open';
+      this.marketStatuses.set(marketOnChainId, restoredStatus);
+
+      this.logger.log(`resumeMarket confirmed: tx_hash=${response.hash}`);
+      return { tx_hash: response.hash };
     });
   }
 
@@ -1045,7 +1183,10 @@ export class SorobanService {
           break;
         }
 
-        const delayMs = computeBackoffDelay(RPC_RETRY_BASE_DELAY_MS, attempt);
+        const delayMs = computeBackoffDelay(
+          this.rpcRetryBaseDelayMs,
+          attempt,
+        );
         this.logger.warn(
           `${operation}: no existing submission found for tx_hash=${txHash}; resending in ${delayMs}ms (attempt ${attempt + 2}/${maxAttempts})`,
         );
@@ -1118,7 +1259,7 @@ export class SorobanService {
     try {
       return await withRetry(fn, {
         maxAttempts: this.rpcMaxRetries + 1,
-        baseDelayMs: RPC_RETRY_BASE_DELAY_MS,
+        baseDelayMs: this.rpcRetryBaseDelayMs,
         isTransient: isTransientSorobanError,
         onRetry: (error, attempt, delayMs) => {
           this.logger.warn(
