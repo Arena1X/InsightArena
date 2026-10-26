@@ -135,4 +135,92 @@ describe('OddsBroadcasterService', () => {
       expect(delivered[1].odds[0].count).toBe(2);
     });
   });
+
+  describe('materialized odds snapshot (#1502)', () => {
+    it('maintains incremental updates that match a full brute-force recompute', () => {
+      const outcomeOptions = ['Yes', 'No', 'Draw'];
+      const writes = [
+        { outcome: 'Yes', stake: '10000000' },
+        { outcome: 'No', stake: '25000000' },
+        { outcome: 'Yes', stake: '5000000' },
+        { outcome: 'Draw', stake: '12000000' },
+        { outcome: 'No', stake: '8000000' },
+      ];
+
+      service.setSnapshot(
+        marketId,
+        outcomeOptions.map((outcome) => ({
+          outcome,
+          count: 0,
+          total_staked_stroops: '0',
+        })),
+      );
+
+      for (const write of writes) {
+        service.applyPredictionIncrement(
+          marketId,
+          write.outcome,
+          write.stake,
+          outcomeOptions,
+        );
+      }
+
+      const bruteForce = outcomeOptions.map((outcome) => {
+        const matching = writes.filter((w) => w.outcome === outcome);
+        const total = matching.reduce(
+          (acc, cur) => acc + BigInt(cur.stake),
+          0n,
+        );
+        return {
+          outcome,
+          count: matching.length,
+          total_staked_stroops: String(total),
+        };
+      });
+
+      expect(service.getSnapshot(marketId)).toEqual(bruteForce);
+    });
+
+    it('broadcasts from the materialized snapshot without requiring caller to pass odds again', () => {
+      service.setSnapshot(marketId, [
+        { outcome: 'Yes', count: 4, total_staked_stroops: '4000' },
+        { outcome: 'No', count: 2, total_staked_stroops: '2000' },
+      ]);
+
+      service.broadcastFromSnapshot(marketId);
+
+      expect(broadcastQueue.enqueue).toHaveBeenCalledWith(
+        gateway.server,
+        'socket-a',
+        `odds:${marketId}`,
+        'odds:update',
+        expect.objectContaining({
+          market_id: marketId,
+          odds: [
+            { outcome: 'Yes', count: 4, total_staked_stroops: '4000' },
+            { outcome: 'No', count: 2, total_staked_stroops: '2000' },
+          ],
+        }),
+      );
+    });
+
+    it('replaces the materialized snapshot only on full reconciliation', () => {
+      service.applyPredictionIncrement(marketId, 'Yes', '1000', ['Yes', 'No']);
+      expect(service.getSnapshot(marketId)).toEqual([
+        { outcome: 'Yes', count: 1, total_staked_stroops: '1000' },
+        { outcome: 'No', count: 0, total_staked_stroops: '0' },
+      ]);
+
+      const reconciled = service.reconcileSnapshot(marketId, [
+        { outcome: 'Yes', count: 10, total_staked_stroops: '99000' },
+        { outcome: 'No', count: 5, total_staked_stroops: '45000' },
+      ]);
+
+      expect(reconciled).toEqual([
+        { outcome: 'Yes', count: 10, total_staked_stroops: '99000' },
+        { outcome: 'No', count: 5, total_staked_stroops: '45000' },
+      ]);
+      expect(service.getSnapshot(marketId)).toEqual(reconciled);
+    });
+  });
 });

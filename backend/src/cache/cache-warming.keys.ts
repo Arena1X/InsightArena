@@ -12,4 +12,6 @@ export const CACHE_WARMING_KEYS = {
     `leaderboard:top:${n}:${seasonId ?? 'all'}`,
   coachInsights: (userId: string, weekId: string) =>
     `leaderboard:coach:${userId}:${weekId}`,
+  marketOddsSnapshot: (marketId: string) =>
+    `market:odds:snapshot:${marketId}`,
 } as const;

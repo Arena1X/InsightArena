@@ -1129,6 +1129,47 @@ describe('MarketsService.getPredictionStats', () => {
       'Market with ID "non-existent" not found',
     );
   });
+
+  it('maintains a materialized odds snapshot where incremental updates match brute-force recompute (#1502)', async () => {
+    marketsRepository.findOne.mockResolvedValue(mockMarket);
+
+    const writes: Array<{
+      chosen_outcome: string;
+      stake_amount_stroops: string;
+    }> = [
+      { chosen_outcome: 'Yes', stake_amount_stroops: '10000000' },
+      { chosen_outcome: 'No', stake_amount_stroops: '5000000' },
+      { chosen_outcome: 'Yes', stake_amount_stroops: '15000000' },
+      { chosen_outcome: 'No', stake_amount_stroops: '20000000' },
+    ];
+
+    for (const write of writes) {
+      await service.recordPredictionOddsWrite(
+        mockMarket.id,
+        write.chosen_outcome,
+        write.stake_amount_stroops,
+        mockMarket.outcome_options,
+      );
+    }
+
+    // Incremental writes must not trigger a DB query on predictionsRepository
+    expect(predictionsRepository.find).not.toHaveBeenCalled();
+
+    const incrementalSnapshot = await service.getOddsSnapshot(mockMarket.id);
+
+    // Now run full brute-force reconciliation from DB and verify exact match
+    predictionsRepository.find.mockResolvedValue(writes as Prediction[]);
+    const bruteForceSnapshot = await service.reconcileOddsSnapshot(
+      mockMarket.id,
+      mockMarket,
+    );
+
+    expect(incrementalSnapshot).toEqual(bruteForceSnapshot);
+    expect(incrementalSnapshot).toEqual([
+      { outcome: 'Yes', count: 2, total_staked_stroops: '25000000' },
+      { outcome: 'No', count: 2, total_staked_stroops: '25000000' },
+    ]);
+  });
 });
 
 describe('MarketsService.cancelMarket', () => {

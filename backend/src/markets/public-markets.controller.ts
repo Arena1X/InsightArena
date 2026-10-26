@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   NotFoundException,
+  Optional,
   Param,
   Query,
   UseGuards,
@@ -18,6 +19,7 @@ import { Scopes } from '../common/decorators/scopes.decorator';
 import { ApiKeyGuard } from '../common/guards/api-key.guard';
 import { CacheService } from '../cache/cache.service';
 import { ListMarketsDto } from './dto/list-markets.dto';
+import { PredictionStatsDto } from './dto/prediction-stats.dto';
 import {
   PaginatedPublicMarketsResponseDto,
   PublicMarketResponseDto,
@@ -38,8 +40,18 @@ export class PublicMarketsController {
 
   constructor(
     private readonly marketsService: MarketsService,
-    private readonly cacheService: CacheService,
+    @Optional() private readonly cacheService?: CacheService,
   ) {}
+
+  private async getOrSetCache<T>(
+    cacheKey: string,
+    loader: () => Promise<T>,
+  ): Promise<T> {
+    if (this.cacheService) {
+      return this.cacheService.getOrSet(this.CACHE_NAMESPACE, cacheKey, loader);
+    }
+    return loader();
+  }
 
   @Get()
   @ApiOperation({
@@ -61,24 +73,20 @@ export class PublicMarketsController {
     // Generate cache key based on query parameters
     const cacheKey = `list:${JSON.stringify(query)}`;
 
-    // Use CacheService with stampede protection
-    return this.cacheService.getOrSet(
-      this.CACHE_NAMESPACE,
-      cacheKey,
-      async () => {
-        const result = await this.marketsService.findAllFiltered({
-          ...query,
-          is_public: true,
-        });
+    // Use CacheService with stampede protection when available
+    return this.getOrSetCache(cacheKey, async () => {
+      const result = await this.marketsService.findAllFiltered({
+        ...query,
+        is_public: true,
+      });
 
-        return {
-          ...result,
-          data: (result.data as Market[]).map((market) =>
-            PublicMarketResponseDto.fromEntity(market),
-          ),
-        };
-      },
-    );
+      return {
+        ...result,
+        data: (result.data as Market[]).map((market) =>
+          PublicMarketResponseDto.fromEntity(market),
+        ),
+      };
+    });
   }
 
   @Get(':id')
@@ -99,20 +107,38 @@ export class PublicMarketsController {
   async get(@Param('id') id: string): Promise<PublicMarketResponseDto> {
     const cacheKey = `detail:${id}`;
 
-    // Use CacheService with stampede protection
-    return this.cacheService.getOrSet(
-      this.CACHE_NAMESPACE,
-      cacheKey,
-      async () => {
-        const market = await this.marketsService.findByIdOrOnChainId(id);
-        if (!market.is_public) {
-          throw new NotFoundException(
-            `Public market with ID "${id}" not found`,
-          );
-        }
+    // Use CacheService with stampede protection when available
+    return this.getOrSetCache(cacheKey, async () => {
+      const market = await this.marketsService.findByIdOrOnChainId(id);
+      if (!market.is_public) {
+        throw new NotFoundException(`Public market with ID "${id}" not found`);
+      }
 
-        return PublicMarketResponseDto.fromEntity(market);
-      },
-    );
+      return PublicMarketResponseDto.fromEntity(market);
+    });
+  }
+
+  @Get(':id/odds')
+  @ApiOperation({
+    summary: 'Get materialized market odds snapshot',
+    description:
+      'Returns the materialized per-market odds snapshot so initial page loads and WebSocket live-odds broadcasts share the same source of truth.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Materialized market odds snapshot by outcome',
+    type: [PredictionStatsDto],
+  })
+  @ApiResponse({ status: 401, description: 'Missing or invalid API key' })
+  @ApiResponse({ status: 403, description: 'API key lacks public:read scope' })
+  @ApiResponse({ status: 404, description: 'Public market not found' })
+  @ApiResponse({ status: 429, description: 'Public API rate limit exceeded' })
+  async getOdds(@Param('id') id: string): Promise<PredictionStatsDto[]> {
+    const market = await this.marketsService.findByIdOrOnChainId(id);
+    if (!market.is_public) {
+      throw new NotFoundException(`Public market with ID "${id}" not found`);
+    }
+
+    return this.marketsService.getOddsSnapshot(market.id);
   }
 }
