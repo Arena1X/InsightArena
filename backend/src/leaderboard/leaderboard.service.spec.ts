@@ -491,6 +491,276 @@ describe('LeaderboardService', () => {
       expect(mockUsersService.findAll).toHaveBeenCalled();
       expect(mockDataSource.transaction).toHaveBeenCalled();
     });
+
+    it('returns a complete prior snapshot when read during recompute (#1932)', async () => {
+      const priorUsers: User[] = [
+        {
+          ...mockUser,
+          id: 'u1',
+          username: 'alice',
+          stellar_address: 'G_ALICE',
+          reputation_score: 300,
+        } as User,
+        {
+          ...mockUser,
+          id: 'u2',
+          username: 'bob',
+          stellar_address: 'G_BOB',
+          reputation_score: 200,
+        } as User,
+        {
+          ...mockUser,
+          id: 'u3',
+          username: 'carol',
+          stellar_address: 'G_CAROL',
+          reputation_score: 100,
+        } as User,
+      ];
+
+      // Establish the initial complete snapshot via first recompute.
+      mockUsersService.findAll.mockResolvedValueOnce(priorUsers);
+      mockDataSource.transaction.mockImplementationOnce(async (cb) =>
+        cb({
+          create: jest.fn((_, d) => d),
+          save: jest.fn().mockResolvedValue(undefined),
+          update: jest.fn().mockResolvedValue(undefined),
+        }),
+      );
+      await service.recalculateRanks();
+
+      // Prepare updated scores where the ordering completely reverses:
+      // u3 (500) -> rank 1, u2 (400) -> rank 2, u1 (300) -> rank 3
+      const updatedUsers: User[] = [
+        { ...priorUsers[0], reputation_score: 300 } as User,
+        { ...priorUsers[1], reputation_score: 400 } as User,
+        { ...priorUsers[2], reputation_score: 500 } as User,
+      ];
+      mockUsersService.findAll.mockResolvedValueOnce(updatedUsers);
+
+      let releaseTransaction!: () => void;
+      const transactionGate = new Promise<void>((resolve) => {
+        releaseTransaction = resolve;
+      });
+      let markMidTransaction!: () => void;
+      const midTransactionReached = new Promise<void>((resolve) => {
+        markMidTransaction = resolve;
+      });
+
+      let savedCount = 0;
+      mockDataSource.transaction.mockImplementationOnce(async (cb) => {
+        const manager = {
+          create: jest.fn((_, d) => d),
+          save: jest.fn(async () => {
+            savedCount += 1;
+            if (savedCount === 1) {
+              // Pause after writing only the first entry (u3 as rank 1)
+              markMidTransaction();
+              await transactionGate;
+            }
+          }),
+          update: jest.fn(),
+        };
+        await cb(manager);
+      });
+
+      const recomputePromise = service.recalculateRanks();
+      await midTransactionReached;
+
+      // Read while only 1 of 3 entries has been written in the transaction:
+      // must return the complete prior snapshot, not a half-updated board.
+      const boardDuringRecompute = await service.getLeaderboard({
+        page: 1,
+        limit: 20,
+      });
+      const topNDuringRecompute = await service.getTopN(3);
+      const cursorDuringRecompute = await service.getLeaderboardCursor({
+        limit: 20,
+      });
+
+      expect(
+        boardDuringRecompute.data.map((e) => ({
+          user_id: e.user_id,
+          rank: e.rank,
+          score: e.reputation_score,
+        })),
+      ).toEqual([
+        { user_id: 'u1', rank: 1, score: 300 },
+        { user_id: 'u2', rank: 2, score: 200 },
+        { user_id: 'u3', rank: 3, score: 100 },
+      ]);
+      expect(topNDuringRecompute.map((e) => e.user_id)).toEqual([
+        'u1',
+        'u2',
+        'u3',
+      ]);
+      expect(cursorDuringRecompute.data.map((e) => e.user_id)).toEqual([
+        'u1',
+        'u2',
+        'u3',
+      ]);
+
+      releaseTransaction();
+      await recomputePromise;
+    });
+
+    it('returns the new snapshot after recompute completes (#1932)', async () => {
+      const initialUsers: User[] = [
+        { ...mockUser, id: 'u1', reputation_score: 100 } as User,
+        { ...mockUser, id: 'u2', reputation_score: 200 } as User,
+      ];
+      mockUsersService.findAll.mockResolvedValueOnce(initialUsers);
+      mockDataSource.transaction.mockResolvedValueOnce(undefined);
+      await service.recalculateRanks();
+
+      const before = await service.getLeaderboard({ page: 1, limit: 20 });
+      expect(before.data.map((e) => ({ id: e.user_id, rank: e.rank }))).toEqual(
+        [
+          { id: 'u2', rank: 1 },
+          { id: 'u1', rank: 2 },
+        ],
+      );
+
+      const updatedUsers: User[] = [
+        { ...mockUser, id: 'u1', reputation_score: 500 } as User,
+        { ...mockUser, id: 'u2', reputation_score: 200 } as User,
+      ];
+      mockUsersService.findAll.mockResolvedValueOnce(updatedUsers);
+      mockDataSource.transaction.mockResolvedValueOnce(undefined);
+      await service.recalculateRanks();
+
+      const after = await service.getLeaderboard({ page: 1, limit: 20 });
+      expect(
+        after.data.map((e) => ({
+          id: e.user_id,
+          rank: e.rank,
+          score: e.reputation_score,
+        })),
+      ).toEqual([
+        { id: 'u1', rank: 1, score: 500 },
+        { id: 'u2', rank: 2, score: 200 },
+      ]);
+    });
+
+    it('swaps the snapshot atomically with no partial state observed across step-by-step writes (#1932)', async () => {
+      const priorEntries: LeaderboardEntry[] = [
+        {
+          ...(mockEntry as LeaderboardEntry),
+          id: 'e1',
+          user_id: 'u1',
+          rank: 1,
+          reputation_score: 300,
+        },
+        {
+          ...(mockEntry as LeaderboardEntry),
+          id: 'e2',
+          user_id: 'u2',
+          rank: 2,
+          reputation_score: 200,
+        },
+        {
+          ...(mockEntry as LeaderboardEntry),
+          id: 'e3',
+          user_id: 'u3',
+          rank: 3,
+          reputation_score: 100,
+        },
+      ];
+      mockEntryRepository.find.mockResolvedValueOnce(priorEntries);
+
+      const nextUsers: User[] = [
+        { ...mockUser, id: 'u1', reputation_score: 100 } as User,
+        { ...mockUser, id: 'u2', reputation_score: 200 } as User,
+        { ...mockUser, id: 'u3', reputation_score: 400 } as User,
+      ];
+      mockUsersService.findAll.mockResolvedValueOnce(nextUsers);
+
+      const observedSnapshotsDuringWrites: Array<
+        Array<{ user_id: string; rank: number; score: number }>
+      > = [];
+
+      mockDataSource.transaction.mockImplementationOnce(async (cb) => {
+        const manager = {
+          create: jest.fn((_, d) => d),
+          save: jest.fn(async () => {
+            const read = await service.getLeaderboard({ page: 1, limit: 20 });
+            observedSnapshotsDuringWrites.push(
+              read.data.map((e) => ({
+                user_id: e.user_id,
+                rank: e.rank,
+                score: e.reputation_score,
+              })),
+            );
+          }),
+          update: jest.fn(),
+        };
+        await cb(manager);
+      });
+
+      await service.recalculateRanks();
+
+      // Every single read performed after each individual row write inside the
+      // transaction must have observed the exact complete prior snapshot.
+      expect(observedSnapshotsDuringWrites).toHaveLength(3);
+      for (const observed of observedSnapshotsDuringWrites) {
+        expect(observed).toEqual([
+          { user_id: 'u1', rank: 1, score: 300 },
+          { user_id: 'u2', rank: 2, score: 200 },
+          { user_id: 'u3', rank: 3, score: 100 },
+        ]);
+      }
+
+      // Immediately after recalculateRanks resolves, the full new snapshot is active.
+      const finalBoard = await service.getLeaderboard({ page: 1, limit: 20 });
+      expect(
+        finalBoard.data.map((e) => ({
+          user_id: e.user_id,
+          rank: e.rank,
+          score: e.reputation_score,
+        })),
+      ).toEqual([
+        { user_id: 'u3', rank: 1, score: 400 },
+        { user_id: 'u2', rank: 2, score: 200 },
+        { user_id: 'u1', rank: 3, score: 100 },
+      ]);
+    });
+
+    it('preserves the prior snapshot if recomputation fails mid-transaction (#1932)', async () => {
+      const initialUsers: User[] = [
+        { ...mockUser, id: 'u1', reputation_score: 300 } as User,
+        { ...mockUser, id: 'u2', reputation_score: 200 } as User,
+      ];
+      mockUsersService.findAll.mockResolvedValueOnce(initialUsers);
+      mockDataSource.transaction.mockResolvedValueOnce(undefined);
+      await service.recalculateRanks();
+
+      const failingUsers: User[] = [
+        { ...mockUser, id: 'u1', reputation_score: 50 } as User,
+        { ...mockUser, id: 'u2', reputation_score: 900 } as User,
+      ];
+      mockUsersService.findAll.mockResolvedValueOnce(failingUsers);
+      mockDataSource.transaction.mockRejectedValueOnce(
+        new Error('DB deadlock during rank recompute'),
+      );
+
+      await expect(service.recalculateRanks()).rejects.toThrow(
+        'DB deadlock during rank recompute',
+      );
+
+      const boardAfterFailure = await service.getLeaderboard({
+        page: 1,
+        limit: 20,
+      });
+      expect(
+        boardAfterFailure.data.map((e) => ({
+          user_id: e.user_id,
+          rank: e.rank,
+          score: e.reputation_score,
+        })),
+      ).toEqual([
+        { user_id: 'u1', rank: 1, score: 300 },
+        { user_id: 'u2', rank: 2, score: 200 },
+      ]);
+    });
   });
 
   describe('getTopN', () => {
