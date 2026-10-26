@@ -9,6 +9,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -51,6 +52,7 @@ import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
 import { SearchService } from '../search/search.service';
+import { OddsBroadcasterService } from '../websocket/odds-broadcaster.service';
 import {
   PriceHistoryQueryDto,
   TimeRange,
@@ -69,6 +71,13 @@ export class MarketsService {
     string,
     { data: PredictionStatsDto[]; cachedAt: number }
   > = new Map();
+
+  /**
+   * Materialized per-market odds snapshots (#1502).
+   * Updated incrementally on prediction writes and replaced only on full
+   * reconciliation or cache warming.
+   */
+  private readonly oddsSnapshots = new Map<string, PredictionStatsDto[]>();
 
   private readonly PREDICTION_STATS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -93,6 +102,7 @@ export class MarketsService {
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
     @Inject(forwardRef(() => MarketSettlementScheduler))
     private readonly settlementScheduler: MarketSettlementScheduler,
+    @Optional() private readonly oddsBroadcaster?: OddsBroadcasterService,
   ) {}
 
   /**
@@ -159,14 +169,215 @@ export class MarketsService {
 
     const stats = Array.from(statsByOutcome.values());
 
-    // Cache the results
+    // Cache the results and keep the materialized odds snapshot synchronized
     this.predictionStatsCache.set(marketId, { data: stats, cachedAt: now });
+    await this.storeMaterializedOddsSnapshot(market.id, stats);
+    if (market.id !== marketId) {
+      this.oddsSnapshots.set(marketId, stats.map((entry) => ({ ...entry })));
+    }
 
     this.logger.log(
       `Retrieved prediction stats for market "${market.title}" (${marketId}) - ${stats.length} outcomes, ${predictions.length} total predictions`,
     );
 
     return stats;
+  }
+
+  /**
+   * Persist the materialized odds snapshot in memory, cache-manager (Redis),
+   * and the WebSocket OddsBroadcasterService without triggering extra DB reads.
+   */
+  private async storeMaterializedOddsSnapshot(
+    marketId: string,
+    stats: PredictionStatsDto[],
+  ): Promise<PredictionStatsDto[]> {
+    const cloned = stats.map((entry) => ({
+      outcome: entry.outcome,
+      count: entry.count,
+      total_staked_stroops: String(entry.total_staked_stroops),
+    }));
+    this.oddsSnapshots.set(marketId, cloned);
+    this.predictionStatsCache.set(marketId, {
+      data: cloned,
+      cachedAt: Date.now(),
+    });
+    this.oddsBroadcaster?.setSnapshot(marketId, cloned);
+    await this.cacheManager.set(
+      CACHE_WARMING_KEYS.marketOddsSnapshot(marketId),
+      cloned,
+    );
+    return cloned.map((entry) => ({ ...entry }));
+  }
+
+  /**
+   * Read the materialized per-market odds snapshot (#1502).
+   * Shares the exact same source of truth between `GET /public/markets/:id/odds`
+   * and WebSocket live-odds broadcasts.
+   */
+  async getOddsSnapshot(marketId: string): Promise<PredictionStatsDto[]> {
+    const broadcasterSnapshot = this.oddsBroadcaster?.getSnapshot(marketId);
+    if (broadcasterSnapshot) {
+      this.oddsSnapshots.set(
+        marketId,
+        broadcasterSnapshot.map((entry) => ({ ...entry })),
+      );
+      return broadcasterSnapshot;
+    }
+
+    const inMemory = this.oddsSnapshots.get(marketId);
+    if (inMemory) {
+      const cloned = inMemory.map((entry) => ({ ...entry }));
+      this.oddsBroadcaster?.setSnapshot(marketId, cloned);
+      return cloned;
+    }
+
+    const cached = await this.cacheManager.get<PredictionStatsDto[]>(
+      CACHE_WARMING_KEYS.marketOddsSnapshot(marketId),
+    );
+    if (cached && Array.isArray(cached)) {
+      const cloned = cached.map((entry) => ({ ...entry }));
+      this.oddsSnapshots.set(marketId, cloned);
+      this.oddsBroadcaster?.setSnapshot(marketId, cloned);
+      return cloned.map((entry) => ({ ...entry }));
+    }
+
+    return this.reconcileOddsSnapshot(marketId);
+  }
+
+  /**
+   * Incrementally update the materialized odds snapshot on a prediction write
+   * and broadcast from the materialized snapshot without querying the database.
+   */
+  async recordPredictionOddsWrite(
+    marketId: string,
+    chosenOutcome: string,
+    stakeAmountStroops: string | bigint,
+    outcomeOptions?: string[],
+  ): Promise<PredictionStatsDto[]> {
+    let current =
+      this.oddsBroadcaster?.getSnapshot(marketId) ??
+      this.oddsSnapshots.get(marketId);
+
+    if (!current) {
+      const cached = await this.cacheManager.get<PredictionStatsDto[]>(
+        CACHE_WARMING_KEYS.marketOddsSnapshot(marketId),
+      );
+      if (cached && Array.isArray(cached)) {
+        current = cached.map((entry) => ({ ...entry }));
+      }
+    }
+
+    if (!current) {
+      if (outcomeOptions?.length) {
+        current = outcomeOptions.map((outcome) => ({
+          outcome,
+          count: 0,
+          total_staked_stroops: '0',
+        }));
+      } else {
+        const market = await this.findByIdOrOnChainId(marketId);
+        current = market.outcome_options.map((outcome) => ({
+          outcome,
+          count: 0,
+          total_staked_stroops: '0',
+        }));
+      }
+    } else {
+      current = current.map((entry) => ({ ...entry }));
+    }
+
+    let matched = false;
+    for (const stat of current) {
+      if (stat.outcome === chosenOutcome) {
+        stat.count += 1;
+        stat.total_staked_stroops = String(
+          BigInt(stat.total_staked_stroops) + BigInt(stakeAmountStroops),
+        );
+        matched = true;
+        break;
+      }
+    }
+
+    if (!matched) {
+      current.push({
+        outcome: chosenOutcome,
+        count: 1,
+        total_staked_stroops: String(BigInt(stakeAmountStroops)),
+      });
+    }
+
+    const updated = await this.storeMaterializedOddsSnapshot(marketId, current);
+    this.oddsBroadcaster?.broadcastFromSnapshot(marketId);
+    return updated;
+  }
+
+  /**
+   * Perform a full reconciliation of a market's materialized odds snapshot from
+   * persisted predictions and replace the snapshot in memory, cache, and broadcaster.
+   */
+  async reconcileOddsSnapshot(
+    marketId: string,
+    preloadedMarket?: Market,
+  ): Promise<PredictionStatsDto[]> {
+    const market =
+      preloadedMarket ?? (await this.findByIdOrOnChainId(marketId));
+
+    const predictions = await this.predictionsRepository.find({
+      where: { market: { id: market.id } },
+      select: ['chosen_outcome', 'stake_amount_stroops'],
+    });
+
+    const statsByOutcome = new Map<string, PredictionStatsDto>();
+    for (const outcome of market.outcome_options) {
+      statsByOutcome.set(outcome, {
+        outcome,
+        count: 0,
+        total_staked_stroops: '0',
+      });
+    }
+
+    for (const prediction of predictions) {
+      const stat = statsByOutcome.get(prediction.chosen_outcome);
+      if (stat) {
+        stat.count += 1;
+        stat.total_staked_stroops = String(
+          BigInt(stat.total_staked_stroops) +
+            BigInt(prediction.stake_amount_stroops),
+        );
+      }
+    }
+
+    const stats = Array.from(statsByOutcome.values());
+    const stored = await this.storeMaterializedOddsSnapshot(market.id, stats);
+    if (market.id !== marketId) {
+      this.oddsSnapshots.set(marketId, stored.map((entry) => ({ ...entry })));
+    }
+    this.oddsBroadcaster?.reconcileSnapshot(market.id, stored);
+    return stored;
+  }
+
+  /**
+   * Warm materialized odds snapshots for active markets (or a specific list of
+   * market IDs) during cache warming.
+   */
+  async warmMarketOddsSnapshots(marketIds?: string[]): Promise<number> {
+    if (marketIds && marketIds.length > 0) {
+      for (const marketId of marketIds) {
+        await this.reconcileOddsSnapshot(marketId);
+      }
+      return marketIds.length;
+    }
+
+    const openMarkets = await this.marketsRepository.find({
+      where: { is_resolved: false, is_cancelled: false },
+      take: 200,
+    });
+
+    for (const market of openMarkets) {
+      await this.reconcileOddsSnapshot(market.id, market);
+    }
+
+    return openMarkets.length;
   }
 
   /**

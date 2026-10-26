@@ -47,6 +47,13 @@ export class OddsBroadcasterService implements OnModuleDestroy {
   /** Active trailing-edge throttle timers keyed by market_id. */
   private readonly throttleTimer = new Map<string, NodeJS.Timeout>();
 
+  /**
+   * Materialized per-market odds snapshots (#1502).
+   * Updated incrementally on prediction writes and replaced only on full
+   * reconciliation or cache warming.
+   */
+  private readonly marketSnapshots = new Map<string, PredictionStatsDto[]>();
+
   private readonly throttleMs: number;
 
   constructor(
@@ -111,11 +118,122 @@ export class OddsBroadcasterService implements OnModuleDestroy {
   }
 
   // ---------------------------------------------------------------------------
+  // Materialized Market Odds Snapshot (#1502)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Read the current materialized odds snapshot for a market without
+   * triggering a database query.
+   */
+  getSnapshot(marketId: string): PredictionStatsDto[] | undefined {
+    const current = this.marketSnapshots.get(marketId);
+    if (!current) {
+      return undefined;
+    }
+    return current.map((entry) => ({ ...entry }));
+  }
+
+  /**
+   * Replace the materialized odds snapshot for a market (used during cache
+   * warming or full reconciliation).
+   */
+  setSnapshot(
+    marketId: string,
+    odds: PredictionStatsDto[],
+  ): PredictionStatsDto[] {
+    const cloned = odds.map((entry) => ({
+      outcome: entry.outcome,
+      count: entry.count,
+      total_staked_stroops: String(entry.total_staked_stroops),
+    }));
+    this.marketSnapshots.set(marketId, cloned);
+    return this.getSnapshot(marketId)!;
+  }
+
+  /**
+   * Replace the materialized snapshot on full reconciliation and broadcast
+   * the reconciled snapshot to any active subscribers.
+   */
+  reconcileSnapshot(
+    marketId: string,
+    odds: PredictionStatsDto[],
+  ): PredictionStatsDto[] {
+    const updated = this.setSnapshot(marketId, odds);
+    this.broadcastFromSnapshot(marketId);
+    return updated;
+  }
+
+  /**
+   * Incrementally apply a single prediction write to the materialized
+   * per-market odds snapshot and broadcast the updated snapshot.
+   */
+  applyPredictionIncrement(
+    marketId: string,
+    chosenOutcome: string,
+    stakeAmountStroops: string | bigint,
+    outcomeOptions?: string[],
+  ): PredictionStatsDto[] {
+    let snapshot = this.marketSnapshots.get(marketId);
+
+    if (!snapshot) {
+      const initialOutcomes = outcomeOptions?.length
+        ? outcomeOptions
+        : [chosenOutcome];
+      snapshot = initialOutcomes.map((outcome) => ({
+        outcome,
+        count: 0,
+        total_staked_stroops: '0',
+      }));
+    } else {
+      snapshot = snapshot.map((entry) => ({ ...entry }));
+    }
+
+    let matched = false;
+    for (const entry of snapshot) {
+      if (entry.outcome === chosenOutcome) {
+        entry.count += 1;
+        entry.total_staked_stroops = String(
+          BigInt(entry.total_staked_stroops) + BigInt(stakeAmountStroops),
+        );
+        matched = true;
+        break;
+      }
+    }
+
+    if (!matched) {
+      snapshot.push({
+        outcome: chosenOutcome,
+        count: 1,
+        total_staked_stroops: String(BigInt(stakeAmountStroops)),
+      });
+    }
+
+    this.marketSnapshots.set(marketId, snapshot);
+    this.broadcastFromSnapshot(marketId);
+    return this.getSnapshot(marketId)!;
+  }
+
+  /**
+   * Broadcast a live-odds update directly from the materialized snapshot
+   * without querying the database.
+   */
+  broadcastFromSnapshot(marketId: string): void {
+    const snapshot = this.getSnapshot(marketId);
+    if (!snapshot) {
+      return;
+    }
+    this.broadcastOddsUpdate(marketId, snapshot);
+  }
+
+  // ---------------------------------------------------------------------------
   // Broadcast logic (called by MarketsService)
   // ---------------------------------------------------------------------------
 
   /**
    * Broadcast a live-odds update to subscribers of `market:{marketId}`.
+   *
+   * Reads from the materialized snapshot when `odds` is omitted, and updates
+   * the materialized snapshot when `odds` is provided.
    *
    * Uses a leading+trailing throttle:
    * - If no timer is active: emit immediately, then start the throttle window.
@@ -124,7 +242,15 @@ export class OddsBroadcasterService implements OnModuleDestroy {
    *
    * No-ops when there are no subscribers, avoiding unnecessary allocations.
    */
-  broadcastOddsUpdate(marketId: string, odds: PredictionStatsDto[]): void {
+  broadcastOddsUpdate(marketId: string, odds?: PredictionStatsDto[]): void {
+    const resolvedOdds = odds
+      ? this.setSnapshot(marketId, odds)
+      : this.getSnapshot(marketId);
+
+    if (!resolvedOdds) {
+      return;
+    }
+
     // Skip entirely when nobody is listening.
     if (!this.hasSubscribers(marketId)) {
       return;
@@ -132,7 +258,7 @@ export class OddsBroadcasterService implements OnModuleDestroy {
 
     const payload: OddsUpdatePayload = {
       market_id: marketId,
-      odds,
+      odds: resolvedOdds,
       timestamp: new Date().toISOString(),
     };
 
@@ -196,6 +322,7 @@ export class OddsBroadcasterService implements OnModuleDestroy {
     this.throttleTimer.clear();
     this.pendingBroadcast.clear();
     this.subscriberCount.clear();
+    this.marketSnapshots.clear();
   }
 
   // ---------------------------------------------------------------------------

@@ -47,6 +47,7 @@ describe('PublicMarketsController', () => {
   const marketsService = {
     findAllFiltered: jest.fn(),
     findByIdOrOnChainId: jest.fn(),
+    getOddsSnapshot: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -96,5 +97,32 @@ describe('PublicMarketsController', () => {
     await expect(controller.get(market.id)).rejects.toBeInstanceOf(
       NotFoundException,
     );
+  });
+
+  it('exposes the materialized odds snapshot via GET /public/markets/:id/odds', async () => {
+    const snapshot = [
+      { outcome: 'yes', count: 4, total_staked_stroops: '4000' },
+      { outcome: 'no', count: 2, total_staked_stroops: '2000' },
+    ];
+    marketsService.findByIdOrOnChainId.mockResolvedValue(market);
+    marketsService.getOddsSnapshot.mockResolvedValue(snapshot);
+
+    const result = await controller.getOdds(market.id);
+
+    expect(marketsService.findByIdOrOnChainId).toHaveBeenCalledWith(market.id);
+    expect(marketsService.getOddsSnapshot).toHaveBeenCalledWith(market.id);
+    expect(result).toEqual(snapshot);
+  });
+
+  it('rejects GET /public/markets/:id/odds for non-public markets', async () => {
+    marketsService.findByIdOrOnChainId.mockResolvedValue({
+      ...market,
+      is_public: false,
+    });
+
+    await expect(controller.getOdds(market.id)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(marketsService.getOddsSnapshot).not.toHaveBeenCalled();
   });
 });
