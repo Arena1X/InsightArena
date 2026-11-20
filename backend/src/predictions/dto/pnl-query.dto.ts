@@ -34,6 +34,24 @@ export class PnlQueryDto {
 
 // ──────────────── Response shape ────────────────
 
+/*
+ * Rounding policy
+ * ---------------
+ * P&L is computed and accumulated exclusively in integer stroops (bigint), so
+ * no rounding drift can build up across many predictions:
+ *
+ * 1. Each prediction's P&L is rounded once, to a whole stroop. Only the
+ *    implied value of an open position involves division; it is truncated
+ *    toward zero (bigint division).
+ * 2. Per-market and aggregate totals are exact bigint sums of those
+ *    per-prediction stroop values, so the per-market `*_stroops` fields always
+ *    sum exactly to the aggregate `*_stroops` fields.
+ * 3. Every `*_xlm` number is converted once, from its exact stroop total, via
+ *    the exact decimal representation (see `stroopsToXlm`). XLM values are
+ *    never summed or re-rounded from other XLM values. A zero total is
+ *    reported as exactly 0.
+ */
+
 export interface MarketPnlEntry {
   market_id: string;
   market_title: string;
@@ -43,6 +61,12 @@ export interface MarketPnlEntry {
   unrealized_pnl_xlm: number;
   /** Total staked in this market, in XLM */
   staked_xlm: number;
+  /** Exact realized P&L in stroops (signed decimal integer string) */
+  realized_pnl_stroops: string;
+  /** Exact unrealized P&L in stroops (signed decimal integer string) */
+  unrealized_pnl_stroops: string;
+  /** Exact total staked in this market, in stroops */
+  staked_stroops: string;
 }
 
 export interface PnlResponseDto {
@@ -52,6 +76,12 @@ export interface PnlResponseDto {
   unrealized_pnl_xlm: number;
   /** Total staked across all selected markets, in XLM */
   total_staked_xlm: number;
+  /** Exact total realized P&L in stroops (signed decimal integer string) */
+  realized_pnl_stroops: string;
+  /** Exact total unrealized P&L in stroops (signed decimal integer string) */
+  unrealized_pnl_stroops: string;
+  /** Exact total staked in stroops */
+  total_staked_stroops: string;
   /** Present only when breakdown=true */
   per_market?: MarketPnlEntry[];
 }

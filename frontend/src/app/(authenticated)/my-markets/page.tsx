@@ -1,9 +1,20 @@
 "use client";
 
-import { useState, useMemo, type ReactNode } from "react";
+import { useEffect, useState, useMemo, type ReactNode } from "react";
 import Link from "next/link";
 import { FileText, Bookmark, Search } from "lucide-react";
 import { EmptyState } from "@/component/ui/empty-state";
+import { formatXlm } from "@/component/PrizePoolSummary";
+import { useWallet } from "@/context/WalletContext";
+import {
+  aggregateCreatorMetrics,
+  getCreatorMarkets,
+  sortCreatorMarkets,
+  toCreatorMarketMetrics,
+  type CreatorMarketMetrics,
+  type CreatorMarketResolution,
+  type CreatorMarketSortKey,
+} from "@/lib/api";
 
 type MarketStatus = "Open" | "Resolved" | "Cancelled";
 type Tab = "All Markets" | "My Markets" | "Bookmarked";
@@ -54,6 +65,135 @@ const EMPTY_STATE_CONFIG: Record<Tab, { icon: ReactNode; title: string; descript
     description: "Try adjusting your search or filters.",
   },
 };
+
+const RESOLUTION_LABELS: Record<CreatorMarketResolution, { label: string; className: string }> = {
+  open: { label: "Open", className: STATUS_COLORS.Open },
+  resolved: { label: "Resolved", className: STATUS_COLORS.Resolved },
+  cancelled: { label: "Cancelled", className: STATUS_COLORS.Cancelled },
+};
+
+const CREATOR_SORT_OPTIONS: { key: CreatorMarketSortKey; label: string }[] = [
+  { key: "volume", label: "Volume" },
+  { key: "recent", label: "Recent" },
+];
+
+function CreatorAnalyticsPanel() {
+  const { address } = useWallet();
+  const [markets, setMarkets] = useState<CreatorMarketMetrics[]>([]);
+  const [status, setStatus] = useState<"idle" | "loading" | "error" | "ready">("idle");
+  const [sortKey, setSortKey] = useState<CreatorMarketSortKey>("volume");
+
+  useEffect(() => {
+    if (!address) {
+      setStatus("idle");
+      setMarkets([]);
+      return;
+    }
+    const controller = new AbortController();
+    setStatus("loading");
+    getCreatorMarkets(address, { signal: controller.signal })
+      .then((res) => {
+        setMarkets(res.data.map(toCreatorMarketMetrics));
+        setStatus("ready");
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setStatus("error");
+      });
+    return () => controller.abort();
+  }, [address]);
+
+  const totals = useMemo(() => aggregateCreatorMetrics(markets), [markets]);
+  const sorted = useMemo(() => sortCreatorMarkets(markets, sortKey), [markets, sortKey]);
+
+  if (!address) {
+    return (
+      <section aria-label="Creator analytics" className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-gray-400">
+        Connect your wallet to see analytics for the markets you created.
+      </section>
+    );
+  }
+
+  return (
+    <section aria-label="Creator analytics" className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-white">Creator Analytics</h2>
+        <div className="flex gap-1 rounded-lg bg-white/5 p-1" role="group" aria-label="Sort created markets">
+          {CREATOR_SORT_OPTIONS.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              onClick={() => setSortKey(option.key)}
+              aria-pressed={sortKey === option.key}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                sortKey === option.key ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <dl className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm" data-testid="creator-totals">
+        <div className="rounded-lg border border-white/10 bg-black/10 px-3 py-2">
+          <dt className="text-gray-400">Total volume</dt>
+          <dd className="mt-1 font-semibold text-white" data-testid="total-volume">{formatXlm(totals.volumeXlm)}</dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-black/10 px-3 py-2">
+          <dt className="text-gray-400">Participants</dt>
+          <dd className="mt-1 font-semibold text-white" data-testid="total-participants">{totals.participants.toLocaleString()}</dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-black/10 px-3 py-2">
+          <dt className="text-gray-400">Fees earned</dt>
+          <dd className="mt-1 font-semibold text-white" data-testid="total-fees">{formatXlm(totals.feesEarnedXlm)}</dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-black/10 px-3 py-2">
+          <dt className="text-gray-400">Resolved</dt>
+          <dd className="mt-1 font-semibold text-white" data-testid="total-resolved">
+            {totals.resolvedCount} / {totals.marketCount}
+          </dd>
+        </div>
+      </dl>
+
+      {status === "loading" && <p className="text-sm text-gray-400">Loading market metrics…</p>}
+      {status === "error" && <p className="text-sm text-red-400" role="alert">Couldn&apos;t load market metrics.</p>}
+      {status === "ready" && sorted.length === 0 && (
+        <p className="text-sm text-gray-400">You haven&apos;t created any markets yet.</p>
+      )}
+
+      {sorted.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-xs uppercase text-gray-500">
+              <tr>
+                <th className="py-2 pr-3 font-medium">Market</th>
+                <th className="py-2 pr-3 font-medium">Volume</th>
+                <th className="py-2 pr-3 font-medium">Participants</th>
+                <th className="py-2 pr-3 font-medium">Fees earned</th>
+                <th className="py-2 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((market) => (
+                <tr key={market.id} data-testid="creator-market-row" className="border-t border-white/5 text-gray-300">
+                  <td className="py-2 pr-3 text-white">{market.title}</td>
+                  <td className="py-2 pr-3">{formatXlm(market.volumeXlm)}</td>
+                  <td className="py-2 pr-3">{market.participants.toLocaleString()}</td>
+                  <td className="py-2 pr-3">{formatXlm(market.feesEarnedXlm)}</td>
+                  <td className="py-2">
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${RESOLUTION_LABELS[market.resolutionStatus].className}`}>
+                      {RESOLUTION_LABELS[market.resolutionStatus].label}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
 
 export default function MarketsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("All Markets");
@@ -138,6 +278,8 @@ export default function MarketsPage() {
           {["Newest", "Popular", "Ending Soon"].map((s) => <option key={s}>{s}</option>)}
         </select>
       </div>
+
+      {activeTab === "My Markets" && <CreatorAnalyticsPanel />}
 
       {/* Empty State */}
       {isEmpty && (

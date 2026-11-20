@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Users,
@@ -13,6 +13,8 @@ import {
   ArrowRight,
   Swords,
   Clock,
+  Ban,
+  TimerOff,
 } from "lucide-react";
 import { FaTwitter, FaTelegram, FaWhatsapp } from "react-icons/fa";
 
@@ -26,6 +28,40 @@ import type {
   EventStatus,
   MatchOutcome,
 } from "@/context/CreatorEventsContext";
+
+/**
+ * The distinct states an invite code can resolve to once the event behind it
+ * is found. `valid` means the invite can still be actioned; every other
+ * variant renders its own terminal message instead of the join flow.
+ */
+export type InviteCodeState = "valid" | "expired" | "cancelled" | "max_used";
+
+/**
+ * Classifies a resolved invite code into a specific, user-facing state.
+ *
+ * - `cancelled`: the creator cancelled the event — the invite is invalid.
+ * - `expired`: the event's window (`endsAt`) has already passed.
+ * - `max_used`: the event is at capacity, so the invite can no longer be
+ *   redeemed for a new join (existing participants can still view it).
+ * - `valid`: none of the above — the invite can be acted on normally.
+ *
+ * Order matters: a cancelled event is reported as cancelled even if it also
+ * happens to be past its end date or full, since "the creator pulled this"
+ * is the more actionable explanation for the visitor.
+ */
+export function getInviteCodeState(
+  event: Pick<CreatorEvent, "status" | "endsAt" | "participants" | "maxParticipants">,
+  now: Date = new Date(),
+): InviteCodeState {
+  if (event.status === "Cancelled") return "cancelled";
+  if (event.endsAt && new Date(event.endsAt).getTime() <= now.getTime()) {
+    return "expired";
+  }
+  if (event.maxParticipants > 0 && event.participants >= event.maxParticipants) {
+    return "max_used";
+  }
+  return "valid";
+}
 
 const STATUS_STYLES: Record<EventStatus, string> = {
   Active: "bg-emerald-500/10 text-emerald-300 border-emerald-500/20",
@@ -292,10 +328,102 @@ export default function InvitePreview({ code }: InvitePreviewProps) {
 
   if (!event) return null;
 
+  const isAlreadyJoined = event.joined ?? false;
+  const inviteCodeState = getInviteCodeState(event);
+
+  // Already-joined participants can still open the event even once its
+  // invite link is no longer redeemable (expired / full); only a fresh
+  // visitor hits the terminal dead-end states below.
+  if (!isAlreadyJoined && inviteCodeState === "cancelled") {
+    return (
+      <div
+        className="flex min-h-[60vh] flex-col items-center justify-center px-4 text-center"
+        data-testid="invite-state-cancelled"
+      >
+        <div className="rounded-full border border-rose-500/20 bg-rose-500/10 p-4">
+          <Ban className="h-10 w-10 text-rose-400" />
+        </div>
+        <h1 className="mt-6 text-3xl font-semibold text-white">
+          Event Cancelled
+        </h1>
+        <p className="mt-3 max-w-sm text-slate-400">
+          &ldquo;{event.title}&rdquo; was cancelled by its creator. This invite
+          link is no longer active.
+        </p>
+        <Button
+          variant="outline"
+          className="mt-8 border-white/10 text-white hover:border-white/30"
+          onClick={() => router.push("/")}
+        >
+          Back to Home
+        </Button>
+      </div>
+    );
+  }
+
+  if (!isAlreadyJoined && inviteCodeState === "expired") {
+    return (
+      <div
+        className="flex min-h-[60vh] flex-col items-center justify-center px-4 text-center"
+        data-testid="invite-state-expired"
+      >
+        <div className="rounded-full border border-rose-500/20 bg-rose-500/10 p-4">
+          <TimerOff className="h-10 w-10 text-rose-400" />
+        </div>
+        <h1 className="mt-6 text-3xl font-semibold text-white">
+          Invite Expired
+        </h1>
+        <p className="mt-3 max-w-sm text-slate-400">
+          &ldquo;{event.title}&rdquo; ended on{" "}
+          {new Date(event.endsAt).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+          })}
+          . This invite link can no longer be used to join.
+        </p>
+        <Button
+          variant="outline"
+          className="mt-8 border-white/10 text-white hover:border-white/30"
+          onClick={() => router.push("/")}
+        >
+          Back to Home
+        </Button>
+      </div>
+    );
+  }
+
+  if (!isAlreadyJoined && inviteCodeState === "max_used") {
+    return (
+      <div
+        className="flex min-h-[60vh] flex-col items-center justify-center px-4 text-center"
+        data-testid="invite-state-max-used"
+      >
+        <div className="rounded-full border border-orange-500/20 bg-orange-500/10 p-4">
+          <Users className="h-10 w-10 text-orange-400" />
+        </div>
+        <h1 className="mt-6 text-3xl font-semibold text-white">
+          Event Full
+        </h1>
+        <p className="mt-3 max-w-sm text-slate-400">
+          &ldquo;{event.title}&rdquo; has reached its maximum of{" "}
+          {event.maxParticipants} participants. This invite link can no
+          longer be used to join.
+        </p>
+        <Button
+          variant="outline"
+          className="mt-8 border-white/10 text-white hover:border-white/30"
+          onClick={() => router.push("/")}
+        >
+          Back to Home
+        </Button>
+      </div>
+    );
+  }
+
   const isFull =
     event.status === "Active" && event.participants >= event.maxParticipants;
   const isCancelled = event.status === "Cancelled";
-  const isAlreadyJoined = event.joined ?? false;
 
   const StatusIcon = STATUS_ICONS[event.status];
 
@@ -405,6 +533,7 @@ export default function InvitePreview({ code }: InvitePreviewProps) {
                   size="lg"
                   className="w-full rounded-full sm:w-auto"
                   onClick={openConnectModal}
+                  data-testid="invite-connect-wallet-cta"
                 >
                   Connect Wallet to Join
                   <ArrowRight className="h-4 w-4" />
@@ -414,6 +543,7 @@ export default function InvitePreview({ code }: InvitePreviewProps) {
                   size="lg"
                   className="w-full rounded-full sm:w-auto"
                   onClick={handleViewEvent}
+                  data-testid="invite-view-event-cta"
                 >
                   <Trophy className="h-4 w-4" />
                   View Event
@@ -425,6 +555,7 @@ export default function InvitePreview({ code }: InvitePreviewProps) {
                   className="w-full rounded-full sm:w-auto"
                   disabled={isFull || isJoining}
                   onClick={handleJoin}
+                  data-testid="invite-join-cta"
                 >
                   {isJoining ? "Joining…" : "Join Event"}
                   {!isJoining && <ArrowRight className="h-4 w-4" />}

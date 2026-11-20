@@ -343,6 +343,58 @@ describe('WebhookService', () => {
     });
   });
 
+  // ── Replay protection (#1930) ─────────────────────────────────────────────
+
+  describe('replay protection', () => {
+    const buildDto = (
+      overrides: Partial<WebhookMatchResultDto> = {},
+    ): WebhookMatchResultDto => ({
+      match_id: '123',
+      winning_team: WinningTeam.TEAM_A,
+      confidence_score: 95,
+      data_source: 'https://api.example.com/match/123',
+      timestamp: new Date().toISOString(),
+      event_id: `evt-${Math.random().toString(36).slice(2)}`,
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      jest
+        .spyOn(service as any, 'simulateOracleSubmission')
+        .mockResolvedValue(undefined);
+    });
+
+    it('accepts a payload within the window with an unseen event id', async () => {
+      const dto = buildDto({ event_id: 'evt-unseen-1' });
+
+      const result = await service.processMatchResult(dto);
+
+      expect(result.status).toBe('accepted');
+    });
+
+    it('rejects a replayed payload with a seen event id', async () => {
+      const dto = buildDto({ event_id: 'evt-replayed-1' });
+
+      const first = await service.processMatchResult(dto);
+      expect(first.status).toBe('accepted');
+
+      await expect(service.processMatchResult(dto)).rejects.toThrow(
+        ConflictException,
+      );
+    });
+
+    it('rejects a payload with an expired timestamp', async () => {
+      const dto = buildDto({
+        event_id: 'evt-expired-1',
+        timestamp: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      });
+
+      await expect(service.processMatchResult(dto)).rejects.toThrow(
+        ConflictException,
+      );
+    });
+  });
+
   describe('reviewSubmission', () => {
     const heldSubmission = {
       id: 'sub-held',

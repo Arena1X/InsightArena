@@ -4,8 +4,10 @@ import {
   Column,
   CreateDateColumn,
   Index,
+  BeforeUpdate,
 } from 'typeorm';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ForbiddenException } from '@nestjs/common';
 
 @Entity('admin_audit_logs')
 @Index(['actor_id'])
@@ -44,4 +46,15 @@ export class AdminAuditLog {
   @CreateDateColumn({ type: 'timestamptz' })
   @ApiProperty()
   created_at: Date;
+
+  /**
+   * Prevents any updates to audit log entries.
+   * Audit logs are append-only for security and compliance.
+   */
+  @BeforeUpdate()
+  preventUpdate(): never {
+    throw new ForbiddenException(
+      'Audit log entries are immutable and cannot be modified',
+    );
+  }
 }

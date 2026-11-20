@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   Check,
   ChevronRight,
+  ChevronUp,
+  ChevronDown,
   Loader2,
   AlertCircle,
   X,
@@ -12,7 +14,8 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { Button } from "@/component/ui/button";
-import { validators } from "@/lib/validators";
+import { validators, validateOutcomes } from "@/lib/validators";
+import MarketCard from "@/component/MarketCard";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -206,10 +209,7 @@ export default function CreateMarketForm() {
       }
       case "outcomes": {
         if (draft.outcomeMode === "multi") {
-          if (draft.outcomes.length < 2) return "Add at least 2 outcomes.";
-          if (new Set(draft.outcomes.map((o) => o.trim().toLowerCase())).size !== draft.outcomes.length)
-            return "Outcomes must be distinct.";
-          if (draft.outcomes.some((o) => !o.trim())) return "Outcomes cannot be empty.";
+          return validateOutcomes(draft.outcomes) || "";
         }
         return "";
       }
@@ -269,8 +269,9 @@ export default function CreateMarketForm() {
     } else if (endDt && new Date(resDt) < new Date(endDt)) {
       errs.resolutionDate = "Resolution date must be on or after the close date.";
     }
-    if (draft.outcomeMode === "multi" && draft.outcomes.length < 2) {
-      errs.outcomes = "Add at least 2 outcomes.";
+    if (draft.outcomeMode === "multi") {
+      const outcomesError = validateOutcomes(draft.outcomes);
+      if (outcomesError) errs.outcomes = outcomesError;
     }
     setErrors(errs);
     return Object.keys(errs).length === 0;
@@ -315,9 +316,23 @@ export default function CreateMarketForm() {
   // ── Outcome chip helpers ────────────────────────────────────────────────────
 
   function addOutcome() {
-    const val = outcomeInput.trim();
-    if (!val || draft.outcomes.includes(val) || draft.outcomes.length >= 10) return;
-    patch({ outcomes: [...draft.outcomes, val] });
+    const trimmed = outcomeInput.trim();
+    if (!trimmed) {
+      setErrors((prev) => ({ ...prev, outcomes: "Outcome label cannot be empty." }));
+      return;
+    }
+    if (draft.outcomes.length >= 10) {
+      setErrors((prev) => ({ ...prev, outcomes: "You can add up to 10 outcomes." }));
+      return;
+    }
+    const isDuplicate = draft.outcomes.some(
+      (o) => o.trim().toLowerCase() === trimmed.toLowerCase(),
+    );
+    if (isDuplicate) {
+      setErrors((prev) => ({ ...prev, outcomes: "That outcome already exists." }));
+      return;
+    }
+    patch({ outcomes: [...draft.outcomes, trimmed] });
     setOutcomeInput("");
     setErrors((prev) => ({ ...prev, outcomes: "" }));
   }
@@ -325,6 +340,14 @@ export default function CreateMarketForm() {
   function removeOutcome(idx: number) {
     patch({ outcomes: draft.outcomes.filter((_, i) => i !== idx) });
     setErrors((prev) => ({ ...prev, outcomes: "" }));
+  }
+
+  function moveOutcome(idx: number, direction: -1 | 1) {
+    const nextIdx = idx + direction;
+    if (nextIdx < 0 || nextIdx >= draft.outcomes.length) return;
+    const next = [...draft.outcomes];
+    [next[idx], next[nextIdx]] = [next[nextIdx], next[idx]];
+    patch({ outcomes: next });
   }
 
   // ── Submit (mock) ───────────────────────────────────────────────────────────
@@ -348,6 +371,21 @@ export default function CreateMarketForm() {
   }
 
   const todayStr = new Date().toISOString().slice(0, 10);
+
+  const previewMarket = useMemo(
+    () => ({
+      id: "preview",
+      title: draft.title.trim() || "Your market title will appear here",
+      category: draft.category || "Uncategorized",
+      probability: 0.5,
+      totalStaked: parseFloat(draft.creatorLiquiditySeed) || 0,
+      closeAt: draft.endDate
+        ? `${draft.endDate}T${draft.endClock || "23:59"}`
+        : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      status: "upcoming",
+    }),
+    [draft.title, draft.category, draft.creatorLiquiditySeed, draft.endDate, draft.endClock],
+  );
 
   function formatDatetime(date: string, clock: string): string {
     if (!date) return "—";
@@ -630,24 +668,49 @@ export default function CreateMarketForm() {
             {draft.outcomeMode === "multi" && (
               <div className="space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4">
                 <p className="text-xs text-slate-500">Add 2–10 outcomes</p>
-                <div className="flex flex-wrap gap-2">
+                <div className="space-y-2">
                   {draft.outcomes.map((o, i) => (
-                    <span
+                    <div
                       key={i}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-slate-800 px-3 py-1 text-sm text-white"
+                      className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-800 px-3 py-2"
                     >
-                      {o}
-                      <button
-                        type="button"
-                        onClick={() => removeOutcome(i)}
-                        aria-label={`Remove outcome ${o}`}
-                        className="text-slate-500 hover:text-rose-400 transition"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
+                      <span className="flex-1 truncate text-sm text-white">{o}</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => moveOutcome(i, -1)}
+                          disabled={i === 0}
+                          aria-label={`Move ${o} up`}
+                          className="rounded p-1 text-slate-400 transition hover:text-white disabled:opacity-30 disabled:hover:text-slate-400"
+                        >
+                          <ChevronUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveOutcome(i, 1)}
+                          disabled={i === draft.outcomes.length - 1}
+                          aria-label={`Move ${o} down`}
+                          className="rounded p-1 text-slate-400 transition hover:text-white disabled:opacity-30 disabled:hover:text-slate-400"
+                        >
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeOutcome(i)}
+                          aria-label={`Remove outcome ${o}`}
+                          className="rounded p-1 text-slate-500 transition hover:text-rose-400"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
                   ))}
                 </div>
+                {draft.outcomes.length < 2 && (
+                  <p className="text-xs text-slate-500">
+                    Add at least 2 outcomes to continue.
+                  </p>
+                )}
                 {draft.outcomes.length < 10 && (
                   <div className="flex gap-2">
                     <input
@@ -677,6 +740,12 @@ export default function CreateMarketForm() {
             {draft.outcomeMode === "binary" && (
               <FieldError msg={errors.outcomes} id="outcomes-error" />
             )}
+          </div>
+
+          {/* Live preview */}
+          <div className="space-y-3">
+            <p className="text-sm font-medium text-slate-300">Live Preview</p>
+            <MarketCard market={previewMarket} onPredict={() => {}} preview />
           </div>
 
           <div className="flex items-center justify-between pt-2">

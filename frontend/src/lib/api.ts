@@ -215,19 +215,111 @@ async function request<T>(
 // ---------------------------------------------------------------------------
 
 export const apiClient = {
-  get: <T>(path: string, options?: ApiOptions) =>
-    request<T>(path, 'GET', options),
-  post: <T>(path: string, body?: unknown, options?: ApiOptions) =>
-    request<T>(path, 'POST', { ...options, body }),
-  patch: <T>(path: string, body?: unknown, options?: ApiOptions) =>
-    request<T>(path, 'PATCH', { ...options, body }),
-  delete: <T>(path: string, options?: ApiOptions) =>
-    request<T>(path, 'DELETE', options),
+  get: <T>(path: string, options?: ApiOptions) => request<T>(path, 'GET', options),
+  post: <T>(path: string, body?: unknown, options?: ApiOptions) => request<T>(path, 'POST', { ...options, body }),
+  patch: <T>(path: string, body?: unknown, options?: ApiOptions) => request<T>(path, 'PATCH', { ...options, body }),
+  delete: <T>(path: string, options?: ApiOptions) => request<T>(path, 'DELETE', options),
 };
 
+/**
+ * Lightweight reachability check for third-party tool URLs (e.g. the
+ * External Tools page). Third-party origins generally don't send CORS
+ * headers, so responses are read in 'no-cors' mode: we can't inspect the
+ * status code, but a resolved fetch still tells us the host is reachable.
+ */
+export type ToolHealthStatus = 'online' | 'offline' | 'unknown';
+
+export interface ToolHealthResult {
+  status: ToolHealthStatus;
+  checkedAt: number;
+}
+
+const TOOL_HEALTH_CACHE_TTL_MS = 60_000;
+const TOOL_HEALTH_CHECK_TIMEOUT_MS = 5_000;
+
+const toolHealthCache = new Map<string, ToolHealthResult>();
+
+function isCacheFresh(result: ToolHealthResult, now: number): boolean {
+  return now - result.checkedAt < TOOL_HEALTH_CACHE_TTL_MS;
+}
+
+async function pingUrl(url: string, timeoutMs: number): Promise<ToolHealthStatus> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    await fetch(url, {
+      method: 'HEAD',
+      mode: 'no-cors',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    return 'online';
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return 'unknown';
+    }
+    return 'offline';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Checks whether a tool's URL is reachable, serving a cached result if one
+ * was fetched within TOOL_HEALTH_CACHE_TTL_MS. Never throws: an unexpected
+ * error resolves to an 'unknown' status so callers never need a try/catch.
+ */
+export async function checkToolHealth(
+  url: string,
+  options: { timeoutMs?: number; force?: boolean } = {}
+): Promise<ToolHealthResult> {
+  const { timeoutMs = TOOL_HEALTH_CHECK_TIMEOUT_MS, force = false } = options;
+  const now = Date.now();
+  const cached = toolHealthCache.get(url);
+
+  if (!force && cached && isCacheFresh(cached, now)) {
+    return cached;
+  }
+
+  let status: ToolHealthStatus;
+  try {
+    status = await pingUrl(url, timeoutMs);
+  } catch {
+    status = 'unknown';
+  }
+
+  const result: ToolHealthResult = { status, checkedAt: Date.now() };
+  toolHealthCache.set(url, result);
+  return result;
+}
+
+/** Test-only escape hatch to reset module-level cache between test cases. */
+export function resetToolHealthCache(): void {
+  toolHealthCache.clear();
+}
+
+export { TOOL_HEALTH_CACHE_TTL_MS };
+
 // ---------------------------------------------------------------------------
-// Profile completeness
+// Profile completeness & Public Profile
 // ---------------------------------------------------------------------------
+
+export interface PublicProfileStats {
+  totalPredictions: number;
+  accuracyRate: string | number;
+  bestSeason: string;
+  currentStreak: number;
+  isPrivate?: boolean;
+}
+
+export interface PublicUserProfile {
+  address: string;
+  username?: string;
+  joinedDate?: string;
+  isPrivate?: boolean;
+  stats?: PublicProfileStats;
+}
 
 export interface ProfileFieldValues {
   username?: string;
@@ -254,6 +346,28 @@ export function getMissingProfileFields(
   if (!user) return REQUIRED_PROFILE_FIELDS;
   return REQUIRED_PROFILE_FIELDS.filter((field) => !user[field.key]?.trim());
 }
+
+/** `GET /api/users/profile/:address` */
+export function getPublicProfile(
+  address: string,
+  options?: ApiOptions,
+): Promise<PublicUserProfile> {
+  return apiClient.get<PublicUserProfile>(
+    `/api/users/profile/${encodeURIComponent(address)}`,
+    options,
+  );
+}
+
+/** Helper to determine if a public profile is hidden/private */
+export function isProfilePrivate(profile?: Partial<PublicUserProfile> | null): boolean {
+  if (!profile) return false;
+  if (profile.isPrivate) return true;
+  if (profile.address && (profile.address.toLowerCase().startsWith('private-') || profile.address.toLowerCase().includes('hidden'))) {
+    return true;
+  }
+  return false;
+}
+
 
 // ---------------------------------------------------------------------------
 // Course completion
@@ -532,5 +646,285 @@ export function flagAdminUser(
     '/api/admin/users/bulk-action',
     { user_ids: [id], action: 'flag', reason },
     { ...options, headers: { ...adminHeaders(token), ...options?.headers } },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Markets list — filter chips & sort (#1582)
+// ---------------------------------------------------------------------------
+
+export interface MarketListItem {
+  id: string;
+  title: string;
+  category: string;
+  probability: number;
+  totalStaked: number;
+  closeAt: string;
+  status: string;
+  createdAt?: string;
+}
+
+export type MarketSortKey = 'volume' | 'newest' | 'closing';
+
+export const MARKET_SORT_OPTIONS: { key: MarketSortKey; label: string }[] = [
+  { key: 'volume', label: 'Volume' },
+  { key: 'newest', label: 'Newest' },
+  { key: 'closing', label: 'Closing Soon' },
+];
+
+const ENDING_SOON_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** True when `closeAt` falls within the "ending soon" window relative to `now`. */
+export function isEndingSoon(closeAt: string, now: number = Date.now()): boolean {
+  const closeTime = new Date(closeAt).getTime();
+  if (Number.isNaN(closeTime)) return false;
+  const diff = closeTime - now;
+  return diff > 0 && diff <= ENDING_SOON_WINDOW_MS;
+}
+
+/** Sorts markets by the given key. Returns a new array; never mutates the input. */
+export function sortMarkets<T extends MarketListItem>(markets: T[], sortKey: MarketSortKey): T[] {
+  const sorted = [...markets];
+  switch (sortKey) {
+    case 'volume':
+      sorted.sort((a, b) => b.totalStaked - a.totalStaked);
+      break;
+    case 'newest':
+      sorted.sort((a, b) => {
+        const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bTime - aTime;
+      });
+      break;
+    case 'closing':
+      sorted.sort((a, b) => new Date(a.closeAt).getTime() - new Date(b.closeAt).getTime());
+      break;
+  }
+  return sorted;
+}
+
+// ---------------------------------------------------------------------------
+// Notification preferences (#1551)
+// ---------------------------------------------------------------------------
+
+export interface NotificationPreferences {
+  predictions: boolean;
+  rewards: boolean;
+  disputes: boolean;
+  digests: boolean;
+}
+
+export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  predictions: true,
+  rewards: true,
+  disputes: true,
+  digests: false,
+};
+
+/** `GET /api/users/preferences/notifications` */
+export async function getNotificationPreferences(
+  options?: ApiOptions,
+): Promise<NotificationPreferences> {
+  return apiClient.get<NotificationPreferences>(
+    '/api/users/preferences/notifications',
+    options,
+  );
+}
+
+/** `PATCH /api/users/preferences/notifications` */
+export async function updateNotificationPreferences(
+  preferences: NotificationPreferences,
+  options?: ApiOptions,
+): Promise<NotificationPreferences> {
+  return apiClient.patch<NotificationPreferences>(
+    '/api/users/preferences/notifications',
+    preferences,
+    options,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Watchlist bookmarks (#1550)
+// ---------------------------------------------------------------------------
+
+export interface UserBookmarkItem {
+  id: string;
+  market: { id: string };
+  created_at?: string;
+}
+
+export interface PaginatedUserBookmarksResponse {
+  data: UserBookmarkItem[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+/** `GET /api/users/me/bookmarks` */
+export function getFavoriteBookmarks(
+  options?: ApiOptions,
+): Promise<PaginatedUserBookmarksResponse> {
+  return apiClient.get<PaginatedUserBookmarksResponse>(
+    '/api/users/me/bookmarks?limit=50',
+    options,
+  );
+}
+
+/** `POST /api/users/me/bookmarks` */
+export function addFavoriteBookmark(
+  marketId: string,
+  options?: ApiOptions,
+): Promise<UserBookmarkItem> {
+  return apiClient.post<UserBookmarkItem>(
+    '/api/users/me/bookmarks',
+    { market_id: marketId },
+    options,
+  );
+}
+
+/** `DELETE /api/users/me/bookmarks/:id` */
+export function removeFavoriteBookmark(
+  bookmarkId: string,
+  options?: ApiOptions,
+): Promise<{ success: true }> {
+  return apiClient.delete<{ success: true }>(
+    `/api/users/me/bookmarks/${bookmarkId}`,
+    options,
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Creator market analytics (#1557)
+// ---------------------------------------------------------------------------
+
+/** Mirrors the market rows returned by `GET /api/users/:address/markets`. */
+export interface CreatorMarketResponse {
+  id: string;
+  title: string;
+  category?: string;
+  total_pool_stroops: string;
+  participant_count: number;
+  is_resolved: boolean;
+  is_cancelled: boolean;
+  created_at: string;
+  /** Not persisted on the market entity today; falls back to the default. */
+  creator_fee_bps?: number;
+}
+
+export interface PaginatedCreatorMarketsResponse {
+  data: CreatorMarketResponse[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export type CreatorMarketResolution = 'open' | 'resolved' | 'cancelled';
+
+export interface CreatorMarketMetrics {
+  id: string;
+  title: string;
+  volumeXlm: number;
+  participants: number;
+  feesEarnedXlm: number;
+  resolutionStatus: CreatorMarketResolution;
+  createdAt: string;
+}
+
+export interface CreatorMarketTotals {
+  marketCount: number;
+  volumeXlm: number;
+  participants: number;
+  feesEarnedXlm: number;
+  resolvedCount: number;
+}
+
+export type CreatorMarketSortKey = 'volume' | 'recent';
+
+/** Default creator fee applied at market creation (1%). */
+export const DEFAULT_CREATOR_FEE_BPS = 100;
+
+const STROOPS_PER_XLM = 10_000_000;
+
+function getCreatorMarketResolution(market: CreatorMarketResponse): CreatorMarketResolution {
+  if (market.is_cancelled) return 'cancelled';
+  if (market.is_resolved) return 'resolved';
+  return 'open';
+}
+
+/**
+ * Derives per-market creator metrics. Fees are only counted as earned once a
+ * market resolves — open markets have not paid out and cancelled markets are
+ * refunded in full.
+ */
+export function toCreatorMarketMetrics(market: CreatorMarketResponse): CreatorMarketMetrics {
+  const volumeXlm = Number(market.total_pool_stroops) / STROOPS_PER_XLM || 0;
+  const resolutionStatus = getCreatorMarketResolution(market);
+  const feeBps = market.creator_fee_bps ?? DEFAULT_CREATOR_FEE_BPS;
+  return {
+    id: market.id,
+    title: market.title,
+    volumeXlm,
+    participants: market.participant_count,
+    feesEarnedXlm: resolutionStatus === 'resolved' ? (volumeXlm * feeBps) / 10_000 : 0,
+    resolutionStatus,
+    createdAt: market.created_at,
+  };
+}
+
+/** Sums per-market metrics into the header totals. */
+export function aggregateCreatorMetrics(markets: CreatorMarketMetrics[]): CreatorMarketTotals {
+  return markets.reduce<CreatorMarketTotals>(
+    (totals, market) => ({
+      marketCount: totals.marketCount + 1,
+      volumeXlm: totals.volumeXlm + market.volumeXlm,
+      participants: totals.participants + market.participants,
+      feesEarnedXlm: totals.feesEarnedXlm + market.feesEarnedXlm,
+      resolvedCount: totals.resolvedCount + (market.resolutionStatus === 'resolved' ? 1 : 0),
+    }),
+    { marketCount: 0, volumeXlm: 0, participants: 0, feesEarnedXlm: 0, resolvedCount: 0 },
+  );
+}
+
+/** Sorts creator markets by volume or recency. Returns a new array. */
+export function sortCreatorMarkets(
+  markets: CreatorMarketMetrics[],
+  sortKey: CreatorMarketSortKey,
+): CreatorMarketMetrics[] {
+  const sorted = [...markets];
+  if (sortKey === 'volume') {
+    sorted.sort((a, b) => b.volumeXlm - a.volumeXlm);
+  } else {
+    sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+  return sorted;
+}
+
+/** `GET /api/users/:address/markets` — markets created by `address`. */
+export function getCreatorMarkets(
+  address: string,
+  options?: ApiOptions,
+): Promise<PaginatedCreatorMarketsResponse> {
+  return apiClient.get<PaginatedCreatorMarketsResponse>(
+    `/api/users/${encodeURIComponent(address)}/markets?limit=50`,
+    options,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /api/notifications/mark-all-read` — marks all notifications as read.
+ * Integration point: once the backend adds this endpoint, the call will succeed.
+ */
+export async function markAllNotificationsAsRead(
+  options?: ApiOptions,
+): Promise<void> {
+  return apiClient.post<void>(
+    '/api/notifications/mark-all-read',
+    undefined,
+    options,
   );
 }

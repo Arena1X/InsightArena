@@ -8,6 +8,8 @@ import { InteractiveChart, type ChartSeries } from "@/component/ui/interactive-c
 import { Button } from "@/component/ui/button";
 import { Badge } from "@/component/ui/badge";
 import { Skeleton } from "@/component/ui/skeleton";
+import MarketDisputePanel from "@/component/markets/MarketDisputePanel";
+import { MarketDetailSkeleton } from "@/component/markets/MarketDetailSkeleton";
 import { ArrowLeft, AlertCircle, TrendingUp, Zap } from "lucide-react";
 
 interface MarketDetail {
@@ -20,6 +22,8 @@ interface MarketDetail {
   closeAt: string;
   status: string;
   volume24h: number;
+  /** ISO timestamp the market was resolved at, or null while still open. */
+  resolvedAt: string | null;
 }
 
 interface PricePoint {
@@ -134,15 +138,7 @@ export default function MarketDetailPage() {
   }, [market, addItem, openSlip]);
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900 p-6 md:p-10">
-        <div className="mx-auto max-w-4xl space-y-6">
-          <Skeleton className="h-8 w-32" />
-          <Skeleton className="h-10 w-3/4" />
-          <Skeleton className="h-64 w-full" />
-        </div>
-      </div>
-    );
+    return <MarketDetailSkeleton />;
   }
 
   if (error || !market) {
@@ -253,6 +249,13 @@ export default function MarketDetailPage() {
               </p>
             </div>
           </div>
+
+          <MarketDisputePanel
+            marketId={market.id}
+            marketTitle={market.title}
+            isResolved={Boolean(market.resolvedAt)}
+            resolvedAt={market.resolvedAt}
+          />
         </div>
 
         <div className="mt-8">

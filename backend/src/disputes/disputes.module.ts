@@ -4,6 +4,7 @@ import { Dispute } from './entities/dispute.entity';
 import { DisputeEvidence } from './entities/dispute-evidence.entity';
 import { DisputeVote } from './entities/dispute-vote.entity';
 import { DisputesService } from './disputes.service';
+import { DisputeChainReconciliationService } from './dispute-chain-reconciliation.service';
 import { DisputesController } from './disputes.controller';
 import { AdminDisputesController } from './admin-disputes.controller';
 import { Market } from '../markets/entities/market.entity';
@@ -24,7 +25,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     NotificationsModule,
   ],
   controllers: [DisputesController, AdminDisputesController],
-  providers: [DisputesService],
-  exports: [DisputesService],
+  providers: [DisputesService, DisputeChainReconciliationService],
+  exports: [DisputesService, DisputeChainReconciliationService],
 })
 export class DisputesModule {}

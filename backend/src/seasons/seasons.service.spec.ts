@@ -5,6 +5,7 @@ import { DataSource, Repository } from 'typeorm';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SeasonsService } from './seasons.service';
 import { Season } from './entities/season.entity';
+import { User } from '../users/entities/user.entity';
 import {
   DistributionLedgerStatus,
   SeasonDistributionLedgerEntry,
@@ -51,7 +52,9 @@ describe('SeasonsService', () => {
     distributionLedgerRepository = {
       findOne: jest.fn().mockResolvedValue(null),
       create: jest.fn((value) => value),
-      save: jest.fn().mockImplementation(async (v) => ({ id: 'ledger-1', ...v })),
+      save: jest
+        .fn()
+        .mockImplementation(async (v) => ({ id: 'ledger-1', ...v })),
       update: jest.fn().mockResolvedValue(undefined),
       find: jest.fn().mockResolvedValue([]),
     };
@@ -228,10 +231,7 @@ describe('SeasonsService', () => {
 
       await service.findAllPaginated({ page: 1, limit: 20, status });
 
-      expect(andWhere).toHaveBeenCalledWith(
-        clause,
-        expect.any(Object),
-      );
+      expect(andWhere).toHaveBeenCalledWith(clause, expect.any(Object));
     });
 
     it('sorts seasons by start date descending', async () => {
@@ -523,6 +523,16 @@ describe('SeasonsService', () => {
           ok: true,
           season: 13,
         },
+        {
+          // #1853: one unit before the existing range's end (199 < 200) must
+          // be flagged as overlapping, distinguishing this from the adjacent
+          // start-at-end case directly above it.
+          label: '[199, 300] starts one unit before existing end => reject',
+          start: 199,
+          end: 300,
+          ok: false,
+          season: 14,
+        },
       ] as const;
 
       for (const a of attempts) {
@@ -532,6 +542,7 @@ describe('SeasonsService', () => {
           getCount: jest.fn().mockResolvedValue(overlapFor(a.start, a.end)),
         } as never;
         seasonsRepository.createQueryBuilder.mockReturnValue(qb);
+        seasonsRepository.save.mockClear();
 
         if (!a.ok) {
           await expect(
@@ -658,6 +669,74 @@ describe('SeasonsService', () => {
       updated_at: new Date(),
     };
 
+    function buildTransactionalManager(overrides: {
+      season: Season;
+      winner: {
+        id: string;
+        stellar_address: string;
+        season_points: number;
+      } | null;
+      finalized: Season;
+      opened: Season | null;
+      standings: { u_id: string; season_points: number }[];
+      snapshotExists?: boolean;
+    }) {
+      const savedSnapshots: unknown[] = [];
+      const manager = {
+        findOne: jest
+          .fn()
+          .mockImplementation(
+            async (
+              entity: unknown,
+              opts: { where?: { id?: string; season_number?: number } },
+            ) => {
+              if (entity === Season) {
+                if (opts?.where?.id === overrides.season.id) {
+                  return { ...overrides.season };
+                }
+                if (
+                  opts?.where?.season_number ===
+                  overrides.season.season_number + 1
+                ) {
+                  return overrides.opened;
+                }
+                return null;
+              }
+              if (entity === User) {
+                return overrides.winner;
+              }
+              return null;
+            },
+          ),
+        save: jest
+          .fn()
+          .mockImplementation(async (entity: unknown, value: unknown) => {
+            if (entity === Season) {
+              const v = value as Season;
+              return v.id === overrides.season.id ? overrides.finalized : v;
+            }
+            if (Array.isArray(value)) {
+              savedSnapshots.push(...value);
+            }
+            return value;
+          }),
+        update: jest.fn().mockResolvedValue(undefined),
+        exists: jest.fn().mockResolvedValue(overrides.snapshotExists ?? false),
+        create: jest.fn().mockImplementation((_entity, value) => value),
+        createQueryBuilder: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnThis(),
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          orderBy: jest.fn().mockReturnThis(),
+          addOrderBy: jest.fn().mockReturnThis(),
+          getRawMany: jest.fn().mockResolvedValue(overrides.standings),
+          getOne: jest.fn().mockResolvedValue(null),
+        }),
+      };
+      return { manager, savedSnapshots };
+    }
+
     it('closes ending season, opens next, and is idempotent on re-run', async () => {
       const now = new Date('2020-06-01T00:00:00.000Z');
       const winner = {
@@ -670,6 +749,7 @@ describe('SeasonsService', () => {
         ...ending,
         is_active: false,
         is_finalized: true,
+        rollover_processed_at: now,
         top_winner: winner as Season['top_winner'],
       };
 
@@ -680,14 +760,13 @@ describe('SeasonsService', () => {
         getOne: jest.fn().mockResolvedValue(ending),
       } as never);
 
-      const manager = {
-        findOne: jest
-          .fn()
-          .mockResolvedValueOnce(ending)
-          .mockResolvedValueOnce(winner),
-        save: jest.fn().mockResolvedValue(finalized),
-        update: jest.fn().mockResolvedValue(undefined),
-      };
+      const { manager, savedSnapshots } = buildTransactionalManager({
+        season: ending,
+        winner,
+        finalized,
+        opened: nextSeason,
+        standings: [{ u_id: 'u1', season_points: 10 }],
+      });
       const qr = {
         connect: jest.fn().mockResolvedValue(undefined),
         startTransaction: jest.fn().mockResolvedValue(undefined),
@@ -719,12 +798,15 @@ describe('SeasonsService', () => {
       expect(first.closedSeasonId).toBe('end-1');
       expect(first.openedSeasonId).toBe('next-1');
       expect(first.rewardsComputed).toBe(true);
-      expect(seasonsRepository.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: 'end-1',
-          rollover_processed_at: now,
-        }),
-      );
+      expect(qr.commitTransaction).toHaveBeenCalledTimes(1);
+      expect(qr.rollbackTransaction).not.toHaveBeenCalled();
+      // Exactly one snapshot row written for the closed season's sole standing.
+      expect(savedSnapshots).toHaveLength(1);
+      expect(savedSnapshots[0]).toMatchObject({
+        rank: 1,
+        season_points: 10,
+        user: { id: 'u1' },
+      });
 
       // Second run with already-processed ending season filtered out.
       seasonsRepository.createQueryBuilder.mockReturnValue({
@@ -737,6 +819,121 @@ describe('SeasonsService', () => {
       const second = await service.processSeasonRollover(now);
       expect(second.skipped).toBe(true);
       expect(second.reason).toBe('nothing_to_rollover');
+    });
+
+    it('does not duplicate the snapshot when re-run inside the transaction finds one already exists', async () => {
+      const now = new Date('2020-06-01T00:00:00.000Z');
+      const winner = {
+        id: 'u1',
+        username: 'winner',
+        stellar_address: 'GWINNER',
+        season_points: 10,
+      };
+      const finalized: Season = {
+        ...ending,
+        is_active: false,
+        is_finalized: true,
+        rollover_processed_at: now,
+        top_winner: winner as Season['top_winner'],
+      };
+
+      seasonsRepository.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(ending),
+      } as never);
+
+      const { manager, savedSnapshots } = buildTransactionalManager({
+        season: ending,
+        winner,
+        finalized,
+        opened: nextSeason,
+        standings: [{ u_id: 'u1', season_points: 10 }],
+        snapshotExists: true,
+      });
+      const qr = {
+        connect: jest.fn().mockResolvedValue(undefined),
+        startTransaction: jest.fn().mockResolvedValue(undefined),
+        manager,
+        commitTransaction: jest.fn().mockResolvedValue(undefined),
+        rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+        release: jest.fn().mockResolvedValue(undefined),
+      };
+      (
+        service as unknown as { dataSource: { createQueryRunner: jest.Mock } }
+      ).dataSource.createQueryRunner = jest.fn().mockReturnValue(qr);
+
+      seasonsRepository.findOne = jest.fn().mockResolvedValue(finalized);
+      seasonsRepository.save = jest
+        .fn()
+        .mockImplementation(async (s: Season) => s);
+
+      await service.processSeasonRollover(now);
+
+      expect(manager.exists).toHaveBeenCalledTimes(1);
+      expect(savedSnapshots).toHaveLength(0);
+    });
+
+    it('rolls back the whole transaction if the leaderboard snapshot write fails', async () => {
+      const now = new Date('2020-06-01T00:00:00.000Z');
+      const winner = {
+        id: 'u1',
+        username: 'winner',
+        stellar_address: 'GWINNER',
+        season_points: 10,
+      };
+      const finalized: Season = {
+        ...ending,
+        is_active: false,
+        is_finalized: true,
+        rollover_processed_at: now,
+        top_winner: winner as Season['top_winner'],
+      };
+
+      seasonsRepository.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(ending),
+      } as never);
+
+      const { manager } = buildTransactionalManager({
+        season: ending,
+        winner,
+        finalized,
+        opened: nextSeason,
+        standings: [{ u_id: 'u1', season_points: 10 }],
+      });
+      manager.save = jest
+        .fn()
+        .mockImplementation(async (entity: unknown, value: unknown) => {
+          if (entity === Season) {
+            const v = value as Season;
+            return v.id === ending.id ? finalized : v;
+          }
+          throw new Error('snapshot write failed');
+        });
+      const qr = {
+        connect: jest.fn().mockResolvedValue(undefined),
+        startTransaction: jest.fn().mockResolvedValue(undefined),
+        manager,
+        commitTransaction: jest.fn().mockResolvedValue(undefined),
+        rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+        release: jest.fn().mockResolvedValue(undefined),
+      };
+      (
+        service as unknown as { dataSource: { createQueryRunner: jest.Mock } }
+      ).dataSource.createQueryRunner = jest.fn().mockReturnValue(qr);
+
+      await expect(service.processSeasonRollover(now)).rejects.toThrow(
+        'snapshot write failed',
+      );
+
+      expect(qr.commitTransaction).not.toHaveBeenCalled();
+      expect(qr.rollbackTransaction).toHaveBeenCalledTimes(1);
+      // Standings must not be reset if the snapshot never committed.
+      expect(manager.update).not.toHaveBeenCalled();
     });
 
     it('skips when rollover_processed_at is already set on ending season', async () => {
@@ -877,6 +1074,246 @@ describe('SeasonsService', () => {
 
       expect(result.matches).toBe(true);
       expect(result.totalDistributed).toBe('100');
+    });
+
+    it('after a partial failure, identifies only the recipients still missing a confirmed payout', async () => {
+      const succeededEntry = {
+        id: 'ledger-succeeded',
+        amount_stroops: '60',
+        status: DistributionLedgerStatus.SUCCEEDED,
+        recipient_stellar_address: 'GSUCCEEDED',
+      };
+      const failedEntry = {
+        id: 'ledger-failed',
+        amount_stroops: '30',
+        status: DistributionLedgerStatus.FAILED,
+        recipient_stellar_address: 'GFAILED',
+      };
+      const pendingEntry = {
+        id: 'ledger-pending',
+        amount_stroops: '10',
+        status: DistributionLedgerStatus.PENDING,
+        recipient_stellar_address: 'GPENDING',
+      };
+      distributionLedgerRepository.find.mockResolvedValue([
+        succeededEntry,
+        failedEntry,
+        pendingEntry,
+      ]);
+
+      const result = await service.reconcileSeasonDistribution(
+        'season-1',
+        100n,
+      );
+
+      // Distributed total reflects only the SUCCEEDED row, so a partial
+      // failure is correctly flagged as a mismatch...
+      expect(result.matches).toBe(false);
+      expect(result.totalDistributed).toBe('60');
+      // ...but the season isn't re-flagged as wholesale undistributed: the
+      // succeeded recipient is excluded from what's still owed.
+      expect(result.missingRecipients).toHaveLength(2);
+      expect(result.missingRecipients).toEqual(
+        expect.arrayContaining([failedEntry, pendingEntry]),
+      );
+      expect(result.missingRecipients).not.toContainEqual(succeededEntry);
+    });
+
+    it('reports no missing recipients and a match for a season with fully confirmed payouts (no-op)', async () => {
+      distributionLedgerRepository.find.mockResolvedValue([
+        { amount_stroops: '100', status: DistributionLedgerStatus.SUCCEEDED },
+      ]);
+
+      const result = await service.reconcileSeasonDistribution(
+        'season-1',
+        100n,
+      );
+
+      expect(result.matches).toBe(true);
+      expect(result.missingRecipients).toEqual([]);
+    });
+
+    it('reports every recipient as missing when nothing has succeeded yet', async () => {
+      distributionLedgerRepository.find.mockResolvedValue([
+        { amount_stroops: '100', status: DistributionLedgerStatus.PENDING },
+      ]);
+
+      const result = await service.reconcileSeasonDistribution(
+        'season-1',
+        100n,
+      );
+
+      expect(result.matches).toBe(false);
+      expect(result.totalDistributed).toBe('0');
+      expect(result.missingRecipients).toHaveLength(1);
+    });
+  });
+
+  describe('reconcileSeasonDistribution does not cause a re-pay of a succeeded recipient', () => {
+    it('re-running computeSeasonRewards after a successful payout does not create a new ledger row or re-notify', async () => {
+      const winner = {
+        id: 'winner-1',
+        username: 'winner',
+        stellar_address: 'GWINNER',
+        season_points: 10,
+      } as Season['top_winner'];
+      const season: Season = {
+        id: 'season-1',
+        season_number: 1,
+        name: 'Season 1',
+        starts_at: new Date('2020-01-01T00:00:00.000Z'),
+        ends_at: new Date('2020-06-01T00:00:00.000Z'),
+        reward_pool_stroops: '100',
+        is_active: false,
+        is_finalized: true,
+        participant_count: 0,
+        top_winner: winner,
+        on_chain_season_id: null,
+        soroban_tx_hash: null,
+        rollover_processed_at: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+
+      // Simulate a prior successful run: the ledger already has a SUCCEEDED
+      // row for this recipient.
+      distributionLedgerRepository.findOne.mockResolvedValue({
+        id: 'ledger-1',
+        status: DistributionLedgerStatus.SUCCEEDED,
+      });
+      distributionLedgerRepository.find.mockResolvedValue([
+        {
+          id: 'ledger-1',
+          amount_stroops: '100',
+          status: DistributionLedgerStatus.SUCCEEDED,
+          recipient_stellar_address: 'GWINNER',
+        },
+      ]);
+
+      const rewardsResult = await service.computeSeasonRewards(season);
+      const reconcileResult = await service.reconcileSeasonDistribution(
+        season.id,
+        100n,
+      );
+
+      expect(rewardsResult).toBe(true);
+      expect(distributionLedgerRepository.save).not.toHaveBeenCalled();
+      expect(notificationsService.create).not.toHaveBeenCalled();
+      expect(reconcileResult.matches).toBe(true);
+      expect(reconcileResult.missingRecipients).toEqual([]);
+    });
+  });
+
+  describe('season rollover boundary scoring (#1950)', () => {
+    const rolloverTime = new Date('2026-07-01T00:00:00.000Z');
+
+    const season1: Season = {
+      id: 'season-1',
+      season_number: 1,
+      name: 'Season 1',
+      starts_at: new Date('2026-04-01T00:00:00.000Z'),
+      ends_at: rolloverTime,
+      reward_pool_stroops: '1000',
+      is_active: false,
+      is_finalized: true,
+      participant_count: 50,
+      top_winner: null,
+      on_chain_season_id: '1',
+      soroban_tx_hash: null,
+      rollover_processed_at: rolloverTime,
+      created_at: new Date('2026-04-01T00:00:00.000Z'),
+      updated_at: rolloverTime,
+    };
+
+    const season2: Season = {
+      id: 'season-2',
+      season_number: 2,
+      name: 'Season 2',
+      starts_at: rolloverTime,
+      ends_at: new Date('2026-10-01T00:00:00.000Z'),
+      reward_pool_stroops: '1000',
+      is_active: true,
+      is_finalized: false,
+      participant_count: 0,
+      top_winner: null,
+      on_chain_season_id: '2',
+      soroban_tx_hash: null,
+      rollover_processed_at: null,
+      created_at: rolloverTime,
+      updated_at: rolloverTime,
+    };
+
+    const allSeasons = [season1, season2];
+
+    beforeEach(() => {
+      seasonsRepository.find.mockResolvedValue(allSeasons);
+    });
+
+    it('a prediction made before rollover scores in the prior season', async () => {
+      const prediction = {
+        id: 'pred-1',
+        submitted_at: new Date(rolloverTime.getTime() - 60_000), // 1 min before rollover
+        resolved_at: new Date(rolloverTime.getTime() + 60_000), // resolved after rollover
+        is_correct: true,
+      };
+
+      const result = await service.scorePredictionForSeason(
+        prediction,
+        15,
+        allSeasons,
+      );
+
+      expect(result.season?.id).toBe(season1.id);
+      expect(result.attributedSeasonNumber).toBe(1);
+      expect(result.pointsAwarded).toBe(15);
+    });
+
+    it('a prediction resolved after rollover is attributed per the rule', async () => {
+      const predBeforeRollover = {
+        id: 'pred-2',
+        submitted_at: new Date(rolloverTime.getTime() - 10_000),
+        resolved_at: new Date('2026-07-05T12:00:00.000Z'), // days after rollover
+      };
+
+      const attrBefore = await service.attributePredictionToSeason(
+        predBeforeRollover,
+        allSeasons,
+      );
+      expect(attrBefore?.id).toBe(season1.id);
+
+      const predAfterRollover = {
+        id: 'pred-3',
+        submitted_at: new Date(rolloverTime.getTime() + 10_000),
+        resolved_at: new Date('2026-07-05T12:00:00.000Z'),
+      };
+
+      const attrAfter = await service.attributePredictionToSeason(
+        predAfterRollover,
+        allSeasons,
+      );
+      expect(attrAfter?.id).toBe(season2.id);
+    });
+
+    it('boundary-exact timestamps follow the documented inclusive/exclusive policy', async () => {
+      // 1 ms before rollover: belongs to season 1 (t < season1.ends_at)
+      const justBefore = {
+        submitted_at: new Date(rolloverTime.getTime() - 1),
+      };
+      const attrJustBefore = await service.attributePredictionToSeason(
+        justBefore,
+        allSeasons,
+      );
+      expect(attrJustBefore?.id).toBe(season1.id);
+
+      // Exact rollover boundary: season1 ends_at is exclusive (< ends_at), season2 starts_at is inclusive (>= starts_at)
+      const exactBoundary = {
+        submitted_at: rolloverTime,
+      };
+      const attrBoundary = await service.attributePredictionToSeason(
+        exactBoundary,
+        allSeasons,
+      );
+      expect(attrBoundary?.id).toBe(season2.id);
     });
   });
 });

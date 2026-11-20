@@ -507,6 +507,50 @@ pub(crate) fn slash_funds(env: &Env, amount: i128) -> Result<(), InsightArenaErr
     Ok(())
 }
 
+/// Distribute a slashed dispute bond: refund winner (if any), route the
+/// remainder to insurance pool + treasury via `slash_funds`. Used by
+/// `dispute::resolve_dispute` and `dispute::finalize_arbiter_vote` to
+/// enforce economic consequences on losing disputers.
+///
+/// # Parameters
+/// - `winner`: Optional address to receive a refund (e.g., the disputer if
+///   the dispute was upheld, or None if rejected).
+/// - `winner_refund`: Amount to refund to `winner` (must be <= `total_bond`).
+/// - `total_bond`: Total bond amount to distribute.
+///
+/// # Errors
+/// - `InvalidInput` if `winner_refund > total_bond`.
+/// - `Overflow` on checked arithmetic failures.
+/// - Propagates escrow transfer errors.
+pub(crate) fn distribute_slashed_bond(
+    env: &Env,
+    winner: Option<&Address>,
+    winner_refund: i128,
+    total_bond: i128,
+) -> Result<(), InsightArenaError> {
+    if winner_refund > total_bond {
+        return Err(InsightArenaError::InvalidInput);
+    }
+
+    // Refund winner first
+    if let Some(addr) = winner {
+        if winner_refund > 0 {
+            refund(env, addr, winner_refund)?;
+        }
+    }
+
+    // Slash the remainder
+    let slashed_amount = total_bond
+        .checked_sub(winner_refund)
+        .ok_or(InsightArenaError::Overflow)?;
+    
+    if slashed_amount > 0 {
+        slash_funds(env, slashed_amount)?;
+    }
+
+    Ok(())
+}
+
 /// Draw `amount` from the insurance pool to `to`, to cover a documented
 /// accounting/settlement shortfall. Caller must be the platform admin
 /// (governance).

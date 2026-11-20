@@ -51,6 +51,14 @@ export class CreateCompetitionDto {
   @Validate(EndAfterStartConstraint)
   end_time: string;
 
+  @ApiPropertyOptional({
+    description: 'Deadline to join the competition',
+    example: '2026-04-01T00:00:00.000Z',
+  })
+  @IsOptional()
+  @IsDateString()
+  join_deadline?: string;
+
   @ApiProperty({ description: 'Prize pool in stroops', example: '5000000000' })
   @IsNumberString()
   prize_pool_stroops: string;

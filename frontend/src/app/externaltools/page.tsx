@@ -2,9 +2,25 @@
 import Header from "@/component/resources/Header";
 import Footer from "@/component/resources/Footer";
 import PageBackground from "@/component/PageBackground";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import Image from "next/image";
+import { checkToolHealth } from "@/lib/api";
+import type { ToolHealthResult, ToolHealthStatus } from "@/lib/api";
+
+type ToolHealthState = { status: "checking" } | ToolHealthResult;
+
+const STATUS_LABEL: Record<ToolHealthStatus, string> = {
+  online: "Online",
+  offline: "Offline",
+  unknown: "Unknown",
+};
+
+const STATUS_DOT_CLASS: Record<ToolHealthStatus, string> = {
+  online: "bg-green-500",
+  offline: "bg-red-500",
+  unknown: "bg-gray-400",
+};
 
 const Resources = () => {
   const [selected, setSelected] = useState("DEX Apps");
@@ -46,6 +62,32 @@ const Resources = () => {
     },
   ];
 
+  const [healthByLink, setHealthByLink] = useState<
+    Record<string, ToolHealthState>
+  >({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    Apps.forEach((app) => {
+      setHealthByLink((prev) =>
+        prev[app.link] ? prev : { ...prev, [app.link]: { status: "checking" } }
+      );
+
+      checkToolHealth(app.link).then((result) => {
+        if (!cancelled) {
+          setHealthByLink((prev) => ({ ...prev, [app.link]: result }));
+        }
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // Apps is a static list defined per render; this effect only needs to run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <PageBackground>
       <div className="flex min-h-screen flex-col">
@@ -86,39 +128,70 @@ const Resources = () => {
               <div className="p-6">
                 <div className="h-fit w-full rounded-xl border border-amber-50/40 bg-black/20 py-6 px-8">
                   <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    {Apps.map((item) => (
-                      <div
-                        key={item.name}
-                        className="w-full rounded-xl border border-amber-50/40 bg-black/20 p-4"
-                      >
-                        <div className="flex items-start gap-3 pb-6">
-                          <div>
-                            {item.image == "" ? (
-                              <div className="size-11 rounded-lg bg-amber-50"></div>
-                            ) : (
-                              <Image src={item.image} alt="img" />
+                    {Apps.map((item) => {
+                      const health: ToolHealthState = healthByLink[
+                        item.link
+                      ] ?? { status: "checking" };
+                      const isChecking = health.status === "checking";
+
+                      return (
+                        <div
+                          key={item.name}
+                          className="w-full rounded-xl border border-amber-50/40 bg-black/20 p-4"
+                        >
+                          <div className="flex items-start gap-3 pb-6">
+                            <div>
+                              {item.image == "" ? (
+                                <div className="size-11 rounded-lg bg-amber-50"></div>
+                              ) : (
+                                <Image src={item.image} alt="img" />
+                              )}
+                            </div>
+                            <div className="text-[22px] font-bold text-white">
+                              {item.name}
+                            </div>
+                          </div>
+                          <div className="text-[16px] text-gray-200">
+                            {item.description}
+                          </div>
+                          <div
+                            className="flex items-center gap-2 pt-3 text-[12px]"
+                            data-testid={`tool-health-${item.name}`}
+                          >
+                            <span
+                              aria-hidden="true"
+                              className={`inline-block size-2 rounded-full ${
+                                isChecking
+                                  ? "animate-pulse bg-gray-400"
+                                  : STATUS_DOT_CLASS[health.status]
+                              }`}
+                            />
+                            <span className="text-gray-300">
+                              {isChecking
+                                ? "Checking…"
+                                : STATUS_LABEL[health.status]}
+                            </span>
+                            {!isChecking && (
+                              <span className="text-gray-500">
+                                · Checked{" "}
+                                {new Date(health.checkedAt).toLocaleTimeString()}
+                              </span>
                             )}
                           </div>
-                          <div className="text-[22px] font-bold text-white">
-                            {item.name}
+                          <div className="pt-4">
+                            <a
+                              href={item.link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-[14px] text-white hover:bg-white/10"
+                            >
+                              View {item.name}
+                              <ExternalLink className="size-5" />
+                            </a>
                           </div>
                         </div>
-                        <div className="text-[16px] text-gray-200">
-                          {item.description}
-                        </div>
-                        <div className="pt-6">
-                          <a
-                            href={item.link}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-[14px] text-white hover:bg-white/10"
-                          >
-                            View {item.name}
-                            <ExternalLink className="size-5" />
-                          </a>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                   <div>
                     <div className="py-10">

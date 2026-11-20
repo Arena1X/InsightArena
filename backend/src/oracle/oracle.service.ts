@@ -25,6 +25,7 @@ import {
   ListDivergencesQueryDto,
   PaginatedDivergencesResponse,
 } from './dto/list-divergences.dto';
+import { OracleReliabilityService } from './oracle-reliability.service';
 
 @Injectable()
 export class OracleService {
@@ -43,6 +44,7 @@ export class OracleService {
     @InjectRepository(OracleSubmission)
     private readonly submissionRepository: Repository<OracleSubmission>,
     private readonly configService: ConfigService,
+    private readonly reliabilityService: OracleReliabilityService,
   ) {}
 
   async getPendingMatches(
@@ -166,8 +168,13 @@ export class OracleService {
    * confidence median, so an anomalous source cannot shape (or veto) the final
    * result. Admin-`APPROVED` submissions return to the consensus pool.
    *
+   * Consensus is weighted by each oracle's historical reliability score (#1765).
+   * Each source contributes: weight(source) * vote_weight to its chosen outcome.
+   * Outcomes are ranked by total weighted votes; a majority requires strictly
+   * more than half of the total eligible weight.
+   *
    * Consensus is actionable when at least `ORACLE_CONSENSUS_MIN_SOURCES`
-   * eligible sources agree on one outcome by simple majority.
+   * eligible sources agree on one outcome by weighted majority.
    */
   async getMatchConsensus(matchId: string): Promise<MatchConsensusResponse> {
     const submissions = await this.submissionRepository.find({
@@ -184,28 +191,40 @@ export class OracleService {
     );
     const quarantined = submissions.filter(isQuarantined);
 
+    // Load reliability weights for each eligible source (#1765)
+    const weights: Map<string, number> = new Map();
+    for (const s of eligible) {
+      const weight = await this.reliabilityService.getWeight(s.data_source);
+      weights.set(s.data_source, weight);
+    }
+
+    // Accumulate weighted votes by outcome
     const outcomeVotes: Record<string, number> = {
       [WinningTeam.TEAM_A]: 0,
       [WinningTeam.TEAM_B]: 0,
       [WinningTeam.DRAW]: 0,
     };
+    let totalWeight = 0;
+
     for (const s of eligible) {
       if (s.winning_team in outcomeVotes) {
-        outcomeVotes[s.winning_team]++;
+        const weight = weights.get(s.data_source) || 1.0;
+        outcomeVotes[s.winning_team] += weight;
+        totalWeight += weight;
       }
     }
 
     let outcome: WinningTeam | null = null;
-    let votes = 0;
-    for (const [team, count] of Object.entries(outcomeVotes)) {
-      if (count > votes) {
+    let winningWeight = 0;
+    for (const [team, weight] of Object.entries(outcomeVotes)) {
+      if (weight > winningWeight) {
         outcome = team as WinningTeam;
-        votes = count;
+        winningWeight = weight;
       }
     }
-    // A majority requires strictly more than half of eligible participants;
-    // every count equal qualifies only as a tie otherwise.
-    if (outcome && votes <= eligible.length / 2) {
+    // A majority requires strictly more than half of total eligible weight;
+    // every weight equal qualifies only as a tie otherwise.
+    if (outcome && winningWeight <= totalWeight / 2) {
       outcome = null;
     }
 

@@ -3,6 +3,11 @@
 import { useState } from "react";
 import { Plus, Loader2 } from "lucide-react";
 import { Button } from "@/component/ui/button";
+import {
+  validateDistinctTeams,
+  validateKickoffTime,
+  validateTeamName,
+} from "@/lib/validators";
 
 export type PointsMultiplier = 1 | 2 | 3;
 
@@ -17,7 +22,6 @@ interface AddMatchFormProps {
   onAddMatch: (data: MatchFormData) => Promise<void>;
 }
 
-const MAX_TEAM_NAME = 100;
 const MULTIPLIER_OPTIONS: PointsMultiplier[] = [1, 2, 3];
 
 function nowPlusOneHour(): string {
@@ -38,22 +42,15 @@ export default function AddMatchForm({ onAddMatch }: AddMatchFormProps) {
     const trimA = teamA.trim();
     const trimB = teamB.trim();
 
-    if (!trimA) errs.teamA = "Team A name is required.";
-    else if (trimA.length > MAX_TEAM_NAME)
-      errs.teamA = `Team A name must be ${MAX_TEAM_NAME} characters or fewer.`;
+    const teamAError = validateTeamName(trimA, "Team A");
+    const teamBError = validateTeamName(trimB, "Team B");
+    const distinctError = validateDistinctTeams(trimA, trimB);
+    const kickoffError = validateKickoffTime(matchTime);
 
-    if (!trimB) errs.teamB = "Team B name is required.";
-    else if (trimB.length > MAX_TEAM_NAME)
-      errs.teamB = `Team B name must be ${MAX_TEAM_NAME} characters or fewer.`;
-
-    if (trimA && trimB && trimA.toLowerCase() === trimB.toLowerCase())
-      errs.form = "Team names must be different.";
-
-    if (!matchTime) {
-      errs.matchTime = "Match date/time is required.";
-    } else if (new Date(matchTime) <= new Date()) {
-      errs.matchTime = "Match time must be in the future.";
-    }
+    if (teamAError) errs.teamA = teamAError;
+    if (teamBError) errs.teamB = teamBError;
+    if (distinctError) errs.form = distinctError;
+    if (kickoffError) errs.matchTime = kickoffError;
 
     setErrors(errs);
     return Object.keys(errs).length === 0;
@@ -109,7 +106,7 @@ export default function AddMatchForm({ onAddMatch }: AddMatchFormProps) {
             type="text"
             value={teamA}
             onChange={(e) => setTeamA(e.target.value)}
-            maxLength={MAX_TEAM_NAME}
+            maxLength={100}
             placeholder="Team A name"
             className="w-full rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 text-sm text-white outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20"
           />
@@ -130,7 +127,7 @@ export default function AddMatchForm({ onAddMatch }: AddMatchFormProps) {
             type="text"
             value={teamB}
             onChange={(e) => setTeamB(e.target.value)}
-            maxLength={MAX_TEAM_NAME}
+            maxLength={100}
             placeholder="Team B name"
             className="w-full rounded-2xl border border-white/10 bg-slate-950/90 px-4 py-3 text-sm text-white outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20"
           />

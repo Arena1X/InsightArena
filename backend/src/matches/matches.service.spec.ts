@@ -10,12 +10,15 @@ import { Match, WinningTeam } from './entities/match.entity';
 import { MatchPrediction } from './entities/match-prediction.entity';
 import { CreatorEvent } from './entities/creator-event.entity';
 import { MatchesService } from './matches.service';
+import { PredictedOutcome } from './entities/match-prediction.entity';
 
 describe('MatchesService', () => {
   let service: MatchesService;
-  let matchRepository: jest.Mocked<Pick<Repository<Match>, 'findOne'>>;
+  let matchRepository: jest.Mocked<
+    Pick<Repository<Match>, 'findOne' | 'save'>
+  >;
   let matchPredictionRepository: jest.Mocked<
-    Pick<Repository<MatchPrediction>, 'count' | 'findAndCount' | 'find'>
+    Pick<Repository<MatchPrediction>, 'count' | 'findAndCount' | 'find' | 'save'>
   >;
 
   const mockEvent = {
@@ -44,13 +47,15 @@ describe('MatchesService', () => {
   beforeEach(async () => {
     matchRepository = {
       findOne: jest.fn(),
-    };
+      save: jest.fn(async (m: Match) => m),
+    } as any;
 
     matchPredictionRepository = {
       count: jest.fn(),
       findAndCount: jest.fn(),
-      find: jest.fn(),
-    };
+      find: jest.fn().mockResolvedValue([]),
+      save: jest.fn(async (p: any) => p),
+    } as any;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -226,12 +231,6 @@ describe('MatchesService', () => {
       winning_team: WinningTeam.TEAM_A,
     };
 
-    beforeEach(() => {
-      (matchRepository as Record<string, unknown>).save = jest.fn(
-        async (m: Match) => m,
-      );
-    });
-
     it('persists the result with submitted_by/submitted_at on happy path', async () => {
       const unscored = { ...mockMatch, result_submitted: false } as Match;
       matchRepository.findOne.mockResolvedValue(unscored);
@@ -313,6 +312,114 @@ describe('MatchesService', () => {
         service.submitResult('match-1', dto, 'admin-1'),
       ).rejects.toThrow(BadRequestException);
       expect(matchRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('scores predictions with the match multiplier on result submission', async () => {
+      const unscored = {
+        ...mockMatch,
+        result_submitted: false,
+        points_multiplier: 3,
+      } as Match;
+      matchRepository.findOne.mockResolvedValue(unscored);
+
+      const predictions = [
+        {
+          id: 'pred-1',
+          predicted_outcome: PredictedOutcome.TEAM_A,
+          is_correct: null,
+          points_earned: 0,
+        },
+        {
+          id: 'pred-2',
+          predicted_outcome: PredictedOutcome.TEAM_B,
+          is_correct: null,
+          points_earned: 0,
+        },
+        {
+          id: 'pred-3',
+          predicted_outcome: PredictedOutcome.DRAW,
+          is_correct: null,
+          points_earned: 0,
+        },
+      ] as MatchPrediction[];
+
+      matchPredictionRepository.find.mockResolvedValue(predictions);
+
+      await service.submitResult('match-1', validDto, 'admin-1');
+
+      expect(matchPredictionRepository.save).toHaveBeenCalledTimes(1);
+      const saved = (matchPredictionRepository.save as jest.Mock).mock
+        .calls[0][0] as MatchPrediction[];
+
+      const correct = saved.find((p) => p.id === 'pred-1')!;
+      expect(correct.is_correct).toBe(true);
+      expect(correct.points_earned).toBe(3);
+
+      const wrong1 = saved.find((p) => p.id === 'pred-2')!;
+      expect(wrong1.is_correct).toBe(false);
+      expect(wrong1.points_earned).toBe(0);
+
+      const wrong2 = saved.find((p) => p.id === 'pred-3')!;
+      expect(wrong2.is_correct).toBe(false);
+      expect(wrong2.points_earned).toBe(0);
+    });
+
+    it('defaults multiplier to 1 when not set', async () => {
+      const unscored = {
+        ...mockMatch,
+        result_submitted: false,
+        points_multiplier: 1,
+      } as Match;
+      matchRepository.findOne.mockResolvedValue(unscored);
+
+      const predictions = [
+        {
+          id: 'pred-1',
+          predicted_outcome: PredictedOutcome.TEAM_A,
+          is_correct: null,
+          points_earned: 0,
+        },
+      ] as MatchPrediction[];
+      matchPredictionRepository.find.mockResolvedValue(predictions);
+
+      await service.submitResult('match-1', validDto, 'admin-1');
+
+      const saved = (matchPredictionRepository.save as jest.Mock).mock
+        .calls[0][0] as MatchPrediction[];
+      expect(saved[0].points_earned).toBe(1);
+    });
+  });
+
+  describe('updateMultiplier', () => {
+    it('updates the multiplier before result submission', async () => {
+      const unscored = {
+        ...mockMatch,
+        result_submitted: false,
+        points_multiplier: 1,
+      } as Match;
+      matchRepository.findOne.mockResolvedValue(unscored);
+
+      const result = await service.updateMultiplier('match-1', 5);
+
+      expect(result.points_multiplier).toBe(5);
+      expect(matchRepository.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects multiplier change after result has been submitted', async () => {
+      matchRepository.findOne.mockResolvedValue(mockMatch); // result_submitted: true
+
+      await expect(
+        service.updateMultiplier('match-1', 5),
+      ).rejects.toThrow(ConflictException);
+      expect(matchRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException for unknown match', async () => {
+      matchRepository.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.updateMultiplier('missing', 3),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

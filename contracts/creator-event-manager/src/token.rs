@@ -135,6 +135,13 @@ impl TokenHelper {
 
     /// Calculate winnings for a user based on their stake and the total pool
     /// Uses a simple proportional distribution model
+    ///
+    /// Rounding dust: each winner's payout is floored via integer division
+    /// (`(user_stake * distributable_pool) / winning_option_total`). Because
+    /// every payout is rounded down, the sum of all winners' payouts is always
+    /// less than or equal to `distributable_pool` (and therefore never exceeds
+    /// `total_pool`). Any leftover dust remains in the contract and is not
+    /// allocated to any individual winner.
     pub fn calculate_winnings(
         user_stake: i128,
         winning_option_total: i128,
@@ -149,7 +156,7 @@ impl TokenHelper {
         let house_fee = (total_pool * house_fee_percentage as i128) / 100;
         let distributable_pool = total_pool - house_fee;
 
-        // Calculate proportional winnings
+        // Calculate proportional winnings (floored; dust stays in the contract)
         (user_stake * distributable_pool) / winning_option_total
     }
 
@@ -208,5 +215,55 @@ mod tests {
 
         let total = TokenHelper::calculate_total_pool(&stakes);
         assert_eq!(total, 750);
+    }
+
+    #[test]
+    fn test_calculate_total_pool_matches_sum_of_stakes() {
+        use soroban_sdk::{Env, Vec};
+
+        let env = Env::default();
+        let mut stakes = Vec::new(&env);
+        stakes.push_back(7i128);
+        stakes.push_back(13i128);
+        stakes.push_back(29i128);
+
+        let total = TokenHelper::calculate_total_pool(&stakes);
+        assert_eq!(total, 7 + 13 + 29);
+    }
+
+    #[test]
+    fn test_winnings_sum_never_exceeds_total_pool_three_winners() {
+        // Pool of 100 does not divide evenly across 3 winners (100 / 3 = 33.33).
+        // Each winner staked 100 on the winning option (winning_option_total = 300).
+        let total_pool = 100i128;
+        let winning_option_total = 300i128;
+        let house_fee_percentage = 0u32;
+
+        let w1 = TokenHelper::calculate_winnings(100, winning_option_total, total_pool, house_fee_percentage);
+        let w2 = TokenHelper::calculate_winnings(100, winning_option_total, total_pool, house_fee_percentage);
+        let w3 = TokenHelper::calculate_winnings(100, winning_option_total, total_pool, house_fee_percentage);
+
+        let sum = w1 + w2 + w3;
+        assert!(sum <= total_pool, "sum of winnings must not exceed total pool");
+        // Dust (1 unit) is retained in the contract, not paid out.
+        assert_eq!(sum, 99);
+    }
+
+    #[test]
+    fn test_single_winner_receives_entire_pool() {
+        // A single winner staking the whole winning option receives the full
+        // distributable pool with no dust loss.
+        let total_pool = 1000i128;
+        let winning_option_total = 1000i128;
+        let house_fee_percentage = 0u32;
+
+        let winnings = TokenHelper::calculate_winnings(
+            1000,
+            winning_option_total,
+            total_pool,
+            house_fee_percentage,
+        );
+
+        assert_eq!(winnings, total_pool);
     }
 }

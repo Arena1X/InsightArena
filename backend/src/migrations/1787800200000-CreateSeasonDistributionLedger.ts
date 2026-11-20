@@ -6,9 +6,7 @@ import {
   TableIndex,
 } from 'typeorm';
 
-export class CreateSeasonDistributionLedger1787800200000
-  implements MigrationInterface
-{
+export class CreateSeasonDistributionLedger1787800200000 implements MigrationInterface {
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.createTable(
       new Table({

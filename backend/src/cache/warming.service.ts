@@ -25,6 +25,7 @@ type CacheWarmResult = Omit<WarmMetrics, 'duration_ms'>;
 export class CacheWarmingService {
   private readonly logger = new Logger(CacheWarmingService.name);
   private readonly strategy: CacheWarmingStrategy;
+  private isWarming = false;
 
   constructor(
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
@@ -38,6 +39,20 @@ export class CacheWarmingService {
 
   @Cron('0 */10 * * * *')
   async warmFrequentlyAccessedData(): Promise<CacheWarmResult> {
+    if (this.isWarming) {
+      this.logger.warn('Cache warming skipped: previous cycle still running');
+      return { warmed: [], failed: [] };
+    }
+
+    this.isWarming = true;
+    try {
+      return await this.runWarmCycle();
+    } finally {
+      this.isWarming = false;
+    }
+  }
+
+  private async runWarmCycle(): Promise<CacheWarmResult> {
     if (!this.strategy.enabled) {
       this.logger.debug('Cache warming skipped because it is disabled');
       return { warmed: [], failed: [] };
@@ -48,13 +63,23 @@ export class CacheWarmingService {
     const result: CacheWarmResult = { warmed: [], failed: [] };
 
     const [, trendingEvents] = await Promise.all([
-      this.warmActiveEvents(result),
-      this.warmTrendingEvents(result),
-      this.warmPlatformStatistics(result),
-      this.warmLeaderboard(result),
+      this.runSubWarmer('warmActiveEvents', () =>
+        this.warmActiveEvents(result),
+      ),
+      this.runSubWarmer('warmTrendingEvents', () =>
+        this.warmTrendingEvents(result),
+      ),
+      this.runSubWarmer('warmPlatformStatistics', () =>
+        this.warmPlatformStatistics(result),
+      ),
+      this.runSubWarmer('warmLeaderboard', () =>
+        this.warmLeaderboard(result),
+      ),
     ]);
 
-    await this.warmPopularEventDetails(result, trendingEvents?.data ?? []);
+    await this.runSubWarmer('warmPopularEventDetails', () =>
+      this.warmPopularEventDetails(result, trendingEvents?.data ?? []),
+    );
 
     const duration_ms = Date.now() - start;
     this.logger.log(
@@ -62,6 +87,24 @@ export class CacheWarmingService {
     );
 
     return result;
+  }
+
+  /**
+   * Runs a single sub-warming task in isolation so that a thrown error from
+   * one task cannot abort the remaining sub-warming tasks. The failing
+   * sub-warmer is recorded in the job result and logged by name.
+   */
+  private async runSubWarmer<T>(
+    name: string,
+    task: () => Promise<T>,
+  ): Promise<T | null> {
+    try {
+      return await task();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Cache warming sub-warmer ${name} failed: ${reason}`);
+      return null;
+    }
   }
 
   /** Warm leaderboard top-N slices for all configured seasons. */

@@ -1,14 +1,16 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, BarChart3 } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ChevronLeft, ChevronRight, BarChart3, Search } from "lucide-react";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useToast } from "@/hooks/useToast";
 import { EmptyState } from "@/component/ui/empty-state";
+import { formatPnlXlm } from "@/lib/utils";
 
-type PredictionStatus = "Active" | "Won" | "Lost" | "Pending";
-type FilterTab = "All" | "Active" | "Won" | "Lost" | "Pending";
+type PredictionStatus = "Active" | "Won" | "Lost" | "Pending" | "Refunded";
+type FilterTab = "All" | "Won" | "Lost" | "Pending" | "Refunded";
 
 interface Prediction {
   id: string;
@@ -127,6 +129,8 @@ function getStatusBadgeClasses(status: PredictionStatus): string {
       return `${baseClasses} border border-red-500/30 bg-red-500/10 text-red-200`;
     case "Pending":
       return `${baseClasses} border border-yellow-500/30 bg-yellow-500/10 text-yellow-200`;
+    case "Refunded":
+      return `${baseClasses} border border-slate-500/30 bg-slate-500/10 text-slate-300`;
     default:
       return `${baseClasses} border border-white/10 bg-white/5 text-gray-200`;
   }
@@ -151,19 +155,67 @@ function getCategoryBadgeClasses(category: string): string {
   }
 }
 
+const FILTER_TABS: FilterTab[] = ["All", "Won", "Lost", "Pending", "Refunded"];
+
+function isFilterTab(value: string | null): value is FilterTab {
+  return !!value && (FILTER_TABS as string[]).includes(value);
+}
+
+/** Parses a stake/payout string like "50 XLM" into its numeric amount. */
+function parseXlmAmount(value: string | undefined): number {
+  if (!value) return 0;
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export default function MyPredictionsPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [predictions, setPredictions] = useState<Prediction[]>(MOCK_PREDICTIONS);
-  const [activeFilter, setActiveFilter] = useState<FilterTab>("All");
+  const [activeFilter, setActiveFilter] = useState<FilterTab>(() => {
+    const fromUrl = searchParams.get("status");
+    return isFilterTab(fromUrl) ? fromUrl : "All";
+  });
+  const [searchQuery, setSearchQuery] = useState(() => searchParams.get("q") || "");
   const [currentPage, setCurrentPage] = useState(1);
   const [claimingPredictionId, setClaimingPredictionId] = useState<string | null>(null);
   const [claimError, setClaimError] = useState<string | null>(null);
   const confirm = useConfirm();
   const toast = useToast();
 
+  // Persist the active filter and search text in the URL query, so a
+  // refreshed or shared link reopens to the same view.
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (activeFilter !== "All") {
+      params.set("status", activeFilter);
+    } else {
+      params.delete("status");
+    }
+    if (searchQuery) {
+      params.set("q", searchQuery);
+    } else {
+      params.delete("q");
+    }
+    const query = params.toString();
+    router.replace(query ? `?${query}` : "?", { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFilter, searchQuery]);
+
   const filteredPredictions = useMemo(() => {
-    if (activeFilter === "All") return predictions;
-    return predictions.filter((pred) => pred.status === activeFilter);
-  }, [predictions, activeFilter]);
+    let result = predictions;
+    if (activeFilter !== "All") {
+      result = result.filter((pred) => pred.status === activeFilter);
+    }
+    const query = searchQuery.trim().toLowerCase();
+    if (query) {
+      result = result.filter((pred) =>
+        pred.marketTitle.toLowerCase().includes(query),
+      );
+    }
+    return result;
+  }, [predictions, activeFilter, searchQuery]);
 
   const totalPages = Math.ceil(filteredPredictions.length / ITEMS_PER_PAGE);
   const paginatedPredictions = useMemo(() => {
@@ -188,18 +240,42 @@ export default function MyPredictionsPage() {
     };
   }, [predictions]);
 
+  // Summary chips (issue #1556) reflect the currently filtered set, not the
+  // whole portfolio, so "win rate" and "net P/L" answer "of what I'm looking
+  // at right now", matching the filters/search above them.
+  const filteredSummary = useMemo(() => {
+    const settled = filteredPredictions.filter(
+      (p) => p.status === "Won" || p.status === "Lost",
+    );
+    const wins = settled.filter((p) => p.status === "Won").length;
+    const winRate = settled.length > 0 ? Math.round((wins / settled.length) * 100) : 0;
+
+    const netPnl = filteredPredictions.reduce((sum, p) => {
+      if (p.status === "Won") return sum + parseXlmAmount(p.payout) - parseXlmAmount(p.stake);
+      if (p.status === "Lost") return sum - parseXlmAmount(p.stake);
+      return sum;
+    }, 0);
+
+    return { winRate, settledCount: settled.length, netPnl };
+  }, [filteredPredictions]);
+
   const filterCounts = useMemo(() => {
     return {
       All: predictions.length,
-      Active: predictions.filter((p) => p.status === "Active").length,
       Won: predictions.filter((p) => p.status === "Won").length,
       Lost: predictions.filter((p) => p.status === "Lost").length,
       Pending: predictions.filter((p) => p.status === "Pending").length,
+      Refunded: predictions.filter((p) => p.status === "Refunded").length,
     };
   }, [predictions]);
 
   const handleFilterChange = (filter: FilterTab) => {
     setActiveFilter(filter);
+    setCurrentPage(1);
+  };
+
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value);
     setCurrentPage(1);
   };
 
@@ -244,7 +320,11 @@ export default function MyPredictionsPage() {
       variant: "destructive",
     });
     if (!confirmed) return;
-    setPredictions((prev) => prev.filter((p) => p.id !== prediction.id));
+    setPredictions((prev) =>
+      prev.map((p) =>
+        p.id === prediction.id ? { ...p, status: "Refunded" as const } : p,
+      ),
+    );
     toast.success("Prediction cancelled and stake refunded");
   };
 
@@ -297,10 +377,45 @@ export default function MyPredictionsPage() {
         </div>
       </section>
 
+      {/* Filtered-set summary chips (issue #1556) */}
+      <section className="flex flex-wrap gap-3">
+        <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm">
+          <span className="text-gray-400">Win rate</span>
+          <span className="font-semibold text-white">
+            {filteredSummary.settledCount > 0 ? `${filteredSummary.winRate}%` : "—"}
+          </span>
+        </div>
+        <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm">
+          <span className="text-gray-400">Net P/L</span>
+          <span
+            className={`font-semibold ${
+              filteredSummary.netPnl >= 0 ? "text-emerald-300" : "text-red-300"
+            }`}
+          >
+            {formatPnlXlm(filteredSummary.netPnl)}
+          </span>
+        </div>
+      </section>
+
+      {/* Search */}
+      <section className="rounded-2xl border border-white/10 bg-white/5 p-4">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            placeholder="Search by market title..."
+            aria-label="Search predictions by market title"
+            className="w-full rounded-xl border border-white/10 bg-white/5 py-2 pl-9 pr-3 text-sm text-white placeholder:text-gray-500 outline-none focus:border-orange-400"
+          />
+        </div>
+      </section>
+
       {/* Filter Tabs */}
       <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
         <div className="flex flex-wrap gap-2">
-          {(["All", "Active", "Won", "Lost", "Pending"] as FilterTab[]).map(
+          {FILTER_TABS.map(
             (filter) => (
               <button
                 key={filter}
@@ -344,9 +459,11 @@ export default function MyPredictionsPage() {
             icon={<BarChart3 className="h-7 w-7" />}
             title="No predictions found"
             description={
-              activeFilter === "All"
-                ? "You haven't made any predictions yet. Start by browsing available markets."
-                : `You don't have any ${activeFilter.toLowerCase()} predictions.`
+              searchQuery
+                ? `No predictions match "${searchQuery}".`
+                : activeFilter === "All"
+                  ? "You haven't made any predictions yet. Start by browsing available markets."
+                  : `You don't have any ${activeFilter.toLowerCase()} predictions.`
             }
             action={{ label: "Browse Markets", href: "/markets" }}
           />

@@ -7,6 +7,7 @@ import {
   Address,
   Contract,
   nativeToScVal,
+  scValToNative,
   Networks,
   Transaction,
 } from '@stellar/stellar-sdk';
@@ -143,6 +144,24 @@ export interface SorobanDisputeResult {
   tx_hash: string;
 }
 
+/**
+ * Snapshot of the contract's `Dispute` record as returned by
+ * `get_dispute(market_id)`. The contract keys disputes by market, so the
+ * market's on-chain ID is also the dispute's canonical on-chain ID.
+ */
+export interface SorobanOnChainDispute {
+  dispute_id: string;
+  disputer: string;
+  bond: string;
+  filed_at: number;
+  appeal_tier: number;
+  is_resolved: boolean;
+  resolution_upheld: boolean | null;
+}
+
+/** `InsightArenaError::DisputeNotFound` in contracts/open-market/src/errors.rs. */
+const CONTRACT_ERROR_DISPUTE_NOT_FOUND = 62;
+
 export interface SorobanFinalizeEventResult {
   tx_hash: string;
 }
@@ -151,6 +170,24 @@ const DEFAULT_RPC_TIMEOUT_MS = 10_000;
 const DEFAULT_RPC_MAX_RETRIES = 2;
 /** Base delay for read-retry and post-ambiguity resend backoff — short by design (see #1). */
 const RPC_RETRY_BASE_DELAY_MS = 250;
+
+/**
+ * Fee estimation policy.
+ *
+ * The inclusion (base) fee for a transaction is estimated from the RPC's
+ * recent fee stats (p90 of recent Soroban inclusion fees). If estimation is
+ * unavailable (RPC error, timeout, or malformed stats), submissions are not
+ * blocked: we fall back to the last successfully estimated fee, or to
+ * SOROBAN_FALLBACK_FEE_STROOPS when no estimate has succeeded yet.
+ *
+ * Every fee — live or fallback — is capped at SOROBAN_MAX_FEE_STROOPS so a
+ * fee spike or a misconfigured fallback can never make us overpay. The
+ * resource fee is still added on top by simulation/assembly.
+ */
+export const DEFAULT_SOROBAN_FALLBACK_FEE_STROOPS = 10_000;
+export const DEFAULT_SOROBAN_MAX_FEE_STROOPS = 1_000_000;
+/** Stellar protocol minimum base fee per operation, in stroops. */
+const MIN_BASE_FEE_STROOPS = 100;
 
 function readNonNegativeIntConfig(
   configService: ConfigService,
@@ -175,6 +212,10 @@ export class SorobanService {
   private readonly rpcServer: SorobanRpc.Server;
   private readonly rpcTimeoutMs: number;
   private readonly rpcMaxRetries: number;
+  private readonly fallbackFeeStroops: number;
+  private readonly maxFeeStroops: number;
+  /** Most recent successfully estimated fee, reused as the fallback. */
+  private lastKnownFeeStroops: number | null = null;
 
   constructor(private readonly configService: ConfigService) {
     this.contractId =
@@ -195,6 +236,22 @@ export class SorobanService {
       'SOROBAN_RPC_MAX_RETRIES',
       DEFAULT_RPC_MAX_RETRIES,
     );
+    this.maxFeeStroops = Math.max(
+      MIN_BASE_FEE_STROOPS,
+      readNonNegativeIntConfig(
+        this.configService,
+        'SOROBAN_MAX_FEE_STROOPS',
+        DEFAULT_SOROBAN_MAX_FEE_STROOPS,
+      ),
+    );
+    this.fallbackFeeStroops = Math.max(
+      MIN_BASE_FEE_STROOPS,
+      readNonNegativeIntConfig(
+        this.configService,
+        'SOROBAN_FALLBACK_FEE_STROOPS',
+        DEFAULT_SOROBAN_FALLBACK_FEE_STROOPS,
+      ),
+    );
 
     this.rpcServer = new SorobanRpc.Server(this.rpcUrl, {
       allowHttp: this.rpcUrl.startsWith('http://'),
@@ -209,6 +266,42 @@ export class SorobanService {
 
   getRpcClient(): SorobanRpc.Server {
     return this.rpcServer;
+  }
+
+  /**
+   * Estimates the inclusion fee (in stroops, as a string suitable for
+   * `TransactionBuilder`) per the fee estimation policy above. Never throws:
+   * an unavailable estimate degrades to the capped fallback fee.
+   */
+  async estimateFee(): Promise<string> {
+    try {
+      const stats = await this.withTimeoutRpc('estimateFee:getFeeStats', () =>
+        this.rpcServer.getFeeStats(),
+      );
+      const liveFee = Number(stats.sorobanInclusionFee.p90);
+      if (!Number.isFinite(liveFee) || liveFee <= 0) {
+        throw new Error(
+          `invalid fee stats: p90=${stats.sorobanInclusionFee.p90}`,
+        );
+      }
+      const fee = this.capFee(
+        Math.max(Math.ceil(liveFee), MIN_BASE_FEE_STROOPS),
+      );
+      this.lastKnownFeeStroops = fee;
+      return String(fee);
+    } catch (error) {
+      const fee = this.capFee(
+        this.lastKnownFeeStroops ?? this.fallbackFeeStroops,
+      );
+      this.logger.warn(
+        `Fee estimation unavailable (${errorMessage(error)}); using fallback fee of ${fee} stroops`,
+      );
+      return String(fee);
+    }
+  }
+
+  private capFee(feeStroops: number): number {
+    return Math.min(feeStroops, this.maxFeeStroops);
   }
 
   async getCreationFee(): Promise<string> {
@@ -350,7 +443,7 @@ export class SorobanService {
 
         // Build the invocation
         const tx = new TransactionBuilder(serverAccount, {
-          fee: '10000', // Base fee, updated by simulation
+          fee: await this.estimateFee(), // Base fee; resource fee added by simulation
           networkPassphrase:
             this.network === 'testnet' ? Networks.TESTNET : Networks.PUBLIC,
         })
@@ -552,8 +645,10 @@ export class SorobanService {
         `raiseDispute signed by server: ${serverKeypair.publicKey()}`,
       );
 
-      // Generate dispute ID and transaction hash
-      const dispute_id = `dispute_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      // The contract stores one dispute per market under
+      // DataKey::Dispute(market_id), so the market ID is the dispute's
+      // canonical on-chain ID.
+      const dispute_id = marketOnChainId;
       const tx_hash = Buffer.from(
         `dispute:${marketOnChainId}:${dispute_id}:${Date.now()}`,
       )
@@ -565,6 +660,75 @@ export class SorobanService {
         `raiseDispute submitted: dispute_id=${dispute_id} tx_hash=${tx_hash}`,
       );
       return Promise.resolve({ dispute_id, tx_hash });
+    });
+  }
+
+  /**
+   * Read the contract's dispute record for a market via a read-only
+   * simulation of `get_dispute(market_id)`. Returns `null` when the contract
+   * reports `DisputeNotFound`; any other failure (RPC outage, malformed
+   * response, other contract error) is thrown so callers never mistake an
+   * unreachable chain for a missing dispute.
+   */
+  async getDispute(
+    marketOnChainId: string,
+  ): Promise<SorobanOnChainDispute | null> {
+    return this.withSorobanErrorHandling('getDispute', async () => {
+      if (!this.contractId) {
+        throw new Error('SOROBAN_CONTRACT_ID is not configured');
+      }
+
+      const contract = new Contract(this.contractId);
+      // Simulation needs no real source account or signature.
+      const source = new SorobanRpc.Account(Keypair.random().publicKey(), '0');
+      const tx = new TransactionBuilder(source, {
+        fee: '100',
+        networkPassphrase:
+          this.network === 'testnet' ? Networks.TESTNET : Networks.PUBLIC,
+      })
+        .addOperation(
+          contract.call(
+            'get_dispute',
+            nativeToScVal(BigInt(marketOnChainId), { type: 'u64' }),
+          ),
+        )
+        .setTimeout(30)
+        .build();
+
+      const simulation = await this.callRpc(
+        `getDispute(${marketOnChainId}):simulateTransaction`,
+        () => this.rpcServer.simulateTransaction(tx),
+      );
+
+      if (SorobanRpc.Api.isSimulationError(simulation)) {
+        if (
+          simulation.error.includes(
+            `Error(Contract, #${CONTRACT_ERROR_DISPUTE_NOT_FOUND})`,
+          )
+        ) {
+          return null;
+        }
+        throw new Error(`get_dispute simulation failed: ${simulation.error}`);
+      }
+
+      const retval = simulation.result?.retval;
+      if (!retval) {
+        throw new Error('get_dispute simulation returned no value');
+      }
+
+      const raw = scValToNative(retval) as Record<string, unknown>;
+      return {
+        dispute_id: marketOnChainId,
+        disputer: String(raw.disputer ?? ''),
+        bond: String(raw.bond ?? '0'),
+        filed_at: Number(raw.filed_at ?? 0),
+        appeal_tier: Number(raw.appeal_tier ?? 0),
+        is_resolved: raw.is_resolved === true,
+        resolution_upheld:
+          typeof raw.resolution_upheld === 'boolean'
+            ? raw.resolution_upheld
+            : null,
+      };
     });
   }
 
@@ -633,7 +797,7 @@ export class SorobanService {
 
       // Build the invocation
       const tx = new TransactionBuilder(serverAccount, {
-        fee: '10000',
+        fee: await this.estimateFee(),
         networkPassphrase:
           this.network === 'testnet' ? Networks.TESTNET : Networks.PUBLIC,
       })

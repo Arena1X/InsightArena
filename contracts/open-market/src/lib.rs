@@ -22,17 +22,16 @@ pub mod storage_types;
 pub use crate::config::Config;
 pub use crate::errors::InsightArenaError;
 pub use crate::governance::{Proposal, ProposalType};
-pub use crate::storage_types::ProposalState;
 pub use crate::liquidity::{calculate_liquidity_value, calculate_lp_tokens, calculate_swap_output};
 pub use crate::market::CreateMarketParams;
+pub use crate::storage_types::ProposalState;
 pub use crate::storage_types::{
-    ArbiterAssignment, ArbiterTally, BatchPredictionRequest,
-    ConditionalChain, ConditionalMarket, CreatorLeaderboardEntry, CreatorStats, DataKey,
-    DependencyStatus, Dispute, Event, EventMatch, EventPrediction, FeeTier, FeeTierConfig,
-    InviteCode, InviteCodeInfo, LPPosition, LeaderboardEntry, LeaderboardSnapshot, LiquidityPool,
-    Market, MarketFeeInfo, MarketStats, OracleSubmission, PlatformStats, Prediction,
-    PriceAccumulator, PriceObservation, Season, SwapRecord, UserProfile, VestingSchedule,
-    VolatilityState, Winner,
+    ArbiterAssignment, ArbiterTally, BatchPredictionRequest, ConditionalChain, ConditionalMarket,
+    CreatorLeaderboardEntry, CreatorStats, DataKey, DependencyStatus, Dispute, Event, EventMatch,
+    EventPrediction, FeeTier, FeeTierConfig, InviteCode, InviteCodeInfo, LPPosition,
+    LeaderboardEntry, LeaderboardSnapshot, LiquidityPool, Market, MarketFeeInfo, MarketStats,
+    OracleSubmission, PlatformStats, Prediction, PriceAccumulator, PriceObservation, Season,
+    SwapRecord, UserProfile, VestingSchedule, VolatilityState, Winner,
 };
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
@@ -377,7 +376,11 @@ impl InsightArenaContract {
 
     /// Deposit a bond making `arbiter` eligible for panel assignment via
     /// `assign_arbiters`. Cumulative; no withdrawal path in this iteration.
-    pub fn stake_as_arbiter(env: Env, arbiter: Address, amount: i128) -> Result<(), InsightArenaError> {
+    pub fn stake_as_arbiter(
+        env: Env,
+        arbiter: Address,
+        amount: i128,
+    ) -> Result<(), InsightArenaError> {
         dispute::stake_as_arbiter(env, arbiter, amount)
     }
 
@@ -504,7 +507,13 @@ impl InsightArenaContract {
         chosen_outcome: Symbol,
         stake_amount: i128,
     ) -> Result<(), InsightArenaError> {
-        prediction::submit_prediction_via_allowance(&env, predictor, market_id, chosen_outcome, stake_amount)
+        prediction::submit_prediction_via_allowance(
+            &env,
+            predictor,
+            market_id,
+            chosen_outcome,
+            stake_amount,
+        )
     }
 
     /// Commit to a prediction with a hash (outcome + amount + salt).
@@ -515,7 +524,13 @@ impl InsightArenaContract {
         commitment_hash: soroban_sdk::BytesN<32>,
         reveal_delay_seconds: u64,
     ) -> Result<(), InsightArenaError> {
-        prediction::commit_prediction(&env, predictor, market_id, commitment_hash, reveal_delay_seconds)
+        prediction::commit_prediction(
+            &env,
+            predictor,
+            market_id,
+            commitment_hash,
+            reveal_delay_seconds,
+        )
     }
 
     /// Reveal a committed prediction and lock funds.
@@ -527,7 +542,14 @@ impl InsightArenaContract {
         stake_amount: i128,
         salt: Vec<soroban_sdk::Val>,
     ) -> Result<(), InsightArenaError> {
-        prediction::reveal_prediction(&env, predictor, market_id, chosen_outcome, stake_amount, salt)
+        prediction::reveal_prediction(
+            &env,
+            predictor,
+            market_id,
+            chosen_outcome,
+            stake_amount,
+            salt,
+        )
     }
 
     /// Submit a batch of predictions atomically.
@@ -924,6 +946,25 @@ impl InsightArenaContract {
         invite::get_invite_code_info(&env, code)
     }
 
+    /// Check whether a participant is authorized to participate in a market.
+    /// Reverts with `Unauthorized` if the market is private and the address is not on the allowlist.
+    pub fn check_market_access(
+        env: Env,
+        market_id: u64,
+        participant: Address,
+    ) -> Result<(), InsightArenaError> {
+        invite::check_market_access(&env, market_id, &participant)
+    }
+
+    /// Query whether an address is authorized to participate in a market (read-only).
+    pub fn is_participant_authorized(
+        env: Env,
+        market_id: u64,
+        participant: Address,
+    ) -> Result<bool, InsightArenaError> {
+        invite::is_participant_authorized(&env, market_id, &participant)
+    }
+
     /// List all season IDs which have snapshots available.
     pub fn list_snapshot_seasons(env: Env) -> Vec<u32> {
         env.storage()
@@ -1191,6 +1232,7 @@ impl InsightArenaContract {
         to_outcome: Symbol,
         amount_in: i128,
         min_amount_out: i128,
+        deadline: Option<u64>,
     ) -> Result<i128, InsightArenaError> {
         liquidity::swap_outcome(
             &env,
@@ -1200,6 +1242,7 @@ impl InsightArenaContract {
             to_outcome,
             amount_in,
             min_amount_out,
+            deadline,
         )
     }
 
