@@ -7,6 +7,7 @@ import StatsCards from "@/component/trading/StatsCards";
 import TradingTabs from "@/component/trading/TradingTabs";
 import MarketSearchBar from "@/component/trading/MarketSearchBar";
 import MarketList from "@/component/trading/MarketList";
+import OrderPreviewModal from "@/component/trading/OrderPreviewModal";
 import Image from "next/image";
 
 // Icons for each coin
@@ -44,10 +45,16 @@ const initialMarkets = [
   { name: "Litecoin", price: "$39422.76", volume: "2.1B", change: "+10.29%", isFavorite: false },
 ];
 
+interface PreviewTarget {
+  name: string;
+  price: string;
+}
+
 export default function TradingPage() {
   const [activeTab, setActiveTab] = useState("Live market");
   const [search, setSearch] = useState("");
   const [markets, setMarkets] = useState(initialMarkets);
+  const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
 
   // Stats placeholder
   const stats = {
@@ -62,10 +69,21 @@ export default function TradingPage() {
     m.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  // Handlers
+  // Open the order preview modal for the selected market
   const handleTrade = (name: string) => {
-    alert(`Trade clicked for ${name}`);
+    const market = markets.find((m) => m.name === name);
+    if (market) {
+      setPreviewTarget({ name: market.name, price: market.price });
+    }
   };
+
+  // Called when the user confirms the trade from the preview modal
+  const handleConfirmTrade = (stake: number) => {
+    // TODO: dispatch the actual trade submission to the backend
+    console.info("Trade confirmed", { market: previewTarget?.name, stake });
+    setPreviewTarget(null);
+  };
+
   const handleFavorite = (name: string) => {
     setMarkets((prev) =>
       prev.map((m) =>
@@ -115,6 +133,17 @@ export default function TradingPage() {
         </main>
         <Footer />
       </div>
+
+      {/* Order preview modal — rendered outside the scrollable main so it overlays correctly */}
+      <OrderPreviewModal
+        marketName={previewTarget?.name ?? ""}
+        price={previewTarget?.price ?? ""}
+        isOpen={previewTarget !== null}
+        initialStake={10}
+        odds={1}
+        onCancel={() => setPreviewTarget(null)}
+        onConfirm={handleConfirmTrade}
+      />
     </PageBackground>
   );
 } 
