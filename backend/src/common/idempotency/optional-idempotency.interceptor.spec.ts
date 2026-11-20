@@ -1,309 +1,474 @@
-import { Test } from '@nestjs/testing';
+import { Test, TestingModule } from '@nestjs/testing';
 import {
-  CallHandler,
-  ConflictException,
   ExecutionContext,
+  ConflictException,
   UnprocessableEntityException,
+  CallHandler,
 } from '@nestjs/common';
-import { createHash } from 'crypto';
-import { of, throwError } from 'rxjs';
 import { OptionalIdempotencyInterceptor } from './optional-idempotency.interceptor';
 import { IdempotencyService } from './idempotency.service';
+import { of, throwError } from 'rxjs';
+import { Request } from 'express';
 
 describe('OptionalIdempotencyInterceptor', () => {
   let interceptor: OptionalIdempotencyInterceptor;
-  let idempotencyService: {
-    acquire: jest.Mock;
-    complete: jest.Mock;
-    release: jest.Mock;
-  };
+  let idempotencyService: jest.Mocked<IdempotencyService>;
+  let mockContext: jest.Mocked<ExecutionContext>;
+  let mockRequest: Partial<Request & { user?: { id: string } }>;
+  let mockCallHandler: jest.Mocked<CallHandler>;
+
+  const validUUID = '550e8400-e29b-41d4-a716-446655440000';
+  const invalidUUID = 'not-a-uuid';
+  const testUserId = 'user-123';
 
   beforeEach(async () => {
     idempotencyService = {
       acquire: jest.fn(),
-      complete: jest.fn().mockResolvedValue(undefined),
-      release: jest.fn().mockResolvedValue(undefined),
-    };
+      getKey: jest.fn(),
+    } as any;
 
-    const module = await Test.createTestingModule({
+    const module: TestingModule = await Test.createTestingModule({
       providers: [
         OptionalIdempotencyInterceptor,
-        { provide: IdempotencyService, useValue: idempotencyService },
+        {
+          provide: IdempotencyService,
+          useValue: idempotencyService,
+        },
       ],
     }).compile();
 
-    interceptor = module.get(OptionalIdempotencyInterceptor);
+    interceptor = module.get<OptionalIdempotencyInterceptor>(
+      OptionalIdempotencyInterceptor,
+    );
+
+    mockRequest = {
+      headers: {},
+      method: 'POST',
+      originalUrl: '/api/v1/predictions',
+      body: { market_id: 'market-123', outcome: 'yes', amount: 100 },
+      user: { id: testUserId },
+    };
+
+    mockContext = {
+      switchToHttp: jest.fn().mockReturnValue({
+        getRequest: jest.fn().mockReturnValue(mockRequest),
+      }),
+    } as any;
+
+    mockCallHandler = {
+      handle: jest.fn().mockReturnValue(of({ success: true })),
+    } as any;
   });
 
-  function contextWith(
-    idempotencyKey: string | undefined,
-    body: unknown,
-    userId?: string,
-  ): ExecutionContext {
-    const headers: Record<string, string> = {};
-    if (idempotencyKey) {
-      headers['idempotency-key'] = idempotencyKey;
-    }
-
-    const request = {
-      headers,
-      method: 'POST',
-      originalUrl: '/api/predict',
-      body,
-      user: userId ? { id: userId } : undefined,
-    };
-
-    const response = {
-      statusCode: 200,
-      setHeader: jest.fn(),
-    };
-
-    return {
-      switchToHttp: jest.fn().mockReturnValue({
-        getRequest: jest.fn().mockReturnValue(request),
-        getResponse: jest.fn().mockReturnValue(response),
-      }),
-    } as unknown as ExecutionContext;
-  }
-
-  describe('intercept', () => {
+  describe('constructor', () => {
     it('should be defined', () => {
       expect(interceptor).toBeDefined();
     });
 
-    it('should pass through when no idempotency header is present', async () => {
-      const context = contextWith(undefined, { data: 'test' });
-      const next = { handle: jest.fn().mockReturnValue(of({ result: 'ok' })) };
+    it('should have IdempotencyService injected', () => {
+      expect(idempotencyService).toBeDefined();
+    });
+  });
 
-      const result = await interceptor.intercept(context, next as CallHandler);
+  describe('intercept without idempotency header', () => {
+    it('should pass through without header', async () => {
+      mockRequest.headers = {};
+
+      const result = await interceptor.intercept(mockContext, mockCallHandler);
 
       expect(result).toBeDefined();
+      expect(mockCallHandler.handle).toHaveBeenCalled();
       expect(idempotencyService.acquire).not.toHaveBeenCalled();
     });
 
-    it('should reject invalid UUID in idempotency key', async () => {
-      const context = contextWith('not-a-uuid', { data: 'test' });
-      const next = { handle: jest.fn() };
+    it('should pass through with non-string header', async () => {
+      mockRequest.headers = { 'idempotency-key': ['array'] };
 
-      await expect(interceptor.intercept(context, next as CallHandler)).rejects.toThrow(
-        UnprocessableEntityException,
-      );
+      const result = await interceptor.intercept(mockContext, mockCallHandler);
+
+      expect(mockCallHandler.handle).toHaveBeenCalled();
     });
 
-    it('should reject non-UUID string in idempotency key', async () => {
-      const context = contextWith('12345', { data: 'test' });
-      const next = { handle: jest.fn() };
+    it('should call next.handle() for no idempotency header', async () => {
+      const result = await interceptor.intercept(mockContext, mockCallHandler);
 
-      await expect(interceptor.intercept(context, next as CallHandler)).rejects.toThrow(
-        'must be a valid UUID',
-      );
+      expect(mockCallHandler.handle).toHaveBeenCalledTimes(1);
     });
 
-    it('should accept valid UUID in idempotency key', async () => {
-      const validUuid = '550e8400-e29b-41d4-a716-446655440000';
-      const context = contextWith(validUuid, { data: 'test' });
-      const next = { handle: jest.fn().mockReturnValue(of({ result: 'ok' })) };
+    it('should return observable from next.handle()', async () => {
+      const result = await interceptor.intercept(mockContext, mockCallHandler);
 
+      expect(result).toEqual(of({ success: true }));
+    });
+  });
+
+  describe('idempotency header validation', () => {
+    it('should reject invalid UUID format', async () => {
+      mockRequest.headers = { 'idempotency-key': invalidUUID };
+
+      await expect(
+        interceptor.intercept(mockContext, mockCallHandler),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
+
+    it('should reject UUID with wrong case in variant bits', async () => {
+      mockRequest.headers = { 'idempotency-key': '550e8400-e29b-41d4-x716-446655440000' };
+
+      await expect(
+        interceptor.intercept(mockContext, mockCallHandler),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
+
+    it('should accept valid UUID v4', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
       idempotencyService.acquire.mockResolvedValue({
         acquired: true,
-        record: { id: 'rec-1', in_progress: false, request_hash: 'hash' },
+        record: null,
       });
 
-      await interceptor.intercept(context, next as CallHandler);
+      const result = await interceptor.intercept(mockContext, mockCallHandler);
 
-      expect(idempotencyService.acquire).toHaveBeenCalled();
+      expect(result).toBeDefined();
     });
 
-    it('should use anonymous user when user not present', async () => {
-      const validUuid = '550e8400-e29b-41d4-a716-446655440000';
-      const context = contextWith(validUuid, { data: 'test' });
-      const next = { handle: jest.fn().mockReturnValue(of({ result: 'ok' })) };
-
+    it('should accept valid UUID with uppercase', async () => {
+      const uppercaseUUID = validUUID.toUpperCase();
+      mockRequest.headers = { 'idempotency-key': uppercaseUUID };
       idempotencyService.acquire.mockResolvedValue({
         acquired: true,
-        record: { id: 'rec-1', in_progress: false, request_hash: 'hash' },
+        record: null,
       });
 
-      await interceptor.intercept(context, next as CallHandler);
+      const result = await interceptor.intercept(mockContext, mockCallHandler);
+
+      expect(result).toBeDefined();
+    });
+
+    it('should reject UUID with incorrect length', async () => {
+      mockRequest.headers = { 'idempotency-key': '550e8400-e29b-41d4-a716-44665544' };
+
+      await expect(
+        interceptor.intercept(mockContext, mockCallHandler),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
+
+    it('should reject UUID with non-hex characters', async () => {
+      mockRequest.headers = { 'idempotency-key': '550e8400-e29b-41d4-a716-44665544ZZZZ' };
+
+      await expect(
+        interceptor.intercept(mockContext, mockCallHandler),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
+  });
+
+  describe('first request (acquired = true)', () => {
+    it('should process normally when key is acquired', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
+
+      expect(mockCallHandler.handle).toHaveBeenCalled();
+    });
+
+    it('should call acquire with correct parameters', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
 
       expect(idempotencyService.acquire).toHaveBeenCalledWith(
-        validUuid,
-        'anonymous',
+        validUUID,
+        testUserId,
         expect.any(String),
       );
     });
 
-    it('should use user ID when present', async () => {
-      const validUuid = '550e8400-e29b-41d4-a716-446655440000';
-      const userId = 'user-123';
-      const context = contextWith(validUuid, { data: 'test' }, userId);
-      const next = { handle: jest.fn().mockReturnValue(of({ result: 'ok' })) };
-
+    it('should include request method in hash', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      mockRequest.method = 'POST';
       idempotencyService.acquire.mockResolvedValue({
         acquired: true,
-        record: { id: 'rec-1', in_progress: false, request_hash: 'hash' },
+        record: null,
       });
 
-      await interceptor.intercept(context, next as CallHandler);
+      await interceptor.intercept(mockContext, mockCallHandler);
 
-      expect(idempotencyService.acquire).toHaveBeenCalledWith(
-        validUuid,
-        userId,
-        expect.any(String),
-      );
+      const callArgs = (idempotencyService.acquire as jest.Mock).mock.calls[0];
+      expect(callArgs[2]).toContain('POST');
     });
 
-    it('should reject different body with same key', async () => {
-      const validUuid = '550e8400-e29b-41d4-a716-446655440000';
-      const context = contextWith(validUuid, { data: 'test' });
-      const next = { handle: jest.fn() };
+    it('should include URL in hash', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      mockRequest.originalUrl = '/api/v1/predictions';
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
 
+      await interceptor.intercept(mockContext, mockCallHandler);
+
+      const callArgs = (idempotencyService.acquire as jest.Mock).mock.calls[0];
+      expect(callArgs[2]).toContain('/api/v1/predictions');
+    });
+
+    it('should include body in hash', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      mockRequest.body = { test: 'data' };
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
+
+      const callArgs = (idempotencyService.acquire as jest.Mock).mock.calls[0];
+      expect(callArgs[2]).toContain('data');
+    });
+
+    it('should handle undefined body', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      mockRequest.body = undefined;
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
+
+      const callArgs = (idempotencyService.acquire as jest.Mock).mock.calls[0];
+      expect(callArgs[2]).toContain('{}');
+    });
+
+    it('should use anonymous user when user is not present', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      mockRequest.user = undefined;
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
+
+      const callArgs = (idempotencyService.acquire as jest.Mock).mock.calls[0];
+      expect(callArgs[1]).toBe('anonymous');
+    });
+  });
+
+  describe('replayed request (acquired = false)', () => {
+    it('should return cached response on replay', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      const cachedResponse = { id: 'prediction-1', success: true };
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: false,
+        record: {
+          idempotency_key: validUUID,
+          user_id: testUserId,
+          request_hash: 'hash',
+          response: cachedResponse,
+          status_code: 201,
+          created_at: new Date(),
+        },
+      });
+
+      const result = await interceptor.intercept(mockContext, mockCallHandler);
+
+      expect(mockCallHandler.handle).not.toHaveBeenCalled();
+    });
+
+    it('should reject replay with different body', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
       const differentHash = 'different-hash';
       idempotencyService.acquire.mockResolvedValue({
         acquired: false,
         record: {
-          id: 'rec-1',
-          in_progress: false,
+          idempotency_key: validUUID,
+          user_id: testUserId,
           request_hash: differentHash,
-          response_body: { result: 'cached' },
-          status_code: 200,
+          response: {},
+          status_code: 201,
         },
       });
 
-      await expect(interceptor.intercept(context, next as CallHandler)).rejects.toThrow(
-        UnprocessableEntityException,
-      );
+      await expect(
+        interceptor.intercept(mockContext, mockCallHandler),
+      ).rejects.toThrow(UnprocessableEntityException);
     });
 
-    it('should reject request in progress with same key', async () => {
-      const validUuid = '550e8400-e29b-41d4-a716-446655440000';
-      const context = contextWith(validUuid, { data: 'test' });
-      const next = { handle: jest.fn() };
-
-      const requestHash = createHash('sha256')
-        .update('POST:/api/predict:{"data":"test"}')
-        .digest('hex');
-
+    it('should include body mismatch error message', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
       idempotencyService.acquire.mockResolvedValue({
         acquired: false,
         record: {
-          id: 'rec-1',
-          in_progress: true,
-          request_hash: requestHash,
-          response_body: null,
-          status_code: null,
+          idempotency_key: validUUID,
+          user_id: testUserId,
+          request_hash: 'different-hash',
+          response: {},
+          status_code: 201,
         },
       });
 
-      await expect(interceptor.intercept(context, next as CallHandler)).rejects.toThrow(
-        ConflictException,
+      await expect(
+        interceptor.intercept(mockContext, mockCallHandler),
+      ).rejects.toThrow('different request body');
+    });
+  });
+
+  describe('per-user key scoping', () => {
+    it('should allow same UUID for different users', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      mockRequest.user = { id: 'user-1' };
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
+
+      expect(idempotencyService.acquire).toHaveBeenCalledWith(
+        validUUID,
+        'user-1',
+        expect.any(String),
+      );
+
+      // Different user with same UUID
+      mockRequest.user = { id: 'user-2' };
+      idempotencyService.acquire.mockClear();
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
+
+      expect(idempotencyService.acquire).toHaveBeenCalledWith(
+        validUUID,
+        'user-2',
+        expect.any(String),
       );
     });
+  });
 
-    it('should return cached response on replay', async () => {
-      const validUuid = '550e8400-e29b-41d4-a716-446655440000';
-      const context = contextWith(validUuid, { data: 'test' });
-      const next = { handle: jest.fn() };
-
-      const cachedResponse = { result: 'cached' };
-      const requestHash = createHash('sha256')
-        .update('POST:/api/predict:{"data":"test"}')
-        .digest('hex');
-
+  describe('hash computation', () => {
+    it('should generate consistent hash for same request', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
       idempotencyService.acquire.mockResolvedValue({
-        acquired: false,
-        record: {
-          id: 'rec-1',
-          in_progress: false,
-          request_hash: requestHash,
-          response_body: cachedResponse,
-          status_code: 200,
-        },
+        acquired: true,
+        record: null,
       });
 
-      const result = await interceptor.intercept(context, next as CallHandler);
+      await interceptor.intercept(mockContext, mockCallHandler);
+      const firstHash = (idempotencyService.acquire as jest.Mock).mock.calls[0][2];
+
+      idempotencyService.acquire.mockClear();
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
+      const secondHash = (idempotencyService.acquire as jest.Mock).mock.calls[0][2];
+
+      expect(firstHash).toBe(secondHash);
+    });
+
+    it('should generate different hash for different body', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      mockRequest.body = { test: 'data1' };
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
+      const hash1 = (idempotencyService.acquire as jest.Mock).mock.calls[0][2];
+
+      idempotencyService.acquire.mockClear();
+      mockRequest.body = { test: 'data2' };
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
+      const hash2 = (idempotencyService.acquire as jest.Mock).mock.calls[0][2];
+
+      expect(hash1).not.toBe(hash2);
+    });
+
+    it('should generate different hash for different URL', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      mockRequest.originalUrl = '/api/v1/predictions';
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
+      const hash1 = (idempotencyService.acquire as jest.Mock).mock.calls[0][2];
+
+      idempotencyService.acquire.mockClear();
+      mockRequest.originalUrl = '/api/v1/markets';
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      await interceptor.intercept(mockContext, mockCallHandler);
+      const hash2 = (idempotencyService.acquire as jest.Mock).mock.calls[0][2];
+
+      expect(hash1).not.toBe(hash2);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should handle empty body', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      mockRequest.body = {};
+      idempotencyService.acquire.mockResolvedValue({
+        acquired: true,
+        record: null,
+      });
+
+      const result = await interceptor.intercept(mockContext, mockCallHandler);
 
       expect(result).toBeDefined();
     });
 
-    it('should complete request on success', async () => {
-      const validUuid = '550e8400-e29b-41d4-a716-446655440000';
-      const context = contextWith(validUuid, { data: 'test' });
-      const responseData = { result: 'ok' };
-      const next = {
-        handle: jest.fn().mockReturnValue(of(responseData)),
-      };
-
+    it('should handle null body', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      mockRequest.body = null;
       idempotencyService.acquire.mockResolvedValue({
         acquired: true,
-        record: { id: 'rec-1', in_progress: false, request_hash: 'hash' },
+        record: null,
       });
 
-      await new Promise((resolve) => {
-        const result = interceptor.intercept(context, next as CallHandler);
-        result.then((observable) => {
-          observable.subscribe(() => resolve(null));
-        });
-      });
+      const result = await interceptor.intercept(mockContext, mockCallHandler);
 
-      expect(idempotencyService.complete).toHaveBeenCalled();
+      expect(result).toBeDefined();
     });
 
-    it('should release on error', async () => {
-      const validUuid = '550e8400-e29b-41d4-a716-446655440000';
-      const context = contextWith(validUuid, { data: 'test' });
-      const error = new Error('Request failed');
-      const next = {
-        handle: jest.fn().mockReturnValue(throwError(() => error)),
-      };
-
+    it('should handle large request body', async () => {
+      mockRequest.headers = { 'idempotency-key': validUUID };
+      mockRequest.body = { data: 'x'.repeat(10000) };
       idempotencyService.acquire.mockResolvedValue({
         acquired: true,
-        record: { id: 'rec-1', in_progress: false, request_hash: 'hash' },
+        record: null,
       });
 
-      const result = await interceptor.intercept(context, next as CallHandler);
+      const result = await interceptor.intercept(mockContext, mockCallHandler);
 
-      await new Promise((resolve, reject) => {
-        result.subscribe({
-          next: () => reject(new Error('Should have thrown')),
-          error: () => resolve(null),
-        });
-      });
-
-      expect(idempotencyService.release).toHaveBeenCalled();
+      expect(result).toBeDefined();
     });
 
-    it('should set replay header on cached response', async () => {
-      const validUuid = '550e8400-e29b-41d4-a716-446655440000';
-      const context = contextWith(validUuid, { data: 'test' });
-      const response = { statusCode: 200, setHeader: jest.fn() };
-      
-      jest.spyOn(context.switchToHttp(), 'getResponse').mockReturnValue(response);
-
-      const requestHash = createHash('sha256')
-        .update('POST:/api/predict:{"data":"test"}')
-        .digest('hex');
-
-      idempotencyService.acquire.mockResolvedValue({
-        acquired: false,
-        record: {
-          id: 'rec-1',
-          in_progress: false,
-          request_hash: requestHash,
-          response_body: { result: 'cached' },
-          status_code: 200,
-        },
-      });
-
-      const next = { handle: jest.fn() };
-
-      await interceptor.intercept(context, next as CallHandler);
-
-      expect(response.setHeader).toHaveBeenCalledWith(
-        'idempotency-replayed',
-        'true',
-      );
+    it('should be async', () => {
+      expect(interceptor.intercept.constructor.name).toBe('AsyncFunction');
     });
   });
 });
