@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import DisputeForm from "@/component/markets/DisputeForm";
 import DisputeList from "@/component/markets/DisputeList";
 import { Button } from "@/component/ui/button";
@@ -24,11 +24,13 @@ export default function MarketDisputePanel({
     submitting,
     submitError,
     submitSuccess,
+    showForm,
     refresh,
     submitDispute,
     clearStatus,
+    openForm,
+    closeForm,
   } = useMarketDisputes();
-  const [openForm, setOpenForm] = useState(false);
 
   useEffect(() => {
     void refresh(marketId);
@@ -39,7 +41,10 @@ export default function MarketDisputePanel({
   }
 
   return (
-    <section className="mt-4 space-y-4 rounded-2xl border border-white/10 bg-black/20 p-4">
+    <section
+      aria-label="Market disputes"
+      className="mt-4 space-y-4 rounded-2xl border border-white/10 bg-black/20 p-4"
+    >
       <div className="flex items-center justify-between gap-3">
         <div>
           <h4 className="text-sm font-semibold text-white">Disputes</h4>
@@ -47,14 +52,14 @@ export default function MarketDisputePanel({
             Contest this resolved market if the outcome looks wrong.
           </p>
         </div>
-        {!openForm && (
+        {!showForm && (
           <Button
             type="button"
             size="sm"
             className="bg-orange-500 text-white hover:bg-orange-400"
             onClick={() => {
               clearStatus();
-              setOpenForm(true);
+              openForm();
             }}
           >
             Raise dispute
@@ -62,7 +67,7 @@ export default function MarketDisputePanel({
         )}
       </div>
 
-      {openForm && (
+      {showForm && (
         <DisputeForm
           marketId={marketId}
           marketTitle={marketTitle}
@@ -70,7 +75,7 @@ export default function MarketDisputePanel({
           submitError={submitError}
           submitSuccess={submitSuccess}
           onSubmit={submitDispute}
-          onCancel={() => setOpenForm(false)}
+          onCancel={closeForm}
         />
       )}
 
