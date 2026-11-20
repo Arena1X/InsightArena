@@ -7,12 +7,10 @@ import {
   claimRewards,
   getRewardItems,
   getRewardsSummary,
-  sortRewardItems,
-  toggleRewardSort,
-  DEFAULT_REWARD_SORT,
+  DEFAULT_REWARD_HISTORY_SORT,
   type RewardItem,
-  type RewardSortKey,
-  type RewardSortState,
+  type RewardHistorySortKey,
+  type RewardHistorySort,
   type RewardsSummary,
 } from "@/lib/rewards";
 import { logHookError } from "./useHookErrorMessage";
