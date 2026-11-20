@@ -151,15 +151,28 @@ pub fn resolve_dispute(
     config::ensure_not_paused(&env)?;
     require_admin(&env, &admin)?;
 
-    let dispute: Dispute = env
+    let mut dispute: Dispute = env
         .storage()
         .persistent()
         .get(&DataKey::Dispute(market_id))
         .ok_or(InsightArenaError::DisputeNotFound)?;
 
+    // Guard against double-resolution (reuses ZeroShareTransfer)
+    if dispute.is_resolved {
+        return Err(InsightArenaError::ZeroShareTransfer);
+    }
+
+    // Mark as resolved before any state changes
+    dispute.is_resolved = true;
+    dispute.resolution_upheld = Some(uphold);
+    env.storage()
+        .persistent()
+        .set(&DataKey::Dispute(market_id), &dispute);
+    bump_dispute(&env, market_id);
+
     if uphold {
-        // Return bond to disputer and reopen market for re-resolution.
-        escrow::refund(&env, &dispute.disputer, dispute.bond)?;
+        // Disputer wins: refund their bond in full, reopen market
+        escrow::distribute_slashed_bond(&env, Some(&dispute.disputer), dispute.bond, dispute.bond)?;
 
         let mut market = market::get_market(&env, market_id)?;
         market.is_resolved = false;
@@ -169,11 +182,15 @@ pub fn resolve_dispute(
             .persistent()
             .set(&DataKey::Market(market_id), &market);
         config::extend_active_market_ttl(&env, market_id);
+
+        // Reputation impact: market creator gets additional penalty
+        reputation::on_dispute_upheld(&env, &market.creator);
     } else {
-        // Slash bond: route the configured insurance-pool share to the
-        // reserve, with the remainder to treasury (accounting balances only,
-        // funds remain in escrow).
-        escrow::slash_funds(&env, dispute.bond)?;
+        // Disputer loses: slash their bond (winner refund = 0, so full amount slashed)
+        escrow::distribute_slashed_bond(&env, None, 0, dispute.bond)?;
+
+        // Reputation impact: disputer gets penalty for frivolous dispute
+        reputation::on_dispute_rejected(&env, &dispute.disputer);
     }
 
     // Settle any staked oracle submission for this market now that the
@@ -319,8 +336,17 @@ pub fn resolve_appeal(
         .clone()
         .ok_or(InsightArenaError::DisputeNotFound)?;
 
+    let appeal_bond = dispute.appeal_bond;
+
+    // Guard against double-resolution of the same appeal (reuses EscrowEmpty)
+    if appeal_bond == 0 {
+        return Err(InsightArenaError::EscrowEmpty);
+    }
+
     if uphold {
-        escrow::refund(&env, &appealer, dispute.appeal_bond)?;
+        // Appealer wins: refund their bond in full, reopen market
+        escrow::distribute_slashed_bond(&env, Some(&appealer), appeal_bond, appeal_bond)?;
+
         let mut market = market::get_market(&env, market_id)?;
         market.is_resolved = false;
         market.resolved_outcome = None;
@@ -329,8 +355,15 @@ pub fn resolve_appeal(
             .persistent()
             .set(&DataKey::Market(market_id), &market);
         config::extend_active_market_ttl(&env, market_id);
+
+        // Reputation impact: market creator gets additional penalty for wrong resolution
+        reputation::on_dispute_upheld(&env, &market.creator);
     } else {
-        escrow::slash_funds(&env, dispute.appeal_bond)?;
+        // Appealer loses: slash their bond
+        escrow::distribute_slashed_bond(&env, None, 0, appeal_bond)?;
+
+        // Reputation impact: appealer gets penalty for frivolous appeal
+        reputation::on_dispute_rejected(&env, &appealer);
     }
 
     dispute.appealer = None;
@@ -747,7 +780,8 @@ fn emit_arbiter_vote_finalized(
 /// `resolve_dispute` — uphold refunds the disputer's bond and reopens the
 /// market, reject slashes the disputer's bond. Ties (`uphold_weight ==
 /// reject_weight`) resolve to reject, preserving the original market
-/// resolution as the safe default.
+/// resolution as the safe default. Reputation deltas are applied to both
+/// the disputer and the market creator based on the outcome.
 pub fn finalize_arbiter_vote(
     env: Env,
     caller: Address,
@@ -756,7 +790,7 @@ pub fn finalize_arbiter_vote(
     config::ensure_not_paused(&env)?;
     require_admin(&env, &caller)?;
 
-    let dispute: Dispute = env
+    let mut dispute: Dispute = env
         .storage()
         .persistent()
         .get(&DataKey::Dispute(market_id))
@@ -765,6 +799,11 @@ pub fn finalize_arbiter_vote(
     if dispute.arbiters.is_empty() {
         // No panel was ever assigned to this dispute.
         return Err(InsightArenaError::InvalidInput);
+    }
+
+    // Guard against double-resolution (reuses ZeroShareTransfer)
+    if dispute.is_resolved {
+        return Err(InsightArenaError::ZeroShareTransfer);
     }
 
     let now = env.ledger().timestamp();
@@ -778,8 +817,17 @@ pub fn finalize_arbiter_vote(
 
     let uphold = tally.uphold_weight > tally.reject_weight;
 
+    // Mark as resolved before any state changes
+    dispute.is_resolved = true;
+    dispute.resolution_upheld = Some(uphold);
+    env.storage()
+        .persistent()
+        .set(&DataKey::Dispute(market_id), &dispute);
+    bump_dispute(&env, market_id);
+
     if uphold {
-        escrow::refund(&env, &dispute.disputer, dispute.bond)?;
+        // Disputer wins: refund their bond in full, reopen market
+        escrow::distribute_slashed_bond(&env, Some(&dispute.disputer), dispute.bond, dispute.bond)?;
 
         let mut market = market::get_market(&env, market_id)?;
         market.is_resolved = false;
@@ -789,8 +837,15 @@ pub fn finalize_arbiter_vote(
             .persistent()
             .set(&DataKey::Market(market_id), &market);
         config::extend_active_market_ttl(&env, market_id);
+
+        // Reputation impact: market creator gets additional penalty
+        reputation::on_dispute_upheld(&env, &market.creator);
     } else {
-        escrow::slash_funds(&env, dispute.bond)?;
+        // Disputer loses: slash their bond
+        escrow::distribute_slashed_bond(&env, None, 0, dispute.bond)?;
+
+        // Reputation impact: disputer gets penalty for frivolous dispute
+        reputation::on_dispute_rejected(&env, &dispute.disputer);
     }
 
     // Settle any staked oracle submission for this market, mirroring

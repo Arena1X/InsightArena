@@ -2,14 +2,34 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import {
-  BadRequestException,
   ConflictException,
-  ForbiddenException,
   NotFoundException,
   HttpStatus,
 } from '@nestjs/common';
+import {
+  MarketNotFoundException,
+  MarketClosedException,
+  InvalidOutcomeException,
+  DuplicatePredictionException,
+  PredictionNotFoundException,
+  UnauthorizedPredictionAccessException,
+  PayoutAlreadyClaimedException,
+  MarketNotResolvedException,
+  PredictionNotWonException,
+  NoClaimableRewardsException,
+  NoteTooLongException,
+} from './exceptions';
+import { PREDICTION_NOTE_MAX_LENGTH } from './dto/update-prediction-note.dto';
+import {
+  EXPORT_CSV_HEADER,
+  EXPORT_MAX_ROWS,
+} from './dto/export-predictions.dto';
 import { Repository, ObjectLiteral } from 'typeorm';
-import { PredictionsService } from './predictions.service';
+import {
+  ExportCsvRawRow,
+  PredictionsService,
+  formatExportCsvRow,
+} from './predictions.service';
 import { Prediction } from './entities/prediction.entity';
 import {
   FraudFlagStatus,
@@ -22,7 +42,9 @@ import { User } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
 import { SorobanService } from '../soroban/soroban.service';
 import { SlippageCheckerService } from './services/slippage-checker.service';
+import { PredictionFraudRulesService } from './services/prediction-fraud-rules.service';
 import { SlippageExceededException } from './exceptions/slippage-exceeded.exception';
+import { BATCH_PREDICTION_STATUS } from './dto/batch-submit-response.dto';
 
 type MockRepo<T extends ObjectLiteral> = jest.Mocked<
   Pick<
@@ -118,7 +140,7 @@ describe('PredictionsService', () => {
       findAndCount: jest.fn(),
       find: jest.fn().mockResolvedValue([]),
       createQueryBuilder: jest.fn().mockReturnValue(fraudQbMock),
-    } as unknown as MockRepo<Prediction>;
+    };
 
     mockMarketsRepo = {
       findOne: jest.fn(),
@@ -198,6 +220,10 @@ describe('PredictionsService', () => {
             recordQualifyingAction: jest.fn().mockResolvedValue(undefined),
           },
         },
+        {
+          provide: PredictionFraudRulesService,
+          useValue: { evaluate: jest.fn().mockResolvedValue([]) },
+        },
         { provide: getDataSourceToken(), useValue: mockDataSource },
         { provide: ConfigService, useValue: mockConfigService },
       ],
@@ -237,7 +263,7 @@ describe('PredictionsService', () => {
       );
     });
 
-    it('throws NotFoundException when market does not exist', async () => {
+    it('throws MarketNotFoundException when market does not exist', async () => {
       mockMarketsRepo.findOne.mockResolvedValue(null);
 
       await expect(
@@ -249,12 +275,12 @@ describe('PredictionsService', () => {
           },
           makeUser(),
         ),
-      ).rejects.toThrow(NotFoundException);
+      ).rejects.toThrow(MarketNotFoundException);
       expect(submitPrediction).not.toHaveBeenCalled();
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws BadRequestException when market is resolved', async () => {
+    it('throws MarketClosedException when market is resolved', async () => {
       mockMarketsRepo.findOne.mockResolvedValue(
         makeMarket({ is_resolved: true }),
       );
@@ -268,12 +294,12 @@ describe('PredictionsService', () => {
           },
           makeUser(),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(MarketClosedException);
       expect(submitPrediction).not.toHaveBeenCalled();
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws BadRequestException when market is cancelled', async () => {
+    it('throws MarketClosedException when market is cancelled', async () => {
       mockMarketsRepo.findOne.mockResolvedValue(
         makeMarket({ is_cancelled: true }),
       );
@@ -287,12 +313,12 @@ describe('PredictionsService', () => {
           },
           makeUser(),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(MarketClosedException);
       expect(submitPrediction).not.toHaveBeenCalled();
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws BadRequestException when end_time has passed', async () => {
+    it('throws MarketClosedException when end_time has passed', async () => {
       mockMarketsRepo.findOne.mockResolvedValue(
         makeMarket({ end_time: new Date(Date.now() - 1000) }),
       );
@@ -306,12 +332,12 @@ describe('PredictionsService', () => {
           },
           makeUser(),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(MarketClosedException);
       expect(submitPrediction).not.toHaveBeenCalled();
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws BadRequestException for invalid outcome', async () => {
+    it('throws InvalidOutcomeException for invalid outcome', async () => {
       mockMarketsRepo.findOne.mockResolvedValue(makeMarket());
 
       await expect(
@@ -323,16 +349,21 @@ describe('PredictionsService', () => {
           },
           makeUser(),
         ),
-      ).rejects.toThrow(BadRequestException);
+      ).rejects.toThrow(InvalidOutcomeException);
       expect(submitPrediction).not.toHaveBeenCalled();
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
-    it('throws ConflictException for duplicate prediction', async () => {
+    it('throws DuplicatePredictionException for duplicate prediction on same market without idempotency key', async () => {
+      // After idempotency check passes (no existing key), but user has already predicted on market
       mockMarketsRepo.findOne.mockResolvedValue(makeMarket());
-      mockPredictionsRepo.findOne.mockResolvedValue({
-        id: 'existing',
-      } as Prediction);
+      // First findOne (idempotency key check) returns null
+      // Second findOne (market duplicate check) returns existing
+      mockPredictionsRepo.findOne
+        .mockResolvedValueOnce(null) // No existing by idempotency key
+        .mockResolvedValueOnce({
+          id: 'existing',
+        } as Prediction); // Existing by market
 
       await expect(
         service.submit(
@@ -340,10 +371,11 @@ describe('PredictionsService', () => {
             market_id: 'market-uuid-1',
             chosen_outcome: 'Yes',
             stake_amount_stroops: '10000000',
+            clientIdempotencyKey: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
           },
           makeUser(),
         ),
-      ).rejects.toThrow(ConflictException);
+      ).rejects.toThrow(DuplicatePredictionException);
       expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
     });
 
@@ -599,7 +631,7 @@ describe('PredictionsService', () => {
       );
     });
 
-    it('throws ConflictException if already claimed', async () => {
+    it('throws PayoutAlreadyClaimedException if already claimed', async () => {
       const user = makeUser();
       const prediction = {
         id: 'pred-1',
@@ -610,11 +642,11 @@ describe('PredictionsService', () => {
       mockPredictionsRepo.findOne.mockResolvedValue(prediction);
 
       await expect(service.claim('pred-1', user)).rejects.toThrow(
-        ConflictException,
+        PayoutAlreadyClaimedException,
       );
     });
 
-    it('throws BadRequestException if market not resolved', async () => {
+    it('throws MarketNotResolvedException if market not resolved', async () => {
       const user = makeUser();
       const market = makeMarket({ is_resolved: false });
       const prediction = {
@@ -628,11 +660,11 @@ describe('PredictionsService', () => {
       mockPredictionsRepo.findOne.mockResolvedValue(prediction);
 
       await expect(service.claim('pred-1', user)).rejects.toThrow(
-        BadRequestException,
+        MarketNotResolvedException,
       );
     });
 
-    it('throws BadRequestException if not a winner', async () => {
+    it('throws PredictionNotWonException if not a winner', async () => {
       const user = makeUser();
       const market = makeMarket({
         is_resolved: true,
@@ -649,14 +681,14 @@ describe('PredictionsService', () => {
       mockPredictionsRepo.findOne.mockResolvedValue(prediction);
 
       await expect(service.claim('pred-1', user)).rejects.toThrow(
-        BadRequestException,
+        PredictionNotWonException,
       );
     });
 
-    it('throws NotFoundException if prediction not found', async () => {
+    it('throws PredictionNotFoundException if prediction not found', async () => {
       mockPredictionsRepo.findOne.mockResolvedValue(null);
       await expect(service.claim('non-existent', makeUser())).rejects.toThrow(
-        NotFoundException,
+        PredictionNotFoundException,
       );
     });
   });
@@ -713,6 +745,9 @@ describe('PredictionsService', () => {
         claimable_xlm: 1,
         vesting_xlm: 2,
         total_earned_xlm: 1.5,
+        claimable_stroops: '10000000',
+        vesting_stroops: '20000000',
+        total_earned_stroops: '15000000',
       });
     });
 
@@ -725,7 +760,72 @@ describe('PredictionsService', () => {
         claimable_xlm: 0,
         vesting_xlm: 0,
         total_earned_xlm: 0,
+        claimable_stroops: '0',
+        vesting_stroops: '0',
+        total_earned_stroops: '0',
       });
+    });
+
+    it('sums reward amounts exactly, without binary float drift', async () => {
+      const resolvedWon = makeMarket({
+        id: 'm-won',
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+      // 0.1 + 0.2 XLM: the classic case that drifts with float addition.
+      mockPredictionsRepo.find.mockResolvedValue([
+        {
+          id: 'p-1',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: true,
+          payout_amount_stroops: '1000000',
+        },
+        {
+          id: 'p-2',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: true,
+          payout_amount_stroops: '2000000',
+        },
+        // Above Number.MAX_SAFE_INTEGER stroops: exact only as an integer.
+        {
+          id: 'p-3',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '9007199254740993',
+        },
+      ] as unknown as Prediction[]);
+
+      const result = await service.getRewardsSummary(makeUser());
+
+      expect(result.total_earned_stroops).toBe('3000000');
+      expect(result.total_earned_xlm).toBe(0.3);
+      expect(result.claimable_stroops).toBe('9007199254740993');
+    });
+
+    it('does not truncate very small reward amounts to zero', async () => {
+      const resolvedWon = makeMarket({
+        id: 'm-won',
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+      mockPredictionsRepo.find.mockResolvedValue([
+        {
+          id: 'p-dust',
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '1',
+        },
+      ] as unknown as Prediction[]);
+
+      const result = await service.getRewardsSummary(makeUser());
+
+      expect(result.claimable_stroops).toBe('1');
+      expect(result.claimable_xlm).toBe(0.0000001);
+      expect(result.claimable_xlm).toBeGreaterThan(0);
     });
   });
 
@@ -793,16 +893,132 @@ describe('PredictionsService', () => {
 
       expect(result.claimed_count).toBe(2);
       expect(result.claimed_xlm).toBe(1.5);
+      expect(result.claimed_stroops).toBe('15000000');
       expect(result.transaction_hash).toBe('tx-2');
       expect(mockSoroban.claimPayout).toHaveBeenCalledTimes(2);
+      expect(result.results).toEqual([
+        {
+          prediction_id: 'p-1',
+          status: BATCH_PREDICTION_STATUS.FULFILLED,
+          tx_hash: 'tx-1',
+          payout_amount_stroops: '10000000',
+        },
+        {
+          prediction_id: 'p-2',
+          status: BATCH_PREDICTION_STATUS.FULFILLED,
+          tx_hash: 'tx-2',
+          payout_amount_stroops: '5000000',
+        },
+      ]);
     });
 
-    it('throws BadRequestException when there is nothing to claim', async () => {
+    it('throws NoClaimableRewardsException when there is nothing to claim', async () => {
       mockPredictionsRepo.find.mockResolvedValue([]);
 
       await expect(service.claimAllRewards(makeUser())).rejects.toThrow(
-        BadRequestException,
+        NoClaimableRewardsException,
       );
+    });
+
+    it('isolates a failing claim so the other claimable predictions still succeed', async () => {
+      const user = makeUser();
+      const resolvedWon = makeMarket({
+        id: 'm-won',
+        is_resolved: true,
+        resolved_outcome: 'Yes',
+      });
+
+      const claimablePredictions = [
+        {
+          id: 'p-1',
+          user,
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '10000000',
+        },
+        {
+          id: 'p-2',
+          user,
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '2000000',
+        },
+        {
+          id: 'p-3',
+          user,
+          market: resolvedWon,
+          chosen_outcome: 'Yes',
+          payout_claimed: false,
+          stake_amount_stroops: '3000000',
+        },
+      ] as Prediction[];
+
+      mockPredictionsRepo.find
+        .mockResolvedValueOnce(claimablePredictions)
+        .mockResolvedValueOnce([
+          {
+            ...claimablePredictions[0],
+            payout_claimed: true,
+            payout_amount_stroops: '10000000',
+          },
+          claimablePredictions[1],
+          {
+            ...claimablePredictions[2],
+            payout_claimed: true,
+            payout_amount_stroops: '3000000',
+          },
+        ] as Prediction[]);
+
+      // findOne() is used internally by claim() for each prediction.
+      mockPredictionsRepo.findOne
+        .mockResolvedValueOnce(claimablePredictions[0])
+        .mockResolvedValueOnce(claimablePredictions[1])
+        .mockResolvedValueOnce(claimablePredictions[2]);
+
+      mockSoroban.claimPayout
+        .mockResolvedValueOnce({
+          tx_hash: 'tx-1',
+          payout_amount_stroops: '10000000',
+        })
+        .mockRejectedValueOnce(new Error('Soroban claimPayout failed'))
+        .mockResolvedValueOnce({
+          tx_hash: 'tx-3',
+          payout_amount_stroops: '3000000',
+        });
+
+      mockPredictionsRepo.save = jest
+        .fn()
+        .mockImplementation((entity: Prediction) => Promise.resolve(entity));
+
+      const result = await service.claimAllRewards(user);
+
+      // The middle claim failed, but both the first and third were still
+      // attempted and succeeded, rather than the batch aborting after p-2.
+      expect(mockSoroban.claimPayout).toHaveBeenCalledTimes(3);
+      expect(result.claimed_count).toBe(2);
+      expect(result.claimed_xlm).toBe(1.3);
+      expect(result.transaction_hash).toBe('tx-3');
+      expect(result.results).toEqual([
+        {
+          prediction_id: 'p-1',
+          status: BATCH_PREDICTION_STATUS.FULFILLED,
+          tx_hash: 'tx-1',
+          payout_amount_stroops: '10000000',
+        },
+        {
+          prediction_id: 'p-2',
+          status: BATCH_PREDICTION_STATUS.REJECTED,
+          error: 'Soroban claimPayout failed',
+        },
+        {
+          prediction_id: 'p-3',
+          status: BATCH_PREDICTION_STATUS.FULFILLED,
+          tx_hash: 'tx-3',
+          payout_amount_stroops: '3000000',
+        },
+      ]);
     });
   });
 
@@ -822,7 +1038,7 @@ describe('PredictionsService', () => {
       mockPredictionsRepo.save.mockResolvedValue({
         ...prediction,
         note: 'My analysis note',
-      } as Prediction);
+      });
 
       const result = await service.updateNote(
         'pred-1',
@@ -837,13 +1053,114 @@ describe('PredictionsService', () => {
       });
     });
 
-    it('should throw NotFoundException if prediction is not found or not owned', async () => {
+    it('should throw PredictionNotFoundException if prediction is not found or not owned', async () => {
       mockPredictionsRepo.findOne.mockResolvedValue(null);
 
       await expect(
         service.updateNote('non-existent', { note: 'Some note' }, makeUser()),
-      ).rejects.toThrow(NotFoundException);
+      ).rejects.toThrow(PredictionNotFoundException);
       expect(submitPrediction).not.toHaveBeenCalled();
+    });
+
+    it('should strip HTML/script markup from the note before saving', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+      const prediction = {
+        id: 'pred-1',
+        user,
+        market,
+        chosen_outcome: 'Yes',
+        note: null,
+      } as unknown as Prediction;
+
+      mockPredictionsRepo.findOne.mockResolvedValue(prediction);
+      mockPredictionsRepo.save.mockImplementation((entity: Prediction) =>
+        Promise.resolve(entity),
+      );
+
+      const result = await service.updateNote(
+        'pred-1',
+        { note: '<script>alert(1)</script>Looks bullish' },
+        user,
+      );
+
+      expect(result.note).toBe('alert(1)Looks bullish');
+      expect(result.note).not.toContain('<script>');
+    });
+
+    it('should strip control characters from the note before saving', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+      const prediction = {
+        id: 'pred-1',
+        user,
+        market,
+        chosen_outcome: 'Yes',
+        note: null,
+      } as unknown as Prediction;
+
+      mockPredictionsRepo.findOne.mockResolvedValue(prediction);
+      mockPredictionsRepo.save.mockImplementation((entity: Prediction) =>
+        Promise.resolve(entity),
+      );
+
+      const result = await service.updateNote(
+        'pred-1',
+        { note: 'Bad\u0000actor\u0007note' },
+        user,
+      );
+
+      expect(result.note).toBe('Badactornote');
+    });
+
+    it('should throw NoteTooLongException when the sanitized note exceeds the max length', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+      const prediction = {
+        id: 'pred-1',
+        user,
+        market,
+        chosen_outcome: 'Yes',
+        note: null,
+      } as unknown as Prediction;
+
+      mockPredictionsRepo.findOne.mockResolvedValue(prediction);
+
+      const overLongNote = 'a'.repeat(PREDICTION_NOTE_MAX_LENGTH + 1);
+
+      await expect(
+        service.updateNote('pred-1', { note: overLongNote }, user),
+      ).rejects.toThrow(NoteTooLongException);
+      expect(mockPredictionsRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('should accept a note whose length is only over the limit due to markup that gets stripped', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+      const prediction = {
+        id: 'pred-1',
+        user,
+        market,
+        chosen_outcome: 'Yes',
+        note: null,
+      } as unknown as Prediction;
+
+      mockPredictionsRepo.findOne.mockResolvedValue(prediction);
+      mockPredictionsRepo.save.mockImplementation((entity: Prediction) =>
+        Promise.resolve(entity),
+      );
+
+      const plainText = 'a'.repeat(PREDICTION_NOTE_MAX_LENGTH);
+      const noteWithMarkup = `<b>${plainText}</b>`;
+
+      const result = await service.updateNote(
+        'pred-1',
+        { note: noteWithMarkup },
+        user,
+      );
+
+      expect(result.note).toBe(plainText);
+      expect(result.note?.length).toBe(PREDICTION_NOTE_MAX_LENGTH);
     });
   });
 
@@ -882,15 +1199,15 @@ describe('PredictionsService', () => {
       });
     });
 
-    it('should throw NotFoundException if prediction does not exist', async () => {
+    it('should throw PredictionNotFoundException if prediction does not exist', async () => {
       mockPredictionsRepo.findOne.mockResolvedValue(null);
 
       await expect(service.findById('non-existent', 'user-1')).rejects.toThrow(
-        NotFoundException,
+        PredictionNotFoundException,
       );
     });
 
-    it('should throw ForbiddenException if user does not own the prediction', async () => {
+    it('should throw UnauthorizedPredictionAccessException if user does not own the prediction', async () => {
       const owner = makeUser({ id: 'owner-1' });
       const otherUser = makeUser({ id: 'other-user' });
       const market = makeMarket();
@@ -904,7 +1221,7 @@ describe('PredictionsService', () => {
       mockPredictionsRepo.findOne.mockResolvedValue(prediction);
 
       await expect(service.findById('pred-1', otherUser.id)).rejects.toThrow(
-        ForbiddenException,
+        UnauthorizedPredictionAccessException,
       );
     });
 
@@ -1212,18 +1529,52 @@ describe('PredictionsService', () => {
 
   describe('exportCsv', () => {
     let csvQbMock: any;
+    let dbStream: any;
+
+    const makeRawRow = (i: number): ExportCsvRawRow => ({
+      prediction_id: `pred-${i}`,
+      prediction_chosen_outcome: 'Yes',
+      prediction_stake_amount_stroops: '10000000',
+      prediction_payout_amount_stroops: '0',
+      prediction_submitted_at: new Date(Date.UTC(2026, 0, 1, 0, 0, i % 60)),
+      prediction_note: i % 2 === 0 ? 'say "hi", ok' : null,
+      market_title: `Market ${i}`,
+      market_resolved_outcome: i % 3 === 0 ? 'Yes' : 'No',
+      market_is_resolved: i % 4 !== 0,
+      market_is_cancelled: false,
+    });
+
+    /** A lazy DB cursor mock that records how many rows have been pulled. */
+    const makeDbStream = (total: number) => {
+      const state = { pulled: 0 };
+      return Object.assign(state, {
+        destroy: jest.fn(),
+        on: jest.fn(),
+        [Symbol.asyncIterator]: async function* () {
+          for (let i = 0; i < total; i++) {
+            state.pulled++;
+            yield makeRawRow(i);
+          }
+        },
+      });
+    };
+
+    const readAll = async (stream: NodeJS.ReadableStream) => {
+      let out = '';
+      for await (const chunk of stream) out += chunk.toString();
+      return out;
+    };
 
     beforeEach(() => {
+      dbStream = makeDbStream(0);
       csvQbMock = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
-        stream: jest.fn().mockResolvedValue({
-          [Symbol.asyncIterator]: function* () {},
-          on: jest.fn(),
-        }),
+        limit: jest.fn().mockReturnThis(),
+        stream: jest.fn(() => Promise.resolve(dbStream)),
       };
       (mockPredictionsRepo as any).createQueryBuilder = jest
         .fn()
@@ -1245,6 +1596,62 @@ describe('PredictionsService', () => {
       });
       expect(stream).toBeDefined();
       expect(csvQbMock.andWhere).toHaveBeenCalledTimes(2);
+    });
+
+    it('streams a large export without buffering the whole result set', async () => {
+      const total = 200_000;
+      dbStream = makeDbStream(total);
+
+      const stream = service.exportCsv(makeUser(), {});
+      const iterator = stream[Symbol.asyncIterator]();
+      await iterator.next();
+      await iterator.next();
+
+      // Only a backpressure-bounded window of rows has been pulled from the DB.
+      expect(dbStream.pulled).toBeGreaterThan(0);
+      expect(dbStream.pulled).toBeLessThan(5_000);
+
+      await iterator.return?.();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Abandoning the export releases the DB cursor.
+      expect(dbStream.pulled).toBeLessThan(5_000);
+      expect(dbStream.destroy).toHaveBeenCalled();
+    });
+
+    it('produces the same output as formatting the rows in one buffer for a small export', async () => {
+      const total = 5;
+      dbStream = makeDbStream(total);
+
+      const streamed = await readAll(service.exportCsv(makeUser(), {}));
+
+      const buffered =
+        EXPORT_CSV_HEADER +
+        Array.from({ length: total }, (_, i) =>
+          formatExportCsvRow(makeRawRow(i)),
+        ).join('');
+      expect(streamed).toBe(buffered);
+      expect(streamed.split('\n')[1]).toBe(
+        'pred-0,"Market 0","Yes",10000000,active,0,"say ""hi"", ok",2026-01-01T00:00:00.000Z',
+      );
+      expect(dbStream.destroy).not.toHaveBeenCalled();
+    });
+
+    it('emits only the header for an empty export', async () => {
+      const streamed = await readAll(service.exportCsv(makeUser(), {}));
+      expect(streamed).toBe(EXPORT_CSV_HEADER);
+    });
+
+    it('caps the export at the documented row limit', async () => {
+      dbStream = makeDbStream(EXPORT_MAX_ROWS + 10);
+
+      const streamed = await readAll(service.exportCsv(makeUser(), {}));
+
+      expect(csvQbMock.limit).toHaveBeenCalledWith(EXPORT_MAX_ROWS);
+      const lines = streamed.split('\n').filter((line) => line.length > 0);
+      // Header + EXPORT_MAX_ROWS data rows, even if the cursor yields more.
+      expect(lines).toHaveLength(EXPORT_MAX_ROWS + 1);
+      expect(dbStream.destroy).toHaveBeenCalled();
     });
   });
 
@@ -1345,6 +1752,67 @@ describe('PredictionsService', () => {
           expect.objectContaining({ id: 'existing-flag' }),
         );
       });
+
+      it('flags a burst of submissions inside the clustering window above the count threshold', async () => {
+        // Window is 30s, min ratio 0.6. 5 predictions, each 2s apart: every
+        // one of the 4 gaps is well inside the 30s window, so the clustered
+        // ratio is 4/4 = 1.0, clearing the 0.6 threshold decisively.
+        const base = Date.now();
+        mockPredictionsRepo.find.mockResolvedValue([
+          makePrediction(new Date(base)),
+          makePrediction(new Date(base + 2_000)),
+          makePrediction(new Date(base + 4_000)),
+          makePrediction(new Date(base + 6_000)),
+          makePrediction(new Date(base + 8_000)),
+        ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            user_id: 'user-1',
+            signal_type: FraudSignalType.TIMING_CLUSTERING,
+            status: FraudFlagStatus.OPEN,
+            score: 1,
+          }),
+        );
+      });
+
+      it('does not flag predictions submitted just outside the clustering window', async () => {
+        // Window is 30s. Every gap here is 35s — just past the window on
+        // each one — so the clustered ratio is 0/3 = 0, well under the 0.6
+        // threshold. Distinct from the "widely-spaced" case above (hours
+        // apart): this exercises the boundary just past the window itself.
+        const base = Date.now();
+        mockPredictionsRepo.find.mockResolvedValue([
+          makePrediction(new Date(base)),
+          makePrediction(new Date(base + 35_000)),
+          makePrediction(new Date(base + 70_000)),
+          makePrediction(new Date(base + 105_000)),
+        ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.TIMING_CLUSTERING,
+          }),
+        );
+      });
+
+      it('never triggers the clustering signal for a single prediction submission', async () => {
+        mockPredictionsRepo.find.mockResolvedValue([
+          makePrediction(new Date()),
+        ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.TIMING_CLUSTERING,
+          }),
+        );
+      });
     });
 
     describe('counterparty concentration signal', () => {
@@ -1431,6 +1899,104 @@ describe('PredictionsService', () => {
           }),
         );
       });
+
+      it('does not flag a user whose concentration sits just under the HHI threshold', async () => {
+        mockPredictionsRepo.find.mockResolvedValue([]);
+
+        const qb = mockPredictionsRepo.createQueryBuilder(
+          'prediction',
+        ) as unknown as {
+          getRawMany: jest.Mock;
+        };
+
+        // 10 markets total; top counterparty shares 6 (share 0.6) and a
+        // second shares 3 (share 0.3): HHI = 0.6^2 + 0.3^2 = 0.45, safely
+        // under the configured 0.5 threshold (not exactly at the boundary,
+        // to avoid floating-point-equality flakiness on `hhi < threshold`).
+        const marketIds = Array.from({ length: 10 }, (_, i) => `m${i + 1}`);
+        qb.getRawMany
+          .mockResolvedValueOnce(marketIds.map((marketId) => ({ marketId })))
+          .mockResolvedValueOnce([
+            ...marketIds
+              .slice(0, 6)
+              .map((marketId) => ({ counterpartyId: 'top', marketId })),
+            ...marketIds
+              .slice(6, 9)
+              .map((marketId) => ({ counterpartyId: 'second', marketId })),
+          ]);
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.COUNTERPARTY_CONCENTRATION,
+          }),
+        );
+      });
+
+      it('flags a user whose concentration crosses the HHI threshold, and never a user with a broad, diverse counterparty set regardless of volume', async () => {
+        mockPredictionsRepo.find.mockResolvedValue([]);
+
+        const qb = mockPredictionsRepo.createQueryBuilder(
+          'prediction',
+        ) as unknown as {
+          getRawMany: jest.Mock;
+        };
+
+        // Same 10-market volume as the "just under" case above, but the top
+        // counterparty now shares 8 markets (share 0.8, HHI = 0.64), well
+        // past the 0.5 threshold — isolates that it's concentration, not
+        // volume, that triggers the signal.
+        const marketIds = Array.from({ length: 10 }, (_, i) => `m${i + 1}`);
+        qb.getRawMany
+          .mockResolvedValueOnce(marketIds.map((marketId) => ({ marketId })))
+          .mockResolvedValueOnce(
+            marketIds
+              .slice(0, 8)
+              .map((marketId) => ({ counterpartyId: 'top', marketId })),
+          );
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).toHaveBeenCalledWith(
+          expect.objectContaining({
+            user_id: 'user-1',
+            signal_type: FraudSignalType.COUNTERPARTY_CONCENTRATION,
+            status: FraudFlagStatus.OPEN,
+          }),
+        );
+      });
+
+      it('never flags a large volume of predictions spread across a broad, diverse set of counterparties', async () => {
+        mockPredictionsRepo.find.mockResolvedValue([]);
+
+        const qb = mockPredictionsRepo.createQueryBuilder(
+          'prediction',
+        ) as unknown as {
+          getRawMany: jest.Mock;
+        };
+
+        // 50 markets, each with a distinct counterparty — high volume, but
+        // maximally diverse (HHI = 50 * (1/50)^2 = 0.02), nowhere near the
+        // 0.5 threshold regardless of how much volume is behind it.
+        const marketIds = Array.from({ length: 50 }, (_, i) => `m${i + 1}`);
+        qb.getRawMany
+          .mockResolvedValueOnce(marketIds.map((marketId) => ({ marketId })))
+          .mockResolvedValueOnce(
+            marketIds.map((marketId, i) => ({
+              counterpartyId: `counterparty-${i}`,
+              marketId,
+            })),
+          );
+
+        await service.evaluateFraudSignalsForUser('user-1');
+
+        expect(mockFraudFlagsRepo.save).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            signal_type: FraudSignalType.COUNTERPARTY_CONCENTRATION,
+          }),
+        );
+      });
     });
 
     it('returns the created flags without throwing or banning the user', async () => {
@@ -1484,6 +2050,165 @@ describe('PredictionsService', () => {
         limit: 20,
         totalPages: 1,
       });
+    });
+  });
+
+  describe('idempotency key validation and duplicate handling', () => {
+    const validIdempotencyKey = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
+
+    it('returns existing prediction when same clientIdempotencyKey is used', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+      const existingPrediction: Prediction = {
+        id: 'existing-pred-id',
+        user,
+        market,
+        chosen_outcome: 'Yes',
+        stake_amount_stroops: '10000000',
+        payout_claimed: false,
+        payout_amount_stroops: '0',
+        tx_hash: 'existing-tx-hash',
+        note: null,
+        clientIdempotencyKey: validIdempotencyKey,
+        submitted_at: new Date(),
+      };
+
+      mockMarketsRepo.findOne.mockResolvedValue(market);
+      mockPredictionsRepo.findOne.mockResolvedValue(existingPrediction);
+
+      const result = await service.submit(
+        {
+          market_id: market.id,
+          chosen_outcome: 'Yes',
+          stake_amount_stroops: '10000000',
+          clientIdempotencyKey: validIdempotencyKey,
+        },
+        user,
+      );
+
+      expect(result.prediction.id).toBe('existing-pred-id');
+      expect(mockSoroban.submitPrediction).not.toHaveBeenCalled();
+    });
+
+    it('creates new prediction when clientIdempotencyKey is unique', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+
+      mockMarketsRepo.findOne.mockResolvedValue(market);
+      mockPredictionsRepo.findOne.mockResolvedValue(null);
+
+      const result = await service.submit(
+        {
+          market_id: market.id,
+          chosen_outcome: 'Yes',
+          stake_amount_stroops: '10000000',
+          clientIdempotencyKey: validIdempotencyKey,
+        },
+        user,
+      );
+
+      expect(result.prediction).toBeDefined();
+      expect(mockSoroban.submitPrediction).toHaveBeenCalled();
+    });
+
+    it('still throws DuplicatePredictionException when user already has prediction on market (after idempotency check passes)', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+
+      // First call to findOne checks for existing key (returns null)
+      // Second call checks for duplicate market prediction (returns existing)
+      mockMarketsRepo.findOne.mockResolvedValue(market);
+      mockPredictionsRepo.findOne
+        .mockResolvedValueOnce(null) // No existing by idempotency key
+        .mockResolvedValueOnce({
+          id: 'existing-market-pred',
+          market,
+          user,
+        } as Prediction); // Existing by market
+
+      await expect(
+        service.submit(
+          {
+            market_id: market.id,
+            chosen_outcome: 'Yes',
+            stake_amount_stroops: '10000000',
+            clientIdempotencyKey: validIdempotencyKey,
+          },
+          user,
+        ),
+      ).rejects.toThrow(DuplicatePredictionException);
+    });
+
+    it('stores clientIdempotencyKey with prediction in database', async () => {
+      const user = makeUser();
+      const market = makeMarket();
+      mockMarketsRepo.findOne.mockResolvedValue(market);
+      mockPredictionsRepo.findOne.mockResolvedValue(null);
+
+      let savedPredictionData: Partial<Prediction> | null = null;
+      const mockDataSource = {
+        transaction: jest.fn(
+          (cb: (manager: unknown) => Promise<Prediction>) => {
+            const manager = {
+              create: (_entity: unknown, data: Partial<Prediction>) => {
+                savedPredictionData = data;
+                return data;
+              },
+              save: (entity: Partial<Prediction>) =>
+                Promise.resolve({ id: 'pred-uuid-1', ...entity } as Prediction),
+              createQueryBuilder: () => qbMock,
+            };
+            return cb(manager);
+          },
+        ),
+      };
+
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          PredictionsService,
+          {
+            provide: getRepositoryToken(Prediction),
+            useValue: mockPredictionsRepo,
+          },
+          { provide: getRepositoryToken(Market), useValue: mockMarketsRepo },
+          { provide: getRepositoryToken(User), useValue: {} },
+          {
+            provide: getRepositoryToken(PredictionFraudFlag),
+            useValue: mockFraudFlagsRepo,
+          },
+          { provide: SorobanService, useValue: mockSoroban },
+          { provide: SlippageCheckerService, useValue: mockSlippageChecker },
+          {
+            provide: UsersService,
+            useValue: {
+              recordQualifyingAction: jest.fn().mockResolvedValue(undefined),
+            },
+          },
+          {
+            provide: PredictionFraudRulesService,
+            useValue: { evaluate: jest.fn().mockResolvedValue([]) },
+          },
+          { provide: getDataSourceToken(), useValue: mockDataSource },
+          { provide: ConfigService, useValue: mockConfigService },
+        ],
+      }).compile();
+
+      const serviceWithNewDataSource =
+        module.get<PredictionsService>(PredictionsService);
+
+      await serviceWithNewDataSource.submit(
+        {
+          market_id: market.id,
+          chosen_outcome: 'Yes',
+          stake_amount_stroops: '10000000',
+          clientIdempotencyKey: validIdempotencyKey,
+        },
+        user,
+      );
+
+      expect(savedPredictionData?.clientIdempotencyKey).toBe(
+        validIdempotencyKey,
+      );
     });
   });
 });

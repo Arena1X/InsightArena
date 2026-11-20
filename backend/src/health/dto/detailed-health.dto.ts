@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class DatabaseStatusDto {
   @ApiProperty({ example: 'up' })
@@ -6,6 +6,13 @@ export class DatabaseStatusDto {
 
   @ApiProperty({ example: 4 })
   latency_ms: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Reason the dependency was reported unhealthy (e.g. a probe timeout).',
+    example: 'database probe timed out',
+  })
+  error?: string;
 }
 
 export class SorobanStatusDto {
@@ -14,6 +21,13 @@ export class SorobanStatusDto {
 
   @ApiProperty({ example: 120 })
   latency_ms: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Reason the dependency was reported unhealthy (e.g. a probe timeout).',
+    example: 'soroban probe timed out',
+  })
+  error?: string;
 }
 
 export class CacheStatusDto {
@@ -22,6 +36,13 @@ export class CacheStatusDto {
 
   @ApiProperty({ example: 1 })
   latency_ms: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Reason the dependency was reported unhealthy (e.g. a probe timeout).',
+    example: 'cache probe timed out',
+  })
+  error?: string;
 }
 
 export class HealthSummaryDto {

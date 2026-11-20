@@ -1,5 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { NotificationBroadcasterService } from './notification-broadcaster.service';
+import {
+  MAX_FANOUT_PER_USER,
+  NotificationBroadcasterService,
+} from './notification-broadcaster.service';
 import { EventsGateway } from './events.gateway';
 
 describe('NotificationBroadcasterService', () => {
@@ -184,6 +187,137 @@ describe('NotificationBroadcasterService', () => {
         expect.objectContaining({
           notification_id: notificationId,
         }),
+      );
+    });
+  });
+
+  describe('cleanupConfirmations', () => {
+    it('should remove a tracked confirmation entry older than the expiry threshold', () => {
+      const userAddress = 'GTEST123';
+      const notificationId = 1;
+
+      service.requestDeliveryConfirmation(userAddress, notificationId);
+      expect(service.isDelivered(userAddress, notificationId)).toBe(false);
+
+      // Advance past the confirmation expiry threshold so the entry is stale.
+      jest.advanceTimersByTime(5 * 60 * 1000 + 1);
+
+      service.cleanupConfirmations();
+
+      // The stale entry should have been purged from tracking.
+      expect(service.isDelivered(userAddress, notificationId)).toBe(false);
+    });
+
+    it('should leave a recently-created, still-pending confirmation entry untouched', () => {
+      const userAddress = 'GTEST123';
+      const notificationId = 2;
+
+      service.requestDeliveryConfirmation(userAddress, notificationId);
+
+      // Only a short amount of time passes; the entry is still fresh.
+      jest.advanceTimersByTime(1000);
+
+      service.cleanupConfirmations();
+
+      // The recent pending entry must still be tracked.
+      expect(service.isDelivered(userAddress, notificationId)).toBe(false);
+    });
+  });
+
+  describe('onModuleDestroy', () => {
+    it('should stop the cleanup interval so no further cleanup runs after destroy', () => {
+      const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+
+      service.onModuleDestroy();
+
+      expect(clearIntervalSpy).toHaveBeenCalled();
+
+      clearIntervalSpy.mockRestore();
+    });
+  });
+
+  describe('per-user fanout limit', () => {
+    const userAddress = 'GFANOUT';
+    const room = `user:${userAddress}`;
+    const result = {
+      match_id: 1,
+      event_id: 2,
+      winning_team: 'A',
+      user_prediction: 'A',
+      is_correct: true,
+    };
+
+    let fanoutService: NotificationBroadcasterService;
+    let roomEmit: jest.Mock;
+    let fanoutServer: {
+      to: jest.Mock;
+      sockets: {
+        adapter: { rooms: Map<string, Set<string>> };
+        sockets: Map<string, { handshake: { issued: number } }>;
+      };
+    };
+
+    /** Connects `count` sockets for the user; socket-i connected at time i. */
+    const connect = (count: number) => {
+      const ids = new Set<string>();
+      for (let i = 0; i < count; i++) {
+        const id = `socket-${i}`;
+        ids.add(id);
+        fanoutServer.sockets.sockets.set(id, { handshake: { issued: i } });
+      }
+      fanoutServer.sockets.adapter.rooms.set(room, ids);
+    };
+
+    beforeEach(() => {
+      roomEmit = jest.fn();
+      fanoutServer = {
+        to: jest.fn().mockReturnValue({ emit: roomEmit }),
+        sockets: { adapter: { rooms: new Map() }, sockets: new Map() },
+      };
+      fanoutService = new NotificationBroadcasterService({
+        server: fanoutServer,
+      } as never);
+    });
+
+    afterEach(() => {
+      fanoutService.onModuleDestroy();
+    });
+
+    it('caps fanout to one user at the documented limit', () => {
+      connect(MAX_FANOUT_PER_USER + 7);
+
+      fanoutService.broadcastPredictionResult(userAddress, result);
+
+      expect(fanoutServer.to).toHaveBeenCalledTimes(1);
+      const targets = fanoutServer.to.mock.calls[0][0] as string[];
+      expect(targets).toHaveLength(MAX_FANOUT_PER_USER);
+      expect(roomEmit).toHaveBeenCalledTimes(1);
+    });
+
+    it('prioritizes the most-recent connections when capping', () => {
+      const total = MAX_FANOUT_PER_USER + 3;
+      connect(total);
+
+      fanoutService.broadcastPredictionResult(userAddress, result);
+
+      const targets = fanoutServer.to.mock.calls[0][0] as string[];
+      const expected = Array.from(
+        { length: MAX_FANOUT_PER_USER },
+        (_, i) => `socket-${total - 1 - i}`,
+      );
+      expect(targets).toEqual(expected);
+      expect(targets).not.toContain('socket-0');
+    });
+
+    it('leaves a user with a single connection unaffected', () => {
+      connect(1);
+
+      fanoutService.broadcastPredictionResult(userAddress, result);
+
+      expect(fanoutServer.to).toHaveBeenCalledWith(room);
+      expect(roomEmit).toHaveBeenCalledWith(
+        'prediction:result',
+        expect.objectContaining({ event: 'prediction:result' }),
       );
     });
   });

@@ -18,6 +18,7 @@ import { UsersService } from '../users/users.service';
 import { SorobanService } from '../soroban/soroban.service';
 import { DataSource } from 'typeorm';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
+import { SearchService } from '../search/search.service';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { MarketSettlementScheduler } from './market-settlement.scheduler';
 
@@ -69,6 +70,10 @@ describe('MarketsService - getPriceHistory', () => {
         { provide: SorobanService, useValue: {} },
         { provide: DataSource, useValue: {} },
         { provide: WebhookDispatcherService, useValue: { emit: jest.fn() } },
+        {
+          provide: SearchService,
+          useValue: { refreshMarketSearchVector: jest.fn() },
+        },
         { provide: CACHE_MANAGER, useValue: {} },
         { provide: MarketSettlementScheduler, useValue: {} },
       ],

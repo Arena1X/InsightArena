@@ -1,225 +1,292 @@
-/**
- * Tests for the URL-sync behaviour added to useMarketDisputes.
- *
- * Requirements verified:
- *  1. Opening a dispute updates the URL (?dispute=<id>)
- *  2. Loading the URL restores the dispute / form view
- *  3. Browser back restores the prior view (router.replace is called with the
- *     correct params so the browser history entry is set correctly)
- */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { apiClient, ApiError } from "@/lib/api";
+import { useMarketDisputes, type CreateDisputeInput } from "./useMarketDisputes";
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+const MARKET_ID = "market-1";
 
-// ---------------------------------------------------------------------------
-// Mock next/navigation
-// ---------------------------------------------------------------------------
-
-const mockReplace = vi.fn();
-let mockSearchParamsString = "";
-
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: mockReplace }),
-  useSearchParams: () => new URLSearchParams(mockSearchParamsString),
-}));
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-async function renderDisputesHook(initialSearch = "") {
-  mockSearchParamsString = initialSearch;
-  // Re-import after updating the search params mock so the hook reads fresh state.
-  const { useMarketDisputes } = await import("./useMarketDisputes");
-  return renderHook(() => useMarketDisputes());
+function buildInput(overrides: Partial<CreateDisputeInput> = {}): CreateDisputeInput {
+  return {
+    marketId: MARKET_ID,
+    category: "incorrect_outcome",
+    reason: "This resolution does not match the publicly reported result.",
+    evidenceLinks: [],
+    ...overrides,
+  };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe("useMarketDisputes — URL sync", () => {
+describe("useMarketDisputes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    vi.resetModules();
-    mockSearchParamsString = "";
+    vi.restoreAllMocks();
   });
 
-  // ── 1. Opening a dispute updates the URL ───────────────────────────────────
+  describe("refresh", () => {
+    it("loads disputes for the given market and decodes their category", async () => {
+      vi.spyOn(apiClient, "get").mockResolvedValue({
+        disputes: [
+          {
+            id: "d1",
+            market_id: MARKET_ID,
+            reason: "[category:manipulation]\nSomething looks off with the odds.",
+            status: "under_review",
+            created_at: "2026-08-01T00:00:00Z",
+          },
+          {
+            id: "d2",
+            market_id: "other-market",
+            reason: "Unrelated dispute",
+            status: "pending",
+            created_at: "2026-08-01T00:00:00Z",
+          },
+        ],
+      });
 
-  it("openDispute writes ?dispute=<id> to the URL", async () => {
-    const { result } = await renderDisputesHook();
+      const { result } = renderHook(() => useMarketDisputes());
 
-    act(() => {
-      result.current.openDispute("dispute-abc");
+      await act(async () => {
+        await result.current.refresh(MARKET_ID);
+      });
+
+      expect(result.current.disputes).toHaveLength(1);
+      expect(result.current.disputes[0]).toMatchObject({
+        id: "d1",
+        category: "manipulation",
+        reason: "Something looks off with the odds.",
+        status: "under_review",
+      });
+      expect(result.current.loading).toBe(false);
+      expect(result.current.error).toBeNull();
     });
 
-    expect(mockReplace).toHaveBeenCalledWith(
-      expect.stringContaining("dispute=dispute-abc"),
-      expect.anything(),
-    );
-  });
+    it("defaults to the 'other' category when a dispute has no category tag", async () => {
+      vi.spyOn(apiClient, "get").mockResolvedValue({
+        disputes: [
+          {
+            id: "d1",
+            market_id: MARKET_ID,
+            reason: "Plain reason with no tag.",
+            status: "pending",
+            created_at: "2026-08-01T00:00:00Z",
+          },
+        ],
+      });
 
-  it("openDispute removes ?disputeForm from the URL", async () => {
-    const { result } = await renderDisputesHook("disputeForm=1");
+      const { result } = renderHook(() => useMarketDisputes());
+      await act(async () => {
+        await result.current.refresh(MARKET_ID);
+      });
 
-    act(() => {
-      result.current.openDispute("dispute-xyz");
+      expect(result.current.disputes[0].category).toBe("other");
+      expect(result.current.disputes[0].reason).toBe("Plain reason with no tag.");
     });
 
-    const calledUrl: string = mockReplace.mock.calls[0][0];
-    expect(calledUrl).toContain("dispute=dispute-xyz");
-    expect(calledUrl).not.toContain("disputeForm");
-  });
+    it("silently clears disputes on a 404 (no disputes endpoint / none found) without setting error", async () => {
+      vi.spyOn(apiClient, "get").mockRejectedValue(
+        new ApiError("Not found", "http", "/disputes", 404),
+      );
 
-  it("openForm writes ?disputeForm=1 to the URL", async () => {
-    const { result } = await renderDisputesHook();
+      const { result } = renderHook(() => useMarketDisputes());
+      await act(async () => {
+        await result.current.refresh(MARKET_ID);
+      });
 
-    act(() => {
-      result.current.openForm();
+      expect(result.current.disputes).toEqual([]);
+      expect(result.current.error).toBeNull();
     });
 
-    expect(mockReplace).toHaveBeenCalledWith(
-      expect.stringContaining("disputeForm=1"),
-      expect.anything(),
-    );
+    it("sets an error message for a non-404/401 failure", async () => {
+      vi.spyOn(apiClient, "get").mockRejectedValue(
+        new ApiError("Server error", "http", "/disputes", 500),
+      );
+
+      const { result } = renderHook(() => useMarketDisputes());
+      await act(async () => {
+        await result.current.refresh(MARKET_ID);
+      });
+
+      expect(result.current.error).toBe("Server error");
+    });
   });
 
-  it("openForm removes ?dispute from the URL", async () => {
-    const { result } = await renderDisputesHook("dispute=dispute-123");
+  describe("submitDispute validation", () => {
+    it("rejects an empty reason without touching the network", async () => {
+      const postSpy = vi.spyOn(apiClient, "post");
+      const { result } = renderHook(() => useMarketDisputes());
 
-    act(() => {
-      result.current.openForm();
+      await act(async () => {
+        await expect(
+          result.current.submitDispute(buildInput({ reason: "" })),
+        ).rejects.toThrow("A dispute reason is required.");
+      });
+
+      expect(postSpy).not.toHaveBeenCalled();
+      expect(result.current.disputes).toHaveLength(0);
+      expect(result.current.submitError).toBe("A dispute reason is required.");
     });
 
-    const calledUrl: string = mockReplace.mock.calls[0][0];
-    expect(calledUrl).toContain("disputeForm=1");
-    expect(calledUrl).not.toContain("dispute=");
-  });
+    it("rejects a reason under 20 characters", async () => {
+      const { result } = renderHook(() => useMarketDisputes());
 
-  it("closeDispute removes ?dispute from the URL", async () => {
-    const { result } = await renderDisputesHook("dispute=dispute-abc");
+      await act(async () => {
+        await expect(
+          result.current.submitDispute(buildInput({ reason: "too short" })),
+        ).rejects.toThrow("Please provide at least 20 characters of detail.");
+      });
 
-    act(() => {
-      result.current.closeDispute();
+      expect(result.current.submitError).toBe(
+        "Please provide at least 20 characters of detail.",
+      );
     });
 
-    const calledUrl: string = mockReplace.mock.calls[0][0];
-    expect(calledUrl).not.toContain("dispute=");
+    it("rejects an invalid evidence URL", async () => {
+      const { result } = renderHook(() => useMarketDisputes());
+
+      await act(async () => {
+        await expect(
+          result.current.submitDispute(
+            buildInput({ evidenceLinks: ["not-a-url"] }),
+          ),
+        ).rejects.toThrow(/Invalid evidence link/);
+      });
+
+      expect(result.current.submitError).toMatch(/Invalid evidence link/);
+    });
   });
 
-  it("closeForm removes ?disputeForm from the URL", async () => {
-    const { result } = await renderDisputesHook("disputeForm=1");
+  describe("submitDispute optimistic update", () => {
+    it("inserts an optimistic dispute immediately, before the network call resolves", async () => {
+      let resolvePost: (value: unknown) => void = () => {};
+      vi.spyOn(apiClient, "post").mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolvePost = resolve;
+          }),
+      );
 
-    act(() => {
-      result.current.closeForm();
+      const { result } = renderHook(() => useMarketDisputes());
+
+      act(() => {
+        void result.current.submitDispute(buildInput());
+      });
+
+      await waitFor(() => expect(result.current.disputes).toHaveLength(1));
+      expect(result.current.disputes[0].isOptimistic).toBe(true);
+      expect(result.current.disputes[0].status).toBe("pending");
+      expect(result.current.submitting).toBe(true);
+
+      await act(async () => {
+        resolvePost({
+          id: "server-1",
+          market_id: MARKET_ID,
+          reason: "encoded",
+          status: "pending",
+          created_at: "2026-08-01T00:00:00Z",
+        });
+      });
+
+      await waitFor(() => expect(result.current.submitting).toBe(false));
+      expect(result.current.disputes).toHaveLength(1);
+      expect(result.current.disputes[0].id).toBe("server-1");
+      expect(result.current.disputes[0].isOptimistic).toBeFalsy();
+      expect(result.current.submitSuccess).toBe("Dispute submitted successfully.");
     });
 
-    const calledUrl: string = mockReplace.mock.calls[0][0];
-    expect(calledUrl).not.toContain("disputeForm");
-  });
+    it("rolls back the optimistic dispute when the server rejects it", async () => {
+      vi.spyOn(apiClient, "post").mockRejectedValue(
+        new ApiError("Market is not resolved yet.", "http", "/disputes", 400),
+      );
 
-  // ── 2. Loading the URL restores the dispute view ───────────────────────────
+      const { result } = renderHook(() => useMarketDisputes());
 
-  it("activeDisputeId is null when ?dispute is absent", async () => {
-    const { result } = await renderDisputesHook();
-    expect(result.current.activeDisputeId).toBeNull();
-  });
+      await act(async () => {
+        await expect(result.current.submitDispute(buildInput())).rejects.toThrow(
+          "Market is not resolved yet.",
+        );
+      });
 
-  it("activeDisputeId is populated when ?dispute=<id> is in the URL", async () => {
-    const { result } = await renderDisputesHook("dispute=dispute-restore");
-    expect(result.current.activeDisputeId).toBe("dispute-restore");
-  });
-
-  it("showForm is false when ?disputeForm is absent", async () => {
-    const { result } = await renderDisputesHook();
-    expect(result.current.showForm).toBe(false);
-  });
-
-  it("showForm is true when ?disputeForm=1 is in the URL", async () => {
-    const { result } = await renderDisputesHook("disputeForm=1");
-    expect(result.current.showForm).toBe(true);
-  });
-
-  it("showForm is false for any value other than '1'", async () => {
-    const { result } = await renderDisputesHook("disputeForm=true");
-    expect(result.current.showForm).toBe(false);
-  });
-
-  // ── 3. Browser back restores the prior view ────────────────────────────────
-  //
-  // The hook uses router.replace(..., { scroll: false }) for every state
-  // change, which means each navigation is a URL replacement that the browser
-  // treats as the current history entry. When the user presses back, the
-  // browser restores the previous search params and the hook re-derives its
-  // state from them.
-  //
-  // We verify this by simulating the two history entries that would exist:
-  //  - Initial state (no params)       →  activeDisputeId: null
-  //  - After openDispute               →  activeDisputeId: "dispute-abc"
-  // And then "going back" (re-rendering with the original params):
-  //  - Restored state (no params)      →  activeDisputeId: null
-
-  it("back navigation restores prior state: activeDisputeId reverts to null", async () => {
-    // Simulate initial render with no params.
-    const { result: before } = await renderDisputesHook("");
-    expect(before.current.activeDisputeId).toBeNull();
-
-    // Simulate having navigated to ?dispute=dispute-abc (the "forward" entry).
-    vi.resetModules();
-    const { result: after } = await renderDisputesHook("dispute=dispute-abc");
-    expect(after.current.activeDisputeId).toBe("dispute-abc");
-
-    // Simulate browser back: search params revert to the original state.
-    vi.resetModules();
-    const { result: restored } = await renderDisputesHook("");
-    expect(restored.current.activeDisputeId).toBeNull();
-  });
-
-  it("back navigation restores prior state: showForm reverts to false", async () => {
-    // Before: form closed.
-    const { result: before } = await renderDisputesHook("");
-    expect(before.current.showForm).toBe(false);
-
-    // Forward: form open.
-    vi.resetModules();
-    const { result: after } = await renderDisputesHook("disputeForm=1");
-    expect(after.current.showForm).toBe(true);
-
-    // Back: form closed again.
-    vi.resetModules();
-    const { result: restored } = await renderDisputesHook("");
-    expect(restored.current.showForm).toBe(false);
-  });
-
-  it("openDispute uses router.replace (not push) so it is part of the browser history", async () => {
-    const { result } = await renderDisputesHook();
-
-    act(() => {
-      result.current.openDispute("dispute-history-check");
+      // The optimistic row must be gone, not left dangling in a broken state.
+      expect(result.current.disputes).toHaveLength(0);
+      expect(result.current.submitError).toBe("Market is not resolved yet.");
+      expect(result.current.submitting).toBe(false);
     });
 
-    // router.replace should have been called, not push.
-    expect(mockReplace).toHaveBeenCalled();
-    // The second argument carries { scroll: false } to avoid page jumps.
-    expect(mockReplace).toHaveBeenCalledWith(
-      expect.any(String),
-      { scroll: false },
-    );
-  });
+    it("rolls back on an unexpected non-ApiError failure", async () => {
+      vi.spyOn(apiClient, "post").mockRejectedValue(new Error("boom"));
 
-  // ── 4. Unrelated params are preserved ─────────────────────────────────────
+      const { result } = renderHook(() => useMarketDisputes());
 
-  it("openDispute preserves pre-existing unrelated params", async () => {
-    const { result } = await renderDisputesHook("tab=disputes&foo=bar");
+      await act(async () => {
+        await expect(result.current.submitDispute(buildInput())).rejects.toThrow(
+          "boom",
+        );
+      });
 
-    act(() => {
-      result.current.openDispute("dispute-keep-params");
+      expect(result.current.disputes).toHaveLength(0);
+      expect(result.current.submitError).toBe("boom");
     });
 
-    const calledUrl: string = mockReplace.mock.calls[0][0];
-    expect(calledUrl).toContain("dispute=dispute-keep-params");
-    expect(calledUrl).toContain("tab=disputes");
-    expect(calledUrl).toContain("foo=bar");
+    it("keeps a locally-pending dispute (no rollback) on a network-level failure", async () => {
+      vi.spyOn(apiClient, "post").mockRejectedValue(
+        new ApiError("Network error", "network", "/disputes"),
+      );
+
+      const { result } = renderHook(() => useMarketDisputes());
+
+      await act(async () => {
+        await result.current.submitDispute(buildInput());
+      });
+
+      expect(result.current.disputes).toHaveLength(1);
+      expect(result.current.disputes[0].status).toBe("pending");
+      expect(result.current.disputes[0].isOptimistic).toBeFalsy();
+      expect(result.current.submitError).toBeNull();
+      expect(result.current.submitSuccess).toBe("Dispute submitted successfully.");
+    });
+
+    it("encodes the category into the posted reason", async () => {
+      const postSpy = vi.spyOn(apiClient, "post").mockResolvedValue({
+        id: "server-1",
+        market_id: MARKET_ID,
+        reason: "encoded",
+        status: "pending",
+        created_at: "2026-08-01T00:00:00Z",
+      });
+
+      const { result } = renderHook(() => useMarketDisputes());
+      await act(async () => {
+        await result.current.submitDispute(
+          buildInput({ category: "manipulation" }),
+        );
+      });
+
+      expect(postSpy).toHaveBeenCalledWith(
+        "/disputes",
+        expect.objectContaining({
+          market_id: MARKET_ID,
+          reason: expect.stringContaining("[category:manipulation]"),
+        }),
+      );
+    });
+  });
+
+  describe("clearStatus", () => {
+    it("clears submitError and submitSuccess", async () => {
+      vi.spyOn(apiClient, "post").mockRejectedValue(
+        new ApiError("failed", "http", "/disputes", 400),
+      );
+      const { result } = renderHook(() => useMarketDisputes());
+
+      await act(async () => {
+        await expect(result.current.submitDispute(buildInput())).rejects.toThrow();
+      });
+      expect(result.current.submitError).toBe("failed");
+
+      act(() => {
+        result.current.clearStatus();
+      });
+
+      expect(result.current.submitError).toBeNull();
+      expect(result.current.submitSuccess).toBeNull();
+    });
   });
 });

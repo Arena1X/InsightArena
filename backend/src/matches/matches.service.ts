@@ -106,7 +106,10 @@ export class MatchesService {
       total_predictions: totalPredictions,
     };
 
-    if (includeUsers) {
+    if (includeUsers && totalPredictions === 0) {
+      response.users = [];
+      response.meta = { total: 0, page, limit, totalPages: 0 };
+    } else if (includeUsers) {
       const skip = (page - 1) * limit;
       const [predictions, total] =
         await this.matchPredictionRepository.findAndCount({
@@ -136,32 +139,49 @@ export class MatchesService {
     return response;
   }
 
-  private async getDistribution(matchId: string, totalPredictions: number) {
-    const outcomes = ['TEAM_A', 'TEAM_B', 'DRAW'] as const;
-    const distribution: Array<{
-      outcome: string;
-      count: number;
-      percentage: string;
-    }> = [];
+  private static readonly DISTRIBUTION_OUTCOMES: readonly PredictedOutcome[] =
+    [PredictedOutcome.TEAM_A, PredictedOutcome.TEAM_B, PredictedOutcome.DRAW];
 
-    for (const outcome of outcomes) {
-      const count = await this.matchPredictionRepository.count({
-        where: {
-          match: { id: matchId },
-          predicted_outcome: outcome as PredictedOutcome,
-        },
-      });
-      distribution.push({
+  /**
+   * Build the per-outcome prediction distribution for a match. Always returns
+   * one entry per outcome in a stable order (TEAM_A, TEAM_B, DRAW). For
+   * matches with no predictions, returns zeroed entries without querying the
+   * database, so percentages are never computed from a zero denominator.
+   */
+  private async getDistribution(
+    matchId: string,
+    totalPredictions: number,
+  ): Promise<Array<{ outcome: string; count: number; percentage: string }>> {
+    const outcomes = MatchesService.DISTRIBUTION_OUTCOMES;
+
+    if (!(totalPredictions > 0)) {
+      return outcomes.map((outcome) => ({
         outcome,
-        count,
-        percentage:
-          totalPredictions > 0
-            ? ((count / totalPredictions) * 100).toFixed(2)
-            : '0.00',
-      });
+        count: 0,
+        percentage: '0.00',
+      }));
     }
 
-    return distribution;
+    const rows = await this.matchPredictionRepository
+      .createQueryBuilder('prediction')
+      .select('prediction.predicted_outcome', 'outcome')
+      .addSelect('COUNT(*)', 'count')
+      .where('prediction.match_id = :matchId', { matchId })
+      .groupBy('prediction.predicted_outcome')
+      .getRawMany<{ outcome: PredictedOutcome; count: string | number }>();
+
+    const counts = new Map<string, number>(
+      rows.map((row) => [row.outcome, Number(row.count) || 0]),
+    );
+
+    return outcomes.map((outcome) => {
+      const count = counts.get(outcome) ?? 0;
+      return {
+        outcome,
+        count,
+        percentage: ((count / totalPredictions) * 100).toFixed(2),
+      };
+    });
   }
 
   /**
@@ -208,11 +228,69 @@ export class MatchesService {
 
     const saved = await this.matchRepository.save(match);
 
+    await this.scorePredictions(saved);
+
     this.logger.log(
       `Result submitted for match ${match.id}: ${match.team_a} ${dto.home_score} - ${dto.away_score} ${match.team_b} (${dto.winning_team}) by ${submittedBy}`,
     );
 
     return saved;
+  }
+
+  /**
+   * Update the points multiplier for a match. Rejects changes after the
+   * result has been submitted because predictions are already scored.
+   */
+  async updateMultiplier(matchId: string, multiplier: number): Promise<Match> {
+    const match = await this.matchRepository.findOne({
+      where: { id: matchId },
+    });
+
+    if (!match) {
+      throw new NotFoundException(`Match with ID "${matchId}" not found`);
+    }
+
+    if (match.result_submitted) {
+      throw new ConflictException(
+        `Cannot change points_multiplier for match "${match.id}" — predictions have already been scored`,
+      );
+    }
+
+    match.points_multiplier = multiplier;
+    return this.matchRepository.save(match);
+  }
+
+  private static readonly BASE_CORRECT_POINTS = 1;
+
+  /**
+   * Score every prediction for a match after its result is submitted.
+   * Sets `is_correct` and computes `points_earned = base * multiplier`.
+   */
+  private async scorePredictions(match: Match): Promise<void> {
+    const predictions = await this.matchPredictionRepository.find({
+      where: { match: { id: match.id } },
+    });
+
+    if (predictions.length === 0) {
+      return;
+    }
+
+    const multiplier = match.points_multiplier ?? 1;
+
+    for (const prediction of predictions) {
+      const correct =
+        prediction.predicted_outcome === (match.winning_team as string);
+      prediction.is_correct = correct;
+      prediction.points_earned = correct
+        ? MatchesService.BASE_CORRECT_POINTS * multiplier
+        : 0;
+    }
+
+    await this.matchPredictionRepository.save(predictions);
+
+    this.logger.log(
+      `Scored ${predictions.length} prediction(s) for match ${match.id} (multiplier=${multiplier})`,
+    );
   }
 
   private validateResultConsistency(dto: SubmitMatchResultDto): void {

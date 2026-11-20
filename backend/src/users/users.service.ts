@@ -5,7 +5,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, QueryFailedError, Repository } from 'typeorm';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import {
   ListUserPredictionsDto,
@@ -57,6 +57,23 @@ import {
   accuracyRateFromUser,
   predictorTierFromReputation,
 } from '../analytics/analytics.service';
+import { GetFeedQueryDto } from './dto/get-feed-query.dto';
+import { FeedItemDto, FeedResponseDto } from './dto/feed-response.dto';
+
+/** Postgres SQLSTATE for a unique-constraint violation. */
+const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Canonical form of a Stellar address: surrounding whitespace removed and
+ * upper-cased. Stellar StrKey addresses are RFC 4648 base32, whose alphabet
+ * is upper-case only, so `gabc…` and `GABC…` are the same account. Every
+ * address is normalized before it is stored or used in a lookup, which makes
+ * the unique constraint on `users.stellar_address` apply to the canonical
+ * form.
+ */
+export function normalizeStellarAddress(stellar_address: string): string {
+  return stellar_address.trim().toUpperCase();
+}
 
 @Injectable()
 export class UsersService {
@@ -112,17 +129,51 @@ export class UsersService {
   }
 
   async findByAddress(stellar_address: string): Promise<User> {
+    const address = normalizeStellarAddress(stellar_address);
     const user = await this.usersRepository.findOne({
-      where: { stellar_address, deleted_at: IsNull() },
+      where: { stellar_address: address, deleted_at: IsNull() },
     });
     if (!user) {
-      throw new NotFoundException(
-        `User with address ${stellar_address} not found`,
-      );
+      throw new NotFoundException(`User with address ${address} not found`);
     }
     return user;
   }
 
+  /**
+   * Returns the user for `stellar_address`, creating it if needed. The
+   * address is normalized first, so differently-cased forms of the same
+   * address always resolve to a single user. If a concurrent request
+   * inserts the same canonical address first, the unique constraint
+   * rejects our insert and the existing row is returned instead.
+   */
+  async findOrCreateByAddress(stellar_address: string): Promise<User> {
+    const address = normalizeStellarAddress(stellar_address);
+
+    const existing = await this.usersRepository.findOne({
+      where: { stellar_address: address },
+    });
+    if (existing) {
+      return existing;
+    }
+
+    try {
+      return await this.usersRepository.save(
+        this.usersRepository.create({ stellar_address: address }),
+      );
+    } catch (error) {
+      const code = (error as { driverError?: { code?: string } }).driverError
+        ?.code;
+      if (error instanceof QueryFailedError && code === PG_UNIQUE_VIOLATION) {
+        const winner = await this.usersRepository.findOne({
+          where: { stellar_address: address },
+        });
+        if (winner) {
+          return winner;
+        }
+      }
+      throw error;
+    }
+  }
 
   async findPublicPredictionsByAddress(
     stellar_address: string,
@@ -321,6 +372,49 @@ export class UsersService {
     }));
 
     return { data, total, page, limit };
+  }
+
+  /**
+   * Bookmark a market on behalf of the authenticated user.
+   * Throws NotFoundException when the market does not exist and
+   * ConflictException when the market is already bookmarked by the user.
+   */
+  async addBookmark(userId: string, marketId: string): Promise<UserBookmark> {
+    const market = await this.marketsRepository.findOneBy({ id: marketId });
+    if (!market) {
+      throw new NotFoundException(`Market with ID "${marketId}" not found`);
+    }
+
+    const existing = await this.userBookmarksRepository.findOne({
+      where: { user: { id: userId }, market: { id: marketId } },
+    });
+    if (existing) {
+      throw new ConflictException('Market is already bookmarked');
+    }
+
+    const bookmark = this.userBookmarksRepository.create({
+      user: { id: userId } as User,
+      market,
+    });
+
+    return this.userBookmarksRepository.save(bookmark);
+  }
+
+  /**
+   * Remove a bookmark owned by the authenticated user.
+   * Ownership is enforced by scoping the lookup to the caller's userId —
+   * another user's bookmark is indistinguishable from a missing one (404).
+   */
+  async removeBookmark(userId: string, bookmarkId: string): Promise<void> {
+    const bookmark = await this.userBookmarksRepository.findOne({
+      where: { id: bookmarkId, user: { id: userId } },
+    });
+
+    if (!bookmark) {
+      throw new NotFoundException('Bookmark not found');
+    }
+
+    await this.userBookmarksRepository.delete({ id: bookmarkId });
   }
 
   async exportUserData(userId: string) {
@@ -662,6 +756,81 @@ export class UsersService {
         qualified_at: referral.qualified_at,
       })),
     };
+  }
+
+  /**
+   * Returns a paginated feed of predictions made by users that `userId`
+   * follows, ordered by recency (submitted_at DESC).
+   *
+   * Exclusions applied:
+   *  - Predictions whose author has been soft-deleted (deleted_at IS NOT NULL).
+   *  - No block exclusion is applied because this codebase has no
+   *    blocked-users model (no user_blocks table or is_blocked column).
+   *    Add that filter here once the model is introduced.
+   *
+   * "Activity" in this codebase is Prediction rows — there is no separate
+   * activity/event entity. Broader activity types are out of scope for this
+   * iteration.
+   */
+  async getFeed(
+    userId: string,
+    dto: GetFeedQueryDto,
+  ): Promise<FeedResponseDto> {
+    const page = dto.page ?? 1;
+    const limit = Math.min(dto.limit ?? 20, 50);
+    const skip = (page - 1) * limit;
+
+    // Collect the IDs of everyone this user follows.
+    const follows = await this.followRepository.find({
+      where: { follower_id: userId },
+      select: ['following_id'],
+    });
+
+    if (follows.length === 0) {
+      return { data: [], total: 0, page, limit };
+    }
+
+    const followedIds = follows.map((f) => f.following_id);
+
+    // Query predictions authored by followed users, excluding soft-deleted authors.
+    const [predictions, total] = await this.predictionsRepository
+      .createQueryBuilder('prediction')
+      .leftJoinAndSelect('prediction.user', 'author')
+      .leftJoinAndSelect('prediction.market', 'market')
+      .where('prediction.userId IN (:...followedIds)', { followedIds })
+      // Exclude predictions belonging to soft-deleted user accounts.
+      .andWhere('author.deleted_at IS NULL')
+      .orderBy('prediction.submitted_at', 'DESC')
+      .skip(skip)
+      .take(limit)
+      .getManyAndCount();
+
+    const data: FeedItemDto[] = predictions.map((prediction) => ({
+      id: prediction.id,
+      chosen_outcome: prediction.chosen_outcome,
+      stake_amount_stroops: prediction.stake_amount_stroops,
+      payout_claimed: prediction.payout_claimed,
+      payout_amount_stroops: prediction.payout_amount_stroops,
+      tx_hash: prediction.tx_hash ?? null,
+      note: prediction.note ?? null,
+      submitted_at: prediction.submitted_at,
+      market: {
+        id: prediction.market.id,
+        title: prediction.market.title,
+        end_time: prediction.market.end_time,
+        resolved_outcome: prediction.market.resolved_outcome ?? null,
+        is_resolved: prediction.market.is_resolved,
+        is_cancelled: prediction.market.is_cancelled,
+      },
+      author: {
+        stellar_address: prediction.user.stellar_address,
+        username: prediction.user.username,
+        avatar_url: prediction.user.avatar_url,
+        reputation_score: prediction.user.reputation_score,
+      },
+    }));
+
+    return { data, total, page, limit };
   }
 
   /**

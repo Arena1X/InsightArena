@@ -1,5 +1,6 @@
 import {
   Controller,
+  Get,
   Post,
   Patch,
   Body,
@@ -16,6 +17,10 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { DisputesService } from './disputes.service';
+import {
+  DisputeChainReconciliationReport,
+  DisputeChainReconciliationService,
+} from './dispute-chain-reconciliation.service';
 import { ResolveDisputeDto } from './dto/resolve-dispute.dto';
 import { AssignArbiterDto } from './dto/assign-arbiter.dto';
 import { Dispute } from './entities/dispute.entity';
@@ -31,7 +36,53 @@ import { Role } from '../common/enums/role.enum';
 @UseGuards(JwtAuthGuard, RolesGuard)
 @ApiBearerAuth()
 export class AdminDisputesController {
-  constructor(private readonly disputesService: DisputesService) {}
+  constructor(
+    private readonly disputesService: DisputesService,
+    private readonly chainReconciliationService: DisputeChainReconciliationService,
+  ) {}
+
+  @Post('reconcile-chain')
+  @HttpCode(HttpStatus.OK)
+  @Roles(Role.Admin)
+  @ApiOperation({
+    summary:
+      'Reconcile dispute on-chain IDs against contract state (Admin only). ' +
+      'Corrects stale or missing chain IDs; flags disputes missing on-chain ' +
+      'and resolution disagreements without changing them.',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description:
+      'Reconciliation report, or null if a run is already in progress',
+  })
+  async reconcileChain(): Promise<DisputeChainReconciliationReport | null> {
+    return this.chainReconciliationService.reconcile();
+  }
+
+  @Get('reconcile-chain/last')
+  @Roles(Role.Admin)
+  @ApiOperation({
+    summary: 'Get the most recent dispute chain reconciliation report',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Last reconciliation report, or null if none has run',
+  })
+  getLastChainReconciliation(): DisputeChainReconciliationReport | null {
+    return this.chainReconciliationService.getLastReport();
+  }
+
+  @Get('breached')
+  @Roles(Role.Admin)
+  @ApiOperation({ summary: 'Get breached disputes (Admin only)' })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'List of breached disputes',
+    type: [Dispute],
+  })
+  async getBreachedDisputes(): Promise<Dispute[]> {
+    return this.disputesService.findBreachedDisputes();
+  }
 
   @Post(':id/resolve')
   @HttpCode(HttpStatus.OK)

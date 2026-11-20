@@ -15,6 +15,7 @@ import { SorobanService } from '../soroban/soroban.service';
 import { UsersService } from '../users/users.service';
 import { User } from '../users/entities/user.entity';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
+import { SearchService } from '../search/search.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
 
 describe('MarketsService - Comments moderation and rate limiting', () => {
@@ -80,6 +81,10 @@ describe('MarketsService - Comments moderation and rate limiting', () => {
         { provide: SorobanService, useValue: {} },
         { provide: DataSource, useValue: dataSource },
         { provide: WebhookDispatcherService, useValue: { emit: jest.fn() } },
+        {
+          provide: SearchService,
+          useValue: { refreshMarketSearchVector: jest.fn() },
+        },
         {
           provide: CACHE_MANAGER,
           useValue: {

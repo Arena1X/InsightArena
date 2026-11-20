@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { SearchService } from './search.service';
 import { Market } from '../markets/entities/market.entity';
 import { User } from '../users/entities/user.entity';
@@ -50,6 +50,10 @@ describe('SearchService - Wildcard Escaping Integration', () => {
         {
           provide: CACHE_MANAGER,
           useValue: { get: jest.fn(), set: jest.fn() },
+        },
+        {
+          provide: DataSource,
+          useValue: { query: jest.fn().mockResolvedValue([undefined, 0]) },
         },
       ],
     }).compile();

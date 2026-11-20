@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -14,6 +14,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { CommonModule } from './common/common.module';
+import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { CompetitionsModule } from './competitions/competitions.module';
@@ -153,6 +154,13 @@ import { TieredThrottlerGuard } from './common/guards/tiered-throttler.guard';
     {
       provide: APP_GUARD,
       useClass: RolesGuard,
+    },
+    {
+      // Globally honor Idempotency-Key on mutating requests (POST/PUT/PATCH/DELETE).
+      // GET and other read-only methods pass through untouched.
+      // Requests without the header also pass through — the header is optional.
+      provide: APP_INTERCEPTOR,
+      useClass: IdempotencyInterceptor,
     },
   ],
 })

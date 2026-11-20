@@ -14,6 +14,59 @@ export type ClaimRewardsResult = {
 /** A single reward tied to one prediction — either claimable now or still vesting. */
 export type RewardItemStatus = "claimable" | "vesting";
 
+// ── Reward type display config ────────────────────────────────────────────
+//
+// The single source of truth for how a reward *type* (as opposed to a
+// reward *status*, see RewardStatusBadge, which is a separate concept with
+// its own values) maps to a label and color. RewardTypeBadge is the only
+// consumer today; centralized here per this issue's own naming of this file
+// as the target, so a second consumer (e.g. RewardSourceRow, if it's ever
+// wired up to render reward-type-colored bars instead of taking a raw
+// barColor prop from its caller) has one place to read the same mapping
+// from instead of re-declaring it.
+
+export type RewardType =
+  | "competition"
+  | "prediction"
+  | "referral"
+  | "airdrop"
+  | "bonus";
+
+export interface RewardTypeDisplay {
+  label: string;
+  className: string;
+}
+
+const NEUTRAL_BADGE_CLASSNAME = "bg-white/5 text-gray-300 border border-white/10";
+
+export const rewardTypeConfig: Record<RewardType, RewardTypeDisplay> = {
+  competition: { label: "Competition", className: NEUTRAL_BADGE_CLASSNAME },
+  prediction: {
+    label: "Prediction",
+    className: "bg-orange-500/10 text-orange-400 border border-orange-500/20",
+  },
+  referral: { label: "Referral", className: NEUTRAL_BADGE_CLASSNAME },
+  airdrop: {
+    label: "Airdrop",
+    className: "bg-yellow-500/10 text-yellow-400 border border-yellow-500/20",
+  },
+  bonus: { label: "Bonus", className: NEUTRAL_BADGE_CLASSNAME },
+};
+
+/** Fallback for a reward type that isn't (or isn't yet) in `rewardTypeConfig`,
+ * e.g. a value newly added on the backend before the frontend map catches up. */
+export const unknownRewardTypeDisplay: RewardTypeDisplay = {
+  label: "Other",
+  className: NEUTRAL_BADGE_CLASSNAME,
+};
+
+/** Looks up a reward type's display config, falling back to
+ * `unknownRewardTypeDisplay` for any value outside the known `RewardType`
+ * union rather than throwing. */
+export function getRewardTypeDisplay(type: string): RewardTypeDisplay {
+  return rewardTypeConfig[type as RewardType] ?? unknownRewardTypeDisplay;
+}
+
 export type RewardItem = {
   id: string;
   marketId: string;
@@ -27,6 +80,174 @@ export type ClaimRewardItemResult = {
   claimedXlm: number;
   transactionHash: string;
 };
+
+// ── Rewards history table: sorting + CSV export ──────────────────────────
+//
+// Shared, framework-agnostic helpers for RewardHistoryTable so the sort
+// comparator and CSV serialization can be unit-tested without rendering the
+// component. The table renders the same `RewardHistoryRow` shape it exports.
+
+export type RewardHistoryRow = {
+  id: string;
+  /** ISO-8601 timestamp; may be missing for legacy rows. */
+  date?: string | null;
+  type?: string | null;
+  amountXlm?: number | null;
+  source?: string | null;
+};
+
+/** Columns the history table can be sorted by. */
+export type RewardHistorySortKey = "date" | "type" | "amount" | "source";
+
+export type SortDirection = "asc" | "desc";
+
+export type RewardHistorySort = {
+  key: RewardHistorySortKey;
+  direction: SortDirection;
+};
+
+/** Stable default sort: newest rewards first. */
+export const DEFAULT_REWARD_HISTORY_SORT: RewardHistorySort = {
+  key: "date",
+  direction: "desc",
+};
+
+/** Placeholder rendered (and exported) for a missing/empty field value. */
+export const EMPTY_REWARD_FIELD = "—";
+
+/**
+ * Toggles the sort for a clicked column: clicking the active column flips
+ * direction, clicking a different column switches to it with a sensible
+ * starting direction (descending for date/amount, ascending for text).
+ */
+export function toggleRewardHistorySort(
+  current: RewardHistorySort,
+  key: RewardHistorySortKey,
+): RewardHistorySort {
+  if (current.key === key) {
+    return { key, direction: current.direction === "asc" ? "desc" : "asc" };
+  }
+
+  const defaultDirection: SortDirection =
+    key === "date" || key === "amount" ? "desc" : "asc";
+  return { key, direction: defaultDirection };
+}
+
+function compareText(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { sensitivity: "base" });
+}
+
+/**
+ * Compares two rows for the given sort. Missing values always sort last
+ * regardless of direction so empty rows never crowd the top of the table.
+ * Ties fall back to `id` for a stable, deterministic order.
+ */
+export function compareRewardHistoryRows(
+  a: RewardHistoryRow,
+  b: RewardHistoryRow,
+  sort: RewardHistorySort,
+): number {
+  const direction = sort.direction === "asc" ? 1 : -1;
+  let result = 0;
+
+  switch (sort.key) {
+    case "date": {
+      const aTime = a.date ? Date.parse(a.date) : NaN;
+      const bTime = b.date ? Date.parse(b.date) : NaN;
+      const aMissing = Number.isNaN(aTime);
+      const bMissing = Number.isNaN(bTime);
+      if (aMissing && bMissing) result = 0;
+      else if (aMissing) return 1;
+      else if (bMissing) return -1;
+      else result = aTime - bTime;
+      break;
+    }
+    case "amount": {
+      const aAmount = typeof a.amountXlm === "number" ? a.amountXlm : null;
+      const bAmount = typeof b.amountXlm === "number" ? b.amountXlm : null;
+      if (aAmount === null && bAmount === null) result = 0;
+      else if (aAmount === null) return 1;
+      else if (bAmount === null) return -1;
+      else result = aAmount - bAmount;
+      break;
+    }
+    case "type": {
+      const aType = a.type?.trim();
+      const bType = b.type?.trim();
+      if (!aType && !bType) result = 0;
+      else if (!aType) return 1;
+      else if (!bType) return -1;
+      else result = compareText(aType, bType);
+      break;
+    }
+    case "source": {
+      const aSource = a.source?.trim();
+      const bSource = b.source?.trim();
+      if (!aSource && !bSource) result = 0;
+      else if (!aSource) return 1;
+      else if (!bSource) return -1;
+      else result = compareText(aSource, bSource);
+      break;
+    }
+  }
+
+  if (result !== 0) return result * direction;
+  return compareText(a.id, b.id);
+}
+
+/** Returns a new array sorted by `sort` without mutating the input. */
+export function sortRewardHistoryRows(
+  rows: RewardHistoryRow[],
+  sort: RewardHistorySort,
+): RewardHistoryRow[] {
+  return [...rows].sort((a, b) => compareRewardHistoryRows(a, b, sort));
+}
+
+/** Renders a field value for display, substituting a placeholder when empty. */
+export function formatRewardHistoryCell(
+  value: string | number | null | undefined,
+): string {
+  if (value === null || value === undefined) return EMPTY_REWARD_FIELD;
+  if (typeof value === "string" && value.trim() === "") {
+    return EMPTY_REWARD_FIELD;
+  }
+  return String(value);
+}
+
+function escapeCsvValue(value: string): string {
+  if (/[",\n\r]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+const REWARD_HISTORY_CSV_HEADERS = [
+  "Date",
+  "Type",
+  "Amount (XLM)",
+  "Source",
+] as const;
+
+/**
+ * Serializes the given (already filtered and sorted) rows to CSV. Missing
+ * fields become empty cells so the export stays parseable; the caller is
+ * responsible for passing exactly the rows currently visible in the table.
+ */
+export function rewardHistoryRowsToCsv(rows: RewardHistoryRow[]): string {
+  const lines = [REWARD_HISTORY_CSV_HEADERS.join(",")];
+
+  for (const row of rows) {
+    const cells = [
+      row.date ?? "",
+      row.type ?? "",
+      typeof row.amountXlm === "number" ? String(row.amountXlm) : "",
+      row.source ?? "",
+    ];
+    lines.push(cells.map((cell) => escapeCsvValue(String(cell))).join(","));
+  }
+
+  return lines.join("\n");
+}
 
 type RewardsSummaryResponse = {
   total_earned_xlm: number;

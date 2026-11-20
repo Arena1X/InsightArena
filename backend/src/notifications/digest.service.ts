@@ -7,6 +7,7 @@ import { UserPreferences } from '../users/entities/user-preferences.entity';
 import { User } from '../users/entities/user.entity';
 import { Notification } from './entities/notification.entity';
 import { NotificationDigestState } from './entities/notification-digest-state.entity';
+import { NotificationCategoryPreference } from './entities/notification-category-preference.entity';
 import { EmailService } from './email.service';
 import {
   renderEmailTemplate,
@@ -101,6 +102,8 @@ export class DigestService {
     private readonly notificationRepo: Repository<Notification>,
     @InjectRepository(NotificationDigestState)
     private readonly digestStateRepo: Repository<NotificationDigestState>,
+    @InjectRepository(NotificationCategoryPreference)
+    private readonly categoryPreferencesRepo: Repository<NotificationCategoryPreference>,
     private readonly emailService: EmailService,
     private readonly config: ConfigService,
   ) {}
@@ -159,7 +162,7 @@ export class DigestService {
     hour: number,
   ): Promise<void> {
     const periodKey = this.getLocalDailyPeriodKey(now, timezone);
-    const windowStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const windowStart = this.getPreviousLocalDigestTime(now, timezone, hour, 1);
     this.logger.log(
       `Running daily digest for ${timezone} @ ${hour}:00 local, period ${periodKey}`,
     );
@@ -172,7 +175,7 @@ export class DigestService {
     hour: number,
   ): Promise<void> {
     const periodKey = this.getLocalWeeklyPeriodKey(now, timezone);
-    const windowStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const windowStart = this.getPreviousLocalDigestTime(now, timezone, hour, 7);
     this.logger.log(
       `Running weekly digest for ${timezone} @ ${hour}:00 local, period ${periodKey}`,
     );
@@ -224,7 +227,7 @@ export class DigestService {
     if (lastPeriod === periodKey) return;
 
     // fetch unread notifications created in the window (cap at 20 items)
-    const notifications = await this.notificationRepo.find({
+    const allNotifications = await this.notificationRepo.find({
       where: {
         user_address: user.stellar_address,
         read: false,
@@ -233,6 +236,11 @@ export class DigestService {
       order: { created_at: 'DESC' },
       take: 20,
     });
+
+    const notifications = await this.filterByCategoryEmailPreference(
+      pref.userId,
+      allNotifications,
+    );
 
     // skip users with nothing to report — no email queued, no state written
     if (notifications.length === 0) return;
@@ -266,6 +274,29 @@ export class DigestService {
 
     this.logger.log(
       `Digest sent to ${user.email} (${frequency}, ${periodKey}, ${aggregated.totalUnique} items, ${aggregated.overflowCount} overflow)`,
+    );
+  }
+
+  /**
+   * Drops notifications whose category has email delivery turned off via
+   * per-category preferences. Categories with no stored preference default
+   * to enabled (matches NotificationsService.isCategoryEnabled).
+   */
+  private async filterByCategoryEmailPreference(
+    userId: string,
+    notifications: Notification[],
+  ): Promise<Notification[]> {
+    const categoryPrefs = await this.categoryPreferencesRepo.find({
+      where: { userId },
+    });
+    const emailDisabledCategories = new Set(
+      categoryPrefs.filter((p) => !p.email).map((p) => p.category as string),
+    );
+
+    if (emailDisabledCategories.size === 0) return notifications;
+
+    return notifications.filter(
+      (notification) => !emailDisabledCategories.has(notification.type),
     );
   }
 
@@ -322,6 +353,71 @@ export class DigestService {
       parseInt(parts.find((p) => p.type === type)?.value ?? '0', 10);
 
     return { year: get('year'), month: get('month'), day: get('day') };
+  }
+
+  /**
+   * The instant of `hour`:00 local time, `daysBack` local calendar days before
+   * `date`. Used as the window start so each digest covers exactly the span
+   * since the previous scheduled digest, even across DST transitions (a fixed
+   * 24h/7d offset would be an hour off on those days).
+   */
+  private getPreviousLocalDigestTime(
+    date: Date,
+    timezone: string,
+    hour: number,
+    daysBack: number,
+  ): Date {
+    const { year, month, day } = this.getLocalDateParts(date, timezone);
+    const prev = new Date(Date.UTC(year, month - 1, day - daysBack));
+    return this.localWallTimeToUtc(
+      prev.getUTCFullYear(),
+      prev.getUTCMonth() + 1,
+      prev.getUTCDate(),
+      hour,
+      timezone,
+    );
+  }
+
+  /** The instant at which the local wall clock in `timezone` reads y-m-d hh:00. */
+  private localWallTimeToUtc(
+    year: number,
+    month: number,
+    day: number,
+    hour: number,
+    timezone: string,
+  ): Date {
+    const wallAsUtc = Date.UTC(year, month - 1, day, hour);
+    const offset = this.getTimeZoneOffsetMs(new Date(wallAsUtc), timezone);
+    let utc = wallAsUtc - offset;
+    // Re-check the offset at the candidate instant in case it differs (DST boundary).
+    const corrected = this.getTimeZoneOffsetMs(new Date(utc), timezone);
+    if (corrected !== offset) utc = wallAsUtc - corrected;
+    return new Date(utc);
+  }
+
+  /** The UTC offset of `timezone` at instant `date`, in milliseconds. */
+  private getTimeZoneOffsetMs(date: Date, timezone: string): number {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+    }).formatToParts(date);
+    const get = (type: string) =>
+      parseInt(parts.find((p) => p.type === type)?.value ?? '0', 10);
+    const wallAsUtc = Date.UTC(
+      get('year'),
+      get('month') - 1,
+      get('day'),
+      get('hour'),
+      get('minute'),
+      get('second'),
+    );
+    return wallAsUtc - Math.floor(date.getTime() / 1000) * 1000;
   }
 
   private getLocalDailyPeriodKey(date: Date, timezone: string): string {

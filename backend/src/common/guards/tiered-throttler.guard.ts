@@ -2,9 +2,14 @@ import { ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerStorage } from '@nestjs/throttler';
 import type { ThrottlerModuleOptions } from '@nestjs/throttler/dist/throttler-module-options.interface';
+import type { ThrottlerLimitDetail } from '@nestjs/throttler/dist/throttler.guard.interface';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { THROTTLE_TIER_KEY } from '../decorators/throttle-tier.decorator';
+import {
+  RateLimitHeaderResponse,
+  setRateLimitHeaders,
+} from '../rate-limit-headers.util';
 
 @Injectable()
 export class TieredThrottlerGuard extends ThrottlerGuard {
@@ -63,6 +68,21 @@ export class TieredThrottlerGuard extends ThrottlerGuard {
       ? `user:${userId}`
       : (req.ip ?? req.socket?.remoteAddress ?? 'unknown');
     return `throttle:${name}:${tracker}:${suffix}`;
+  }
+
+  protected override async throwThrottlingException(
+    context: ExecutionContext,
+    throttlerLimitDetail: ThrottlerLimitDetail,
+  ): Promise<void> {
+    const { res } = this.getRequestResponse(context);
+    setRateLimitHeaders(res as RateLimitHeaderResponse, {
+      limit: throttlerLimitDetail.limit,
+      remaining: 0,
+      resetSeconds: throttlerLimitDetail.timeToExpire,
+      retryAfterSeconds: throttlerLimitDetail.timeToBlockExpire,
+    });
+
+    await super.throwThrottlingException(context, throttlerLimitDetail);
   }
 
   private extractUserId(req: Record<string, any>): string | null {

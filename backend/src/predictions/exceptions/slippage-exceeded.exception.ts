@@ -11,7 +11,8 @@ export class SlippageExceededException extends HttpException {
       {
         success: false,
         error: {
-          code: HttpStatus.CONFLICT,
+          code: 'SLIPPAGE_EXCEEDED',
+          statusCode: HttpStatus.CONFLICT,
           message: 'Slippage tolerance exceeded',
           details: {
             expectedPrice,

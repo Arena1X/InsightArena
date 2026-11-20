@@ -107,7 +107,9 @@ export class FlagsController {
 
   @Patch(':id/resolve')
   @Roles(Role.Admin)
-  @ApiOperation({ summary: 'Resolve a flag with an action and reason (Admin only)' })
+  @ApiOperation({
+    summary: 'Resolve a flag with an action and reason (Admin only)',
+  })
   @ApiResponse({
     status: 200,
     description: 'Flag resolved successfully',
@@ -124,4 +126,3 @@ export class FlagsController {
     return this.flagsService.resolveFlag(id, resolveFlagDto, user.id);
   }
 }
-

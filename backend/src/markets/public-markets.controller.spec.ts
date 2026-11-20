@@ -28,6 +28,7 @@ describe('PublicMarketsController', () => {
     proposed_outcome: null,
     resolution_proposed_at: null,
     grace_period_seconds: 86400,
+    settlement_attempt_count: 0,
     total_pool_stroops: '1000',
     participant_count: 2,
     featured_at: null,
