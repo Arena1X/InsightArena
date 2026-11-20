@@ -1,9 +1,10 @@
 use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{symbol_short, Address, BytesN, Env, IntoVal, Map, Symbol, Vec};
+use soroban_sdk::{symbol_short, token, Address, BytesN, Env, IntoVal, Map, Symbol, Vec};
 
 use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::escrow;
+use crate::invite;
 use crate::market;
 use crate::season;
 use crate::storage_types::{DataKey, Market, Prediction, UserProfile, BatchPredictionRequest, CommitmentPrediction};
@@ -235,6 +236,27 @@ fn emit_batch_payout_complete(env: &Env, market_id: u64, caller: &Address, proce
     );
 }
 
+/// Calculate payout breakdown for a single winner ensuring value conservation.
+///
+/// This function computes the payout components using checked arithmetic
+/// throughout to prevent overflow and ensure that the sum of all payouts  
+/// plus fees equals the pool within rounding tolerance.
+///
+/// # Arguments
+/// * `stake_amount` - The winner's original stake
+/// * `winning_pool` - Total stakes on the winning outcome
+/// * `loser_pool` - Total stakes on losing outcomes
+/// * `protocol_fee_bps` - Protocol fee in basis points (1/10000)
+/// * `creator_fee_bps` - Creator fee in basis points (1/10000)
+///
+/// # Returns
+/// `(net_payout, protocol_fee, creator_fee)` - All amounts in stroops
+///
+/// # Value Conservation
+/// Due to integer division rounding, individual payouts may differ by ±1 stroop
+/// from the theoretical proportional share. However, the sum of all net_payouts
+/// plus all fees across all winners will equal `loser_pool` within a tolerance
+/// of ±N stroops where N is the number of winners (one rounding error per winner).
 fn compute_payout_breakdown(
     stake_amount: i128,
     winning_pool: i128,
@@ -427,23 +449,7 @@ fn do_submit_prediction(
         return Err(InsightArenaError::InvalidOutcome);
     }
 
-    if !market.is_public {
-        let allowlist: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::MarketAllowlist(market_id))
-            .unwrap_or_else(|| Vec::new(env));
-
-        if !allowlist.iter().any(|entry| entry == predictor) {
-            return Err(InsightArenaError::Unauthorized);
-        }
-
-        env.storage().persistent().extend_ttl(
-            &DataKey::MarketAllowlist(market_id),
-            PERSISTENT_THRESHOLD,
-            PERSISTENT_BUMP,
-        );
-    }
+    invite::validate_market_access(env, &market, &predictor)?;
 
     // ── Guard 5 & 6: stake_amount must be within effective [min, max] ─────────
     // Per-market non-zero bounds override the global Config bounds.
@@ -553,7 +559,7 @@ pub fn commit_prediction(
     predictor: Address,
     market_id: u64,
     commitment_hash: BytesN<32>,
-    reveal_delay_seconds: u64,
+    _reveal_delay_seconds: u64,
 ) -> Result<(), InsightArenaError> {
     config::ensure_not_paused(env)?;
 
@@ -571,6 +577,8 @@ pub fn commit_prediction(
     if now >= market.end_time {
         return Err(InsightArenaError::MarketExpired);
     }
+
+    invite::validate_market_access(env, &market, &predictor)?;
 
     let commitment_key = DataKey::CommitmentPrediction(market_id, predictor.clone());
     if env.storage().persistent().has(&commitment_key) {
@@ -632,6 +640,8 @@ pub fn reveal_prediction(
     if !outcome_valid {
         return Err(InsightArenaError::InvalidOutcome);
     }
+
+    invite::validate_market_access(env, &market, &predictor)?;
 
     // Stake bounds must be resolved the same way as every other submission
     // path: per-market non-zero bounds override, zero inherits the global
@@ -792,23 +802,7 @@ fn do_submit_prediction_via_allowance(
         return Err(InsightArenaError::InvalidOutcome);
     }
 
-    if !market.is_public {
-        let allowlist: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::MarketAllowlist(market_id))
-            .unwrap_or_else(|| Vec::new(env));
-
-        if !allowlist.iter().any(|entry| entry == predictor) {
-            return Err(InsightArenaError::Unauthorized);
-        }
-
-        env.storage().persistent().extend_ttl(
-            &DataKey::MarketAllowlist(market_id),
-            PERSISTENT_THRESHOLD,
-            PERSISTENT_BUMP,
-        );
-    }
+    invite::validate_market_access(env, &market, &predictor)?;
 
     // ── Guard 5 & 6: stake_amount must be within effective [min, max] ─────────
     // Per-market non-zero bounds override the global Config bounds, matching
@@ -825,6 +819,24 @@ fn do_submit_prediction_via_allowance(
     let prediction_key = DataKey::Prediction(market_id, predictor.clone());
     if env.storage().persistent().has(&prediction_key) {
         return Err(InsightArenaError::AlreadyPredicted);
+    }
+
+    // ── Guard 7: allowance must cover the full stake before any state is written ──
+    // Read the current allowance the predictor has granted to this contract and
+    // fail fast with InsufficientFunds if it is smaller than the requested stake.
+    // This must come before every state mutation (Prediction record, pool totals,
+    // participant count, UserProfile) so that a reverted call leaves no partial
+    // state behind. The error enum is at its 50-case XDR cap; InsufficientFunds
+    // is the canonical reuse for insufficient-balance/allowance situations (see
+    // errors.rs). escrow::lock_stake_via_allowance carries the same check as
+    // defense-in-depth, but having it here makes the contract's intent explicit.
+    {
+        let cfg = config::get_config(env)?;
+        let contract = env.current_contract_address();
+        let token_client = token::Client::new(env, &cfg.xlm_token);
+        if token_client.allowance(&predictor, &contract) < stake_amount {
+            return Err(InsightArenaError::InsufficientFunds);
+        }
     }
 
     escrow::lock_stake_via_allowance(env, &predictor, stake_amount)?;
@@ -1142,6 +1154,12 @@ pub fn list_market_predictions(env: &Env, market_id: u64) -> Vec<Prediction> {
 /// Claim the payout for a previously submitted winning prediction.
 ///
 /// Returns the net payout amount transferred to the predictor.
+///
+/// # Value Conservation
+/// Payouts are calculated to ensure that the sum of all payouts plus fees
+/// equals the market's total pool within a rounding tolerance of ±N stroops,
+/// where N is the number of winners. This tolerance arises from integer
+/// division when computing proportional shares.
 pub fn claim_payout(
     env: &Env,
     predictor: Address,
@@ -1187,6 +1205,7 @@ pub fn claim_payout(
         .get(&DataKey::PredictorList(market_id))
         .unwrap_or_else(|| Vec::new(env));
 
+    // Calculate winning pool with checked arithmetic
     let mut winning_pool: i128 = 0;
     for address in predictors.iter() {
         let key = DataKey::Prediction(market_id, address.clone());
@@ -1208,42 +1227,22 @@ pub fn claim_payout(
         return Err(InsightArenaError::EscrowEmpty);
     }
 
+    // Calculate loser pool with checked arithmetic
     let loser_pool = market
         .total_pool
         .checked_sub(winning_pool)
         .ok_or(InsightArenaError::Overflow)?;
 
-    let winner_share = prediction
-        .stake_amount
-        .checked_mul(loser_pool)
-        .ok_or(InsightArenaError::Overflow)?
-        .checked_div(winning_pool)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    let gross_payout = prediction
-        .stake_amount
-        .checked_add(winner_share)
-        .ok_or(InsightArenaError::Overflow)?;
-
     let cfg = config::get_config(env)?;
 
-    let protocol_fee = gross_payout
-        .checked_mul(cfg.protocol_fee_bps as i128)
-        .ok_or(InsightArenaError::Overflow)?
-        .checked_div(10_000)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    let creator_fee = gross_payout
-        .checked_mul(market.creator_fee_bps as i128)
-        .ok_or(InsightArenaError::Overflow)?
-        .checked_div(10_000)
-        .ok_or(InsightArenaError::Overflow)?;
-
-    let net_payout = gross_payout
-        .checked_sub(protocol_fee)
-        .ok_or(InsightArenaError::Overflow)?
-        .checked_sub(creator_fee)
-        .ok_or(InsightArenaError::Overflow)?;
+    // Use the value-conserving payout breakdown function
+    let (net_payout, protocol_fee, creator_fee) = compute_payout_breakdown(
+        prediction.stake_amount,
+        winning_pool,
+        loser_pool,
+        cfg.protocol_fee_bps,
+        market.creator_fee_bps,
+    )?;
 
     prediction.payout_claimed = true;
     prediction.payout_amount = net_payout;

@@ -85,6 +85,18 @@ class EnvironmentVariables {
   @Min(0)
   SOROBAN_RPC_MAX_RETRIES?: number;
 
+  /** Default: 10000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(100)
+  SOROBAN_FALLBACK_FEE_STROOPS?: number;
+
+  /** Default: 1000000 */
+  @IsOptional()
+  @IsNumber()
+  @Min(100)
+  SOROBAN_MAX_FEE_STROOPS?: number;
+
   /** Default: true */
   @IsOptional()
   @IsBooleanString()
@@ -101,6 +113,23 @@ class EnvironmentVariables {
   @IsNumber()
   @Min(1)
   RECONCILE_WINDOW?: number;
+
+  /** Default: true — hourly dispute chain ID reconciliation */
+  @IsOptional()
+  @IsBooleanString()
+  DISPUTE_CHAIN_RECONCILE_ENABLED?: string;
+
+  /** Default: 50 — markets read from chain per reconciliation batch */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  DISPUTE_CHAIN_RECONCILE_BATCH_SIZE?: number;
+
+  /** Default: 10 — ledgers to rewind the checkpoint on a detected chain reorg */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  INDEXER_REORG_ROLLBACK_DEPTH?: number;
 
   /** Default: ./exports */
   @IsOptional()

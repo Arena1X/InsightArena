@@ -90,4 +90,48 @@ describe("useOptimisticPrediction", () => {
       expect.objectContaining({ marketId: "market-1", amount: 42, outcome: "yes" }),
     ]);
   });
+
+  it("finalizes a prediction as confirmed once its transaction is confirmed on-chain, without rolling back", async () => {
+    vi.useFakeTimers();
+    const confirmedPoll = vi.fn().mockResolvedValue("confirmed" as const);
+    const onSubmit = vi.fn().mockResolvedValueOnce({
+      id: "prediction-1",
+      transaction: { hash: "hash-1", pollFn: confirmedPoll },
+    });
+
+    const { result } = renderHook(
+      () => ({
+        optimistic: useOptimisticPrediction({ onSubmit }),
+        slip: usePredictionSlip(),
+      }),
+      { wrapper: Wrapper },
+    );
+
+    act(() => {
+      result.current.slip.addItem({
+        marketId: "market-2",
+        marketTitle: "Will it snow?",
+        category: "weather",
+        outcome: "no",
+        odds: 2.1,
+      });
+      result.current.slip.updateAmount("market-2", 10);
+    });
+
+    await act(async () => {
+      await result.current.optimistic.addOptimisticPrediction("market-2", 10, "no");
+    });
+    expect(result.current.optimistic.predictions).toEqual([
+      expect.objectContaining({ id: "prediction-1", status: "pending", amount: 10 }),
+    ]);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+
+    expect(result.current.optimistic.predictions).toEqual([
+      expect.objectContaining({ id: "prediction-1", status: "confirmed", amount: 10 }),
+    ]);
+    expect(result.current.optimistic.lastRollback).toBeNull();
+  });
 });

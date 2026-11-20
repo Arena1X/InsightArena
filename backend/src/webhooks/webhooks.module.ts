@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
+import { AuthModule } from '../auth/auth.module';
+import { ApiKeyGuard } from '../common/guards/api-key.guard';
 import { WebhookEndpoint } from './entities/webhook-endpoint.entity';
 import { WebhookDeliveryLog } from './entities/webhook-delivery-log.entity';
 import { WebhookProcessedEvent } from './entities/webhook-processed-event.entity';
@@ -20,6 +22,7 @@ import { WebhookSignatureGuard } from './guards/webhook-signature.guard';
       WebhookProcessedEvent,
     ]),
     HttpModule,
+    AuthModule,
   ],
   controllers: [WebhooksController, WebhookReceiverController],
   providers: [
@@ -28,6 +31,7 @@ import { WebhookSignatureGuard } from './guards/webhook-signature.guard';
     WebhookCronService,
     WebhookSignatureService,
     WebhookSignatureGuard,
+    ApiKeyGuard,
   ],
   exports: [WebhookDispatcherService],
 })

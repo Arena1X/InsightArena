@@ -1,8 +1,6 @@
 import { MigrationInterface, QueryRunner, TableColumn } from 'typeorm';
 
-export class AddDisputeStatusToMatches1787800000000
-  implements MigrationInterface
-{
+export class AddDisputeStatusToMatches1787800000000 implements MigrationInterface {
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.addColumn(
       'event_matches',

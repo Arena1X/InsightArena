@@ -1,7 +1,7 @@
-use crate::config;
+use crate::config::{self, PERSISTENT_BUMP, PERSISTENT_THRESHOLD};
 use crate::errors::InsightArenaError;
 use crate::market;
-use crate::storage_types::{DataKey, InviteCode, InviteCodeInfo};
+use crate::storage_types::{DataKey, InviteCode, InviteCodeInfo, Market};
 
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{symbol_short, Address, Env, IntoVal, Symbol, Val, Vec};
@@ -218,3 +218,73 @@ pub fn revoke_invite_code(
 
     Ok(())
 }
+
+/// Validate whether an address is authorized to participate in a market.
+///
+/// Access rules:
+/// 1. Public markets (`market.is_public == true`) ignore invite gating; any address can participate.
+/// 2. Private markets (`market.is_public == false`) restrict participation strictly to
+///    invited/authorized addresses present in `DataKey::MarketAllowlist(market.id)`.
+///    Uninvited addresses are rejected with `InsightArenaError::Unauthorized`.
+///
+/// On success for a private market, the allowlist's persistent storage TTL is bumped.
+pub fn validate_market_access(
+    env: &Env,
+    market: &Market,
+    participant: &Address,
+) -> Result<(), InsightArenaError> {
+    if market.is_public {
+        return Ok(());
+    }
+
+    let allowlist_key = DataKey::MarketAllowlist(market.market_id);
+    let allowlist: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&allowlist_key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    if !allowlist.iter().any(|entry| &entry == participant) {
+        return Err(InsightArenaError::Unauthorized);
+    }
+
+    env.storage().persistent().extend_ttl(
+        &allowlist_key,
+        PERSISTENT_THRESHOLD,
+        PERSISTENT_BUMP,
+    );
+
+    Ok(())
+}
+
+/// Convenience check for market access by market ID.
+pub fn check_market_access(
+    env: &Env,
+    market_id: u64,
+    participant: &Address,
+) -> Result<(), InsightArenaError> {
+    let market = market::get_market(env, market_id)?;
+    validate_market_access(env, &market, participant)
+}
+
+/// Query whether an address is an authorized participant in a market (read-only).
+pub fn is_participant_authorized(
+    env: &Env,
+    market_id: u64,
+    participant: &Address,
+) -> Result<bool, InsightArenaError> {
+    let market = market::get_market(env, market_id)?;
+    if market.is_public {
+        return Ok(true);
+    }
+
+    let allowlist_key = DataKey::MarketAllowlist(market_id);
+    let allowlist: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&allowlist_key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    Ok(allowlist.iter().any(|entry| &entry == participant))
+}
+

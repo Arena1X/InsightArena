@@ -70,3 +70,32 @@ jobs:
 
       - name: WASM Build
         run: cargo build --target wasm32-unknown-unknown --release
+
+  staking-vault:
+    name: Build, Lint, and Test staking-vault
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: contracts/staking-vault
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "contracts/staking-vault -> target"
+
+      - name: Unit Tests
+        run: cargo test
+
+      - name: WASM Build
+        run: cargo build --target wasm32-unknown-unknown --release

@@ -20,6 +20,7 @@ import { UserFlag } from './entities/user-flag.entity';
 import { VerifiedAddress } from './entities/verified-address.entity';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
+import { AdminAuditLogSubscriber } from './subscribers/admin-audit-log.subscriber';
 
 @Module({
   imports: [
@@ -45,7 +46,7 @@ import { AdminService } from './admin.service';
     CacheModule.register(),
   ],
   controllers: [AdminController],
-  providers: [AdminService],
+  providers: [AdminService, AdminAuditLogSubscriber],
   exports: [AdminService],
 })
 export class AdminModule {}

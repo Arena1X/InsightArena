@@ -30,6 +30,16 @@ export class SubmitPredictionDto {
   @IsNumberString()
   stake_amount_stroops: string;
 
+  @ApiProperty({
+    description:
+      'Client-supplied idempotency key (UUID4 format) unique per (user, market). Used to prevent duplicate submissions and enable safe retries. Same key with same market_id returns the existing prediction.',
+    example: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+  })
+  @IsUUID('4', {
+    message: 'clientIdempotencyKey must be a valid UUID4',
+  })
+  clientIdempotencyKey: string;
+
   @ApiPropertyOptional({
     description:
       'Maximum acceptable price per share. If actual price exceeds this, prediction is rejected with SlippageExceededException. Optional slippage protection.',

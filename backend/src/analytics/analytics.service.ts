@@ -40,6 +40,49 @@ export function accuracyRateFromUser(user: User): string {
   return ((user.correct_predictions / user.total_predictions) * 100).toFixed(1);
 }
 
+export interface TimeBucket<T = any> {
+  bucket_start: Date;
+  bucket_end: Date;
+  count: number;
+  total_value: number;
+  events: T[];
+}
+
+export interface TimeBucketAggregationResult<T = any> {
+  buckets: TimeBucket<T>[];
+  total_count: number;
+  total_value: number;
+  interval_ms: number;
+  from: Date;
+  to: Date;
+}
+
+export interface TimeBucketAggregationOptions {
+  from: Date;
+  to: Date;
+  interval?: 'hour' | 'day' | 'week' | 'month' | string;
+  intervalMs?: number;
+  fillEmptyBuckets?: boolean;
+  timestampField?: string;
+  valueField?: string;
+}
+
+export function parseIntervalToMs(interval?: string | number): number {
+  if (typeof interval === 'number' && interval > 0) return interval;
+  if (!interval) return 3600_000;
+  const str = String(interval).toLowerCase().trim();
+  if (str === 'hour' || str === '1h' || str === '1hour' || str === 'hourly')
+    return 3600_000;
+  if (str === 'day' || str === '1d' || str === '1day' || str === 'daily')
+    return 86400_000;
+  if (str === 'week' || str === '1w' || str === '1week' || str === 'weekly')
+    return 7 * 86400_000;
+  if (str === 'month' || str === '1m' || str === '1month' || str === 'monthly')
+    return 30 * 86400_000;
+  const parsed = parseInt(str, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 3600_000;
+}
+
 @Injectable()
 export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name);
@@ -101,7 +144,17 @@ export class AnalyticsService {
     return this.activityLogsRepository.save(log);
   }
 
+  /**
+   * Cached per-user (short TTL, since rank/streak change with live activity)
+   * since this fans out into several queries over predictions/leaderboard.
+   */
   async getDashboardKPIs(user: User): Promise<DashboardKpisDto> {
+    return this.cacheService.getOrSet('analytics:dashboard', user.id, () =>
+      this.computeDashboardKPIs(user),
+    );
+  }
+
+  private async computeDashboardKPIs(user: User): Promise<DashboardKpisDto> {
     const fullUser = await this.usersRepository.findOne({
       where: { id: user.id },
     });
@@ -163,9 +216,18 @@ export class AnalyticsService {
   }
 
   /**
-   * Get market analytics: pool size, participant count, outcome distribution, and time remaining
+   * Get market analytics: pool size, participant count, outcome distribution, and time remaining.
+   * Cached per market id (short TTL, since pool/participant counts move with live predictions).
    */
   async getMarketAnalytics(marketId: string): Promise<MarketAnalyticsDto> {
+    return this.cacheService.getOrSet('analytics:market', marketId, () =>
+      this.computeMarketAnalytics(marketId),
+    );
+  }
+
+  private async computeMarketAnalytics(
+    marketId: string,
+  ): Promise<MarketAnalyticsDto> {
     const market = await this.marketsRepository.findOne({
       where: [{ id: marketId }, { on_chain_market_id: marketId }],
     });
@@ -223,13 +285,29 @@ export class AnalyticsService {
   }
 
   /**
-   * Get historical data for a market: prediction volume, pool size, participant growth over time
+   * Get historical data for a market: prediction volume, pool size, participant growth over time.
+   * Cached per (market, from, to, interval) combination — short TTL, since new
+   * snapshots land periodically via recordMarketSnapshot.
    */
   async getMarketHistory(
     marketId: string,
     from: Date,
     to: Date,
     interval?: string, // TODO: Implement interval-based aggregation
+  ): Promise<MarketHistoryResponseDto> {
+    const cacheKey = `${marketId}:${from.toISOString()}:${to.toISOString()}:${interval ?? ''}`;
+    return this.cacheService.getOrSet(
+      'analytics:market-history',
+      cacheKey,
+      () => this.computeMarketHistory(marketId, from, to, interval),
+    );
+  }
+
+  private async computeMarketHistory(
+    marketId: string,
+    from: Date,
+    to: Date,
+    interval?: string,
   ): Promise<MarketHistoryResponseDto> {
     const clampedRange = clampAnalyticsDateRange(from, to);
     from = clampedRange.from;
@@ -260,6 +338,33 @@ export class AnalyticsService {
 
     const history = await qb.getMany();
 
+    if (interval && history.length > 0) {
+      const bucketResult = this.aggregateEventsByTimeBucket(history, {
+        from,
+        to,
+        interval,
+        timestampField: 'recorded_at',
+      });
+
+      return {
+        market_id: market.id,
+        title: market.title,
+        history: bucketResult.buckets.map((b) => {
+          const lastEvent = b.events[b.events.length - 1];
+          return {
+            timestamp: b.bucket_start,
+            prediction_volume: b.count,
+            pool_size_stroops: lastEvent?.pool_size_stroops ?? '0',
+            participant_count: lastEvent?.participant_count ?? 0,
+            outcome_probabilities: lastEvent?.outcome_probabilities
+              ? lastEvent.outcome_probabilities.map((p) => parseFloat(p))
+              : null,
+          };
+        }),
+        generated_at: new Date(),
+      };
+    }
+
     return {
       market_id: market.id,
       title: market.title,
@@ -273,6 +378,111 @@ export class AnalyticsService {
           : null,
       })),
       generated_at: new Date(),
+    };
+  }
+
+  /**
+   * Aggregates events into time buckets according to a documented half-open interval:
+   * [bucket_start, bucket_end) — inclusive of bucket_start, exclusive of bucket_end.
+   *
+   * Guarantees:
+   * 1. Every event within [from, to) is assigned to exactly one bucket.
+   * 2. Edge-timestamp events on bucket boundaries land in the bucket where timestamp === bucket_start
+   *    and never double-count in the adjacent bucket where timestamp === bucket_end.
+   * 3. Total sum of bucket event counts/values strictly equals the ungrouped total for the window.
+   * 4. Empty buckets are represented with count = 0 and total_value = 0 to maintain continuity.
+   */
+  aggregateEventsByTimeBucket<T extends Record<string, any>>(
+    events: T[],
+    options: TimeBucketAggregationOptions,
+  ): TimeBucketAggregationResult<T> {
+    const { from, to, timestampField, valueField, fillEmptyBuckets = true } =
+      options;
+    const intervalMs =
+      options.intervalMs ?? parseIntervalToMs(options.interval);
+
+    const startMs = from.getTime();
+    const endMs = to.getTime();
+
+    if (endMs <= startMs || intervalMs <= 0) {
+      return {
+        buckets: [],
+        total_count: 0,
+        total_value: 0,
+        interval_ms: intervalMs,
+        from,
+        to,
+      };
+    }
+
+    const numBuckets = Math.ceil((endMs - startMs) / intervalMs);
+    const buckets: TimeBucket<T>[] = [];
+
+    for (let i = 0; i < numBuckets; i++) {
+      const bStartMs = startMs + i * intervalMs;
+      const bEndMs = bStartMs + intervalMs;
+      buckets.push({
+        bucket_start: new Date(bStartMs),
+        bucket_end: new Date(bEndMs),
+        count: 0,
+        total_value: 0,
+        events: [],
+      });
+    }
+
+    let totalCount = 0;
+    let totalValue = 0;
+
+    for (const event of events) {
+      const rawTimestamp =
+        (timestampField ? event[timestampField] : undefined) ??
+        event.timestamp ??
+        event.recorded_at ??
+        event.created_at ??
+        event.submitted_at ??
+        event.date;
+
+      if (!rawTimestamp) continue;
+
+      const t = new Date(rawTimestamp).getTime();
+
+      // Check if event is within the overall half-open window [from, to)
+      if (t < startMs || t >= endMs) {
+        continue;
+      }
+
+      // Assign to exactly one bucket using half-open interval [bStart, bEnd)
+      const bucketIndex = Math.floor((t - startMs) / intervalMs);
+      if (bucketIndex >= 0 && bucketIndex < numBuckets) {
+        const bucket = buckets[bucketIndex];
+        const rawVal = valueField
+          ? event[valueField]
+          : event.value ?? event.amount ?? 1;
+        const val =
+          typeof rawVal === 'number' && Number.isFinite(rawVal)
+            ? rawVal
+            : Number(rawVal) || 0;
+
+        bucket.count++;
+        bucket.total_value += val;
+        bucket.events.push(event);
+
+        totalCount++;
+        totalValue += val;
+      }
+    }
+
+    const finalBuckets = fillEmptyBuckets
+      ? buckets
+      : buckets.filter((b) => b.count > 0);
+
+    return {
+      buckets: finalBuckets,
+      total_count: totalCount,
+      total_value: totalValue,
+      interval_ms: intervalMs,
+      from,
+      to,
     };
   }
 
@@ -312,11 +522,24 @@ export class AnalyticsService {
   }
 
   /**
-   * Get user performance trends over time
+   * Get user performance trends over time.
+   * Cached per (address, days) combination — short TTL, since a new
+   * prediction or resolution shifts the trend.
    */
   async getUserTrends(
     address: string,
     days: number = 30,
+  ): Promise<UserTrendsDto> {
+    return this.cacheService.getOrSet(
+      'analytics:user-trends',
+      `${address}:${days}`,
+      () => this.computeUserTrends(address, days),
+    );
+  }
+
+  private async computeUserTrends(
+    address: string,
+    days: number,
   ): Promise<UserTrendsDto> {
     const validDays = Math.min(Math.max(days || 30, 1), 90);
 
@@ -761,5 +984,55 @@ export class AnalyticsService {
       active_users,
       active_markets,
     };
+  }
+
+  /**
+   * Invalidate cached aggregates that go stale the moment a market
+   * resolves, rather than waiting out their TTL:
+   * - this market's own analytics (looked up by either id, since callers
+   *   may key `getMarketAnalytics`/`getMarketHistory` by either one),
+   * - category analytics and platform stats, since resolution changes
+   *   active/resolved market counts,
+   * - the dashboard KPIs of every affected predictor, since resolution can
+   *   flip their streak/tier.
+   *
+   * `getMarketHistory` and `getUserTrends` are keyed by (id, date-range)
+   * and (address, days) respectively — an unbounded set of parameter
+   * combinations that can't be enumerated here, so those two are left to
+   * expire on their own short TTL instead.
+   *
+   * Called from write paths that resolve a market (e.g. admin resolution).
+   * Best-effort: failures are logged, not thrown, so a cache hiccup never
+   * blocks the write it's attached to.
+   */
+  async invalidateMarketResolutionCaches(
+    marketId: string,
+    onChainMarketId: string | null | undefined,
+    affectedUserIds: string[] = [],
+  ): Promise<void> {
+    const marketKeys = new Set([marketId]);
+    if (onChainMarketId) {
+      marketKeys.add(onChainMarketId);
+    }
+
+    const tasks = [
+      ...Array.from(marketKeys).map((key) =>
+        this.cacheService.invalidate('analytics:market', key),
+      ),
+      this.cacheService.invalidate('analytics:category', 'all'),
+      this.cacheService.invalidate('analytics:platform-stats', 'all'),
+      ...affectedUserIds.map((userId) =>
+        this.cacheService.invalidate('analytics:dashboard', userId),
+      ),
+    ];
+
+    const results = await Promise.allSettled(tasks);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        this.logger.warn(
+          `Cache invalidation failed after market resolution: ${result.reason}`,
+        );
+      }
+    }
   }
 }

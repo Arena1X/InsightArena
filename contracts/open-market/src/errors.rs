@@ -42,6 +42,9 @@ pub enum InsightArenaError {
     MarketNotResolved = 12,
     /// The current ledger timestamp is past `end_time`.
     /// Raised when a prediction submission arrives after the market has closed.
+    /// REUSED for AMM swap deadline protection: also raised by
+    /// `liquidity::swap_outcome` when the caller-supplied `deadline` has
+    /// already passed (reserves may have moved since the trade was signed).
     MarketExpired = 13,
     /// The current ledger timestamp is before `start_time`.
     /// Raised when a prediction submission arrives before the market opens.
@@ -218,5 +221,9 @@ pub enum InsightArenaError {
     /// - Withdrawal attempted after market lock time (MarketExpired not applicable pre-lock)
     /// - Withdrawal amount is zero or invalid
     /// - Withdrawal amount exceeds user's current stake
+    /// REUSED for dispute resolution guards:
+    /// - A dispute has already been resolved and cannot be settled again
+    ///   (prevents double-refund or double-slash in resolve_dispute/finalize_arbiter_vote)
+    /// - Attempted to slash a bond that has already been slashed or refunded
     ZeroShareTransfer = 112,
 }

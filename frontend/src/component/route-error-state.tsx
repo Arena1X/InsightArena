@@ -1,10 +1,15 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useTransition } from "react";
 import Link from "next/link";
-import { AlertTriangle, Home, RefreshCcw } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { AlertTriangle, Bug, Home, RefreshCcw } from "lucide-react";
 
+import { AppNotFound, isNotFoundError } from "@/component/app-not-found";
+import { classifyError } from "@/component/error-classifier";
 import { Button } from "@/component/ui/button";
+
+const ISSUE_TRACKER_URL = "https://github.com/Arena1X/InsightArena/issues/new";
 
 type RouteErrorStateProps = {
   error: Error & { digest?: string };
@@ -14,6 +19,31 @@ type RouteErrorStateProps = {
   fullScreen?: boolean;
 };
 
+/** Builds a "new issue" link prefilled with the route and error digest. */
+export function buildErrorReportUrl({
+  routeLabel,
+  error,
+}: {
+  routeLabel: string;
+  error: Error & { digest?: string };
+}): string {
+  const reference = error.digest ?? "unavailable";
+  const params = new URLSearchParams({
+    title: `[Bug] ${routeLabel} route error (${reference})`,
+    body: [
+      `**Route:** ${routeLabel}`,
+      `**Error digest:** ${reference}`,
+      typeof window !== "undefined" ? `**URL:** ${window.location.href}` : null,
+      "",
+      "**What were you doing when this happened?**",
+      "",
+    ]
+      .filter((line) => line !== null)
+      .join("\n"),
+  });
+  return `${ISSUE_TRACKER_URL}?${params.toString()}`;
+}
+
 export function RouteErrorState({
   error,
   reset,
@@ -21,13 +51,33 @@ export function RouteErrorState({
   description,
   fullScreen = true,
 }: RouteErrorStateProps) {
+  const router = useRouter();
+  const [isRetrying, startTransition] = useTransition();
+  const notFound = isNotFoundError(error);
+  const classified = classifyError(error);
+
   useEffect(() => {
+    if (notFound) return;
     console.error(`[Route Error Boundary] ${routeLabel}`, {
       message: error.message,
       digest: error.digest,
       error,
     });
-  }, [error, routeLabel]);
+  }, [error, routeLabel, notFound]);
+
+  // Re-run the failed segment's server loader in place: refresh() re-fetches
+  // the RSC payload and reset() re-renders the boundary's children, without a
+  // full page reload.
+  const handleRetry = () => {
+    startTransition(() => {
+      router.refresh();
+      reset();
+    });
+  };
+
+  if (notFound) {
+    return <AppNotFound compact={!fullScreen} />;
+  }
 
   return (
     <section className="dark relative overflow-hidden rounded-[2rem] border border-white/10 bg-[#171d2d] text-white shadow-[0_25px_80px_rgba(1,6,20,0.45)]">
@@ -44,23 +94,29 @@ export function RouteErrorState({
           </div>
 
           <p className="mt-6 text-xs font-semibold uppercase tracking-[0.3em] text-[#43c3be]">
-            Something Went Wrong
+            {classified.headline}
           </p>
           <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
             {routeLabel} hit an unexpected problem
           </h1>
           <p className="mt-4 text-sm leading-7 text-[#97a0b5] sm:text-base">
-            {description}
+            {classified.detail}
           </p>
+          {description && classified.errorClass === "unknown" ? (
+            <p className="mt-2 text-xs leading-6 text-[#6f7891]">
+              {description}
+            </p>
+          ) : null}
 
           <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
             <Button
               type="button"
-              onClick={reset}
+              onClick={handleRetry}
+              disabled={isRetrying}
               className="h-11 rounded-xl bg-[#2f9e9d] px-6 text-sm font-semibold text-white hover:bg-[#38adaa]"
             >
-              <RefreshCcw className="h-4 w-4" />
-              Try again
+              <RefreshCcw className={`h-4 w-4 ${isRetrying ? "animate-spin" : ""}`} />
+              {isRetrying ? "Retrying…" : "Try again"}
             </Button>
             <Button
               asChild
@@ -73,6 +129,16 @@ export function RouteErrorState({
               </Link>
             </Button>
           </div>
+
+          <a
+            href={buildErrorReportUrl({ routeLabel, error })}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-[#43c3be] hover:text-[#5fd6d1]"
+          >
+            <Bug className="h-4 w-4" />
+            Report issue
+          </a>
 
           {error.digest ? (
             <p className="mt-6 text-xs text-[#6f7891]">

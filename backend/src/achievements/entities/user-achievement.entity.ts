@@ -19,6 +19,12 @@ export class UserAchievement {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ type: 'uuid' })
+  userId: string;
+
+  @Column({ type: 'uuid' })
+  achievementId: string;
+
   @ManyToOne(() => User, { onDelete: 'CASCADE', eager: false })
   @JoinColumn({ name: 'userId' })
   user: User;

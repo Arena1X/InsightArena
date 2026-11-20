@@ -8,7 +8,9 @@ import {
 describe('check-migration-timestamps', () => {
   it('extracts the numeric prefix from migration filenames', () => {
     expect(
-      extractMigrationTimestamp('1775000000000-CreateLeaderboardHistoryTable.ts'),
+      extractMigrationTimestamp(
+        '1775000000000-CreateLeaderboardHistoryTable.ts',
+      ),
     ).toBe('1775000000000');
     expect(extractMigrationTimestamp('invalid-name.ts')).toBeNull();
   });
@@ -38,9 +40,7 @@ describe('check-migration-timestamps', () => {
       '/migrations/1775000000000-AddPredictionNoteColumn.ts',
     ];
 
-    expect(
-      findCollisionsForChangedFiles(allFiles, []).size,
-    ).toBe(0);
+    expect(findCollisionsForChangedFiles(allFiles, []).size).toBe(0);
 
     const collisions = findCollisionsForChangedFiles(allFiles, [
       '/migrations/1775000000000-AddPredictionNoteColumn.ts',

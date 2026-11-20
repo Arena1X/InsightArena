@@ -1,13 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useWallet } from "@/context/WalletContext";
 import {
   claimRewardItem,
   claimRewards,
   getRewardItems,
   getRewardsSummary,
+  sortRewardItems,
+  toggleRewardSort,
+  DEFAULT_REWARD_SORT,
   type RewardItem,
+  type RewardSortKey,
+  type RewardSortState,
   type RewardsSummary,
 } from "@/lib/rewards";
 import { logHookError } from "./useHookErrorMessage";
@@ -42,6 +47,11 @@ export interface UseRewardsReturn {
   claimAllItems: () => Promise<void>;
   isClaimingAll: boolean;
 
+  // Sorting for the rewards history table.
+  sort: RewardSortState;
+  setSort: (key: RewardSortKey) => void;
+  sortedItems: WalletRewardItem[];
+
   hasClaimableRewards: boolean;
   isEmpty: boolean;
 }
@@ -65,6 +75,7 @@ export function useRewards(): UseRewardsReturn {
 
   const [items, setItems] = useState<WalletRewardItem[]>([]);
   const [isClaimingAll, setIsClaimingAll] = useState(false);
+  const [sort, setSortState] = useState<RewardSortState>(DEFAULT_REWARD_SORT);
 
   const fetchSummary = useCallback(async () => {
     if (!address || !token) {
@@ -222,6 +233,15 @@ export function useRewards(): UseRewardsReturn {
     }
   }, [address, token, items, claimItem, isClaimingAll]);
 
+  const setSort = useCallback((key: RewardSortKey) => {
+    setSortState((current) => toggleRewardSort(current, key));
+  }, []);
+
+  const sortedItems = useMemo(
+    () => sortRewardItems(items, sort) as WalletRewardItem[],
+    [items, sort],
+  );
+
   const claimableItems = items.filter((item) => item.status === "claimable");
   const vestingItems = items.filter((item) => item.status === "vesting");
 
@@ -249,6 +269,9 @@ export function useRewards(): UseRewardsReturn {
     claimItem,
     claimAllItems,
     isClaimingAll,
+    sort,
+    setSort,
+    sortedItems,
     hasClaimableRewards,
     isEmpty,
   };

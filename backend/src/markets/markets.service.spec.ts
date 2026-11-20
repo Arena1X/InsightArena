@@ -27,6 +27,7 @@ import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
 import { MarketsService } from './markets.service';
 import { MarketSettlementScheduler } from './market-settlement.scheduler';
 import { WebhookDispatcherService } from '../webhooks/services/webhook-dispatcher.service';
+import { SearchService } from '../search/search.service';
 
 type MockRepo = jest.Mocked<
   Pick<Repository<Market>, 'create' | 'save' | 'findOne' | 'find'>
@@ -138,6 +139,10 @@ describe('MarketsService', () => {
         {
           provide: WebhookDispatcherService,
           useValue: { emit: jest.fn() },
+        },
+        {
+          provide: SearchService,
+          useValue: { refreshMarketSearchVector: jest.fn() },
         },
         {
           provide: CACHE_MANAGER,
@@ -457,6 +462,10 @@ describe('MarketsService.findFeaturedMarkets', () => {
         { provide: SorobanService, useValue: {} },
         { provide: DataSource, useValue: {} },
         { provide: WebhookDispatcherService, useValue: { emit: jest.fn() } },
+        {
+          provide: SearchService,
+          useValue: { refreshMarketSearchVector: jest.fn() },
+        },
         { provide: CACHE_MANAGER, useValue: cacheMock },
         {
           provide: MarketSettlementScheduler,
@@ -596,6 +605,10 @@ describe('MarketsService.findAllFiltered', () => {
         { provide: SorobanService, useValue: {} },
         { provide: DataSource, useValue: {} },
         { provide: WebhookDispatcherService, useValue: { emit: jest.fn() } },
+        {
+          provide: SearchService,
+          useValue: { refreshMarketSearchVector: jest.fn() },
+        },
         {
           provide: CACHE_MANAGER,
           useValue: {
@@ -789,6 +802,10 @@ describe('MarketsService.update', () => {
         {
           provide: WebhookDispatcherService,
           useValue: { emit: jest.fn() },
+        },
+        {
+          provide: SearchService,
+          useValue: { refreshMarketSearchVector: jest.fn() },
         },
         {
           provide: CACHE_MANAGER,
@@ -1018,6 +1035,10 @@ describe('MarketsService.getPredictionStats', () => {
           useValue: { emit: jest.fn() },
         },
         {
+          provide: SearchService,
+          useValue: { refreshMarketSearchVector: jest.fn() },
+        },
+        {
           provide: CACHE_MANAGER,
           useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
         },
@@ -1163,6 +1184,10 @@ describe('MarketsService.cancelMarket', () => {
         { provide: SorobanService, useValue: sorobanService },
         { provide: DataSource, useValue: {} },
         { provide: WebhookDispatcherService, useValue: { emit: jest.fn() } },
+        {
+          provide: SearchService,
+          useValue: { refreshMarketSearchVector: jest.fn() },
+        },
         {
           provide: CACHE_MANAGER,
           useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
@@ -1322,6 +1347,10 @@ describe('MarketsService pause/resume cache invalidation', () => {
         { provide: DataSource, useValue: {} },
         { provide: WebhookDispatcherService, useValue: { emit: jest.fn() } },
         {
+          provide: SearchService,
+          useValue: { refreshMarketSearchVector: jest.fn() },
+        },
+        {
           provide: CACHE_MANAGER,
           useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },
         },
@@ -1471,6 +1500,10 @@ describe('MarketsService settlement grace period workflow', () => {
         { provide: SorobanService, useValue: sorobanService },
         { provide: DataSource, useValue: {} },
         { provide: WebhookDispatcherService, useValue: { emit: jest.fn() } },
+        {
+          provide: SearchService,
+          useValue: { refreshMarketSearchVector: jest.fn() },
+        },
         {
           provide: CACHE_MANAGER,
           useValue: { get: jest.fn(), set: jest.fn(), del: jest.fn() },

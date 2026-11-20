@@ -21,6 +21,7 @@ import { DisputesService } from './disputes.service';
 import { CreateDisputeDto } from './dto/create-dispute.dto';
 import { AttachEvidenceDto } from './dto/attach-evidence.dto';
 import { CastVoteDto } from './dto/cast-vote.dto';
+import { EscalateDisputeDto } from './dto/escalate-dispute.dto';
 import {
   ListDisputesDto,
   PaginatedDisputesResponse,
@@ -231,8 +232,9 @@ export class DisputesController {
   async escalate(
     @Param('id') id: string,
     @CurrentUser() user: User,
+    @Body() dto?: EscalateDisputeDto,
   ): Promise<Dispute> {
-    return this.disputesService.escalate(id, user);
+    return this.disputesService.escalate(id, user, dto);
   }
 
   @Get(':id/evidence')

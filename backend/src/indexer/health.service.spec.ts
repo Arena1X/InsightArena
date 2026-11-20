@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { IndexerHealthService } from './health.service';
 import { IndexerService } from './indexer.service';
+import { ReconciliationService } from './reconciliation.service';
 import { IndexerAlertSeverity } from './dto/indexer-health.dto';
 
 describe('IndexerHealthService', () => {
@@ -15,6 +16,9 @@ describe('IndexerHealthService', () => {
       | 'triggerManualSync'
     >
   >;
+  let reconciliationService: jest.Mocked<
+    Pick<ReconciliationService, 'getStatus'>
+  >;
 
   beforeEach(async () => {
     indexerService = {
@@ -24,10 +28,22 @@ describe('IndexerHealthService', () => {
       triggerManualSync: jest.fn(),
     };
 
+    reconciliationService = {
+      getStatus: jest.fn().mockReturnValue({
+        enabled: true,
+        is_running: false,
+        last_run_at: null,
+        last_backfill_count: 0,
+        last_reorg_depth: 0,
+        last_reorg_rescanned_ledger_count: 0,
+      }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         IndexerHealthService,
         { provide: IndexerService, useValue: indexerService },
+        { provide: ReconciliationService, useValue: reconciliationService },
         {
           provide: ConfigService,
           useValue: {
@@ -126,6 +142,26 @@ describe('IndexerHealthService', () => {
     expect(output).toContain('indexer_total_events_processed 950');
   });
 
+  it('includes reorg depth and re-scanned ledger count from reconciliation status', async () => {
+    mockHealthyMetrics();
+    reconciliationService.getStatus.mockReturnValue({
+      enabled: true,
+      is_running: false,
+      last_run_at: null,
+      last_backfill_count: 3,
+      last_reorg_depth: 12,
+      last_reorg_rescanned_ledger_count: 45,
+    });
+
+    const health = await service.getHealth();
+    expect(health.metrics.last_reorg_depth).toBe(12);
+    expect(health.metrics.last_reorg_rescanned_ledger_count).toBe(45);
+
+    const output = await service.getPrometheusMetrics();
+    expect(output).toContain('indexer_last_reorg_depth 12');
+    expect(output).toContain('indexer_last_reorg_rescanned_ledger_count 45');
+  });
+
   it('triggers manual sync via indexer service', async () => {
     indexerService.triggerManualSync.mockResolvedValue(undefined);
 
@@ -133,5 +169,53 @@ describe('IndexerHealthService', () => {
 
     expect(indexerService.triggerManualSync).toHaveBeenCalled();
     expect(result.message).toContain('triggered');
+  });
+
+  it('rejects a second triggerManualSync while a sync is already in progress', async () => {
+    let resolveSync: () => void = () => undefined;
+    indexerService.triggerManualSync.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSync = resolve;
+        }),
+    );
+
+    const first = service.triggerManualSync();
+    await expect(service.triggerManualSync()).rejects.toThrow(
+      /already in progress/i,
+    );
+
+    expect(indexerService.triggerManualSync).toHaveBeenCalledTimes(1);
+
+    resolveSync();
+    await first;
+  });
+
+  it('allows triggerManualSync again once the prior sync run has completed', async () => {
+    indexerService.triggerManualSync.mockResolvedValue(undefined);
+
+    await service.triggerManualSync();
+    await expect(service.triggerManualSync()).resolves.toBeDefined();
+
+    expect(indexerService.triggerManualSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('reflects an in-progress sync state in getHealth while one is running', async () => {
+    mockHealthyMetrics();
+    let resolveSync: () => void = () => undefined;
+    indexerService.triggerManualSync.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSync = resolve;
+        }),
+    );
+
+    const sync = service.triggerManualSync();
+    const health = await service.getHealth();
+
+    expect(health.metrics.is_running).toBe(true);
+
+    resolveSync();
+    await sync;
   });
 });

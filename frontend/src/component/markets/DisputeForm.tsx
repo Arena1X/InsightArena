@@ -2,7 +2,18 @@
 
 import { useMemo, useState } from "react";
 import { Button } from "@/component/ui/button";
-import type { CreateDisputeInput } from "@/hooks/useMarketDisputes";
+import { FormField, Select } from "@/component/ui/form-field";
+import {
+  DISPUTE_REASON_CATEGORIES,
+  DISPUTE_REASON_CATEGORY_LABELS,
+  type CreateDisputeInput,
+  type DisputeReasonCategory,
+} from "@/hooks/useMarketDisputes";
+
+const CATEGORY_OPTIONS = DISPUTE_REASON_CATEGORIES.map((value) => ({
+  value,
+  label: DISPUTE_REASON_CATEGORY_LABELS[value],
+}));
 
 type Props = {
   marketId: string;
@@ -10,6 +21,8 @@ type Props = {
   submitting: boolean;
   submitError: string | null;
   submitSuccess: string | null;
+  /** True once the dispute window has closed; disables the submit button. */
+  disputeWindowClosed?: boolean;
   onSubmit: (input: CreateDisputeInput) => Promise<unknown>;
   onCancel?: () => void;
 };
@@ -20,17 +33,21 @@ export default function DisputeForm({
   submitting,
   submitError,
   submitSuccess,
+  disputeWindowClosed = false,
   onSubmit,
   onCancel,
 }: Props) {
+  const [category, setCategory] = useState<DisputeReasonCategory>(
+    DISPUTE_REASON_CATEGORIES[0],
+  );
   const [reason, setReason] = useState("");
   const [evidenceDraft, setEvidenceDraft] = useState("");
   const [evidenceLinks, setEvidenceLinks] = useState<string[]>([]);
   const [localError, setLocalError] = useState<string | null>(null);
 
   const canSubmit = useMemo(
-    () => reason.trim().length >= 20 && !submitting,
-    [reason, submitting],
+    () => reason.trim().length >= 20 && !submitting && !disputeWindowClosed,
+    [reason, submitting, disputeWindowClosed],
   );
 
   function addEvidenceLink() {
@@ -58,6 +75,10 @@ export default function DisputeForm({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLocalError(null);
+    if (disputeWindowClosed) {
+      setLocalError("The dispute window for this market has closed.");
+      return;
+    }
     if (reason.trim().length < 20) {
       setLocalError("Please provide at least 20 characters explaining the dispute.");
       return;
@@ -65,9 +86,11 @@ export default function DisputeForm({
     try {
       await onSubmit({
         marketId,
+        category,
         reason: reason.trim(),
         evidenceLinks,
       });
+      setCategory(DISPUTE_REASON_CATEGORIES[0]);
       setReason("");
       setEvidenceLinks([]);
       setEvidenceDraft("");
@@ -91,15 +114,38 @@ export default function DisputeForm({
         </p>
       </div>
 
+      {disputeWindowClosed && (
+        <p
+          className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300"
+          data-testid="dispute-window-closed-notice"
+        >
+          The dispute window for this market has closed. New disputes can no
+          longer be filed.
+        </p>
+      )}
+
+      <FormField label="Reason category" required>
+        <Select
+          value={category}
+          onChange={(e) =>
+            setCategory(e.target.value as DisputeReasonCategory)
+          }
+          options={CATEGORY_OPTIONS}
+          disabled={disputeWindowClosed}
+          aria-label="Dispute reason category"
+        />
+      </FormField>
+
       <label className="block space-y-2">
-        <span className="text-sm text-gray-300">Reason</span>
+        <span className="text-sm text-gray-300">Description</span>
         <textarea
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           rows={4}
           maxLength={1000}
+          disabled={disputeWindowClosed}
           placeholder="Explain why the resolution is incorrect (min 20 characters)"
-          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none ring-orange-500/40 focus:ring"
+          className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none ring-orange-500/40 focus:ring disabled:opacity-50"
         />
         <span className="text-xs text-gray-500">{reason.trim().length}/1000</span>
       </label>
@@ -112,13 +158,15 @@ export default function DisputeForm({
             value={evidenceDraft}
             onChange={(e) => setEvidenceDraft(e.target.value)}
             placeholder="https://example.com/proof"
-            className="flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none ring-orange-500/40 focus:ring"
+            disabled={disputeWindowClosed}
+            className="flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none ring-orange-500/40 focus:ring disabled:opacity-50"
           />
           <Button
             type="button"
             variant="outline"
             className="border-white/10 text-gray-200"
             onClick={addEvidenceLink}
+            disabled={disputeWindowClosed}
           >
             Add
           </Button>

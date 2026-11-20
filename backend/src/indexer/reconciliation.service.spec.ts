@@ -195,6 +195,8 @@ describe('ReconciliationService', () => {
         is_running: false,
         last_run_at: null,
         last_backfill_count: 0,
+        last_reorg_depth: 0,
+        last_reorg_rescanned_ledger_count: 0,
       });
     });
   });
@@ -617,6 +619,12 @@ describe('ReconciliationService', () => {
       expect(reorgEventRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({ fork_ledger: 90, previous_ledger: 100 }),
       );
+
+      // Reorg depth (100 - 90) and the re-scanned ledger range (91..95) are
+      // captured for the indexer-health metrics.
+      const status = service.getStatus();
+      expect(status.last_reorg_depth).toBe(10);
+      expect(status.last_reorg_rescanned_ledger_count).toBe(5);
     });
   });
 });
