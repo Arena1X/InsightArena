@@ -16,6 +16,13 @@ import { Type } from 'class-transformer';
 /** Hard cap on predictions per batch submission. */
 export const MAX_BATCH_PREDICTIONS = 20;
 
+/**
+ * Reason reported for an item that was itself valid but was not persisted
+ * because another item in an atomic slip failed.
+ */
+export const BATCH_ROLLED_BACK_REASON =
+  'Not submitted - another item in this atomic batch failed, so the whole batch was rolled back';
+
 export class BatchPredictionItemDto {
   @ApiProperty({
     description: 'UUID of the market to predict on',
@@ -40,6 +47,16 @@ export class BatchPredictionItemDto {
   @IsNumberString()
   stake_amount_stroops!: string;
 
+  @ApiProperty({
+    description:
+      'Client-supplied idempotency key (UUID4 format) unique per (user, market). Used to prevent duplicate submissions within batch and enable idempotent retries.',
+    example: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+  })
+  @IsUUID('4', {
+    message: 'clientIdempotencyKey must be a valid UUID4',
+  })
+  clientIdempotencyKey!: string;
+
   @ApiPropertyOptional({
     description: 'Maximum acceptable price for slippage protection (optional)',
     example: '5000000',
@@ -58,6 +75,19 @@ export class BatchPredictionItemDto {
   minSharesOut?: string;
 }
 
+/**
+ * Batch (slip) submission.
+ *
+ * Partial-failure policy, selected by `atomic`:
+ * - `atomic: true` (default) - all-or-nothing. If any item fails validation
+ *   or on-chain submission, no prediction is persisted and the request fails
+ *   with HTTP 400. The error body lists `errors` (failing items only) and
+ *   `results` (one entry per item: failing items carry their own reason,
+ *   the rest carry `BATCH_ROLLED_BACK_REASON`).
+ * - `atomic: false` - best-effort. Valid items are submitted and persisted;
+ *   the 200 response lists one `results` entry per item with status
+ *   `fulfilled` or `rejected` plus the rejection reason.
+ */
 export class SubmitBatchPredictionsDto {
   @ApiProperty({
     description: `The prediction slip - between 1 and ${MAX_BATCH_PREDICTIONS} items`,
@@ -70,6 +100,16 @@ export class SubmitBatchPredictionsDto {
   @ValidateNested({ each: true })
   @Type(() => BatchPredictionItemDto)
   predictions!: BatchPredictionItemDto[];
+
+  @ApiProperty({
+    description:
+      'Client-supplied idempotency key (UUID4 format) unique per batch submission. Used to prevent duplicate batch submissions and enable safe retries. Same key returns the existing batch result.',
+    example: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
+  })
+  @IsUUID('4', {
+    message: 'clientIdempotencyKey must be a valid UUID4',
+  })
+  clientIdempotencyKey!: string;
 
   @ApiPropertyOptional({
     description:

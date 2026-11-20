@@ -59,7 +59,7 @@ const STORAGE_KEY = "insightarena.prediction_slip";
 function readStoredSlip(): SlipItem[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.sessionStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -71,7 +71,7 @@ function readStoredSlip(): SlipItem[] {
 function writeStoredSlip(items: SlipItem[]) {
   if (typeof window === "undefined") return;
   try {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
   } catch {
   }
 }

@@ -12,6 +12,7 @@ import { SubmissionHistoryService } from './submission-history.service';
 import { OracleSubmission } from './entities/oracle-submission.entity';
 import { OracleSubmissionFlag } from './entities/oracle-submission-flag.entity';
 import { OracleSourceReliability } from './entities/oracle-source-reliability.entity';
+import { OracleReliabilityHistory } from './entities/oracle-reliability-history.entity';
 import { OracleAssignment } from './entities/oracle-assignment.entity';
 import { OracleReliabilityService } from './oracle-reliability.service';
 import { MatchResultDivergence } from '../matches/entities/match-result-divergence.entity';
@@ -24,6 +25,7 @@ import { MatchResultDivergence } from '../matches/entities/match-result-divergen
       OracleSubmission,
       OracleSubmissionFlag,
       OracleSourceReliability,
+      OracleReliabilityHistory,
       OracleAssignment,
       MatchResultDivergence,
     ]),

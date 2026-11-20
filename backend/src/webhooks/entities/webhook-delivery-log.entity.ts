@@ -13,6 +13,7 @@ export enum DeliveryStatus {
   PENDING = 'pending',
   SUCCESS = 'success',
   FAILED = 'failed',
+  DEAD_LETTER = 'dead_letter',
 }
 
 @Entity('webhook_delivery_logs')
@@ -45,6 +46,9 @@ export class WebhookDeliveryLog {
 
   @Column({ type: 'int', default: 0 })
   attempt_count: number;
+
+  @Column({ type: 'int', nullable: true })
+  max_retry_limit: number | null;
 
   @Column({ type: 'int', nullable: true })
   http_status_code: number | null;

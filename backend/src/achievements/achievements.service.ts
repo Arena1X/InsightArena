@@ -197,6 +197,152 @@ export class AchievementsService {
   }
 
   /**
+   * Updates achievement progress monotonically and awards the achievement exactly once
+   * when crossing the threshold.
+   *
+   * Guarantees:
+   * 1. Monotonicity: Progress never decreases. Out-of-order events with lower progress are ignored.
+   * 2. Award-once: Crossing the threshold awards exactly once. Replayed events never double-award.
+   */
+  async recordProgress(
+    user: User,
+    achievement: Achievement,
+    value: number,
+  ): Promise<{ userAchievement: UserAchievement; awarded: boolean }> {
+    const existing = await this.userAchievementsRepository.findOne({
+      where: {
+        user: { id: user.id },
+        achievement: { id: achievement.id },
+      },
+    });
+
+    if (existing) {
+      // Replayed events do not double-award an achievement
+      if (existing.is_unlocked) {
+        // Monotonic: if event value is higher, update current_value, but never decrease
+        if (value > existing.current_value) {
+          existing.current_value = value;
+          await this.userAchievementsRepository.save(existing);
+        }
+        return { userAchievement: existing, awarded: false };
+      }
+
+      // Out-of-order events never decrease progress
+      const newProgress = Math.max(existing.current_value, value);
+      existing.current_value = newProgress;
+
+      // Crossing a threshold awards exactly once
+      if (newProgress >= achievement.threshold) {
+        existing.is_unlocked = true;
+        existing.unlocked_at = new Date();
+        const saved = await this.userAchievementsRepository.save(existing);
+        await this.notifyAchievementUnlocked(user, achievement);
+        return { userAchievement: saved, awarded: true };
+      }
+
+      const saved = await this.userAchievementsRepository.save(existing);
+      this.broadcastProgress(user, achievement, newProgress);
+      return { userAchievement: saved, awarded: false };
+    }
+
+    // New user achievement entry
+    const initialProgress = Math.max(0, value);
+    const crossesThreshold = initialProgress >= achievement.threshold;
+
+    if (crossesThreshold) {
+      const awarded = await this.awardAchievementOnce(
+        user,
+        achievement,
+        initialProgress,
+      );
+      if (awarded) {
+        await this.notifyAchievementUnlocked(user, achievement);
+      }
+      const saved =
+        (await this.userAchievementsRepository.findOne({
+          where: {
+            user: { id: user.id },
+            achievement: { id: achievement.id },
+          },
+        })) ??
+        this.userAchievementsRepository.create({
+          user,
+          achievement,
+          is_unlocked: true,
+          current_value: initialProgress,
+          unlocked_at: new Date(),
+        });
+      return { userAchievement: saved, awarded };
+    }
+
+    // Threshold not yet reached: create in-progress entry
+    const newEntry = this.userAchievementsRepository.create({
+      user,
+      achievement,
+      is_unlocked: false,
+      current_value: initialProgress,
+      unlocked_at: null,
+    });
+    const saved = await this.userAchievementsRepository.save(newEntry);
+    this.broadcastProgress(user, achievement, initialProgress);
+    return { userAchievement: saved, awarded: false };
+  }
+
+  async updateProgress(
+    userId: string,
+    achievementIdOrType: string,
+    value: number,
+  ): Promise<{ userAchievement: UserAchievement; awarded: boolean }> {
+    const user = await this.usersRepository.findOne({
+      where: [{ id: userId }, { stellar_address: userId }],
+    });
+    if (!user) {
+      throw new NotFoundException(`User "${userId}" not found`);
+    }
+
+    const achievement = await this.achievementsRepository.findOne({
+      where: [
+        { id: achievementIdOrType },
+        { type: achievementIdOrType as AchievementType },
+      ],
+    });
+    if (!achievement) {
+      throw new NotFoundException(
+        `Achievement "${achievementIdOrType}" not found`,
+      );
+    }
+
+    return this.recordProgress(user, achievement, value);
+  }
+
+  private broadcastProgress(
+    user: User,
+    achievement: Achievement,
+    currentProgress: number,
+  ): void {
+    if (!user.stellar_address) return;
+    const threshold = achievement.threshold;
+    const progress_percentage =
+      threshold > 0
+        ? Math.min(
+            100,
+            Math.round((currentProgress / threshold) * 10000) / 100,
+          )
+        : 100;
+
+    this.notificationBroadcaster.broadcastAchievementProgress(
+      user.stellar_address,
+      {
+        achievement_id: achievement.id,
+        type: achievement.type,
+        current_progress: currentProgress,
+        threshold,
+        progress_percentage,
+      },
+    );
+  }
+
+  /**
    * Atomically inserts the (user, achievement) unlock row, relying on the
    * UQ_user_achievement DB constraint to guard against concurrent triggers.
    * Returns true only for the call that actually performed the insert, so
@@ -279,206 +425,53 @@ export class AchievementsService {
     }
   }
 
-  private getThreshold(achievementType: AchievementType): number {
-    switch (achievementType) {
-      case AchievementType.FIRST_PREDICTION:
-        return 1;
-      case AchievementType.CORRECT_PREDICTIONS_10:
-        return 10;
-      case AchievementType.CORRECT_PREDICTIONS_50:
-        return 50;
-      case AchievementType.CORRECT_PREDICTIONS_100:
-        return 100;
-      case AchievementType.ACCURACY_75:
-        return 75;
-      case AchievementType.ACCURACY_90:
-        return 90;
-      case AchievementType.TOTAL_STAKED_1M:
-        return 1000000;
-      case AchievementType.TOTAL_STAKED_10M:
-        return 10000000;
-      case AchievementType.REPUTATION_500:
-        return 500;
-      case AchievementType.REPUTATION_1000:
-        return 1000;
-      default:
-        return 0;
-    }
-  }
-
-  async getUserAchievements(
-    userAddress: string,
-  ): Promise<AchievementResponseDto[]> {
-    const user = await this.usersRepository.findOne({
-      where: { stellar_address: userAddress },
+  async getUserAchievements(userId: string): Promise<AchievementResponseDto[]> {
+    const userAchievements = await this.userAchievementsRepository.find({
+      where: { user: { id: userId } },
+      relations: ['achievement'],
+      order: { unlocked_at: 'DESC' },
     });
 
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
+    return userAchievements.map((ua) => ({
+      id: ua.achievement.id,
+      type: ua.achievement.type,
+      title: ua.achievement.title,
+      description: ua.achievement.description,
+      icon_url: ua.achievement.icon_url,
+      reward_points: ua.achievement.reward_points,
+      is_unlocked: ua.is_unlocked,
+      current_value: ua.current_value,
+      unlocked_at: ua.unlocked_at,
+    }));
+  }
+
+  async getAllAchievements(userId: string): Promise<AchievementResponseDto[]> {
+    const achievements = await this.achievementsRepository.find({
+      order: { threshold: 'ASC' },
+    });
 
     const userAchievements = await this.userAchievementsRepository.find({
-      where: { user: { id: user.id } },
+      where: { user: { id: userId } },
       relations: ['achievement'],
     });
 
-    const allAchievements = await this.achievementsRepository.find();
+    const userAchievementMap = new Map(
+      userAchievements.map((ua) => [ua.achievement.id, ua]),
+    );
 
-    return allAchievements.map((achievement) => {
-      const userAchievement = userAchievements.find(
-        (ua) => ua.achievement.id === achievement.id,
-      );
-
-      const currentProgress = this.getAchievementMetric(achievement.type, user);
-      const threshold = this.getThreshold(achievement.type);
-      const percentage =
-        threshold > 0
-          ? Math.min(100, Math.round((currentProgress / threshold) * 100))
-          : 0;
-      const isUnlocked = !!userAchievement?.is_unlocked;
-      const unlockedAt = userAchievement?.unlocked_at
-        ? userAchievement.unlocked_at
-        : null;
-
-      const response: AchievementResponseDto = {
+    return achievements.map((achievement) => {
+      const userAchievement = userAchievementMap.get(achievement.id);
+      return {
         id: achievement.id,
         type: achievement.type,
         title: achievement.title,
         description: achievement.description,
         icon_url: achievement.icon_url,
         reward_points: achievement.reward_points,
-        is_unlocked: isUnlocked,
-        unlocked_at: unlockedAt,
-        progress_percentage: isUnlocked ? 100 : percentage,
-        current_progress: currentProgress,
-        threshold: threshold,
+        is_unlocked: userAchievement?.is_unlocked ?? false,
+        current_value: userAchievement?.current_value ?? 0,
+        unlocked_at: userAchievement?.unlocked_at ?? null,
       };
-      return response;
-    });
-  }
-
-  async updateAchievementProgress(user: User): Promise<void> {
-    const achievements = await this.achievementsRepository.find();
-
-    for (const achievement of achievements) {
-      const currentProgress = this.getAchievementMetric(achievement.type, user);
-      const threshold = this.getThreshold(achievement.type);
-      const meetsThreshold = currentProgress >= threshold;
-
-      if (meetsThreshold) {
-        // Delegate to the atomic insert-or-ignore guard so concurrent
-        // callers can't double-unlock; only the winner notifies.
-        const awarded = await this.awardAchievementOnce(
-          user,
-          achievement,
-          currentProgress,
-        );
-        if (awarded) {
-          this.logger.log(
-            `Progress unlocked achievement "${achievement.title}" for user ${user.id}`,
-          );
-          await this.notifyAchievementUnlocked(user, achievement);
-        } else {
-          await this.userAchievementsRepository.update(
-            { user: { id: user.id }, achievement: { id: achievement.id } },
-            { current_value: currentProgress },
-          );
-        }
-        continue;
-      }
-
-      const existing = await this.userAchievementsRepository.findOne({
-        where: { user: { id: user.id }, achievement: { id: achievement.id } },
-      });
-
-      const previousProgress = existing?.current_value ?? 0;
-
-      if (existing) {
-        existing.current_value = currentProgress;
-        await this.userAchievementsRepository.save(existing);
-      } else {
-        await this.userAchievementsRepository
-          .createQueryBuilder()
-          .insert()
-          .into(UserAchievement)
-          .values({
-            user: { id: user.id },
-            achievement: { id: achievement.id },
-            is_unlocked: false,
-            current_value: currentProgress,
-          })
-          .orIgnore()
-          .execute();
-      }
-
-      // Only push a live update when progress actually moved — avoids
-      // spamming unchanged progress on every profile view/poll.
-      if (currentProgress !== previousProgress) {
-        const percentage =
-          threshold > 0
-            ? Math.min(100, Math.round((currentProgress / threshold) * 100))
-            : 0;
-        this.notificationBroadcaster.broadcastAchievementProgress(
-          user.stellar_address,
-          {
-            achievement_id: achievement.id,
-            type: achievement.type,
-            current_progress: currentProgress,
-            threshold,
-            progress_percentage: percentage,
-          },
-        );
-      }
-    }
-  }
-
-  async getAchievementProgress(
-    userAddress: string,
-  ): Promise<AchievementResponseDto[]> {
-    const user = await this.usersRepository.findOne({
-      where: { stellar_address: userAddress },
-    });
-
-    if (!user) {
-      throw new NotFoundException('User not found');
-    }
-
-    const allAchievements = await this.achievementsRepository.find();
-    const userAchievements = await this.userAchievementsRepository.find({
-      where: { user: { id: user.id } },
-      relations: ['achievement'],
-    });
-
-    return allAchievements.map((achievement) => {
-      const userAchievement = userAchievements.find(
-        (ua) => ua.achievement.id === achievement.id,
-      );
-
-      const currentProgress = this.getAchievementMetric(achievement.type, user);
-      const threshold = this.getThreshold(achievement.type);
-      const percentage =
-        threshold > 0
-          ? Math.min(100, Math.round((currentProgress / threshold) * 100))
-          : 0;
-      const isUnlocked = !!userAchievement?.is_unlocked;
-      const unlockedAt = userAchievement?.unlocked_at
-        ? userAchievement.unlocked_at
-        : null;
-
-      const response: AchievementResponseDto = {
-        id: achievement.id,
-        type: achievement.type,
-        title: achievement.title,
-        description: achievement.description,
-        icon_url: achievement.icon_url,
-        reward_points: achievement.reward_points,
-        is_unlocked: isUnlocked,
-        unlocked_at: unlockedAt,
-        progress_percentage: isUnlocked ? 100 : percentage,
-        current_progress: currentProgress,
-        threshold: threshold,
-      };
-      return response;
     });
   }
 }

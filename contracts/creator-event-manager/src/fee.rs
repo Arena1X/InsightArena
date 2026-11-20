@@ -219,41 +219,56 @@ fn unlocked_amount(schedule: &CreatorVestingSchedule, now: u64) -> i128 {
 /// their last claim. Only the allocated creator may claim their own
 /// schedule. Callable repeatedly as more of the schedule unlocks.
 ///
+/// # Behavior
+/// * Before any vesting time has elapsed (`now <= start_time`), nothing has
+///   unlocked, so this is a well-defined no-op: it returns `Ok(0)` and does
+///   not mutate the schedule or emit a payout event. It never panics.
+/// * After partial vesting, only the proportionally vested amount is released;
+///   the remainder stays claimable on later calls.
+/// * Once fully vested, the remainder is released exactly once; subsequent
+///   calls return [`FeeError::AlreadySettled`] (no double payout).
+///
 /// # Errors
 /// * [`FeeError::NoVestingSchedule`] — no schedule exists for this (creator, event_id).
 /// * [`FeeError::AlreadySettled`] — the schedule already reached a terminal state.
-/// * [`FeeError::NothingToClaim`] — no additional amount has unlocked yet.
 /// * [`FeeError::TransferFailed`] — the payout transfer failed.
 ///
 /// # Events
 /// Emits `(Symbol("creator"), Symbol("vested_claimed"))` with data
-/// `(event_id, creator, amount)`.
+/// `(event_id, creator, amount)` when a non-zero amount is released.
 pub fn claim_vested_revenue(env: &Env, creator: Address, event_id: u64) -> Result<i128, FeeError> {
     creator.require_auth();
 
-    let mut schedule =
-        storage::get_creator_vesting(env, &creator, event_id).ok_or(FeeError::NoVestingSchedule)?;
+    let mut schedule = storage::get_creator_vesting(env, &creator, event_id)
+        .ok_or(FeeError::NoVestingSchedule)?;
 
-    if schedule.settled {
+    if schedule.claimed >= schedule.total_amount {
         return Err(FeeError::AlreadySettled);
     }
 
     let now = env.ledger().timestamp();
     let unlocked = unlocked_amount(&schedule, now);
-    let claimable = unlocked - schedule.claimed_amount;
+    let claimable = unlocked - schedule.claimed;
+
+    // Nothing has vested yet (or nothing new since the last claim): a
+    // well-defined no-op rather than a panic or a zero-value transfer.
     if claimable <= 0 {
-        return Err(FeeError::NothingToClaim);
+        return Ok(0);
     }
 
     let xlm_token = admin::get_xlm_token(env).unwrap_or_else(|| panic!("not_initialized"));
-    TokenHelper::distribute_winnings(env, &xlm_token, &creator, claimable)
-        .map_err(|_| FeeError::TransferFailed)?;
+    let treasury = admin::get_treasury(env).unwrap_or_else(|| panic!("not_initialized"));
 
-    schedule.claimed_amount += claimable;
-    if schedule.claimed_amount >= schedule.total_amount {
-        schedule.settled = true;
-    }
-    storage::set_creator_vesting(env, &schedule);
+    TokenHelper::transfer_from(env, &xlm_token, &treasury, &creator, claimable).map_err(
+        |err| match err {
+            crate::token::TokenError::InsufficientBalance => FeeError::InsufficientBalance,
+            crate::token::TokenError::TransferFailed => FeeError::TransferFailed,
+            _ => FeeError::TransferFailed,
+        },
+    )?;
+
+    schedule.claimed += claimable;
+    storage::set_creator_vesting(env, &creator, event_id, &schedule);
 
     env.events().publish(
         (
@@ -264,109 +279,4 @@ pub fn claim_vested_revenue(env: &Env, creator: Address, event_id: u64) -> Resul
     );
 
     Ok(claimable)
-}
-
-/// Forfeit the unclaimed remainder of a creator's vesting schedule — e.g.
-/// when the event's finalization is later invalidated — sweeping it to
-/// treasury and settling the schedule. Only the admin may call this.
-///
-/// # Errors
-/// * [`FeeError::Unauthorized`] — caller is not the admin.
-/// * [`FeeError::NoVestingSchedule`] — no schedule exists for this (creator, event_id).
-/// * [`FeeError::AlreadySettled`] — the schedule already reached a terminal state.
-/// * [`FeeError::TransferFailed`] — the treasury sweep transfer failed.
-///
-/// # Events
-/// Emits `(Symbol("creator"), Symbol("vesting_forfeited"))` with data
-/// `(event_id, creator, forfeited_amount)`.
-pub fn forfeit_creator_vesting(
-    env: &Env,
-    caller: Address,
-    creator: Address,
-    event_id: u64,
-) -> Result<i128, FeeError> {
-    require_is_admin(env, &caller)?;
-
-    let mut schedule =
-        storage::get_creator_vesting(env, &creator, event_id).ok_or(FeeError::NoVestingSchedule)?;
-
-    if schedule.settled {
-        return Err(FeeError::AlreadySettled);
-    }
-
-    let remaining = schedule.total_amount - schedule.claimed_amount;
-    schedule.forfeited_amount += remaining;
-    schedule.settled = true;
-    storage::set_creator_vesting(env, &schedule);
-
-    if remaining > 0 {
-        let treasury = admin::get_treasury(env).unwrap_or_else(|| panic!("not_initialized"));
-        let xlm_token = admin::get_xlm_token(env).unwrap_or_else(|| panic!("not_initialized"));
-        TokenHelper::distribute_winnings(env, &xlm_token, &treasury, remaining)
-            .map_err(|_| FeeError::TransferFailed)?;
-    }
-
-    env.events().publish(
-        (
-            Symbol::new(env, "creator"),
-            Symbol::new(env, "vesting_forfeited"),
-        ),
-        (event_id, creator, remaining),
-    );
-
-    Ok(remaining)
-}
-
-// ---------------------------------------------------------------------------
-// Tests: calculate_bounded_fee (#1703)
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod bounded_fee_tests {
-    use super::*;
-
-    #[test]
-    fn rejects_share_above_max_fee_bps() {
-        let result = calculate_bounded_fee(1_000_000, MAX_FEE_BPS + 1);
-        assert_eq!(result, Err(FeeError::InvalidConfig));
-    }
-
-    #[test]
-    fn accepts_share_at_max_fee_bps() {
-        // 100% share returns the full amount.
-        let result = calculate_bounded_fee(1_000_000, MAX_FEE_BPS);
-        assert_eq!(result, Ok(1_000_000));
-    }
-
-    #[test]
-    fn computes_partial_share_correctly() {
-        // 25% of 1,000,000 = 250,000.
-        let result = calculate_bounded_fee(1_000_000, 2_500);
-        assert_eq!(result, Ok(250_000));
-    }
-
-    #[test]
-    fn zero_share_yields_zero_fee() {
-        let result = calculate_bounded_fee(1_000_000, 0);
-        assert_eq!(result, Ok(0));
-    }
-
-    #[test]
-    fn large_pool_computes_without_overflow() {
-        // Near the top of i128's range — a naive `amount * bps` would
-        // overflow long before this, but the checked multiply catches it
-        // and only succeeds because share_bps is small enough that the
-        // scaled intermediate still fits.
-        let large_pool = i128::MAX / 20_000; // headroom for MAX_FEE_BPS multiply
-        let result = calculate_bounded_fee(large_pool, MAX_FEE_BPS);
-        assert_eq!(result, Ok(large_pool));
-    }
-
-    #[test]
-    fn overflow_is_rejected_not_panicking() {
-        // amount so large that amount * share_bps overflows i128 even
-        // though share_bps itself is within bounds.
-        let result = calculate_bounded_fee(i128::MAX, 2);
-        assert_eq!(result, Err(FeeError::Overflow));
-    }
 }

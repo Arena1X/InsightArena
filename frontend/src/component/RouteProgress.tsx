@@ -3,7 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 
-import { cn, isRouteContentPending, subscribeRouteContentPending } from "@/lib/utils";
+import {
+  cn,
+  isRouteContentPending,
+  subscribeRouteContentPending,
+} from "@/lib/utils";
 
 /** Navigations that resolve within this window never show the bar. */
 const SHOW_DELAY_MS = 150;
@@ -16,7 +20,8 @@ function usePrefersReducedMotion() {
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
     setReduced(query.matches);
-    const handleChange = (event: MediaQueryListEvent) => setReduced(event.matches);
+    const handleChange = (event: MediaQueryListEvent) =>
+      setReduced(event.matches);
     query.addEventListener("change", handleChange);
     return () => query.removeEventListener("change", handleChange);
   }, []);
@@ -60,8 +65,11 @@ export function RouteProgress() {
       isNavigating.current = true;
       routeSettled.current = false;
       setValue(0);
+      setVisible(false); // Reset visibility immediately to prevent flashing
 
       showTimer.current = setTimeout(() => {
+        // Only show if we're still navigating (not superseded by another navigation)
+        if (!isNavigating.current) return;
         setVisible(true);
         if (reducedMotion) {
           setValue(100);
@@ -69,7 +77,9 @@ export function RouteProgress() {
         }
         setValue(20);
         trickleTimer.current = setInterval(() => {
-          setValue((current) => (current >= 90 ? current : current + (90 - current) * 0.15));
+          setValue((current) =>
+            current >= 90 ? current : current + (90 - current) * 0.15,
+          );
         }, 250);
       }, SHOW_DELAY_MS);
     }
@@ -81,14 +91,21 @@ export function RouteProgress() {
       showTimer.current = null;
       trickleTimer.current = null;
 
-      setValue(100);
-      hideTimer.current = setTimeout(
-        () => {
-          setVisible(false);
-          setValue(0);
-        },
-        reducedMotion ? 0 : FINISH_HOLD_MS,
-      );
+      // Only complete to 100% if we were actually visible
+      if (visible) {
+        setValue(100);
+        hideTimer.current = setTimeout(
+          () => {
+            setVisible(false);
+            setValue(0);
+          },
+          reducedMotion ? 0 : FINISH_HOLD_MS,
+        );
+      } else {
+        // If never shown, just ensure we're in the hidden state
+        setVisible(false);
+        setValue(0);
+      }
     }
 
     function finish() {
@@ -100,20 +117,26 @@ export function RouteProgress() {
       finishNow();
     }
 
-    const unsubscribeContentPending = subscribeRouteContentPending((pending) => {
-      if (!pending && isNavigating.current && routeSettled.current) {
-        finishNow();
-      }
-    });
+    const unsubscribeContentPending = subscribeRouteContentPending(
+      (pending) => {
+        if (!pending && isNavigating.current && routeSettled.current) {
+          finishNow();
+        }
+      },
+    );
 
     const originalPushState = window.history.pushState.bind(window.history);
-    const originalReplaceState = window.history.replaceState.bind(window.history);
+    const originalReplaceState = window.history.replaceState.bind(
+      window.history,
+    );
 
     window.history.pushState = (...args: Parameters<History["pushState"]>) => {
       start();
       return originalPushState(...args);
     };
-    window.history.replaceState = (...args: Parameters<History["replaceState"]>) => {
+    window.history.replaceState = (
+      ...args: Parameters<History["replaceState"]>
+    ) => {
       start();
       return originalReplaceState(...args);
     };
@@ -131,7 +154,7 @@ export function RouteProgress() {
       unsubscribeContentPending();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeKey, reducedMotion]);
+  }, [routeKey, reducedMotion, visible]);
 
   useEffect(
     () => () => {

@@ -12,12 +12,18 @@ import {
 @Injectable()
 export class WebhookDispatcherService {
   private readonly logger = new Logger(WebhookDispatcherService.name);
-  private readonly maxAttempts = parseInt(
+  private readonly defaultMaxAttempts = parseInt(
     process.env.WEBHOOK_MAX_ATTEMPTS || '5',
     10,
   );
   private readonly timeoutMs = parseInt(
     process.env.WEBHOOK_TIMEOUT_MS || '5000',
+    10,
+  );
+  private readonly globalRetryCapEnabled =
+    process.env.WEBHOOK_GLOBAL_RETRY_CAP_ENABLED === 'true';
+  private readonly globalRetryCapLimit = parseInt(
+    process.env.WEBHOOK_GLOBAL_RETRY_CAP_LIMIT || '10',
     10,
   );
 
@@ -32,6 +38,7 @@ export class WebhookDispatcherService {
   async emit(
     eventType: string,
     payload: Record<string, unknown>,
+    options?: { maxRetryLimit?: number },
   ): Promise<void> {
     const endpoints = await this.endpointRepository.find({
       where: {
@@ -49,7 +56,12 @@ export class WebhookDispatcherService {
     }
 
     for (const endpoint of targetEndpoints) {
-      await this.createDeliveryLog(endpoint, eventType, payload);
+      await this.createDeliveryLog(
+        endpoint,
+        eventType,
+        payload,
+        options?.maxRetryLimit,
+      );
     }
 
     this.logger.log(
@@ -61,6 +73,7 @@ export class WebhookDispatcherService {
     endpoint: WebhookEndpoint,
     eventType: string,
     payload: Record<string, unknown>,
+    maxRetryLimit?: number,
   ): Promise<void> {
     const log = this.deliveryLogRepository.create({
       endpoint,
@@ -69,6 +82,7 @@ export class WebhookDispatcherService {
       status: DeliveryStatus.PENDING,
       attempt_count: 0,
       next_retry_at: new Date(),
+      max_retry_limit: maxRetryLimit ?? null,
     });
 
     await this.deliveryLogRepository.save(log);
@@ -104,7 +118,12 @@ export class WebhookDispatcherService {
     const attempt = log.attempt_count + 1;
 
     try {
-      const signature = this.generateSignature(payload, endpoint.secret_key);
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const signature = this.generateSignature(
+        payload,
+        endpoint.secret_key,
+        timestamp,
+      );
 
       const response = await this.httpService.axiosRef.post(
         endpoint.url,
@@ -113,6 +132,7 @@ export class WebhookDispatcherService {
           headers: {
             'Content-Type': 'application/json',
             'X-Webhook-Signature': signature,
+            'X-Webhook-Timestamp': timestamp,
             'X-Webhook-Event': event_type,
             'X-Delivery-Attempt': String(attempt),
           },
@@ -151,23 +171,54 @@ export class WebhookDispatcherService {
   }
 
   private scheduleRetry(log: WebhookDeliveryLog, attempt: number): void {
-    if (attempt >= this.maxAttempts) {
-      log.status = DeliveryStatus.FAILED;
+    // Determine the effective max attempts for this delivery log
+    const effectiveMaxAttempts = this.getEffectiveMaxAttempts(log);
+
+    if (attempt >= effectiveMaxAttempts) {
+      log.status = DeliveryStatus.DEAD_LETTER;
       log.next_retry_at = null;
+      this.logger.warn(
+        `Webhook delivery ${log.id} moved to dead-letter after ${attempt} attempts (limit: ${effectiveMaxAttempts})`,
+      );
     } else {
-      const backoffMs = Math.min(Math.pow(2, attempt - 1) * 1000, 3600000); // cap at 1 hour
-      log.next_retry_at = new Date(Date.now() + backoffMs);
+      const baseMs = Math.min(Math.pow(2, attempt - 1) * 1000, 3600000);
+      const jitterMs = Math.random() * baseMs * 0.5;
+      log.next_retry_at = new Date(Date.now() + baseMs + jitterMs);
     }
   }
 
-  private generateSignature(
+  /**
+   * Determines the effective maximum retry attempts for a delivery log.
+   * Priority order:
+   * 1. Per-delivery max_retry_limit (if set)
+   * 2. Global retry cap (if enabled via WEBHOOK_GLOBAL_RETRY_CAP_ENABLED)
+   * 3. Default max attempts (WEBHOOK_MAX_ATTEMPTS)
+   */
+  private getEffectiveMaxAttempts(log: WebhookDeliveryLog): number {
+    // Per-delivery limit takes highest priority
+    if (log.max_retry_limit !== null && log.max_retry_limit !== undefined) {
+      return log.max_retry_limit;
+    }
+
+    // Global retry cap (if enabled)
+    if (this.globalRetryCapEnabled) {
+      return this.globalRetryCapLimit;
+    }
+
+    // Default fallback
+    return this.defaultMaxAttempts;
+  }
+
+  generateSignature(
     payload: Record<string, unknown>,
     secretKey: string,
+    timestamp?: string,
   ): string {
     const payloadStr = JSON.stringify(payload);
+    const signedPayload = timestamp ? `${timestamp}.${payloadStr}` : payloadStr;
     return crypto
       .createHmac('sha256', secretKey)
-      .update(payloadStr)
+      .update(signedPayload)
       .digest('hex');
   }
 }

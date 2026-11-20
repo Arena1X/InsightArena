@@ -28,7 +28,7 @@ export type ValidatorFn = (value: any) => string | undefined;
  */
 export type AsyncValidatorFn = (
   value: any,
-  signal: AbortSignal
+  signal: AbortSignal,
 ) => Promise<string | undefined>;
 
 export interface FieldValidator {
@@ -81,7 +81,7 @@ interface UseFormValidationReturn {
    * Resolves to true only when every field is valid.
    */
   validateAllAsync: () => Promise<boolean>;
-  reset: () => void;
+  reset: (newValues?: Record<string, any>) => void;
   /** True when no field has a sync error and no async validation is pending. */
   isValid: boolean;
 }
@@ -100,7 +100,12 @@ export function useFormValidation({
   const [formState, setFormState] = useState<FormValidationState>(() => {
     const initial: FormValidationState = {};
     for (const [key, value] of Object.entries(initialValues)) {
-      initial[key] = { value, touched: false, error: undefined, pending: false };
+      initial[key] = {
+        value,
+        touched: false,
+        error: undefined,
+        pending: false,
+      };
     }
     return initial;
   });
@@ -122,11 +127,15 @@ export function useFormValidation({
 
   // Refs for debounce timers per field (keyed by field name).
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>(
-    {}
+    {},
   );
 
   // Refs for AbortControllers per field so we can cancel in-flight async work.
   const abortControllers = useRef<Record<string, AbortController>>({});
+
+  // Track validation sequence numbers per field to prevent race conditions.
+  // Only the result from the highest sequence number should update state.
+  const validationSequence = useRef<Record<string, number>>({});
 
   // ---------------------------------------------------------------------------
   // Sync helpers
@@ -194,7 +203,7 @@ export function useFormValidation({
       }));
       return true;
     },
-    [validators, formState]
+    [validators, formState],
   );
 
   const validateAll = useCallback((): boolean => {
@@ -230,10 +239,23 @@ export function useFormValidation({
         [field]: { ...prev[field], pending: true },
       }));
 
+      // Increment sequence number for this field to track validation order
+      const currentSequence = (validationSequence.current[field] ?? 0) + 1;
+      validationSequence.current[field] = currentSequence;
+
       try {
         for (const asyncValidator of fieldAsyncValidators) {
           const error = await asyncValidator(value, signal);
           if (signal.aborted) return false; // superseded — don't touch state
+
+          // Race condition guard: only apply result if this is still the latest validation
+          if (validationSequence.current[field] !== currentSequence) {
+            console.warn(
+              `[useFormValidation] Ignoring stale async validation result for field "${field}" (sequence ${currentSequence}, current: ${validationSequence.current[field]})`,
+            );
+            return false;
+          }
+
           if (error) {
             setFormState((prev) => ({
               ...prev,
@@ -241,6 +263,11 @@ export function useFormValidation({
             }));
             return false;
           }
+        }
+
+        // Double-check sequence before applying success state
+        if (validationSequence.current[field] !== currentSequence) {
+          return false;
         }
 
         // All async validators passed.
@@ -252,6 +279,12 @@ export function useFormValidation({
       } catch (err) {
         // Ignore aborted-request errors silently.
         if (signal.aborted) return false;
+
+        // Check sequence before applying error state
+        if (validationSequence.current[field] !== currentSequence) {
+          return false;
+        }
+
         // Re-surface unexpected errors as a field error.
         const message =
           err instanceof Error ? err.message : "Validation failed";
@@ -262,7 +295,7 @@ export function useFormValidation({
         return false;
       }
     },
-    [asyncValidators]
+    [asyncValidators],
   );
 
   /**
@@ -283,7 +316,7 @@ export function useFormValidation({
       const value = latestValues.current[field] ?? formState[field]?.value;
       return _runAsyncValidators(field, value);
     },
-    [validateField, formState, _runAsyncValidators]
+    [validateField, formState, _runAsyncValidators],
   );
 
   /**
@@ -302,10 +335,16 @@ export function useFormValidation({
       Object.keys({ ...validators, ...asyncValidators }).map((field) => {
         const value = latestValues.current[field] ?? formState[field]?.value;
         return _runAsyncValidators(field, value);
-      })
+      }),
     );
     return results.every(Boolean);
-  }, [validateAll, validators, asyncValidators, formState, _runAsyncValidators]);
+  }, [
+    validateAll,
+    validators,
+    asyncValidators,
+    formState,
+    _runAsyncValidators,
+  ]);
 
   // ---------------------------------------------------------------------------
   // setTouched — triggers validation (sync + debounced async) on blur
@@ -326,7 +365,13 @@ export function useFormValidation({
         }
       }
     },
-    [validateOnBlur, validateField, asyncValidators, formState, _runAsyncValidators]
+    [
+      validateOnBlur,
+      validateField,
+      asyncValidators,
+      formState,
+      _runAsyncValidators,
+    ],
   );
 
   // ---------------------------------------------------------------------------
@@ -393,40 +438,56 @@ export function useFormValidation({
         _runAsyncValidators(field, value);
       }, asyncDebounceMs);
     },
-    [asyncValidators, validators, asyncDebounceMs, _runAsyncValidators]
+    [asyncValidators, validators, asyncDebounceMs, _runAsyncValidators],
   );
 
   // ---------------------------------------------------------------------------
   // Reset
   // ---------------------------------------------------------------------------
 
-  const reset = useCallback(() => {
-    for (const controller of Object.values(abortControllers.current)) {
-      controller.abort();
-    }
-    abortControllers.current = {};
-
-    for (const timer of Object.values(debounceTimers.current)) {
-      clearTimeout(timer);
-    }
-    debounceTimers.current = {};
-
-    // Reset the eager value cache to initial values.
-    latestValues.current = { ...initialValues };
-
-    setFormState((prev) => {
-      const next: FormValidationState = {};
-      for (const key of Object.keys(prev)) {
-        next[key] = {
-          value: initialValues[key] ?? "",
-          touched: false,
-          error: undefined,
-          pending: false,
-        };
+  const reset = useCallback(
+    (newValues?: Record<string, any>) => {
+      for (const controller of Object.values(abortControllers.current)) {
+        controller.abort();
       }
-      return next;
-    });
-  }, [initialValues]);
+      abortControllers.current = {};
+
+      for (const timer of Object.values(debounceTimers.current)) {
+        clearTimeout(timer);
+      }
+      debounceTimers.current = {};
+
+      // Reset validation sequence numbers to prevent stale validations
+      validationSequence.current = {};
+
+      const valuesToUse = newValues ?? initialValues;
+
+      // Reset the eager value cache to valuesToUse.
+      latestValues.current = { ...valuesToUse };
+
+      setFormState((prev) => {
+        const next: FormValidationState = {};
+        const allKeys = new Set([
+          ...Object.keys(prev),
+          ...Object.keys(valuesToUse),
+        ]);
+        for (const key of allKeys) {
+          const val =
+            valuesToUse[key] !== undefined
+              ? valuesToUse[key]
+              : (initialValues[key] ?? "");
+          next[key] = {
+            value: val,
+            touched: false,
+            error: undefined,
+            pending: false,
+          };
+        }
+        return next;
+      });
+    },
+    [initialValues],
+  );
 
   // ---------------------------------------------------------------------------
   // Derived memos
@@ -466,7 +527,7 @@ export function useFormValidation({
 
   const isValid = useMemo(() => {
     return Object.values(formState).every(
-      (state) => !state.error && !state.pending
+      (state) => !state.error && !state.pending,
     );
   }, [formState]);
 

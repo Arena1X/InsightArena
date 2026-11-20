@@ -1,4 +1,12 @@
-import { IsString, IsInt, IsOptional, IsEnum, Min, Max } from 'class-validator';
+import {
+  IsString,
+  IsInt,
+  IsOptional,
+  IsEnum,
+  Min,
+  Max,
+  MaxLength,
+} from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export enum WinningTeam {
@@ -54,6 +62,17 @@ export class WebhookMatchResultDto {
   })
   @IsOptional()
   metadata?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description:
+      'Client-supplied key identifying this result delivery. Repeating a call with the same key returns the original job instead of submitting again. When omitted, a key is derived from match_id, data_source, winning_team, confidence_score and timestamp.',
+    example: 'sports-data-123-final',
+    maxLength: 255,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  idempotency_key?: string;
 }
 
 export class WebhookResponseDto {
@@ -74,4 +93,16 @@ export class WebhookResponseDto {
     example: 'Match result queued for submission',
   })
   message: string;
+
+  @ApiPropertyOptional({
+    description:
+      'True when this call duplicated an earlier one and no new submission was made',
+    example: false,
+  })
+  duplicate?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'ID of the oracle submission record backing this job',
+  })
+  submission_id?: string;
 }

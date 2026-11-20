@@ -7,13 +7,19 @@ import {
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
-import { IndexerService, EVENT_DECODER_VERSION } from './indexer.service';
+import {
+  IndexerService,
+  EVENT_DECODER_VERSION,
+  CHECKPOINT_LEDGER_KEY,
+} from './indexer.service';
 import {
   ContractEvent,
   ContractEventStatus,
 } from './entities/contract-event.entity';
 import { FeeHistory } from './entities/fee-history.entity';
 import { IndexerCheckpoint } from './entities/indexer-checkpoint.entity';
+import { ChainSyncCheckpoint } from './entities/chain-sync-checkpoint.entity';
+import { ReorgEvent } from './entities/reorg-event.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
 import { CreatorEventLeaderboardEntry } from '../matches/entities/creator-event-leaderboard-entry.entity';
 import { CreatorEventPayout } from '../matches/entities/creator-event-payout.entity';
@@ -52,6 +58,12 @@ describe('IndexerService', () => {
   let checkpointRepository: jest.Mocked<
     Pick<Repository<IndexerCheckpoint>, 'findOne' | 'save' | 'upsert'>
   >;
+  let chainSyncCheckpointRepository: jest.Mocked<
+    Pick<Repository<ChainSyncCheckpoint>, 'findOne' | 'create' | 'save'>
+  >;
+  let reorgEventRepository: jest.Mocked<
+    Pick<Repository<ReorgEvent>, 'create' | 'save'>
+  >;
   let creatorEventRepository: jest.Mocked<
     Pick<
       Repository<CreatorEvent>,
@@ -88,6 +100,17 @@ describe('IndexerService', () => {
       findOne: jest.fn(),
       save: jest.fn(),
       upsert: jest.fn(),
+    };
+
+    chainSyncCheckpointRepository = {
+      findOne: jest.fn(),
+      create: jest.fn(),
+      save: jest.fn(),
+    };
+
+    reorgEventRepository = {
+      create: jest.fn(),
+      save: jest.fn(),
     };
 
     creatorEventRepository = {
@@ -144,6 +167,14 @@ describe('IndexerService', () => {
         {
           provide: getRepositoryToken(IndexerCheckpoint),
           useValue: checkpointRepository,
+        },
+        {
+          provide: getRepositoryToken(ChainSyncCheckpoint),
+          useValue: chainSyncCheckpointRepository,
+        },
+        {
+          provide: getRepositoryToken(ReorgEvent),
+          useValue: reorgEventRepository,
         },
         {
           provide: getRepositoryToken(CreatorEvent),
@@ -219,6 +250,516 @@ describe('IndexerService', () => {
           key: 'indexer:last_processed_ledger',
           value: 99,
         }),
+        ['key'],
+      );
+    });
+
+    it('rewinds the persisted chain-sync checkpoint so a restart does not resurrect the old position', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+      checkpointRepository.upsert.mockResolvedValue({} as InsertResult);
+      const chainSync = {
+        contract_id: 'CCONTRACT',
+        last_indexed_ledger: 500,
+        last_indexed_ledger_hash: 'hash-500',
+      } as ChainSyncCheckpoint;
+      chainSyncCheckpointRepository.findOne.mockResolvedValue(chainSync);
+
+      await service.reindex(50);
+
+      expect(chainSync.last_indexed_ledger).toBe(49);
+      expect(chainSync.last_indexed_ledger_hash).toBeNull();
+      expect(chainSyncCheckpointRepository.save).toHaveBeenCalledWith(
+        chainSync,
+      );
+    });
+  });
+
+  describe('startup checkpoint resume', () => {
+    it('resumes from the persisted chain-sync checkpoint instead of genesis when the working cursor is missing', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      // No key/value checkpoint row exists yet (missing after restart).
+      checkpointRepository.findOne.mockResolvedValue(null);
+      chainSyncCheckpointRepository.findOne.mockResolvedValue({
+        contract_id: 'CCONTRACT',
+        last_indexed_ledger: 1234,
+      } as ChainSyncCheckpoint);
+      checkpointRepository.upsert.mockResolvedValue({} as InsertResult);
+
+      await (service as any).onModuleInit();
+
+      // Adopts the persisted ledger (1234) rather than starting at genesis.
+      expect(checkpointRepository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 1234,
+        }),
+        ['key'],
+      );
+    });
+
+    it('resumes from the persisted chain-sync checkpoint when the working cursor is behind', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      checkpointRepository.findOne.mockResolvedValue({
+        key: CHECKPOINT_LEDGER_KEY,
+        value: 10,
+      } as IndexerCheckpoint);
+      chainSyncCheckpointRepository.findOne.mockResolvedValue({
+        contract_id: 'CCONTRACT',
+        last_indexed_ledger: 999,
+      } as ChainSyncCheckpoint);
+      checkpointRepository.upsert.mockResolvedValue({} as InsertResult);
+
+      await (service as any).onModuleInit();
+
+      expect(checkpointRepository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 999,
+        }),
+        ['key'],
+      );
+    });
+
+    it('never regresses a working cursor that is already ahead of the persisted checkpoint', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      checkpointRepository.findOne.mockResolvedValue({
+        key: CHECKPOINT_LEDGER_KEY,
+        value: 5000,
+      } as IndexerCheckpoint);
+      chainSyncCheckpointRepository.findOne.mockResolvedValue({
+        contract_id: 'CCONTRACT',
+        last_indexed_ledger: 1234,
+      } as ChainSyncCheckpoint);
+
+      await (service as any).onModuleInit();
+
+      expect(checkpointRepository.upsert).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 1234,
+        }),
+        ['key'],
+      );
+    });
+  });
+
+  describe('pollContractEvents checkpoint advance', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('advances the checkpoint to the last processed ledger, not the chain head', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_RPC_URL') return 'https://rpc.example';
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      // Working cursor sits at ledger 100 (bigint column read back as string).
+      checkpointRepository.findOne.mockResolvedValue({
+        key: CHECKPOINT_LEDGER_KEY,
+        value: '100', // Postgres returns bigint as a string
+      } as unknown as IndexerCheckpoint);
+
+      // Chain head is at 10_000, but this batch only returns one event at 101.
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          result: {
+            events: [
+              {
+                id: 'evt-1',
+                ledger: 101,
+                log_index: 0,
+                topic: [{ symbol: 'event' }, { symbol: 'created' }],
+                value: { event_id: { u64: '1' } },
+              },
+            ],
+            latestLedger: 10000,
+          },
+        }),
+      } as unknown as Response);
+
+      // No need to exercise the full handler chain for this test.
+      jest
+        .spyOn(service as any, 'storeAndProcessEvent')
+        .mockResolvedValue(undefined);
+
+      await service.pollContractEvents();
+
+      // The checkpoint must land on the processed ledger (101), never jump to
+      // the chain head (10_000) and skip events 102..10_000.
+      expect(checkpointRepository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 101,
+        }),
+        ['key'],
+      );
+      expect(checkpointRepository.upsert).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 10000,
+        }),
+        ['key'],
+      );
+    });
+
+    it('still advances the checkpoint to the chain head when a poll returns no events', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_RPC_URL') return 'https://rpc.example';
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        return undefined;
+      });
+
+      checkpointRepository.findOne.mockResolvedValue({
+        key: CHECKPOINT_LEDGER_KEY,
+        value: 100,
+      } as IndexerCheckpoint);
+
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          result: { events: [], latestLedger: 5000 },
+        }),
+      } as unknown as Response);
+
+      await service.pollContractEvents();
+
+      expect(checkpointRepository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 5000,
+        }),
+        ['key'],
+      );
+    });
+  });
+
+  describe('detectAndHandleReorg', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('returns null when there is no chain-sync checkpoint yet', async () => {
+      chainSyncCheckpointRepository.findOne.mockResolvedValue(null);
+
+      const result = await (service as any).detectAndHandleReorg(
+        'CTEST',
+        'https://rpc.example',
+      );
+
+      expect(result).toBeNull();
+      expect(contractEventRepository.delete).not.toHaveBeenCalled();
+    });
+
+    it('returns null on first run when no ledger hash has been stored yet', async () => {
+      chainSyncCheckpointRepository.findOne.mockResolvedValue({
+        contract_id: 'CTEST',
+        last_indexed_ledger: 100,
+        last_indexed_ledger_hash: null,
+      } as ChainSyncCheckpoint);
+
+      const result = await (service as any).detectAndHandleReorg(
+        'CTEST',
+        'https://rpc.example',
+      );
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null when the RPC ledger-hash lookup fails (skips silently)', async () => {
+      chainSyncCheckpointRepository.findOne.mockResolvedValue({
+        contract_id: 'CTEST',
+        last_indexed_ledger: 100,
+        last_indexed_ledger_hash: 'hash-100',
+      } as ChainSyncCheckpoint);
+
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({}),
+      } as unknown as Response);
+
+      const result = await (service as any).detectAndHandleReorg(
+        'CTEST',
+        'https://rpc.example',
+      );
+
+      expect(result).toBeNull();
+      expect(contractEventRepository.delete).not.toHaveBeenCalled();
+    });
+
+    it('returns null when the stored hash still matches the chain', async () => {
+      chainSyncCheckpointRepository.findOne.mockResolvedValue({
+        contract_id: 'CTEST',
+        last_indexed_ledger: 100,
+        last_indexed_ledger_hash: 'hash-100',
+      } as ChainSyncCheckpoint);
+
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({ result: { ledgers: [{ hash: 'hash-100' }] } }),
+      } as unknown as Response);
+
+      const result = await (service as any).detectAndHandleReorg(
+        'CTEST',
+        'https://rpc.example',
+      );
+
+      expect(result).toBeNull();
+      expect(contractEventRepository.delete).not.toHaveBeenCalled();
+    });
+
+    it('rolls back events, rewinds both checkpoints, and records a ReorgEvent when a divergence is detected', async () => {
+      const chainSync = {
+        contract_id: 'CTEST',
+        last_indexed_ledger: 100,
+        last_indexed_ledger_hash: 'hash-100',
+      } as ChainSyncCheckpoint;
+      chainSyncCheckpointRepository.findOne.mockResolvedValue(chainSync);
+      chainSyncCheckpointRepository.save.mockImplementation(
+        async (cp) => cp as ChainSyncCheckpoint,
+      );
+
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'INDEXER_REORG_ROLLBACK_DEPTH') return 10;
+        return undefined;
+      });
+
+      jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(async (_url, init: any) => {
+          const body = JSON.parse(init.body as string);
+          const ledger = body.params.startLedger;
+          if (ledger === 100) {
+            return {
+              ok: true,
+              json: async () => ({
+                result: { ledgers: [{ hash: 'hash-100-DIVERGED' }] },
+              }),
+            } as unknown as Response;
+          }
+          if (ledger === 90) {
+            return {
+              ok: true,
+              json: async () => ({
+                result: { ledgers: [{ hash: 'hash-90' }] },
+              }),
+            } as unknown as Response;
+          }
+          return {
+            ok: true,
+            json: async () => ({ result: { ledgers: [] } }),
+          } as unknown as Response;
+        });
+
+      contractEventRepository.delete.mockResolvedValue({
+        affected: 7,
+        raw: [],
+      } as unknown as DeleteResult);
+
+      checkpointRepository.upsert.mockResolvedValue({} as InsertResult);
+
+      const savedReorgEvent = { id: 'reorg-1' } as ReorgEvent;
+      reorgEventRepository.create.mockReturnValue(savedReorgEvent);
+      reorgEventRepository.save.mockResolvedValue(savedReorgEvent);
+
+      const result = await (service as any).detectAndHandleReorg(
+        'CTEST',
+        'https://rpc.example',
+      );
+
+      // Rolls back ContractEvent rows past the fork ledger (100 - 10 = 90).
+      expect(contractEventRepository.delete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ledger: expect.objectContaining({ _type: 'moreThan', _value: 90 }),
+        }),
+      );
+
+      // Mutates the same ChainSyncCheckpoint instance in place.
+      expect(chainSync.last_indexed_ledger).toBe(90);
+      expect(chainSync.last_indexed_ledger_hash).toBe('hash-90');
+      expect(chainSyncCheckpointRepository.save).toHaveBeenCalledWith(
+        chainSync,
+      );
+
+      // Rewinds the working (key/value) checkpoint to the same fork point so
+      // the next poll re-indexes from there.
+      expect(checkpointRepository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: CHECKPOINT_LEDGER_KEY,
+          value: 90,
+        }),
+        ['key'],
+      );
+
+      // Persists a ReorgEvent audit row capturing depth (100 - 90) and range.
+      expect(reorgEventRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          contract_id: 'CTEST',
+          fork_ledger: 90,
+          previous_ledger: 100,
+          previous_hash: 'hash-100',
+          new_hash: 'hash-100-DIVERGED',
+          rolled_back_event_count: 7,
+        }),
+      );
+      expect(reorgEventRepository.save).toHaveBeenCalledWith(savedReorgEvent);
+      expect(result).toBe(savedReorgEvent);
+    });
+  });
+
+  describe('pollContractEvents reorg integration', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('rolls back an injected reorg and re-indexes from the fork point within the same poll', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'SOROBAN_RPC_URL') return 'https://rpc.example';
+        if (key === 'SOROBAN_CONTRACT_ID') return 'CCONTRACT';
+        if (key === 'INDEXER_REORG_ROLLBACK_DEPTH') return 10;
+        return undefined;
+      });
+
+      // The chain-sync checkpoint holds a hash for ledger 100 that no longer
+      // matches what the chain reports for that ledger - a reorg happened
+      // since the last successful poll.
+      const chainSync = {
+        contract_id: 'CCONTRACT',
+        last_indexed_ledger: 100,
+        last_indexed_ledger_hash: 'hash-100',
+      } as ChainSyncCheckpoint;
+      chainSyncCheckpointRepository.findOne.mockResolvedValue(chainSync);
+      chainSyncCheckpointRepository.save.mockImplementation(
+        async (cp) => cp as ChainSyncCheckpoint,
+      );
+
+      // Stateful working-cursor mock so the rewind (during reorg handling)
+      // is visible to the getLastProcessedLedger() read later in the same
+      // poll call.
+      let workingCursor = 100;
+      checkpointRepository.findOne.mockImplementation(
+        async ({ where }: any) => {
+          if (where?.key === CHECKPOINT_LEDGER_KEY) {
+            return {
+              key: CHECKPOINT_LEDGER_KEY,
+              value: workingCursor,
+            } as IndexerCheckpoint;
+          }
+          return null;
+        },
+      );
+      checkpointRepository.upsert.mockImplementation(async (entity: any) => {
+        if (entity.key === CHECKPOINT_LEDGER_KEY) {
+          workingCursor = entity.value;
+        }
+        return {} as InsertResult;
+      });
+
+      contractEventRepository.delete.mockResolvedValue({
+        affected: 3,
+        raw: [],
+      } as unknown as DeleteResult);
+
+      const savedReorgEvent = { id: 'reorg-1' } as ReorgEvent;
+      reorgEventRepository.create.mockReturnValue(savedReorgEvent);
+      reorgEventRepository.save.mockResolvedValue(savedReorgEvent);
+
+      jest
+        .spyOn(service as any, 'storeAndProcessEvent')
+        .mockResolvedValue(undefined);
+
+      jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(async (_url, init: any) => {
+          const body = JSON.parse(init.body as string);
+
+          if (body.method === 'getLedgers') {
+            const ledger = body.params.startLedger;
+            if (ledger === 100) {
+              return {
+                ok: true,
+                json: async () => ({
+                  result: { ledgers: [{ hash: 'hash-100-DIVERGED' }] },
+                }),
+              } as unknown as Response;
+            }
+            return {
+              ok: true,
+              json: async () => ({
+                result: { ledgers: [{ hash: `hash-${ledger}` }] },
+              }),
+            } as unknown as Response;
+          }
+
+          // getEvents: re-fetch must resume right after the fork point (91),
+          // not from the pre-reorg position (101).
+          expect(body.params.startLedger).toBe(91);
+          return {
+            ok: true,
+            json: async () => ({
+              result: {
+                events: [
+                  {
+                    id: 'evt-canonical',
+                    ledger: 95,
+                    log_index: 0,
+                    topic: [{ symbol: 'event' }, { symbol: 'created' }],
+                    value: { event_id: { u64: '99' } },
+                  },
+                ],
+                latestLedger: 95,
+              },
+            }),
+          } as unknown as Response;
+        });
+
+      await service.pollContractEvents();
+
+      // Reorg rolled back ContractEvent rows past the fork ledger
+      // (100 - rollback depth 10 = 90).
+      expect(contractEventRepository.delete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ledger: expect.objectContaining({ _type: 'moreThan', _value: 90 }),
+        }),
+      );
+      expect(reorgEventRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          contract_id: 'CCONTRACT',
+          fork_ledger: 90,
+          previous_ledger: 100,
+          rolled_back_event_count: 3,
+        }),
+      );
+      expect(reorgEventRepository.save).toHaveBeenCalledWith(savedReorgEvent);
+
+      // Re-indexing resumed from the fork point and processed the canonical
+      // event the reorged chain now reports.
+      expect((service as any).storeAndProcessEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ ledger: 95 }),
+      );
+
+      // The working checkpoint lands on the newly re-indexed ledger (95),
+      // never on the pre-reorg position it was rewound from.
+      expect(checkpointRepository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ key: CHECKPOINT_LEDGER_KEY, value: 95 }),
         ['key'],
       );
     });

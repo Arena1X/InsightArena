@@ -3,6 +3,8 @@ import { PredictionsController } from './predictions.controller';
 import { PredictionsService } from './predictions.service';
 import { IDEMPOTENT_KEY } from '../common/idempotency/idempotent.decorator';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { PredictionsRateLimitGuard } from '../common/guards/predictions-rate-limit.guard';
+import { ThrottlerStorage } from '@nestjs/throttler';
 
 describe('PredictionsController — idempotency', () => {
   let controller: PredictionsController;
@@ -23,19 +25,25 @@ describe('PredictionsController — idempotency', () => {
         { provide: PredictionsService, useValue: predictionsService },
         {
           provide: IdempotencyService,
-          useValue: { acquire: jest.fn(), complete: jest.fn(), release: jest.fn() },
+          useValue: {
+            acquire: jest.fn(),
+            complete: jest.fn(),
+            release: jest.fn(),
+          },
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(PredictionsRateLimitGuard)
+      .useValue({
+        canActivate: jest.fn().mockResolvedValue(true),
+      })
+      .compile();
 
     controller = module.get(PredictionsController);
   });
 
   it('requires an Idempotency-Key on submit (POST /predictions)', () => {
-    const metadata = Reflect.getMetadata(
-      IDEMPOTENT_KEY,
-      controller.submit,
-    );
+    const metadata = Reflect.getMetadata(IDEMPOTENT_KEY, controller.submit);
     expect(metadata).toBe(true);
   });
 

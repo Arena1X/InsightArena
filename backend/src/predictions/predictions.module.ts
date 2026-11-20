@@ -5,6 +5,10 @@ import { PredictionFraudFlag } from './entities/prediction-fraud-flag.entity';
 import { PredictionsService } from './predictions.service';
 import { PredictionsController } from './predictions.controller';
 import { SlippageCheckerService } from './services/slippage-checker.service';
+import { PredictionFraudRulesService } from './services/prediction-fraud-rules.service';
+import { PostDeadlineEditRule } from './services/fraud-rules/post-deadline-edit.rule';
+import { DuplicateBurstRule } from './services/fraud-rules/duplicate-burst.rule';
+import { PredictionsExceptionFilter } from './filters/predictions-exception.filter';
 import { UsersModule } from '../users/users.module';
 import { MarketsModule } from '../markets/markets.module';
 import { SorobanModule } from '../soroban/soroban.module';
@@ -21,7 +25,14 @@ import { Market } from '../markets/entities/market.entity';
     CommonModule,
   ],
   controllers: [PredictionsController],
-  providers: [PredictionsService, SlippageCheckerService],
+  providers: [
+    PredictionsService,
+    SlippageCheckerService,
+    PredictionFraudRulesService,
+    PostDeadlineEditRule,
+    DuplicateBurstRule,
+    PredictionsExceptionFilter,
+  ],
   exports: [PredictionsService],
 })
 export class PredictionsModule {}

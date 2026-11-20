@@ -36,6 +36,9 @@ export class Competition {
   @Column({ type: 'timestamptz' })
   end_time: Date;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  join_deadline?: Date;
+
   @Column({ type: 'bigint', default: 0 })
   prize_pool_stroops: string;
 

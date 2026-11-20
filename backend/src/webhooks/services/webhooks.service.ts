@@ -1,9 +1,17 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as crypto from 'crypto';
 import { WebhookEndpoint } from '../entities/webhook-endpoint.entity';
-import { WebhookDeliveryLog } from '../entities/webhook-delivery-log.entity';
+import {
+  DeliveryStatus,
+  WebhookDeliveryLog,
+} from '../entities/webhook-delivery-log.entity';
 import { CreateWebhookEndpointDto } from '../dto/create-webhook-endpoint.dto';
 import { UpdateWebhookEndpointDto } from '../dto/update-webhook-endpoint.dto';
 import { User } from '../../users/entities/user.entity';
@@ -108,5 +116,50 @@ export class WebhooksService {
 
   private generateSecretKey(): string {
     return crypto.randomBytes(32).toString('hex');
+  }
+
+  // -------------------------------------------------------------------------
+  // Dead-letter queue (admin)
+  // -------------------------------------------------------------------------
+
+  async listDeadLetterDeliveries(
+    limit: number = 50,
+    offset: number = 0,
+  ): Promise<{ logs: WebhookDeliveryLog[]; total: number }> {
+    const [logs, total] = await this.deliveryLogRepository.findAndCount({
+      where: { status: DeliveryStatus.DEAD_LETTER },
+      relations: ['endpoint'],
+      order: { created_at: 'DESC' },
+      take: limit,
+      skip: offset,
+    });
+
+    return { logs, total };
+  }
+
+  async redriveDelivery(id: string): Promise<WebhookDeliveryLog> {
+    const log = await this.deliveryLogRepository.findOne({
+      where: { id },
+      relations: ['endpoint'],
+    });
+
+    if (!log) {
+      throw new NotFoundException('Webhook delivery not found');
+    }
+
+    if (log.status !== DeliveryStatus.DEAD_LETTER) {
+      throw new BadRequestException(
+        'Only dead-lettered deliveries can be redriven',
+      );
+    }
+
+    log.status = DeliveryStatus.PENDING;
+    log.attempt_count = 0;
+    log.next_retry_at = new Date();
+
+    const saved = await this.deliveryLogRepository.save(log);
+    this.logger.log(`Redrove dead-lettered webhook delivery ${id}`);
+
+    return saved;
   }
 }

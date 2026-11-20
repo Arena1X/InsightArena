@@ -2,7 +2,14 @@
 
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { apiClient, ApiError } from "@/lib/api";
+import {
+  apiClient,
+  ApiError,
+  sortMarkets,
+  isEndingSoon,
+  MARKET_SORT_OPTIONS,
+  type MarketSortKey,
+} from "@/lib/api";
 import { useFavorites } from "@/context/FavoritesContext";
 import { usePredictionSlip } from "@/context/PredictionSlipContext";
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
@@ -10,7 +17,7 @@ import { useDebounce } from "@/hooks/useDebounce";
 import MarketCard from "@/component/MarketCard";
 import { MarketsPageLoadingSkeleton } from "@/component/loading-route-skeletons";
 import { EmptyState } from "@/component/ui/empty-state";
-import { Heart, AlertCircle, Inbox, Loader2, Search, X } from "lucide-react";
+import { Heart, AlertCircle, Inbox, Loader2, Search, X, Clock } from "lucide-react";
 
 interface Market {
   id: string;
@@ -20,11 +27,17 @@ interface Market {
   totalStaked: number;
   closeAt: string;
   status: string;
+  createdAt?: string;
 }
 
 const CATEGORIES = ["All", "Sports", "Finance", "Crypto", "Politics", "Tech"];
+const STATUSES = ["All", "active", "upcoming", "closed"];
 const PAGE_SIZE = 12;
 const SCROLL_POSITION_KEY = "markets_scroll_position";
+
+function isValidSortKey(value: string | null): value is MarketSortKey {
+  return MARKET_SORT_OPTIONS.some((option) => option.key === value);
+}
 
 export default function MarketsPage() {
   const router = useRouter();
@@ -43,6 +56,15 @@ export default function MarketsPage() {
   const [hasMore, setHasMoreState] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState<string>(
     searchParams.get("category") || "All",
+  );
+  const [selectedStatus, setSelectedStatus] = useState<string>(
+    searchParams.get("status") || "All",
+  );
+  const [endingSoonOnly, setEndingSoonOnly] = useState<boolean>(
+    searchParams.get("endingSoon") === "1",
+  );
+  const [sortKey, setSortKey] = useState<MarketSortKey | null>(
+    isValidSortKey(searchParams.get("sort")) ? (searchParams.get("sort") as MarketSortKey) : null,
   );
   const [searchQuery, setSearchQuery] = useState<string>(
     searchParams.get("q") || "",
@@ -125,18 +147,38 @@ export default function MarketsPage() {
     await fetchMarketsPage(nextPage);
   }, [page, fetchMarketsPage]);
 
-  const { observerTarget, isLoading: isLoadingMore } = useInfiniteScroll({
+  const {
+    observerTarget,
+    isLoading: isLoadingMore,
+    loadMore,
+    announcement,
+  } = useInfiniteScroll({
     onLoadMore: handleLoadMore,
     enabled: viewMode === "all" && hasMore && !loading,
   });
 
-  // Update URL when category, search, or view changes
+  // Update URL when category, status, sort, ending-soon, search, or view changes
   useEffect(() => {
     const params = new URLSearchParams(searchParams);
     if (selectedCategory === "All") {
       params.delete("category");
     } else {
       params.set("category", selectedCategory);
+    }
+    if (selectedStatus === "All") {
+      params.delete("status");
+    } else {
+      params.set("status", selectedStatus);
+    }
+    if (endingSoonOnly) {
+      params.set("endingSoon", "1");
+    } else {
+      params.delete("endingSoon");
+    }
+    if (sortKey) {
+      params.set("sort", sortKey);
+    } else {
+      params.delete("sort");
     }
     if (debouncedSearch) {
       params.set("q", debouncedSearch);
@@ -149,9 +191,18 @@ export default function MarketsPage() {
       params.delete("view");
     }
     router.push(`?${params.toString()}`);
-  }, [selectedCategory, debouncedSearch, viewMode, router, searchParams]);
+  }, [
+    selectedCategory,
+    selectedStatus,
+    endingSoonOnly,
+    sortKey,
+    debouncedSearch,
+    viewMode,
+    router,
+    searchParams,
+  ]);
 
-  // Filter markets by category, search, and favorites
+  // Filter markets by category, status, ending-soon, search, and favorites; then sort
   const filteredMarkets = useMemo(() => {
     let filtered = markets;
 
@@ -159,6 +210,16 @@ export default function MarketsPage() {
       filtered = filtered.filter(
         (m) => m.category.toLowerCase() === selectedCategory.toLowerCase(),
       );
+    }
+
+    if (selectedStatus !== "All") {
+      filtered = filtered.filter(
+        (m) => m.status.toLowerCase() === selectedStatus.toLowerCase(),
+      );
+    }
+
+    if (endingSoonOnly) {
+      filtered = filtered.filter((m) => isEndingSoon(m.closeAt));
     }
 
     if (debouncedSearch) {
@@ -174,12 +235,48 @@ export default function MarketsPage() {
       filtered = filtered.filter((m) => favoriteIds.has(m.id));
     }
 
+    if (sortKey) {
+      filtered = sortMarkets(filtered, sortKey);
+    }
+
     return filtered;
-  }, [markets, selectedCategory, debouncedSearch, viewMode, favoriteIds]);
+  }, [
+    markets,
+    selectedCategory,
+    selectedStatus,
+    endingSoonOnly,
+    debouncedSearch,
+    viewMode,
+    favoriteIds,
+    sortKey,
+  ]);
 
   const handleCategoryChange = useCallback((category: string) => {
     setSelectedCategory(category);
   }, []);
+
+  const handleStatusChange = useCallback((status: string) => {
+    setSelectedStatus(status);
+  }, []);
+
+  const handleSortChange = useCallback((key: MarketSortKey) => {
+    setSortKey((prev) => (prev === key ? null : key));
+  }, []);
+
+  const handleClearAll = useCallback(() => {
+    setSelectedCategory("All");
+    setSelectedStatus("All");
+    setEndingSoonOnly(false);
+    setSortKey(null);
+    setSearchQuery("");
+  }, []);
+
+  const hasActiveFilters =
+    selectedCategory !== "All" ||
+    selectedStatus !== "All" ||
+    endingSoonOnly ||
+    sortKey !== null ||
+    debouncedSearch !== "";
 
   const handleViewModeChange = useCallback((mode: "all" | "favorites") => {
     setViewMode(mode);
@@ -304,6 +401,68 @@ export default function MarketsPage() {
           </div>
         )}
 
+        {/* Status + Ending Soon chips, Sort, Clear all */}
+        {viewMode === "all" && (
+          <div className="mb-6 flex flex-wrap items-center gap-4">
+            <div className="flex flex-wrap gap-2">
+              {STATUSES.map((status) => (
+                <button
+                  key={status}
+                  onClick={() => handleStatusChange(status)}
+                  className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium capitalize transition-all ${
+                    selectedStatus === status
+                      ? "bg-orange-500 text-white"
+                      : "bg-white/10 text-gray-300 hover:bg-white/20"
+                  }`}
+                  aria-pressed={selectedStatus === status}
+                >
+                  {status}
+                </button>
+              ))}
+              <button
+                onClick={() => setEndingSoonOnly((prev) => !prev)}
+                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium transition-all ${
+                  endingSoonOnly
+                    ? "bg-orange-500 text-white"
+                    : "bg-white/10 text-gray-300 hover:bg-white/20"
+                }`}
+                aria-pressed={endingSoonOnly}
+              >
+                <Clock size={14} />
+                Ending Soon
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+              <span className="text-xs uppercase tracking-wide text-gray-500">
+                Sort
+              </span>
+              {MARKET_SORT_OPTIONS.map((option) => (
+                <button
+                  key={option.key}
+                  onClick={() => handleSortChange(option.key)}
+                  className={`whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium transition-all ${
+                    sortKey === option.key
+                      ? "bg-orange-500 text-white"
+                      : "bg-white/10 text-gray-300 hover:bg-white/20"
+                  }`}
+                  aria-pressed={sortKey === option.key}
+                >
+                  {option.label}
+                </button>
+              ))}
+              {hasActiveFilters && (
+                <button
+                  onClick={handleClearAll}
+                  className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium text-gray-400 underline-offset-2 transition hover:text-white hover:underline"
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Error State */}
         {error && (
           <div className="mb-6 rounded-lg border border-red-500/50 bg-red-500/10 p-4">
@@ -332,7 +491,7 @@ export default function MarketsPage() {
               ))}
             </div>
 
-            {/* Infinite scroll trigger and loading state */}
+            {/* Infinite scroll trigger, load-more button, and ARIA announcement */}
             {viewMode === "all" && (
               <>
                 <div
@@ -347,6 +506,18 @@ export default function MarketsPage() {
                   </div>
                 )}
 
+                {hasMore && !isLoadingMore && (
+                  <div className="mt-6 flex justify-center">
+                    <button
+                      type="button"
+                      onClick={loadMore}
+                      className="rounded-lg border border-white/10 bg-white/5 px-6 py-2.5 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-orange-400/50"
+                    >
+                      Load more markets
+                    </button>
+                  </div>
+                )}
+
                 {!hasMore && markets.length > 0 && (
                   <div className="mt-8 text-center">
                     <p className="text-sm text-slate-400">
@@ -354,6 +525,10 @@ export default function MarketsPage() {
                     </p>
                   </div>
                 )}
+
+                <div aria-live="polite" aria-atomic="true" className="sr-only">
+                  {announcement}
+                </div>
               </>
             )}
           </>

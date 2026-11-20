@@ -12,6 +12,13 @@ export type PendingResolution = {
   participantCount: number;
 };
 
+export type PendingQueueItem = PendingResolution & {
+  deadline: string;
+  isOverdue: boolean;
+  teamA: string;
+  teamB: string;
+};
+
 export type OracleSubmissionHistoryItem = {
   id: string;
   marketId: string;
@@ -32,6 +39,9 @@ export type OracleReliability = {
 
 type OracleDashboardState = {
   pending: PendingResolution[];
+  queue: PendingQueueItem[];
+  pendingCount: number;
+  overdueCount: number;
   history: OracleSubmissionHistoryItem[];
   reliability: OracleReliability;
   loading: boolean;
@@ -54,13 +64,51 @@ const MOCK_PENDING: PendingResolution[] = [
   },
   {
     marketId: "mkt-102",
-    title: "Premier League: Arsenal vs Chelsea",
+    title: "Arsenal vs Chelsea",
     category: "Sports",
     closedAt: new Date(Date.now() - 7_200_000).toISOString(),
     outcomes: ["Arsenal", "Draw", "Chelsea"],
     participantCount: 64,
   },
+  {
+    marketId: "mkt-103",
+    title: "Lakers vs Celtics",
+    category: "Sports",
+    closedAt: new Date(Date.now() + 3_600_000).toISOString(),
+    outcomes: ["Lakers", "Celtics"],
+    participantCount: 41,
+  },
 ];
+
+export function parseMatchTeams(title: string): { teamA: string; teamB: string } {
+  const [teamA, teamB] = title.split(/\s+vs\s+/i);
+  return {
+    teamA: teamA?.trim() || "Team A",
+    teamB: teamB?.trim() || "Team B",
+  };
+}
+
+export function buildPendingQueue(
+  pending: PendingResolution[],
+  now = Date.now(),
+): PendingQueueItem[] {
+  return pending
+    .map((item) => {
+      const deadline = item.closedAt;
+      const { teamA, teamB } = parseMatchTeams(item.title);
+      return {
+        ...item,
+        deadline,
+        isOverdue: new Date(deadline).getTime() < now,
+        teamA,
+        teamB,
+      };
+    })
+    .sort(
+      (a, b) =>
+        new Date(a.deadline).getTime() - new Date(b.deadline).getTime(),
+    );
+}
 
 const MOCK_HISTORY: OracleSubmissionHistoryItem[] = [
   {
@@ -224,9 +272,15 @@ export function useOracleDashboard(): OracleDashboardState {
   );
 
   const reliability = useMemo(() => computeReliability(history), [history]);
+  const queue = useMemo(() => buildPendingQueue(pending), [pending]);
+  const pendingCount = queue.length;
+  const overdueCount = queue.filter((item) => item.isOverdue).length;
 
   return {
     pending,
+    queue,
+    pendingCount,
+    overdueCount,
     history,
     reliability,
     loading,

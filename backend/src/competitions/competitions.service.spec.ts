@@ -570,6 +570,93 @@ describe('CompetitionsService', () => {
         1,
       );
     });
+
+    describe('join deadline enforcement (#1949)', () => {
+      const fixedNow = new Date('2026-06-01T12:00:00.000Z');
+      const deadline = new Date('2026-06-01T12:00:00.000Z');
+
+      beforeEach(() => {
+        jest.useFakeTimers();
+        jest.setSystemTime(fixedNow);
+
+        mockParticipantsRepository.findOne.mockResolvedValue(null);
+        mockParticipantsRepository.create.mockImplementation((v) => v);
+        mockParticipantsRepository.save.mockImplementation((v) =>
+          Promise.resolve({ id: 'participant-1', ...v }),
+        );
+        mockRepository.increment.mockResolvedValue(undefined);
+      });
+
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      it('a join before deadline succeeds', async () => {
+        // System time is 1 second before deadline
+        jest.setSystemTime(new Date(deadline.getTime() - 1000));
+
+        mockRepository.findOne.mockResolvedValue({
+          ...mockCompetition,
+          id: 'comp-uuid-1',
+          join_deadline: deadline,
+          end_time: new Date(deadline.getTime() + 1000 * 60 * 60),
+          is_cancelled: false,
+          max_participants: 0,
+        });
+
+        const result = await service.joinCompetition(
+          'comp-uuid-1',
+          mockUser as User,
+        );
+
+        expect(result.id).toBe('participant-1');
+        expect(mockParticipantsRepository.save).toHaveBeenCalled();
+      });
+
+      it('a join exactly at the boundary follows the documented rule (inclusive boundary succeeds)', async () => {
+        // System time equals the exact join deadline timestamp
+        jest.setSystemTime(new Date(deadline.getTime()));
+
+        mockRepository.findOne.mockResolvedValue({
+          ...mockCompetition,
+          id: 'comp-uuid-1',
+          join_deadline: deadline,
+          end_time: new Date(deadline.getTime() + 1000 * 60 * 60),
+          is_cancelled: false,
+          max_participants: 0,
+        });
+
+        const result = await service.joinCompetition(
+          'comp-uuid-1',
+          mockUser as User,
+        );
+
+        expect(result.id).toBe('participant-1');
+        expect(mockParticipantsRepository.save).toHaveBeenCalled();
+      });
+
+      it('a join after deadline is rejected with a clear error containing the deadline', async () => {
+        // System time is 1 millisecond after deadline
+        jest.setSystemTime(new Date(deadline.getTime() + 1));
+
+        mockRepository.findOne.mockResolvedValue({
+          ...mockCompetition,
+          id: 'comp-uuid-1',
+          join_deadline: deadline,
+          end_time: new Date(deadline.getTime() + 1000 * 60 * 60),
+          is_cancelled: false,
+          max_participants: 0,
+        });
+
+        await expect(
+          service.joinCompetition('comp-uuid-1', mockUser as User),
+        ).rejects.toThrow(
+          `Cannot join competition: join deadline (${deadline.toISOString()}) has passed`,
+        );
+
+        expect(mockParticipantsRepository.save).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe('cancel', () => {
@@ -646,6 +733,55 @@ describe('CompetitionsService', () => {
 
       expect(result.is_cancelled).toBe(true);
       expect(mockNotificationsService.create).not.toHaveBeenCalled();
+    });
+
+    it('sends exactly one notification per currently-joined participant', async () => {
+      mockRepository.findOne.mockResolvedValue({ ...creatorCompetition });
+      mockRepository.save.mockImplementation((v) => Promise.resolve(v));
+      mockParticipantsRepository.find.mockResolvedValue([
+        {
+          user_id: 'user-uuid-2',
+          user: { stellar_address: 'GPARTICIPANT1' },
+        },
+        {
+          user_id: 'user-uuid-3',
+          user: { stellar_address: 'GPARTICIPANT2' },
+        },
+        {
+          user_id: 'user-uuid-4',
+          user: { stellar_address: 'GPARTICIPANT3' },
+        },
+      ]);
+
+      const result = await service.cancel('comp-uuid-1', 'user-uuid-1');
+
+      expect(result.is_cancelled).toBe(true);
+      expect(mockNotificationsService.create).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not notify participants who left before cancellation', async () => {
+      mockRepository.findOne.mockResolvedValue({ ...creatorCompetition });
+      mockRepository.save.mockImplementation((v) => Promise.resolve(v));
+      // Only user-uuid-2 is still joined
+      mockParticipantsRepository.find.mockResolvedValue([
+        {
+          user_id: 'user-uuid-2',
+          user: { stellar_address: 'GPARTICIPANT1' },
+        },
+      ]);
+
+      const result = await service.cancel('comp-uuid-1', 'user-uuid-1');
+
+      expect(result.is_cancelled).toBe(true);
+      expect(mockNotificationsService.create).toHaveBeenCalledTimes(1);
+      expect(mockNotificationsService.create).toHaveBeenCalledWith(
+        'GPARTICIPANT1',
+        'event_cancelled',
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({ competition_id: 'comp-uuid-1' }),
+        'user-uuid-2',
+      );
     });
   });
 
@@ -922,6 +1058,51 @@ describe('CompetitionsService', () => {
           'user-1',
         ),
       ).rejects.toThrow('Bracket already exists');
+    });
+
+    it('generates bracket with exactly one bye for 5 participants', async () => {
+      mockRepository.findOne.mockResolvedValue({
+        ...mockCompetition,
+        creator: { id: 'user-1' },
+      });
+      mockBracketRepo.findOne.mockResolvedValue(null);
+      mockParticipantsRepository.find.mockResolvedValue(seedParticipants(5));
+
+      const bracket = await service.generateBracket(
+        'comp-1',
+        { metric: SeedingMetric.Score },
+        'user-1',
+      );
+
+      const firstRoundMatchups = mockMatchupRepo.save.mock.calls
+        .map((call) => call[0])
+        .filter((m) => m.round_id === 'round-1');
+
+      const byes = firstRoundMatchups.filter((m) => m.is_bye);
+      expect(byes).toHaveLength(3);
+      expect(byes.every((m) => m.winner_id === m.participant_1_id)).toBe(true);
+    });
+
+    it('generates bracket with zero byes for power-of-two participant count (8)', async () => {
+      mockRepository.findOne.mockResolvedValue({
+        ...mockCompetition,
+        creator: { id: 'user-1' },
+      });
+      mockBracketRepo.findOne.mockResolvedValue(null);
+      mockParticipantsRepository.find.mockResolvedValue(seedParticipants(8));
+
+      const bracket = await service.generateBracket(
+        'comp-1',
+        { metric: SeedingMetric.Score },
+        'user-1',
+      );
+
+      const firstRoundMatchups = mockMatchupRepo.save.mock.calls
+        .map((call) => call[0])
+        .filter((m) => m.round_id === 'round-1');
+
+      expect(firstRoundMatchups).toHaveLength(4);
+      expect(firstRoundMatchups.every((m) => !m.is_bye)).toBe(true);
     });
   });
 });

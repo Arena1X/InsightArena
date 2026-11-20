@@ -39,7 +39,16 @@ async function bootstrap() {
 
   const config = new DocumentBuilder()
     .setTitle('InsightArena API')
-    .setDescription('The InsightArena Platform API description')
+    .setDescription(
+      'The InsightArena Platform API description\n\n' +
+        '### Rate limiting\n' +
+        'Every endpoint is rate-limited per tier (default/auth/read/write). ' +
+        'A `429 Too Many Requests` response always includes:\n' +
+        '- `X-RateLimit-Limit`: max requests allowed in the current window\n' +
+        '- `X-RateLimit-Remaining`: requests left in the window (`0` when throttled)\n' +
+        '- `X-RateLimit-Reset`: seconds until the window resets\n' +
+        '- `Retry-After`: seconds the client must wait before retrying',
+    )
     .setVersion('1.0')
     .addBearerAuth()
     .addApiKey(

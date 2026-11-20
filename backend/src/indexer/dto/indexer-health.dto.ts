@@ -55,6 +55,18 @@ export class IndexerHealthMetricsDto {
 
   @ApiProperty()
   dlq_events: number;
+
+  @ApiProperty({
+    description:
+      'Ledgers rewound by the most recently detected chain reorg (0 if none yet)',
+  })
+  last_reorg_depth: number;
+
+  @ApiProperty({
+    description:
+      'Ledgers re-scanned during recovery from the most recently detected chain reorg (0 if none yet)',
+  })
+  last_reorg_rescanned_ledger_count: number;
 }
 
 export class IndexerHealthResponseDto {
@@ -80,6 +92,12 @@ export class ReconciliationStatusDto {
 
   @ApiProperty()
   last_backfill_count: number;
+
+  @ApiProperty()
+  last_reorg_depth: number;
+
+  @ApiProperty()
+  last_reorg_rescanned_ledger_count: number;
 
   @ApiProperty()
   lag_in_ledgers: number;

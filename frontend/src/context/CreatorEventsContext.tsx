@@ -57,6 +57,9 @@ export interface CreatorEvent {
   rewardDistribution?: RewardDistribution;
   category?: string;
   bannerUrl?: string;
+  hasWaitlist?: boolean;
+  waitlistConfigured?: boolean;
+  waitlistHint?: string;
 }
 
 export interface CreatorEventMatch {

@@ -36,6 +36,8 @@ export interface ToastContextValue {
 export const ToastContext = createContext<ToastContextValue | null>(null);
 
 const DEFAULT_DURATION = 5000;
+const MAX_TOASTS = 5;
+const DEDUP_WINDOW_MS = 3000;
 
 let idCounter = 0;
 function generateId() {
@@ -48,7 +50,9 @@ function generateId() {
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const toastsRef = useRef<ToastItem[]>([]);
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const recentMessages = useRef<Map<string, number>>(new Map());
 
   const clearTimer = useCallback((id: string) => {
     const timer = timers.current.get(id);
@@ -61,7 +65,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const dismiss = useCallback(
     (id: string) => {
       clearTimer(id);
-      setToasts((prev) => prev.filter((toast) => toast.id !== id));
+      const next = toastsRef.current.filter((toast) => toast.id !== id);
+      toastsRef.current = next;
+      setToasts(next);
     },
     [clearTimer],
   );
@@ -78,17 +84,43 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const show = useCallback(
     (options: ToastOptions) => {
+      const variant = options.variant ?? "info";
+      const description = options.description;
+
+      // Dedup: skip identical messages within the window
+      const now = Date.now();
+      const lastSeen = recentMessages.current.get(description);
+      if (lastSeen && now - lastSeen < DEDUP_WINDOW_MS) {
+        return "";
+      }
+
+      // Overflow policy: keep the first five concurrent toasts and drop new arrivals.
+      if (toastsRef.current.length >= MAX_TOASTS) return "";
+
+      recentMessages.current.set(description, now);
+
+      // Clean old dedup entries
+      if (recentMessages.current.size > 50) {
+        for (const [msg, ts] of recentMessages.current) {
+          if (now - ts > DEDUP_WINDOW_MS) recentMessages.current.delete(msg);
+        }
+      }
+
       const id = generateId();
       const duration = options.duration ?? DEFAULT_DURATION;
       const toast: ToastItem = {
         id,
         title: options.title,
-        description: options.description,
-        variant: options.variant ?? "info",
+        description,
+        variant,
         duration,
         action: options.action,
       };
-      setToasts((prev) => [...prev, toast]);
+
+      const next = [...toastsRef.current, toast];
+      toastsRef.current = next;
+      setToasts(next);
+
       scheduleDismiss(id, duration);
       return id;
     },

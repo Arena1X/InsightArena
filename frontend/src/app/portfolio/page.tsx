@@ -1,23 +1,28 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowUpDown, ArrowUp, ArrowDown, Download, Filter, Wallet } from "lucide-react";
+import { ArrowUpDown, ArrowUp, ArrowDown, Download, Filter, Wallet, TrendingUp, TrendingDown } from "lucide-react";
 
 import Footer from "@/component/Footer";
 import Header from "@/component/Header";
 import PageBackground from "@/component/PageBackground";
+import { InteractiveChart, type ChartSeries } from "@/component/ui/interactive-chart";
 import { useWallet } from "@/context/WalletContext";
 import {
   usePortfolio,
+  usePnlHistory,
   type PositionStatus,
   type SortField,
   type SortDirection,
+  type TimeRange,
 } from "@/hooks/usePortfolio";
 import {
   computePositionPnl,
   downloadCsv,
   positionsToCsv,
   sumPnlBreakdown,
+  fillSparseHistory,
+  formatPnlForChart,
 } from "@/lib/utils";
 
 const STATUS_FILTERS: { label: string; value: PositionStatus | "all" }[] = [
@@ -30,6 +35,12 @@ const SORT_OPTIONS: { label: string; field: SortField }[] = [
   { label: "Stake", field: "stake" },
   { label: "Current Value", field: "current_value" },
   { label: "P&L", field: "pnl" },
+];
+
+const TIME_RANGES: { label: string; value: TimeRange }[] = [
+  { label: "7 Days", value: "7d" },
+  { label: "30 Days", value: "30d" },
+  { label: "All Time", value: "all" },
 ];
 
 function formatStroops(stroops: string): string {
@@ -69,6 +80,7 @@ export default function PortfolioPage() {
   const [sortBy, setSortBy] = useState<SortField>("stake");
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [page, setPage] = useState(1);
+  const [timeRange, setTimeRange] = useState<TimeRange>("30d");
 
   const effectiveAddress = address ?? "";
 
@@ -81,12 +93,67 @@ export default function PortfolioPage() {
     limit: 20,
   });
 
+  const { history, summary, isLoading: isLoadingHistory, error: historyError } = usePnlHistory({
+    address: effectiveAddress,
+    range: timeRange,
+  });
+
   const totalPages = useMemo(
     () => Math.max(1, Math.ceil(total / 20)),
     [total],
   );
 
   const pnlTotals = useMemo(() => sumPnlBreakdown(positions), [positions]);
+
+  // Transform history data into chart series with sparse data handling
+  const chartSeries = useMemo((): ChartSeries[] => {
+    if (!history || history.length === 0) return [];
+
+    // Fill sparse data for smoother visualization
+    const filledHistory = fillSparseHistory(history, timeRange);
+
+    return [
+      {
+        id: "realized",
+        name: "Realized P/L",
+        data: filledHistory.map((point) => ({
+          label: new Date(point.date).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+          }),
+          value: point.realized_pnl / 10_000_000, // Convert stroops to XLM
+          date: point.date,
+        })),
+        color: "#10b981", // Green
+      },
+      {
+        id: "unrealized",
+        name: "Unrealized P/L",
+        data: filledHistory.map((point) => ({
+          label: new Date(point.date).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+          }),
+          value: point.unrealized_pnl / 10_000_000, // Convert stroops to XLM
+          date: point.date,
+        })),
+        color: "#f59e0b", // Orange
+      },
+      {
+        id: "total",
+        name: "Total P/L",
+        data: filledHistory.map((point) => ({
+          label: new Date(point.date).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+          }),
+          value: point.total_pnl / 10_000_000, // Convert stroops to XLM
+          date: point.date,
+        })),
+        color: "#3b82f6", // Blue
+      },
+    ];
+  }, [history, timeRange]);
 
   const toggleSortDir = () => setSortDir((d) => (d === "asc" ? "desc" : "asc"));
 
@@ -141,6 +208,101 @@ export default function PortfolioPage() {
             </button>
           </div>
 
+          {/* P/L Summary Cards */}
+          {summary && (
+            <div className="mt-8 grid gap-4 sm:grid-cols-3">
+              <div className="rounded-xl border border-white/10 bg-gray-950/40 p-4">
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <TrendingUp className="h-4 w-4" />
+                  <span>Realized P/L</span>
+                </div>
+                <p className={`mt-2 text-2xl font-bold ${summary.total_realized > 0
+                  ? "text-green-400"
+                  : summary.total_realized < 0
+                    ? "text-red-400"
+                    : "text-gray-400"
+                  }`}>
+                  {summary.total_realized > 0 ? "+" : ""}
+                  {(summary.total_realized / 10_000_000).toFixed(2)} XLM
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-gray-950/40 p-4">
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <TrendingDown className="h-4 w-4" />
+                  <span>Unrealized P/L</span>
+                </div>
+                <p className={`mt-2 text-2xl font-bold ${summary.total_unrealized > 0
+                  ? "text-green-400"
+                  : summary.total_unrealized < 0
+                    ? "text-red-400"
+                    : "text-gray-400"
+                  }`}>
+                  {summary.total_unrealized > 0 ? "+" : ""}
+                  {(summary.total_unrealized / 10_000_000).toFixed(2)} XLM
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-gray-950/40 p-4">
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <Wallet className="h-4 w-4" />
+                  <span>Total P/L</span>
+                </div>
+                <p className={`mt-2 text-2xl font-bold ${summary.total_pnl > 0
+                  ? "text-green-400"
+                  : summary.total_pnl < 0
+                    ? "text-red-400"
+                    : "text-gray-400"
+                  }`}>
+                  {summary.total_pnl > 0 ? "+" : ""}
+                  {(summary.total_pnl / 10_000_000).toFixed(2)} XLM
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* P/L Over Time Chart */}
+          {!historyError && chartSeries.length > 0 && (
+            <div className="mt-8">
+              <div className="mb-4 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <h2 className="text-lg font-semibold">P/L Over Time</h2>
+                <div className="flex gap-1 rounded-xl border border-white/10 bg-gray-950/60 p-1">
+                  {TIME_RANGES.map((range) => (
+                    <button
+                      key={range.value}
+                      type="button"
+                      onClick={() => setTimeRange(range.value)}
+                      className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${timeRange === range.value
+                        ? "bg-orange-500/20 text-orange-400"
+                        : "text-gray-400 hover:text-white"
+                        }`}
+                    >
+                      {range.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {isLoadingHistory ? (
+                <div className="h-[300px] w-full animate-pulse rounded-xl border border-white/5 bg-[#0a0f1a]" />
+              ) : (
+                <InteractiveChart
+                  series={chartSeries}
+                  tooltipFormatter={(value) => formatPnlForChart(value * 10_000_000)}
+                  height={300}
+                />
+              )}
+            </div>
+          )}
+
+          {historyError && (
+            <div className="mt-8 rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-4">
+              <p className="text-sm text-yellow-400">
+                Unable to load P/L history. {historyError}
+              </p>
+            </div>
+          )}
+
           {/* Filters */}
           <div className="mt-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
@@ -154,11 +316,10 @@ export default function PortfolioPage() {
                       setStatusFilter(f.value);
                       setPage(1);
                     }}
-                    className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
-                      statusFilter === f.value
-                        ? "bg-orange-500/20 text-orange-400"
-                        : "text-gray-400 hover:text-white"
-                    }`}
+                    className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${statusFilter === f.value
+                      ? "bg-orange-500/20 text-orange-400"
+                      : "text-gray-400 hover:text-white"
+                      }`}
                   >
                     {f.label}
                   </button>
