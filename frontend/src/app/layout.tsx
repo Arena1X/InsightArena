@@ -10,6 +10,7 @@ import { ToastProvider } from "@/context/ToastContext";
 import { ConfirmProvider } from "@/context/ConfirmContext";
 import { FavoritesProvider } from "@/context/FavoritesContext";
 import { NotificationProvider } from "@/context/NotificationContext";
+import { PriceAlertProvider } from "@/context/PriceAlertContext";
 import { PredictionSlipProvider } from "@/context/PredictionSlipContext";
 import { PredictionSlipPanel, PredictionSlipFloatingButton } from "@/component/PredictionSlip";
 import { ThemeProvider } from "@/context/ThemeContext";
@@ -106,28 +107,30 @@ export default function RootLayout({
           <WalletProvider>
             <FavoritesProvider>
               <NotificationProvider>
-                <CreatorEventsProvider>
-                  <ToastProvider>
-                    <PredictionSlipProvider>
-                      <ConfirmProvider>
-                        <Suspense fallback={null}>
-                          <RouteProgress />
-                        </Suspense>
-                        <PwaManager />
-                        <a href="#main-content" className="skip-link">
-                          Skip to main content
-                        </a>
-                        <div id="main-content" tabIndex={-1}>
-                          <Suspense fallback={<StandardPageLoadingSkeleton />}>
-                            {children}
+                <PriceAlertProvider>
+                  <CreatorEventsProvider>
+                    <ToastProvider>
+                      <PredictionSlipProvider>
+                        <ConfirmProvider>
+                          <Suspense fallback={null}>
+                            <RouteProgress />
                           </Suspense>
-                        </div>
-                        <PredictionSlipFloatingButton />
-                        <PredictionSlipPanel />
-                      </ConfirmProvider>
-                    </PredictionSlipProvider>
-                  </ToastProvider>
-                </CreatorEventsProvider>
+                          <PwaManager />
+                          <a href="#main-content" className="skip-link">
+                            Skip to main content
+                          </a>
+                          <div id="main-content" tabIndex={-1}>
+                            <Suspense fallback={<StandardPageLoadingSkeleton />}>
+                              {children}
+                            </Suspense>
+                          </div>
+                          <PredictionSlipFloatingButton />
+                          <PredictionSlipPanel />
+                        </ConfirmProvider>
+                      </PredictionSlipProvider>
+                    </ToastProvider>
+                  </CreatorEventsProvider>
+                </PriceAlertProvider>
               </NotificationProvider>
             </FavoritesProvider>
           </WalletProvider>

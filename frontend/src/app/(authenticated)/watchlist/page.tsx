@@ -3,10 +3,12 @@
 import { useEffect, useState, useMemo } from "react";
 import { apiClient } from "@/lib/api";
 import { useFavorites } from "@/context/FavoritesContext";
+import { useLiveOddsWithAlerts } from "@/hooks/useLiveOddsWithAlerts";
 import MarketCard from "@/component/MarketCard";
+import PriceAlertManager from "@/component/PriceAlertManager";
 import { EmptyState } from "@/component/ui/empty-state";
 import { Skeleton } from "@/component/ui/skeleton";
-import { Heart } from "lucide-react";
+import { Heart, Bell } from "lucide-react";
 
 interface Market {
   id: string;
@@ -26,6 +28,7 @@ export default function WatchlistPage() {
   } = useFavorites();
   const [markets, setMarkets] = useState<Market[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedMarket, setSelectedMarket] = useState<Market | null>(null);
 
   // Fetch all markets
   useEffect(() => {
@@ -67,6 +70,10 @@ export default function WatchlistPage() {
     console.log(`Predict clicked for market ${marketId}`);
   };
 
+  const handleManageAlerts = (market: Market) => {
+    setSelectedMarket(market);
+  };
+
   if (loading || favoritesLoading) {
     return (
       <div className="space-y-6">
@@ -94,16 +101,45 @@ export default function WatchlistPage() {
         </p>
       </div>
 
+      {selectedMarket && (
+        <div className="mb-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-xl font-bold text-white flex items-center gap-2">
+              <Bell size={20} />
+              Manage Alerts - {selectedMarket.title}
+            </h2>
+            <button
+              onClick={() => setSelectedMarket(null)}
+              className="text-sm text-gray-400 hover:text-white"
+            >
+              Close
+            </button>
+          </div>
+          <PriceAlertManager
+            marketId={selectedMarket.id}
+            marketTitle={selectedMarket.title}
+          />
+        </div>
+      )}
+
       {watchlistMarkets.length > 0 ? (
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
           {watchlistMarkets.map((market) => (
-            <MarketCard
-              key={market.id}
-              market={market}
-              isFavorite={favoriteIds.has(market.id)}
-              onFavoriteToggle={() => handleFavoriteToggle(market.id)}
-              onPredict={() => handlePredict(market.id)}
-            />
+            <div key={market.id} className="space-y-3">
+              <WatchlistMarketCard
+                market={market}
+                isFavorite={favoriteIds.has(market.id)}
+                onFavoriteToggle={() => handleFavoriteToggle(market.id)}
+                onPredict={() => handlePredict(market.id)}
+              />
+              <button
+                onClick={() => handleManageAlerts(market)}
+                className="w-full flex items-center justify-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm text-gray-300 hover:bg-white/10 hover:text-white transition-colors"
+              >
+                <Bell size={16} />
+                Manage Price Alerts
+              </button>
+            </div>
           ))}
         </div>
       ) : (
@@ -116,5 +152,30 @@ export default function WatchlistPage() {
         />
       )}
     </div>
+  );
+}
+
+// Component that monitors a single market's live odds with alerts
+function WatchlistMarketCard({
+  market,
+  isFavorite,
+  onFavoriteToggle,
+  onPredict,
+}: {
+  market: Market;
+  isFavorite: boolean;
+  onFavoriteToggle: () => void;
+  onPredict: () => void;
+}) {
+  // This hook will automatically check price alerts when odds update
+  useLiveOddsWithAlerts(market.id);
+
+  return (
+    <MarketCard
+      market={market}
+      isFavorite={isFavorite}
+      onFavoriteToggle={onFavoriteToggle}
+      onPredict={onPredict}
+    />
   );
 }
