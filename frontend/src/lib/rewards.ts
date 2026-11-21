@@ -112,6 +112,80 @@ export const DEFAULT_REWARD_HISTORY_SORT: RewardHistorySort = {
   direction: "desc",
 };
 
+// ── Reward item sorting ──────────────────────────────────────────────────
+//
+// Types and helpers for sorting individual reward items in the rewards list.
+
+export type RewardSortKey = "amount" | "status" | "market";
+
+export type RewardSortState = {
+  key: RewardSortKey;
+  direction: SortDirection;
+};
+
+export const DEFAULT_REWARD_SORT: RewardSortState = {
+  key: "amount",
+  direction: "desc",
+};
+
+/**
+ * Toggles the sort for a clicked column: clicking the active column flips
+ * direction, clicking a different column switches to it with a sensible
+ * starting direction (descending for amount, ascending for text).
+ */
+export function toggleRewardSort(
+  current: RewardSortState,
+  key: RewardSortKey,
+): RewardSortState {
+  if (current.key === key) {
+    return { key, direction: current.direction === "asc" ? "desc" : "asc" };
+  }
+
+  const defaultDirection: SortDirection = key === "amount" ? "desc" : "asc";
+  return { key, direction: defaultDirection };
+}
+
+/**
+ * Compares two reward items for the given sort.
+ * Ties fall back to `id` for a stable, deterministic order.
+ */
+export function compareRewardItems(
+  a: RewardItem,
+  b: RewardItem,
+  sort: RewardSortState,
+): number {
+  const direction = sort.direction === "asc" ? 1 : -1;
+  let result = 0;
+
+  switch (sort.key) {
+    case "amount": {
+      result = a.amountXlm - b.amountXlm;
+      break;
+    }
+    case "status": {
+      result = a.status.localeCompare(b.status);
+      break;
+    }
+    case "market": {
+      result = a.marketTitle.localeCompare(b.marketTitle, undefined, {
+        sensitivity: "base",
+      });
+      break;
+    }
+  }
+
+  if (result !== 0) return result * direction;
+  return a.id.localeCompare(b.id);
+}
+
+/** Returns a new array sorted by `sort` without mutating the input. */
+export function sortRewardItems(
+  items: RewardItem[],
+  sort: RewardSortState,
+): RewardItem[] {
+  return [...items].sort((a, b) => compareRewardItems(a, b, sort));
+}
+
 /** Placeholder rendered (and exported) for a missing/empty field value. */
 export const EMPTY_REWARD_FIELD = "—";
 
