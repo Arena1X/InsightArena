@@ -148,6 +148,9 @@ export default function InvitePage({ params }: InvitePageProps) {
         </div>
       </div>
     </section>
+  );
+}
+
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import InvitePreview from "@/component/creator-events/InvitePreview";
