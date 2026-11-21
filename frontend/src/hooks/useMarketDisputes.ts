@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { apiClient, ApiError } from "@/lib/api";
 
 export const DISPUTE_REASON_CATEGORIES = [
@@ -47,9 +48,17 @@ type UseMarketDisputesResult = {
   submitting: boolean;
   submitError: string | null;
   submitSuccess: string | null;
+  /** ID of the dispute currently open in the detail view, synced to ?dispute= */
+  activeDisputeId: string | null;
+  /** Whether the new-dispute form is open, synced to ?disputeForm=1 */
+  showForm: boolean;
   refresh: (marketId: string) => Promise<void>;
   submitDispute: (input: CreateDisputeInput) => Promise<MarketDispute>;
   clearStatus: () => void;
+  openDispute: (id: string) => void;
+  closeDispute: () => void;
+  openForm: () => void;
+  closeForm: () => void;
 };
 
 function normalizeStatus(status: string): MarketDispute["status"] {
@@ -105,12 +114,54 @@ function guessMimeType(url: string): string | null {
 }
 
 export function useMarketDisputes(): UseMarketDisputesResult {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [disputes, setDisputes] = useState<MarketDispute[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+
+  // Derive URL-driven state from search params.
+  const activeDisputeId = searchParams.get("dispute");
+  const showForm = searchParams.get("disputeForm") === "1";
+
+  /** Replace search params, preserving unrelated params. */
+  const updateParams = useCallback(
+    (patch: Record<string, string | null>) => {
+      const next = new URLSearchParams(searchParams.toString());
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === null) {
+          next.delete(key);
+        } else {
+          next.set(key, value);
+        }
+      }
+      router.replace(`?${next.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
+
+  const openDispute = useCallback(
+    (id: string) => {
+      updateParams({ dispute: id, disputeForm: null });
+    },
+    [updateParams],
+  );
+
+  const closeDispute = useCallback(() => {
+    updateParams({ dispute: null });
+  }, [updateParams]);
+
+  const openForm = useCallback(() => {
+    updateParams({ disputeForm: "1", dispute: null });
+  }, [updateParams]);
+
+  const closeForm = useCallback(() => {
+    updateParams({ disputeForm: null });
+  }, [updateParams]);
 
   const refresh = useCallback(async (marketId: string) => {
     setLoading(true);
@@ -297,8 +348,14 @@ export function useMarketDisputes(): UseMarketDisputesResult {
     submitting,
     submitError,
     submitSuccess,
+    activeDisputeId,
+    showForm,
     refresh,
     submitDispute,
     clearStatus,
+    openDispute,
+    closeDispute,
+    openForm,
+    closeForm,
   };
 }
