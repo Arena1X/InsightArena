@@ -264,6 +264,9 @@ export default function LeaderboardsPage() {
     isLoading,
     error,
     isEmpty,
+    loadMore,
+    isLoadingMore,
+    hasMore,
     compareDate,
     setCompareDate,
     snapshotDeltas,
@@ -368,6 +371,9 @@ export default function LeaderboardsPage() {
           entries={tableEntries}
           isLoading={isLoading}
           showDelta={showCompare && snapshotDeltas.size > 0}
+          onLoadMore={loadMore}
+          isLoadingMore={isLoadingMore}
+          hasMore={hasMore}
         />
         {isEmpty && !isLoading && (
           <p className="text-center text-sm text-gray-500 py-4">
