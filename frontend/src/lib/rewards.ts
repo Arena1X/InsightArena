@@ -81,6 +81,67 @@ export type ClaimRewardItemResult = {
   transactionHash: string;
 };
 
+// ── Wallet rewards item table: sorting ──────────────────────────────────
+//
+// Separate from the reward history table, this is the sorting state for
+// the wallet card's claimable/vesting items list.
+
+export type RewardSortKey = "amount" | "market" | "status";
+
+export type RewardSortState = {
+  key: RewardSortKey;
+  direction: SortDirection;
+};
+
+export const DEFAULT_REWARD_SORT: RewardSortState = {
+  key: "amount",
+  direction: "desc",
+};
+
+export function toggleRewardSort(
+  current: RewardSortState,
+  key: RewardSortKey,
+): RewardSortState {
+  if (current.key === key) {
+    return { key, direction: current.direction === "asc" ? "desc" : "asc" };
+  }
+  const defaultDirection: SortDirection = key === "amount" ? "desc" : "asc";
+  return { key, direction: defaultDirection };
+}
+
+function compareRewardItems(
+  a: RewardItem,
+  b: RewardItem,
+  sort: RewardSortState,
+): number {
+  const direction = sort.direction === "asc" ? 1 : -1;
+  let result = 0;
+
+  switch (sort.key) {
+    case "amount":
+      result = a.amountXlm - b.amountXlm;
+      break;
+    case "market":
+      result = a.marketTitle.localeCompare(b.marketTitle, undefined, {
+        sensitivity: "base",
+      });
+      break;
+    case "status":
+      result = a.status.localeCompare(b.status);
+      break;
+  }
+
+  if (result !== 0) return result * direction;
+  return a.id.localeCompare(b.id);
+}
+
+export function sortRewardItems(
+  items: RewardItem[],
+  sort: RewardSortState,
+): RewardItem[] {
+  return [...items].sort((a, b) => compareRewardItems(a, b, sort));
+}
+
 // ── Rewards history table: sorting + CSV export ──────────────────────────
 //
 // Shared, framework-agnostic helpers for RewardHistoryTable so the sort
