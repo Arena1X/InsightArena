@@ -47,6 +47,11 @@ const initialMarkets = [
   { name: "Litecoin", price: "$39422.76", volume: "2.1B", change: "+10.29%", isFavorite: false },
 ];
 
+interface PreviewTarget {
+  name: string;
+  price: string;
+}
+
 export default function TradingPage() {
   const [activeTab, setActiveTab] = useState("Live market");
   const [search, setSearch] = useState("");
@@ -124,6 +129,7 @@ export default function TradingPage() {
     if (!isOnline) return;
     alert(`Trade clicked for ${name}`);
   };
+
   const handleFavorite = (name: string) => {
     if (!isOnline) return;
     setMarkets((prev) =>
@@ -269,6 +275,17 @@ export default function TradingPage() {
         </main>
         <Footer />
       </div>
+
+      {/* Order preview modal — rendered outside the scrollable main so it overlays correctly */}
+      <OrderPreviewModal
+        marketName={previewTarget?.name ?? ""}
+        price={previewTarget?.price ?? ""}
+        isOpen={previewTarget !== null}
+        initialStake={10}
+        odds={1}
+        onCancel={() => setPreviewTarget(null)}
+        onConfirm={handleConfirmTrade}
+      />
     </PageBackground>
   );
 } 
