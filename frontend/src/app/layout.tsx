@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
+import Script from "next/script";
 
 import { StandardPageLoadingSkeleton } from "@/component/loading-route-skeletons";
 import { PwaManager } from "@/component/PwaManager";
@@ -92,10 +93,9 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        {/* Pre-hydration theme script — runs before React mounts to prevent FOUC.
-            Reads the persisted mode from localStorage. "system" (or missing)
-            falls through to the OS prefers-color-scheme media query. */}
-        <script
+        <Script
+          id="theme-initialization"
+          strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
             __html: `(function(){try{var m=localStorage.getItem('insightarena.theme.v1');var d=(m==='dark')||(m!=='light'&&window.matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.classList.toggle('dark',d)}catch(e){}})()`,
           }}
