@@ -8,6 +8,12 @@ export interface QueuedAction {
 
 const QUEUE_KEY = "insightarena.action_queue";
 const MAX_RETRIES = 3;
+export const QUEUE_CHANGED_EVENT = "insightarena:action-queue-changed";
+
+function writeQueue(queue: QueuedAction[]): void {
+  window.localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+  window.dispatchEvent(new Event(QUEUE_CHANGED_EVENT));
+}
 
 export function queueAction(type: QueuedAction["type"], payload: Record<string, unknown>): string {
   if (typeof window === "undefined") return "";
@@ -24,7 +30,7 @@ export function queueAction(type: QueuedAction["type"], payload: Record<string, 
   try {
     const queue = getQueue();
     queue.push(action);
-    window.localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+    writeQueue(queue);
   } catch {
   }
 
@@ -46,8 +52,7 @@ export function removeQueuedAction(id: string): void {
   if (typeof window === "undefined") return;
 
   try {
-    const queue = getQueue().filter((a) => a.id !== id);
-    window.localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+    writeQueue(getQueue().filter((a) => a.id !== id));
   } catch {
   }
 }
@@ -56,10 +61,9 @@ export function updateQueuedActionRetries(id: string, retries: number): void {
   if (typeof window === "undefined") return;
 
   try {
-    const queue = getQueue().map((a) =>
-      a.id === id ? { ...a, retries } : a
+    writeQueue(
+      getQueue().map((a) => (a.id === id ? { ...a, retries } : a))
     );
-    window.localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
   } catch {
   }
 }
@@ -69,6 +73,7 @@ export function clearQueue(): void {
 
   try {
     window.localStorage.removeItem(QUEUE_KEY);
+    window.dispatchEvent(new Event(QUEUE_CHANGED_EVENT));
   } catch {
   }
 }
