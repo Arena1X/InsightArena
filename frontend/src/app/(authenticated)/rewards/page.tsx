@@ -5,7 +5,7 @@ import RewardHistoryTable, {
   RewardHistoryEntry,
 } from "@/component/rewards/RewardHistoryTable";
 import UpcomingRewards from "@/component/rewards/UpcomingRewards";
-import RewardStatusBadge from "@/component/rewards/RewardStatusBadge";
+import RewardItemCard from "@/component/rewards/RewardItemCard";
 import { useWallet } from "@/context/WalletContext";
 import { useRewards } from "@/hooks/useRewards";
 import {
@@ -170,9 +170,11 @@ export default function RewardsPage() {
     isLoading: isRewardsLoading,
     error: rewardsError,
     refetch: refetchRewards,
-    claim: claimRewards,
-    claimStatus,
-    claimError,
+    claimableItems,
+    vestingItems,
+    claimItem,
+    claimAllItems,
+    isClaimingAll,
     hasClaimableRewards,
     isEmpty: hasNoRewards,
   } = useRewards();
@@ -330,14 +332,14 @@ export default function RewardsPage() {
 
           {address && !isRewardsLoading && !rewardsError && (
             <button
-              onClick={claimRewards}
-              disabled={!hasClaimableRewards || claimStatus === "pending"}
+              onClick={claimAllItems}
+              disabled={!hasClaimableRewards || isClaimingAll}
               className="inline-flex items-center gap-2 rounded-xl bg-orange-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {claimStatus === "pending" && (
+              {isClaimingAll && (
                 <Loader2 className="h-4 w-4 animate-spin" />
               )}
-              {claimStatus === "pending"
+              {isClaimingAll
                 ? "Claiming…"
                 : hasClaimableRewards
                   ? "Claim All"
@@ -422,24 +424,39 @@ export default function RewardsPage() {
               </div>
             </div>
 
-            {claimStatus !== "idle" && (
-              <div className="mt-4 flex items-center gap-3">
-                <RewardStatusBadge
-                  status={
-                    claimStatus === "pending"
-                      ? "processing"
-                      : claimStatus === "success"
-                        ? "claimed"
-                        : "failed"
-                  }
-                />
-                {claimStatus === "error" && claimError && (
-                  <span className="text-xs text-rose-300">{claimError}</span>
-                )}
-                {claimStatus === "success" && (
-                  <span className="text-xs text-emerald-300">
-                    Rewards claimed successfully.
-                  </span>
+            {/* Claimable Items */}
+            {claimableItems.length > 0 && (
+              <div className="mt-6">
+                <h3 className="mb-3 text-sm font-semibold text-white">
+                  Claimable Rewards ({claimableItems.length})
+                </h3>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {claimableItems.map((item) => (
+                    <RewardItemCard
+                      key={item.id}
+                      item={item}
+                      onRetry={claimItem}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Vesting Items */}
+            {vestingItems.length > 0 && (
+              <div className="mt-6">
+                <h3 className="mb-3 text-sm font-semibold text-white">
+                  Vesting Rewards ({vestingItems.length})
+                </h3>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {vestingItems.slice(0, 6).map((item) => (
+                    <RewardItemCard key={item.id} item={item} />
+                  ))}
+                </div>
+                {vestingItems.length > 6 && (
+                  <p className="mt-3 text-xs text-gray-400">
+                    And {vestingItems.length - 6} more vesting...
+                  </p>
                 )}
               </div>
             )}
