@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildTableOfContents,
   calculateAverageStake,
   calculatePoolStats,
   computePositionPnl,
+  downloadCsv,
   filterDocSections,
+  PORTFOLIO_CSV_HEADERS,
   positionsToCsv,
   sortLeaderboardWithTieBreak,
   detectTies,
@@ -155,6 +157,50 @@ describe("positionsToCsv", () => {
     expect(lines).toHaveLength(3); // header + 2 rows
     expect(lines[1]).toContain("Market A");
     expect(lines[2]).toContain("Market B");
+  });
+
+  it("exports only the positions remaining after the active status filter", () => {
+    const positions = [
+      buildPosition({ market_title: "Settled market", status: "settled" }),
+      buildPosition({ market_title: "Open market", status: "open" }),
+    ];
+
+    const csv = positionsToCsv(
+      positions.filter((position) => position.status === "open"),
+    );
+    const lines = csv.split("\n");
+
+    expect(lines[0]).toBe(PORTFOLIO_CSV_HEADERS.join(","));
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("Open market");
+    expect(lines[1]).not.toContain("Settled market");
+  });
+
+  it("exports a header-only CSV for an empty portfolio", () => {
+    expect(positionsToCsv([])).toBe(PORTFOLIO_CSV_HEADERS.join(","));
+  });
+});
+
+describe("downloadCsv", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("creates and clicks a browser download link for the CSV", () => {
+    const createObjectURL = vi.fn(() => "blob:portfolio-csv");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+
+    downloadCsv("portfolio.csv", "Market,Status");
+
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(click).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:portfolio-csv");
+    expect(document.querySelector('a[download="portfolio.csv"]')).toBeNull();
   });
 });
 

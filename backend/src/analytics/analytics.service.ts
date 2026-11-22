@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Between, Repository } from 'typeorm';
 import { clampAnalyticsDateRange } from '../common/dto/date-range-query.dto';
 import { LeaderboardEntry } from '../leaderboard/entities/leaderboard-entry.entity';
 import { Market } from '../markets/entities/market.entity';
@@ -25,6 +25,7 @@ import {
 } from './dto/category-analytics.dto';
 import { CohortDataDto, RetentionResponseDto } from './dto/retention.dto';
 import { PlatformStatsDto } from './dto/platform-stats.dto';
+import { ConversionFunnelDto } from './dto/conversion-funnel.dto';
 import { CacheService } from '../cache/cache.service';
 
 /** Tier thresholds: Bronze < 200, Silver < 500, Gold < 1000, Platinum ≥ 1000 */
@@ -789,6 +790,66 @@ export class AnalyticsService {
       `${period}:${periods}`,
       () => this.computeRetention(period, periods),
     );
+  }
+
+  async getConversionFunnel(
+    from: Date,
+    to: Date,
+  ): Promise<ConversionFunnelDto> {
+    const [signups, firstPredictions, payouts] = await Promise.all([
+      this.usersRepository.count({
+        where: { created_at: Between(from, to) },
+      }),
+      this.predictionsRepository
+        .createQueryBuilder('prediction')
+        .innerJoin('prediction.user', 'user')
+        .select('COUNT(DISTINCT prediction.userId)', 'count')
+        .where('user.created_at BETWEEN :from AND :to', { from, to })
+        .andWhere('prediction.submitted_at >= user.created_at')
+        .andWhere('prediction.submitted_at <= :to', { to })
+        .getRawOne<{ count: string | number }>(),
+      this.predictionsRepository
+        .createQueryBuilder('prediction')
+        .innerJoin('prediction.user', 'user')
+        .select('COUNT(DISTINCT prediction.userId)', 'count')
+        .where('user.created_at BETWEEN :from AND :to', { from, to })
+        .andWhere('prediction.submitted_at >= user.created_at')
+        .andWhere('prediction.submitted_at <= :to', { to })
+        .andWhere('CAST(prediction.payout_amount_stroops AS BIGINT) > 0')
+        .getRawOne<{ count: string | number }>(),
+    ]);
+
+    const firstPredictionCount = Number(firstPredictions?.count ?? 0);
+    const payoutCount = Number(payouts?.count ?? 0);
+
+    return {
+      stages: [
+        {
+          stage: 'signup',
+          count: signups,
+          conversion_rate: 100,
+        },
+        {
+          stage: 'first_prediction',
+          count: firstPredictionCount,
+          conversion_rate:
+            signups > 0
+              ? Math.round((firstPredictionCount / signups) * 10000) / 100
+              : 0,
+        },
+        {
+          stage: 'payout',
+          count: payoutCount,
+          conversion_rate:
+            firstPredictionCount > 0
+              ? Math.round((payoutCount / firstPredictionCount) * 10000) / 100
+              : 0,
+        },
+      ],
+      from,
+      to,
+      generated_at: new Date(),
+    };
   }
 
   private async computeRetention(

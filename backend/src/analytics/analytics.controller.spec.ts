@@ -1,3 +1,4 @@
+import { ValidationPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AnalyticsController } from './analytics.controller';
 import { AnalyticsService } from './analytics.service';
@@ -107,6 +108,7 @@ describe('AnalyticsController', () => {
             getMarketHistory: jest.fn(),
             getDashboardKPIs: jest.fn(),
             getCategoryAnalytics: jest.fn(),
+            getConversionFunnel: jest.fn(),
           },
         },
         {
@@ -305,6 +307,54 @@ describe('AnalyticsController', () => {
 
       expect(result).toEqual(mockCategoryAnalytics);
       expect(service.getCategoryAnalytics).toHaveBeenCalled();
+    });
+  });
+
+  describe('getConversionFunnel', () => {
+    it('passes the resolved date range to the service', async () => {
+      const from = '2026-03-01T00:00:00.000Z';
+      const to = '2026-03-31T23:59:59.999Z';
+      const response = {
+        stages: [
+          { stage: 'signup', count: 4, conversion_rate: 100 },
+          { stage: 'first_prediction', count: 3, conversion_rate: 75 },
+          { stage: 'payout', count: 2, conversion_rate: 66.67 },
+        ],
+        from: new Date(from),
+        to: new Date(to),
+        generated_at: new Date(),
+      };
+      const query = new DateRangeQueryDto();
+      query.from = from;
+      query.to = to;
+      service.getConversionFunnel.mockResolvedValue(response);
+
+      const result = await controller.getConversionFunnel(query);
+
+      expect(result).toEqual(response);
+      expect(service.getConversionFunnel).toHaveBeenCalledWith(
+        new Date(from),
+        new Date(to),
+      );
+    });
+
+    it('rejects an invalid date range with HTTP 400 validation', async () => {
+      const query = new DateRangeQueryDto();
+      query.from = '2026-03-31T23:59:59.999Z';
+      query.to = '2026-03-01T00:00:00.000Z';
+
+      const validationPipe = new ValidationPipe({
+        transform: true,
+        whitelist: true,
+      });
+
+      await expect(
+        validationPipe.transform(query, {
+          type: 'query',
+          metatype: DateRangeQueryDto,
+        }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(service.getConversionFunnel).not.toHaveBeenCalled();
     });
   });
 });

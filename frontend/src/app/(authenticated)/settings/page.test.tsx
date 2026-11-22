@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import SettingsPage from "./page";
 import * as api from "@/lib/api";
 
@@ -40,6 +40,10 @@ describe("SettingsPage - Notification Preferences Form (#1551)", () => {
     );
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("renders notification category toggles loaded from API", async () => {
     render(<SettingsPage />);
 
@@ -68,7 +72,7 @@ describe("SettingsPage - Notification Preferences Form (#1551)", () => {
     expect(digestsToggle).toHaveAttribute("aria-checked", "false");
   });
 
-  it("shows save/reset bar on dirty state when toggling categories", async () => {
+  it("optimistically updates a toggle while its debounced save is pending", async () => {
     render(<SettingsPage />);
 
     await waitFor(() => {
@@ -76,8 +80,6 @@ describe("SettingsPage - Notification Preferences Form (#1551)", () => {
         screen.getByRole("switch", { name: "Weekly Activity Digests" })
       ).toBeInTheDocument();
     });
-
-    expect(screen.queryByTestId("save-reset-bar")).not.toBeInTheDocument();
 
     const digestsToggle = screen.getByRole("switch", {
       name: "Weekly Activity Digests",
@@ -85,10 +87,12 @@ describe("SettingsPage - Notification Preferences Form (#1551)", () => {
     fireEvent.click(digestsToggle);
 
     expect(digestsToggle).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByTestId("save-reset-bar")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Saving notification preferences",
+    );
   });
 
-  it("saving persists changes to API and clears dirty state", async () => {
+  it("reverts the optimistic toggle when saving fails", async () => {
     render(<SettingsPage />);
 
     await waitFor(() => {
@@ -100,26 +104,30 @@ describe("SettingsPage - Notification Preferences Form (#1551)", () => {
     const digestsToggle = screen.getByRole("switch", {
       name: "Weekly Activity Digests",
     });
+    vi.spyOn(api, "updateNotificationPreferences").mockRejectedValueOnce(
+      new Error("Network unavailable"),
+    );
+    vi.useFakeTimers();
     fireEvent.click(digestsToggle);
-
-    const saveButton = screen.getByRole("button", { name: "Save Preferences" });
-    fireEvent.click(saveButton);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    vi.useRealTimers();
 
     await waitFor(() => {
-      expect(api.updateNotificationPreferences).toHaveBeenCalledWith({
-        predictions: true,
-        rewards: true,
-        disputes: true,
-        digests: true,
-      });
+      expect(digestsToggle).toHaveAttribute("aria-checked", "false");
     });
-
-    await waitFor(() => {
-      expect(screen.queryByTestId("save-reset-bar")).not.toBeInTheDocument();
-    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Failed to save preferences. Network unavailable",
+    );
   });
 
-  it("cancel/reset restores prior values and clears dirty state", async () => {
+  it("reflects the server response after a successful save", async () => {
+    vi.spyOn(api, "updateNotificationPreferences").mockResolvedValueOnce({
+      ...initialMockPrefs,
+      predictions: false,
+      digests: true,
+    });
     render(<SettingsPage />);
 
     await waitFor(() => {
@@ -128,22 +136,57 @@ describe("SettingsPage - Notification Preferences Form (#1551)", () => {
       ).toBeInTheDocument();
     });
 
-    const predictionsToggle = screen.getByRole("switch", {
-      name: "Predictions & Market Resolutions",
+    const digestsToggle = screen.getByRole("switch", {
+      name: "Weekly Activity Digests",
     });
-    expect(predictionsToggle).toHaveAttribute("aria-checked", "true");
+    vi.useFakeTimers();
+    fireEvent.click(digestsToggle);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    vi.useRealTimers();
 
-    // Toggle off
-    fireEvent.click(predictionsToggle);
-    expect(predictionsToggle).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByTestId("save-reset-bar")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        screen.getByRole("switch", {
+          name: "Predictions & Market Resolutions",
+        }),
+      ).toHaveAttribute("aria-checked", "false");
+      expect(digestsToggle).toHaveAttribute("aria-checked", "true");
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Preferences saved successfully.",
+      );
+    });
+  });
 
-    // Click Reset
-    const resetButton = screen.getByRole("button", { name: "Reset" });
-    fireEvent.click(resetButton);
+  it("debounces rapid changes into one save with the latest preferences", async () => {
+    render(<SettingsPage />);
+    await screen.findByRole("switch", { name: "Weekly Activity Digests" });
+    vi.useFakeTimers();
 
-    expect(predictionsToggle).toHaveAttribute("aria-checked", "true");
-    expect(screen.queryByTestId("save-reset-bar")).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Weekly Activity Digests" }),
+    );
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: "Predictions & Market Resolutions",
+      }),
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    vi.useRealTimers();
+
+    await waitFor(() => {
+      expect(api.updateNotificationPreferences).toHaveBeenCalledTimes(1);
+    });
+    expect(api.updateNotificationPreferences).toHaveBeenCalledWith({
+      predictions: false,
+      rewards: true,
+      disputes: true,
+      digests: true,
+    });
   });
 
   it("triggers beforeunload warning when dirty", async () => {
@@ -206,8 +249,6 @@ describe("SettingsPage - Unsaved Changes Navigation Guard", () => {
     fireEvent.click(digestsToggle);
 
     // Verify dirty state
-    expect(screen.getByTestId("save-reset-bar")).toBeInTheDocument();
-
     // Trigger beforeunload event (simulates navigation)
     const beforeUnloadEvent = new Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
     window.dispatchEvent(beforeUnloadEvent);
@@ -231,17 +272,7 @@ describe("SettingsPage - Unsaved Changes Navigation Guard", () => {
     });
     fireEvent.click(digestsToggle);
 
-    // Save changes
-    const saveButton = screen.getByRole("button", { name: "Save Preferences" });
-    fireEvent.click(saveButton);
-
-    // Wait for save to complete and dirty state to clear
-    await waitFor(() => {
-      expect(screen.queryByTestId("save-reset-bar")).not.toBeInTheDocument();
-    });
-
-    // Wait a bit more to ensure all state updates have propagated
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await screen.findByText("Preferences saved successfully.");
 
     // Trigger beforeunload event
     const beforeUnloadEvent = new Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
@@ -251,7 +282,7 @@ describe("SettingsPage - Unsaved Changes Navigation Guard", () => {
     expect(beforeUnloadEvent.defaultPrevented).toBe(false);
   });
 
-  it("discard proceeds and stay cancels navigation", async () => {
+  it("a failed save reverts the change and clears the navigation warning", async () => {
     render(<SettingsPage />);
 
     await waitFor(() => {
@@ -264,32 +295,21 @@ describe("SettingsPage - Unsaved Changes Navigation Guard", () => {
     const digestsToggle = screen.getByRole("switch", {
       name: "Weekly Activity Digests",
     });
+    vi.spyOn(api, "updateNotificationPreferences").mockRejectedValueOnce(
+      new Error("Network unavailable"),
+    );
     fireEvent.click(digestsToggle);
 
-    // Verify dirty state exists
-    expect(screen.getByTestId("save-reset-bar")).toBeInTheDocument();
-
-    // Simulate navigation attempt with beforeunload
     const beforeUnloadEvent = new Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
     window.dispatchEvent(beforeUnloadEvent);
-
-    // Navigation should be prevented (user will be prompted by browser)
     expect(beforeUnloadEvent.defaultPrevented).toBe(true);
 
-    // Now reset/discard changes
-    const resetButton = screen.getByRole("button", { name: "Reset" });
-    fireEvent.click(resetButton);
-
-    // Verify clean state
     await waitFor(() => {
-      expect(screen.queryByTestId("save-reset-bar")).not.toBeInTheDocument();
+      expect(digestsToggle).toHaveAttribute("aria-checked", "false");
     });
 
-    // Try navigation again
     const secondBeforeUnloadEvent = new Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
     window.dispatchEvent(secondBeforeUnloadEvent);
-
-    // Should NOT prevent navigation after discarding changes
     expect(secondBeforeUnloadEvent.defaultPrevented).toBe(false);
   });
 });

@@ -56,17 +56,9 @@ const iconBgMap = {
   megaphone: "bg-blue-500/10",
 };
 
-interface NotificationsCardProps {
-  notifications?: NotificationItem[];
-}
-
-export default function NotificationsCard({
-  notifications: initialNotifications,
-}: NotificationsCardProps) {
+export default function NotificationsCard() {
   const context = useNotifications();
-  // Use prop if provided (for testing), otherwise use context
-  const notifications = initialNotifications ?? context.notifications;
-  const contextUnreadCount = context.unreadCount;
+  const notifications = context.notifications;
   
   const [activeCategory, setActiveCategory] = useState<NotificationCategory>("all");
   const [markAllError, setMarkAllError] = useState<string | null>(null);
@@ -124,7 +116,9 @@ export default function NotificationsCard({
               Mark all as read
             </button>
           )}
-          <div className="w-2 h-2 bg-red-500 rounded-full" />
+          {unreadCount > 0 && (
+            <div className="w-2 h-2 bg-red-500 rounded-full" />
+          )}
         </div>
       </div>
 
