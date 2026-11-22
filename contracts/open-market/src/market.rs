@@ -952,6 +952,75 @@ pub fn resolve_market(
     Ok(())
 }
 
+/// Settle an unresolved market once the oracle has missed its deadline.
+///
+/// Permissionless after `resolution_time + ORACLE_TIMEOUT_SECONDS`: the market is
+/// cancelled, participants pull their stakes via `claim_cancel_refund`, and the
+/// creator's bond is returned (the oracle failed, not the creator).
+///
+/// Validation order:
+/// 1. Platform not paused
+/// 2. `caller` provides authorisation
+/// 3. Market exists
+/// 4. Market has not already been resolved or cancelled
+/// 5. `current_time >= resolution_time + ORACLE_TIMEOUT_SECONDS` — else `OracleTimeoutNotReached`
+///
+/// Emits an `orcl_tmo` event on success.
+pub fn oracle_timeout_fallback(
+    env: &Env,
+    caller: Address,
+    market_id: u64,
+) -> Result<(), InsightArenaError> {
+    config::ensure_not_paused(env)?;
+    caller.require_auth();
+
+    let mut market = get_market(env, market_id)?;
+
+    if market.is_resolved {
+        return Err(InsightArenaError::MarketAlreadyResolved);
+    }
+    if market.is_cancelled {
+        return Err(InsightArenaError::MarketAlreadyCancelled);
+    }
+
+    let deadline = market
+        .resolution_time
+        .checked_add(config::ORACLE_TIMEOUT_SECONDS)
+        .ok_or(InsightArenaError::Overflow)?;
+    if env.ledger().timestamp() < deadline {
+        return Err(InsightArenaError::OracleTimeoutNotReached);
+    }
+
+    market.is_cancelled = true;
+    env.storage()
+        .persistent()
+        .set(&DataKey::Market(market_id), &market);
+    bump_market(env, market_id);
+
+    let _ = crate::escrow::refund_market_bond(env, &market.creator, market_id);
+
+    let child_ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ConditionalChildren(market_id))
+        .unwrap_or_else(|| Vec::new(env));
+
+    for child_id in child_ids.iter() {
+        let _ = deactivate_conditional_market(env, child_id);
+    }
+
+    emit_oracle_timeout_fallback(env, market_id, &caller);
+
+    Ok(())
+}
+
+fn emit_oracle_timeout_fallback(env: &Env, market_id: u64, caller: &Address) {
+    env.events().publish(
+        (symbol_short!("mkt"), symbol_short!("orcl_tmo")),
+        (market_id, caller.clone()),
+    );
+}
+
 pub fn update_oracle_from_governance(
     env: &Env,
     new_oracle: Address,

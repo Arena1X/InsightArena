@@ -226,4 +226,6 @@ pub enum InsightArenaError {
     ///   (prevents double-refund or double-slash in resolve_dispute/finalize_arbiter_vote)
     /// - Attempted to slash a bond that has already been slashed or refunded
     ZeroShareTransfer = 112,
+    /// `oracle_timeout_fallback` was called before `resolution_time + ORACLE_TIMEOUT_SECONDS`.
+    OracleTimeoutNotReached = 113,
 }

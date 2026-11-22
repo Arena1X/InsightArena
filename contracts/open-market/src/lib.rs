@@ -253,6 +253,16 @@ impl InsightArenaContract {
         market::cancel_market(&env, caller, market_id)
     }
 
+    /// Cancel a market the oracle failed to resolve within `ORACLE_TIMEOUT_SECONDS`
+    /// of its `resolution_time`. Permissionless once the timeout has elapsed.
+    pub fn oracle_timeout_fallback(
+        env: Env,
+        caller: Address,
+        market_id: u64,
+    ) -> Result<(), InsightArenaError> {
+        market::oracle_timeout_fallback(&env, caller, market_id)
+    }
+
     /// Explicitly extend a market's persistent-storage TTL by the configured
     /// extension amount. Permissionless maintenance entrypoint — anyone may
     /// call this to keep a long-running market's storage from expiring.
