@@ -39,4 +39,7 @@ export class UserResponseDto {
 
   @Expose()
   updated_at: Date;
+
+  @Expose()
+  profile_completeness: number;
 }
