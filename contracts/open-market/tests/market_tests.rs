@@ -100,6 +100,36 @@ fn test_create_market_success() {
 }
 
 #[test]
+fn per_market_liquidity_cap_obeys_global_bounds() {
+    let env = Env::default();
+    let (client, admin, _) = deploy_with_actors(&env);
+    let creator = Address::generate(&env);
+    let market_id = client.create_market(&creator, &default_params(&env));
+
+    client.set_market_liquidity_cap(
+        &admin,
+        &market_id,
+        &insightarena_contract::config::MIN_MAX_LIQUIDITY_PER_OUTCOME,
+    );
+    client.set_market_liquidity_cap(&admin, &market_id, &1_000_000_000_i128);
+    assert_eq!(
+        client.get_market(&market_id).outcome_liquidity_cap,
+        1_000_000_000
+    );
+
+    let result = client.try_set_market_liquidity_cap(
+        &admin,
+        &market_id,
+        &(insightarena_contract::config::MAX_MAX_LIQUIDITY_PER_OUTCOME + 1),
+    );
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidInput))));
+    assert_eq!(
+        client.get_market(&market_id).outcome_liquidity_cap,
+        1_000_000_000
+    );
+}
+
+#[test]
 fn create_market_success_returns_incremented_id() {
     let env = Env::default();
     env.mock_all_auths();

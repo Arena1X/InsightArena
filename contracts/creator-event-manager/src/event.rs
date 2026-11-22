@@ -87,6 +87,8 @@ pub enum EventError {
     InviteCodeUsesExceeded = 33,
     /// A fee/share computation overflowed `i128` (#1703).
     Overflow = 34,
+    /// The invite code has been revoked by its creator.
+    InviteCodeRevoked = 35,
 }
 
 impl From<InviteError> for EventError {
@@ -96,6 +98,7 @@ impl From<InviteError> for EventError {
             InviteError::InvalidCode => EventError::InvalidInviteCode,
             InviteError::CodeExpired => EventError::InviteCodeExpired,
             InviteError::CodeUsesExceeded => EventError::InviteCodeUsesExceeded,
+            InviteError::CodeRevoked => EventError::InviteCodeRevoked,
         }
     }
 }
@@ -425,6 +428,24 @@ pub fn set_invite_limits(
             Symbol::new(env, "invite_limits_updated"),
         ),
         (event_id, expires_at, max_uses),
+    );
+
+    Ok(())
+}
+
+/// Revoke an event's invite code. Only the event creator may call this.
+pub fn revoke_invite(env: &Env, caller: Address, event_id: u64) -> Result<(), EventError> {
+    caller.require_auth();
+
+    let event = storage::get_event(env, event_id).map_err(|_| EventError::EventNotFound)?;
+    if event.creator != caller {
+        return Err(EventError::Unauthorized);
+    }
+
+    invite::revoke(env, &event.invite_code).map_err(EventError::from)?;
+    env.events().publish(
+        (Symbol::new(env, "event"), Symbol::new(env, "invite_revoked")),
+        event_id,
     );
 
     Ok(())
