@@ -166,6 +166,10 @@ pub const TWAP_SETTLEMENT_WINDOW_SECONDS: u64 = 3_600;
 /// Max allowed |spot - TWAP| / TWAP at settlement, in basis points (20%).
 pub const TWAP_SETTLEMENT_MAX_DEVIATION_BPS: u32 = 2_000;
 
+/// Seconds after `resolution_time` the oracle has to resolve a market. Once it
+/// elapses, anyone may trigger the oracle-timeout fallback (market cancelled, stakes refunded).
+pub const ORACLE_TIMEOUT_SECONDS: u64 = 604_800; // 7 days
+
 // ── Storage-specific TTL constants (merged from ttl.rs) ───────────────────────
 // ~30 days at ~6s/ledger for frequently accessed market state.
 pub const LEDGER_BUMP_MARKET: u32 = 432_000;
