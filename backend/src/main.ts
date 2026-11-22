@@ -4,6 +4,11 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { DeprecationInterceptor } from './common/interceptors/deprecation.interceptor';
+import {
+  CORRELATION_ID_HEADER,
+  correlationIdMiddleware,
+  installOutboundCorrelationIdPropagation,
+} from './common/correlation-id';
 
 import { Logger } from 'nestjs-pino';
 
@@ -22,6 +27,8 @@ async function bootstrap() {
     rawBody: true,
   });
   app.useLogger(app.get(Logger));
+  app.use(correlationIdMiddleware);
+  installOutboundCorrelationIdPropagation();
 
   // Enable URI-based versioning.
   //
@@ -47,7 +54,11 @@ async function bootstrap() {
         '- `X-RateLimit-Limit`: max requests allowed in the current window\n' +
         '- `X-RateLimit-Remaining`: requests left in the window (`0` when throttled)\n' +
         '- `X-RateLimit-Reset`: seconds until the window resets\n' +
-        '- `Retry-After`: seconds the client must wait before retrying',
+        '- `Retry-After`: seconds the client must wait before retrying\n\n' +
+        '### Correlation IDs\n' +
+        `Send \`${CORRELATION_ID_HEADER}\` (or \`x-request-id\`) to continue a trace. ` +
+        `The same value is attached to request logs, propagated to outbound HTTP ` +
+        `where feasible, and returned as \`${CORRELATION_ID_HEADER}\`.`,
     )
     .setVersion('1.0')
     .addBearerAuth()
@@ -89,7 +100,7 @@ async function bootstrap() {
 
   app.useGlobalInterceptors(
     new DeprecationInterceptor(app.get(Reflector)),
-    new ResponseInterceptor(),
+    new ResponseInterceptor(app.get(Reflector)),
   );
   app.useGlobalFilters(new HttpExceptionFilter());
   await app.listen(env.PORT ?? 3000);
