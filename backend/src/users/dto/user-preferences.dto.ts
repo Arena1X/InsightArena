@@ -8,7 +8,13 @@ import {
   Min,
   registerDecorator,
   ValidationOptions,
+  IsArray,
+  ValidateNested,
+  IsNumber,
+  IsUUID,
+  IsISO8601,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 function IsIanaTimezone(validationOptions?: ValidationOptions) {
   return function (object: object, propertyName: string) {
@@ -71,6 +77,37 @@ export class UpdateUserPreferencesDto {
   @IsString()
   @IsIanaTimezone()
   digest_timezone?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PriceAlertConfigDto)
+  price_alerts?: PriceAlertConfigDto[];
+}
+
+export class PriceAlertConfigDto {
+  @IsUUID()
+  id: string;
+
+  @IsString()
+  marketId: string;
+
+  @IsIn(['YES', 'NO'])
+  outcome: 'YES' | 'NO';
+
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  targetOdds: number;
+
+  @IsIn(['above', 'below'])
+  direction: 'above' | 'below';
+
+  @IsBoolean()
+  enabled: boolean;
+
+  @IsISO8601()
+  createdAt: string;
 }
 
 export class UserPreferencesResponseDto {
@@ -83,6 +120,7 @@ export class UserPreferencesResponseDto {
   digest_frequency: 'daily' | 'weekly' | 'off';
   digest_hour: number;
   digest_timezone: string;
+  price_alerts: PriceAlertConfigDto[] | null;
   created_at: Date;
   updated_at: Date;
 }
