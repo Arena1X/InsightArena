@@ -51,18 +51,7 @@ interface UseOptimisticPredictionOptions {
 interface PendingReconciliation {
   predictionId: string;
   input: SubmissionInput;
-  slipItem: SlipItem;
-}
-
-function fallbackSlipItem(input: SubmissionInput): SlipItem {
-  return {
-    marketId: input.marketId,
-    marketTitle: `Market ${input.marketId}`,
-    category: "",
-    outcome: input.direction,
-    odds: 1,
-    amount: input.amount,
-  };
+  slipItem: SlipItem | null;
 }
 
 export function useOptimisticPrediction({
@@ -95,17 +84,19 @@ export function useOptimisticPrediction({
     (
       predictionId: string,
       input: SubmissionInput,
-      slipItem: SlipItem,
+      slipItem: SlipItem | null,
       message: string,
     ) => {
       setPredictions((current) =>
         current.filter((prediction) => prediction.id !== predictionId),
       );
-      slip.restoreItem(slipItem);
+      // Only restore items that were really in the slip; never fabricate one.
+      if (slipItem) slip.restoreItem(slipItem);
 
       const retry = () => {
         setLastRollback(null);
-        void retryRef.current?.(input);
+        // The failure is already surfaced by a new rollback toast, so swallow the rethrow here.
+        void retryRef.current?.(input).catch(() => undefined);
       };
 
       const rollbackData: RolledBackPrediction = {
@@ -120,7 +111,7 @@ export function useOptimisticPrediction({
       setLastRollback(rollbackData);
       setRollbackHistory((history) => [rollbackData, ...history].slice(0, 10)); // Keep last 10 rollbacks
 
-      toast.error(message, {
+      toast.error(`${message} — your prediction was not placed.`, {
         title: "Prediction rolled back",
         duration: 0,
         action: { label: "Retry", onClick: retry },
@@ -137,8 +128,7 @@ export function useOptimisticPrediction({
     async (marketId: string, amount: number, direction: "yes" | "no") => {
       const input = { marketId, amount, direction };
       const slipItem =
-        slip.items.find((item) => item.marketId === marketId) ||
-        fallbackSlipItem(input);
+        slip.items.find((item) => item.marketId === marketId) ?? null;
       const temporaryId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
       setPredictions((current) => [
@@ -170,7 +160,7 @@ export function useOptimisticPrediction({
         pendingTransactions.current.set(transactionId, {
           predictionId: result.id,
           input,
-          slipItem: { ...slipItem },
+          slipItem: slipItem ? { ...slipItem } : null,
         });
         setPredictions((current) =>
           current.map((prediction) =>

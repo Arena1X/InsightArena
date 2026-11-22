@@ -94,8 +94,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         return "";
       }
 
-      // Overflow policy: keep the first five concurrent toasts and drop new arrivals.
-      if (toastsRef.current.length >= MAX_TOASTS) return "";
+      // Overflow policy: evict the oldest toast so new arrivals (e.g. rollbacks) are never silently dropped.
+      if (toastsRef.current.length >= MAX_TOASTS) dismiss(toastsRef.current[0].id);
 
       recentMessages.current.set(description, now);
 
@@ -124,7 +124,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       scheduleDismiss(id, duration);
       return id;
     },
-    [scheduleDismiss],
+    [dismiss, scheduleDismiss],
   );
 
   const pause = useCallback((id: string) => clearTimer(id), [clearTimer]);
