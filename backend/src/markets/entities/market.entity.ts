@@ -121,6 +121,11 @@ export class Market {
   @IsOptional()
   resolution_proposed_at: Date | null;
 
+  /** Per-market slippage tolerance in basis points; null = global default. */
+  @Column({ type: 'int', nullable: true })
+  @IsOptional()
+  slippage_tolerance_bps: number | null;
+
   @Column({ type: 'int', default: 86400 })
   @IsNumber()
   @Min(0)
