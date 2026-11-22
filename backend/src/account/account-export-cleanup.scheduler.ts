@@ -7,9 +7,15 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
-import { AccountService } from './account.service';
+import { AccountService, ExportCleanupResult } from './account.service';
 
 export const EXPORT_CLEANUP_JOB_NAME = 'account-export-stale-file-cleanup';
+const REPEATED_DELETION_FAILURE_RUNS = 3;
+
+export interface ExportCleanupRunSummary extends ExportCleanupResult {
+  completedAt: Date;
+  error?: string;
+}
 
 /**
  * Schedules periodic removal of stale account export files and job rows on
@@ -22,6 +28,8 @@ export class AccountExportCleanupScheduler
 {
   private readonly logger = new Logger(AccountExportCleanupScheduler.name);
   private running = false;
+  private consecutiveDeletionFailureRuns = 0;
+  private latestRunSummary: ExportCleanupRunSummary | null = null;
 
   constructor(
     private readonly accountService: AccountService,
@@ -72,18 +80,66 @@ export class AccountExportCleanupScheduler
 
     this.running = true;
     try {
-      const { expired, failed, stuck, orphans } =
-        await this.accountService.cleanupExports();
-      if (expired + failed + stuck + orphans > 0) {
+      const result = await this.accountService.cleanupExports();
+      this.latestRunSummary = {
+        ...result,
+        completedAt: new Date(),
+      };
+
+      if (
+        result.expired +
+          result.failed +
+          result.stuck +
+          result.orphans +
+          result.filesScanned +
+          result.filesDeleted +
+          result.deletionFailures >
+        0
+      ) {
         this.logger.log(
-          `Account export cleanup: expired=${expired} failed=${failed} ` +
-            `stuck=${stuck} orphans=${orphans}`,
+          `Account export cleanup: scanned=${result.filesScanned} ` +
+            `deleted=${result.filesDeleted} bytesReclaimed=${result.bytesReclaimed} ` +
+            `deletionFailures=${result.deletionFailures} expired=${result.expired} ` +
+            `failed=${result.failed} stuck=${result.stuck} orphans=${result.orphans}`,
         );
       }
+
+      this.recordDeletionFailures(result.deletionFailures);
     } catch (err) {
+      this.latestRunSummary = {
+        expired: 0,
+        failed: 0,
+        stuck: 0,
+        orphans: 0,
+        filesScanned: 0,
+        filesDeleted: 0,
+        bytesReclaimed: 0,
+        deletionFailures: 0,
+        completedAt: new Date(),
+        error: err instanceof Error ? err.message : String(err),
+      };
       this.logger.error('Account export cleanup failed', err);
+      this.consecutiveDeletionFailureRuns = 0;
     } finally {
       this.running = false;
+    }
+  }
+
+  getLatestRunSummary(): ExportCleanupRunSummary | null {
+    return this.latestRunSummary;
+  }
+
+  private recordDeletionFailures(failureCount: number): void {
+    if (failureCount === 0) {
+      this.consecutiveDeletionFailureRuns = 0;
+      return;
+    }
+
+    this.consecutiveDeletionFailureRuns++;
+    if (this.consecutiveDeletionFailureRuns === REPEATED_DELETION_FAILURE_RUNS) {
+      this.logger.warn(
+        `Account export file deletions failed for ${this.consecutiveDeletionFailureRuns} consecutive cleanup runs`,
+      );
     }
   }
 }

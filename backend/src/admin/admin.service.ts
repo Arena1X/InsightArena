@@ -28,6 +28,7 @@ import { User } from '../users/entities/user.entity';
 import { CreatorEvent } from '../matches/entities/creator-event.entity';
 import { UserFlag } from './entities/user-flag.entity';
 import { VerifiedAddress } from './entities/verified-address.entity';
+import { AdminAuditLog } from './entities/admin-audit-log.entity';
 import { FeeHistory } from '../indexer/entities/fee-history.entity';
 import { ActivityLogQueryDto } from './dto/activity-log-query.dto';
 import {
@@ -94,6 +95,8 @@ export class AdminService {
     private readonly verifiedAddressesRepository: Repository<VerifiedAddress>,
     @InjectRepository(FeeHistory)
     private readonly feeHistoryRepository: Repository<FeeHistory>,
+    @InjectRepository(AdminAuditLog)
+    private readonly adminAuditLogsRepository: Repository<AdminAuditLog>,
     private readonly marketsService: MarketsService,
 
     private readonly analyticsService: AnalyticsService,
@@ -315,21 +318,34 @@ export class AdminService {
   }
 
   async banUser(id: string, reason: string, adminId: string): Promise<User> {
+    if (typeof reason !== 'string' || reason.trim().length === 0) {
+      throw new BadRequestException('A non-empty ban reason is required');
+    }
+
+    const normalizedReason = reason.trim();
     const user = await this.usersRepository.findOne({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
     if (user.is_banned) throw new ConflictException('User is already banned');
 
     user.is_banned = true;
-    user.ban_reason = reason;
+    user.ban_reason = normalizedReason;
     user.banned_at = new Date();
     user.banned_by = adminId;
 
     await this.usersRepository.save(user);
 
     await this.analyticsService.logActivity(user.id, 'USER_BANNED', {
-      reason,
+      reason: normalizedReason,
       banned_by: adminId,
     });
+    const auditEntry = this.adminAuditLogsRepository.create({
+      actor_id: adminId,
+      action: 'BAN_USER',
+      target_type: 'user',
+      target_id: user.id,
+      metadata: { reason: normalizedReason },
+    });
+    await this.adminAuditLogsRepository.save(auditEntry);
 
     return user;
   }

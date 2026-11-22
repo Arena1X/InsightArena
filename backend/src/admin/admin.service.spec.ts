@@ -131,6 +131,15 @@ describe('AdminService (Verified Addresses)', () => {
           useValue: { findOne: jest.fn(), find: jest.fn() },
         },
         {
+          provide: getRepositoryToken(
+            require('./entities/admin-audit-log.entity').AdminAuditLog,
+          ),
+          useValue: {
+            create: jest.fn((entry: any) => entry),
+            save: jest.fn((entry: any) => Promise.resolve(entry)),
+          },
+        },
+        {
           provide: require('../analytics/analytics.service').AnalyticsService,
           useValue: {
             logActivity: jest.fn(),
@@ -267,9 +276,48 @@ describe('AdminService (Verified Addresses)', () => {
   });
   describe('banUser and unbanUser', () => {
     let userRepository: any;
+    let auditRepository: any;
 
     beforeEach(() => {
       userRepository = service['usersRepository'];
+      auditRepository = service['adminAuditLogsRepository'];
+    });
+
+    it('should reject a ban without a non-empty reason', async () => {
+      await expect(service.banUser('u1', '   ', 'admin')).rejects.toThrow(
+        'A non-empty ban reason is required',
+      );
+      expect(userRepository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('should store the reason on the ban record and in the admin audit log', async () => {
+      const user = {
+        id: 'u1',
+        is_banned: false,
+        ban_reason: null,
+        banned_at: null,
+        banned_by: null,
+      };
+      userRepository.findOne.mockResolvedValue(user);
+      userRepository.save = jest.fn().mockResolvedValue(user);
+
+      const result = await service.banUser('u1', '  repeated spam  ', 'admin');
+
+      expect(result.ban_reason).toBe('repeated spam');
+      expect(auditRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actor_id: 'admin',
+          action: 'BAN_USER',
+          target_type: 'user',
+          target_id: 'u1',
+          metadata: { reason: 'repeated spam' },
+        }),
+      );
+      expect(service['analyticsService'].logActivity).toHaveBeenCalledWith(
+        'u1',
+        'USER_BANNED',
+        { reason: 'repeated spam', banned_by: 'admin' },
+      );
     });
 
     it('should throw ConflictException if user is already banned', async () => {

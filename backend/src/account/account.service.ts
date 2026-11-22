@@ -20,6 +20,10 @@ export interface ExportCleanupResult {
   failed: number;
   stuck: number;
   orphans: number;
+  filesScanned: number;
+  filesDeleted: number;
+  bytesReclaimed: number;
+  deletionFailures: number;
 }
 
 @Injectable()
@@ -296,13 +300,17 @@ export class AccountService {
       failed: 0,
       stuck: 0,
       orphans: 0,
+      filesScanned: 0,
+      filesDeleted: 0,
+      bytesReclaimed: 0,
+      deletionFailures: 0,
     };
 
     const expired = await this.jobRepo.find({
       where: { status: 'ready', expires_at: LessThan(new Date(now)) },
     });
     for (const job of expired) {
-      await this.removeJobFile(job);
+      await this.removeJobFile(job, result);
       await this.jobRepo.delete(job.id);
       result.expired++;
     }
@@ -317,7 +325,7 @@ export class AccountService {
       },
     });
     for (const job of failed) {
-      await this.removeJobFile(job);
+      await this.removeJobFile(job, result);
       await this.jobRepo.delete(job.id);
       result.failed++;
     }
@@ -332,7 +340,7 @@ export class AccountService {
       },
     });
     for (const job of stuck) {
-      await this.removeJobFile(job);
+      await this.removeJobFile(job, result);
       await this.jobRepo.update(job.id, {
         status: 'failed',
         file_path: null,
@@ -341,7 +349,7 @@ export class AccountService {
       result.stuck++;
     }
 
-    result.orphans = await this.removeOrphanFiles(now);
+    await this.removeOrphanFiles(now, result);
 
     return result;
   }
@@ -350,19 +358,41 @@ export class AccountService {
     return this.configService.get<string>('EXPORT_DIR', './exports');
   }
 
-  private async removeJobFile(job: DataExportJob): Promise<void> {
+  private async removeJobFile(
+    job: DataExportJob,
+    result: ExportCleanupResult,
+  ): Promise<void> {
     const filePath =
       job.file_path ?? path.join(this.exportDir(), `${job.id}.json`);
-    await fs.unlink(filePath).catch(() => {});
+    result.filesScanned++;
+
+    let size: number;
+    try {
+      size = (await fs.lstat(filePath)).size;
+    } catch (error) {
+      if (!this.isFileNotFound(error)) result.deletionFailures++;
+      return;
+    }
+
+    try {
+      await fs.unlink(filePath);
+      result.filesDeleted++;
+      result.bytesReclaimed += size;
+    } catch (error) {
+      if (!this.isFileNotFound(error)) result.deletionFailures++;
+    }
   }
 
-  private async removeOrphanFiles(now: number): Promise<number> {
+  private async removeOrphanFiles(
+    now: number,
+    result: ExportCleanupResult,
+  ): Promise<void> {
     const dir = this.exportDir();
     let entries: string[];
     try {
       entries = await fs.readdir(dir);
     } catch {
-      return 0;
+      return;
     }
 
     const graceMinutes = Number(
@@ -372,20 +402,21 @@ export class AccountService {
 
     // Only consider files named like export jobs (`<uuid>.json`) so unrelated
     // files that happen to live in EXPORT_DIR are never touched.
-    const candidates: { jobId: string; filePath: string }[] = [];
+    const candidates: { jobId: string; filePath: string; size: number }[] = [];
     for (const name of entries) {
       const jobId = path.basename(name, '.json');
       if (!name.endsWith('.json') || !UUID_PATTERN.test(jobId)) continue;
+      result.filesScanned++;
       const filePath = path.join(dir, name);
       try {
-        const stat = await fs.stat(filePath);
+        const stat = await fs.lstat(filePath);
         if (!stat.isFile() || stat.mtimeMs > cutoff) continue;
+        candidates.push({ jobId, filePath, size: stat.size });
       } catch {
         continue;
       }
-      candidates.push({ jobId, filePath });
     }
-    if (candidates.length === 0) return 0;
+    if (candidates.length === 0) return;
 
     const knownJobs = await this.jobRepo.find({
       where: { id: In(candidates.map((c) => c.jobId)) },
@@ -393,16 +424,25 @@ export class AccountService {
     });
     const known = new Set(knownJobs.map((j) => j.id));
 
-    let removed = 0;
     for (const c of candidates) {
       if (known.has(c.jobId)) continue;
       try {
         await fs.unlink(c.filePath);
-        removed++;
-      } catch {
-        // already gone or not removable; skip
+        result.orphans++;
+        result.filesDeleted++;
+        result.bytesReclaimed += c.size;
+      } catch (error) {
+        if (!this.isFileNotFound(error)) result.deletionFailures++;
       }
     }
-    return removed;
+  }
+
+  private isFileNotFound(error: unknown): boolean {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'ENOENT'
+    );
   }
 }
