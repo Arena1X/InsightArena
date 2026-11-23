@@ -2097,6 +2097,41 @@ Example curl:
 curl "http://localhost:3000/api/v1/analytics/users/GBRPYHIL2CI3WHZDTOOQFC6EB4RRJC3XNRBF7XN/trends?days=30"
 ```
 
+### `GET /analytics/conversion-funnel`
+One-line description: Get signup, first-prediction, and payout funnel metrics.
+
+Auth required: Yes (admin)
+
+Request body: none
+
+Query parameters:
+- `from` (ISO 8601 string, optional; defaults to 30 days before `to`)
+- `to` (ISO 8601 string, optional; defaults to now)
+- Date ranges are limited to a maximum 365-day window. Invalid dates, future dates, or inverted ranges return `400`.
+
+The range selects the signup cohort. Prediction counts include cohort users who predicted by `to`; payout counts include cohort users with a positive recorded payout on a prediction submitted by `to`.
+
+Success response:
+- `200 OK`
+```json
+{
+  "stages": [
+    { "stage": "signup", "count": 100, "conversion_rate": 100 },
+    { "stage": "first_prediction", "count": 60, "conversion_rate": 60 },
+    { "stage": "payout", "count": 30, "conversion_rate": 50 }
+  ],
+  "from": "2026-01-01T00:00:00.000Z",
+  "to": "2026-01-31T23:59:59.999Z",
+  "generated_at": "2026-02-01T00:00:00.000Z"
+}
+```
+
+Example curl:
+```bash
+curl "http://localhost:3000/api/v1/analytics/conversion-funnel?from=2026-01-01T00:00:00.000Z&to=2026-01-31T23:59:59.999Z" \
+  -H "Authorization: ******"
+```
+
 ### `GET /analytics/categories`
 One-line description: Get aggregated category analytics.
 

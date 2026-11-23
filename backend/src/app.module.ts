@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
@@ -40,6 +40,11 @@ import { WebsocketModule } from './websocket/websocket.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { AccountModule } from './account/account.module';
 import { TieredThrottlerGuard } from './common/guards/tiered-throttler.guard';
+import {
+  correlationIdMiddleware,
+  installOutboundCorrelationIdPropagation,
+  pinoHttpCorrelationOptions,
+} from './common/correlation-id';
 
 @Module({
   imports: [
@@ -87,6 +92,7 @@ import { TieredThrottlerGuard } from './common/guards/tiered-throttler.guard';
             ? { target: 'pino-pretty' }
             : undefined,
         autoLogging: true,
+        ...pinoHttpCorrelationOptions(),
       },
     }),
     ScheduleModule.forRoot(),
@@ -164,4 +170,12 @@ import { TieredThrottlerGuard } from './common/guards/tiered-throttler.guard';
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  constructor() {
+    installOutboundCorrelationIdPropagation();
+  }
+
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(correlationIdMiddleware).forRoutes('*');
+  }
+}

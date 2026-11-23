@@ -8,6 +8,10 @@ import {
   Validate,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { stripControlChars } from '../../common/text-sanitizer.util';
+
+/** Upper bound on the sanitized search term length (matches the DTO MaxLength) */
+export const SEARCH_QUERY_MAX_LENGTH = 100;
 
 /**
  * Custom validator to ensure the query is not whitespace-only after trimming
@@ -74,16 +78,19 @@ export function escapeLikeWildcards(input: string): string {
 }
 
 /**
- * Sanitizes user input for full-text search by stripping or neutralizing query
- * operators that could manipulate query structure or cause malformed tsquery syntax.
+ * Sanitizes user input for full-text search: strips control characters, neutralizes
+ * query operators that could manipulate query structure or cause malformed tsquery
+ * syntax, normalizes whitespace, and bounds the result to SEARCH_QUERY_MAX_LENGTH.
  *
  * @param input - The raw search input
- * @returns Sanitized input with query operators neutralized and whitespace normalized
+ * @returns Sanitized, trimmed and length-bounded input (may be empty)
  */
 export function sanitizeSearchInput(input: string): string {
   if (!input) return '';
-  return input
+  return stripControlChars(input)
     .replace(/[&|!():*<>'"\\]/g, ' ')
     .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, SEARCH_QUERY_MAX_LENGTH)
     .trim();
 }

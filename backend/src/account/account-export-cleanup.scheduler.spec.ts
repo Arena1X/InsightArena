@@ -3,6 +3,9 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import {
   AccountExportCleanupScheduler,
   EXPORT_CLEANUP_JOB_NAME,
@@ -21,6 +24,10 @@ describe('AccountExportCleanupScheduler', () => {
     failed: 2,
     stuck: 1,
     orphans: 3,
+    filesScanned: 12,
+    filesDeleted: 8,
+    bytesReclaimed: 2048,
+    deletionFailures: 0,
   };
 
   beforeEach(async () => {
@@ -241,12 +248,103 @@ describe('AccountExportCleanupScheduler', () => {
       loggerLogSpy.mockRestore();
     });
 
+    it('should expose scanned, deleted, and reclaimed-byte metrics for the latest run', async () => {
+      accountService.cleanupExports.mockResolvedValue({
+        ...mockCleanupResult,
+        filesScanned: 6,
+        filesDeleted: 4,
+        bytesReclaimed: 1536,
+      });
+
+      await scheduler.handleCleanup();
+
+      expect(scheduler.getLatestRunSummary()).toEqual(
+        expect.objectContaining({
+          filesScanned: 6,
+          filesDeleted: 4,
+          bytesReclaimed: 1536,
+        }),
+      );
+    });
+
+    it('should sum the sizes of deleted export files', async () => {
+      const exportDirectory = await fs.mkdtemp(
+        path.join(os.tmpdir(), 'account-export-cleanup-'),
+      );
+      const firstFile = path.join(exportDirectory, 'first.json');
+      const secondFile = path.join(exportDirectory, 'second.json');
+      const firstContents = 'first export';
+      const secondContents = 'second export data';
+      await fs.writeFile(firstFile, firstContents);
+      await fs.writeFile(secondFile, secondContents);
+
+      const expiredJobs = [
+        { id: 'expired-1', file_path: firstFile },
+        { id: 'expired-2', file_path: secondFile },
+      ];
+      const jobRepository = {
+        find: jest
+          .fn()
+          .mockResolvedValueOnce(expiredJobs)
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([]),
+        delete: jest.fn(),
+        update: jest.fn(),
+      };
+      const service = new AccountService(
+        jobRepository as never,
+        {} as never,
+        {
+          get: jest.fn((key: string, defaultValue: unknown) =>
+            key === 'EXPORT_DIR' ? exportDirectory : defaultValue,
+          ),
+        } as never,
+      );
+
+      try {
+        const result = await service.cleanupExports();
+
+        expect(result.filesScanned).toBe(2);
+        expect(result.filesDeleted).toBe(2);
+        expect(result.bytesReclaimed).toBe(
+          Buffer.byteLength(firstContents) + Buffer.byteLength(secondContents),
+        );
+      } finally {
+        await fs.rm(exportDirectory, { recursive: true, force: true });
+      }
+    });
+
+    it('should warn after deletion failures repeat across cleanup runs', async () => {
+      accountService.cleanupExports.mockResolvedValue({
+        ...mockCleanupResult,
+        deletionFailures: 1,
+      });
+      const loggerWarnSpy = jest.spyOn(Logger.prototype, 'warn');
+
+      await scheduler.handleCleanup();
+      await scheduler.handleCleanup();
+      expect(loggerWarnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('consecutive cleanup runs'),
+      );
+
+      await scheduler.handleCleanup();
+
+      expect(loggerWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('3 consecutive cleanup runs'),
+      );
+    });
+
     it('should not log when no exports are removed', async () => {
       accountService.cleanupExports.mockResolvedValue({
         expired: 0,
         failed: 0,
         stuck: 0,
         orphans: 0,
+        filesScanned: 0,
+        filesDeleted: 0,
+        bytesReclaimed: 0,
+        deletionFailures: 0,
       });
       const loggerLogSpy = jest.spyOn(Logger.prototype, 'log');
 
@@ -335,6 +433,7 @@ describe('AccountExportCleanupScheduler', () => {
 
     it('should handle partial cleanup results', async () => {
       const partialResult = {
+        ...mockCleanupResult,
         expired: 10,
         failed: 0,
         stuck: 2,
@@ -412,6 +511,7 @@ describe('AccountExportCleanupScheduler', () => {
   describe('edge cases', () => {
     it('should handle large cleanup results', async () => {
       const largeResult = {
+        ...mockCleanupResult,
         expired: 1000,
         failed: 500,
         stuck: 100,
@@ -435,6 +535,10 @@ describe('AccountExportCleanupScheduler', () => {
         failed: 0,
         stuck: 0,
         orphans: 0,
+        filesScanned: 0,
+        filesDeleted: 0,
+        bytesReclaimed: 0,
+        deletionFailures: 0,
       });
 
       await expect(scheduler.handleCleanup()).resolves.toBeUndefined();

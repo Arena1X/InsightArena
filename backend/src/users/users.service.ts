@@ -75,6 +75,42 @@ export function normalizeStellarAddress(stellar_address: string): string {
   return stellar_address.trim().toUpperCase();
 }
 
+export type ProfileCompletenessField = 'username' | 'avatar_url' | 'email';
+
+/** Weight of each profile field in the completeness score (relative, not %). */
+export const PROFILE_COMPLETENESS_WEIGHTS: Record<
+  ProfileCompletenessField,
+  number
+> = {
+  username: 40,
+  avatar_url: 30,
+  email: 30,
+};
+
+/**
+ * Percentage (0-100, integer) of the weighted profile fields that are filled.
+ * Blank strings count as unfilled. Clamped to [0, 100] so odd weights
+ * (e.g. negative) can never push the score out of range.
+ */
+export function computeProfileCompleteness(
+  user: Partial<Record<ProfileCompletenessField, string | null>>,
+  weights: Record<ProfileCompletenessField, number> = PROFILE_COMPLETENESS_WEIGHTS,
+): number {
+  const fields = Object.keys(weights) as ProfileCompletenessField[];
+  const total = fields.reduce((sum, field) => sum + weights[field], 0);
+  if (total <= 0) {
+    return 0;
+  }
+
+  const filled = fields.reduce(
+    (sum, field) => sum + (user[field]?.trim() ? weights[field] : 0),
+    0,
+  );
+  const score = Math.round((filled / total) * 100);
+
+  return Math.min(100, Math.max(0, score));
+}
+
 @Injectable()
 export class UsersService {
   constructor(

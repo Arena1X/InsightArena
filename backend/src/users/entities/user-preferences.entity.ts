@@ -65,9 +65,26 @@ export class UserPreferences {
   @Column({ type: 'varchar', default: 'UTC' })
   digest_timezone: string;
 
+  /**
+   * Price alerts configuration for watchlist markets.
+   * Stored as JSON array of alert configurations.
+   */
+  @Column({ type: 'jsonb', nullable: true })
+  price_alerts: PriceAlertConfig[] | null;
+
   @CreateDateColumn()
   created_at: Date;
 
   @UpdateDateColumn()
   updated_at: Date;
+}
+
+export interface PriceAlertConfig {
+  id: string;
+  marketId: string;
+  outcome: 'YES' | 'NO';
+  targetOdds: number;
+  direction: 'above' | 'below';
+  enabled: boolean;
+  createdAt: string;
 }

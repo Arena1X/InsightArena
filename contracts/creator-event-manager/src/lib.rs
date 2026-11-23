@@ -917,6 +917,7 @@ impl CreatorEventManagerContract {
     /// # Panics
     /// * `"invite_code_expired"` — the code's expiry has passed (#1699).
     /// * `"invite_code_uses_exceeded"` — the code has reached its use cap (#1699).
+    /// * `"invite_code_revoked"` — the creator revoked the invite code.
     pub fn join_event(env: Env, user: Address, invite_code: Symbol) {
         match prediction::join_event(&env, user, invite_code) {
             Ok(()) => {}
@@ -935,6 +936,7 @@ impl CreatorEventManagerContract {
             Err(prediction::PredictionError::InviteCodeUsesExceeded) => {
                 panic!("invite_code_uses_exceeded")
             }
+            Err(prediction::PredictionError::InviteCodeRevoked) => panic!("invite_code_revoked"),
             Err(_) => panic!("unexpected_error"),
         }
     }
@@ -956,6 +958,20 @@ impl CreatorEventManagerContract {
         max_uses: u32,
     ) {
         match event::set_invite_limits(&env, caller, event_id, expires_at, max_uses) {
+            Ok(()) => {}
+            Err(EventError::EventNotFound) => panic!("event_not_found"),
+            Err(EventError::Unauthorized) => panic!("unauthorized"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Revoke an event's invite code. Only its creator may call this.
+    ///
+    /// # Panics
+    /// * `"event_not_found"` — no event exists with the given ID.
+    /// * `"unauthorized"` — caller is not the event creator.
+    pub fn revoke_invite(env: Env, caller: Address, event_id: u64) {
+        match event::revoke_invite(&env, caller, event_id) {
             Ok(()) => {}
             Err(EventError::EventNotFound) => panic!("event_not_found"),
             Err(EventError::Unauthorized) => panic!("unauthorized"),

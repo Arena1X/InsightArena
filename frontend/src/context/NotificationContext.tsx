@@ -4,8 +4,8 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { markAllNotificationsAsRead } from "@/lib/api";
@@ -79,6 +79,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const [notifications, setNotifications] = useState<NotificationItem[]>(
     mockNotifications,
   );
+  const markAllRequestId = useRef(0);
 
   const unreadCount = useMemo(
     () => notifications.filter((n) => !n.isRead).length,
@@ -97,19 +98,34 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   );
 
   const markAllAsRead = useCallback(async () => {
-    const previousNotifications = notifications;
+    const unreadIds = new Set(
+      notifications
+        .filter((notification) => !notification.isRead)
+        .map((notification) => notification.id),
+    );
+    if (unreadIds.size === 0) return;
+    const requestId = ++markAllRequestId.current;
 
-    // Optimistic update: mark all as read immediately
     setNotifications((current) =>
-      current.map((n) => ({ ...n, isRead: true })),
+      current.map((notification) =>
+        unreadIds.has(notification.id) && !notification.isRead
+          ? { ...notification, isRead: true }
+          : notification,
+      ),
     );
 
     try {
-      // Call the API to persist the change
       await markAllNotificationsAsRead();
     } catch (error) {
-      // On error, roll back to the previous state
-      setNotifications(previousNotifications);
+      if (requestId === markAllRequestId.current) {
+        setNotifications((current) =>
+          current.map((notification) =>
+            unreadIds.has(notification.id) && notification.isRead
+              ? { ...notification, isRead: false }
+              : notification,
+          ),
+        );
+      }
       throw error;
     }
   }, [notifications]);

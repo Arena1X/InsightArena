@@ -180,6 +180,7 @@ export class PredictionsService {
         dto.minSharesOut,
         realized_price,
         shares_received,
+        market.slippage_tolerance_bps,
       );
     }
 
@@ -387,6 +388,7 @@ export class PredictionsService {
             item.minSharesOut,
             result.realized_price,
             result.shares_received,
+            market.slippage_tolerance_bps,
           );
         }
 

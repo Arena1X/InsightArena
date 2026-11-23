@@ -6,62 +6,63 @@ import {
 } from './response.interceptor';
 import { CallHandler } from '@nestjs/common';
 import { of } from 'rxjs';
-import { PAGINATED_KEY } from '../decorators/paginated.decorator';
+import {
+  ALT_INCOMING_HEADER,
+  CORRELATION_ID_HEADER,
+  correlationIdStorage,
+  getCorrelationId,
+} from '../correlation-id';
 
-function makeContext(
+function makeHttpContext(
   statusCode: number,
-  metadataValue: boolean | undefined,
-): jest.Mocked<ExecutionContext> {
-  const mockHandler = {} as object;
-  const mockClass = {} as object;
-  const mockReflector = {
-    getAllAndOverride: jest.fn().mockReturnValue(metadataValue),
-  } as unknown as jest.Mocked<Reflector>;
-
-  const ctx = {
+  incomingHeaders: Record<string, string> = {},
+): {
+  context: jest.Mocked<ExecutionContext>;
+  request: { headers: Record<string, string>; id?: string };
+  response: { statusCode: number; setHeader: jest.Mock };
+} {
+  const request = { headers: incomingHeaders };
+  const response = { statusCode, setHeader: jest.fn() };
+  const context = {
+    getType: jest.fn().mockReturnValue('http'),
     switchToHttp: jest.fn().mockReturnValue({
-      getResponse: jest.fn().mockReturnValue({ statusCode }),
+      getResponse: jest.fn().mockReturnValue(response),
+      getRequest: jest.fn().mockReturnValue(request),
     }),
-    getHandler: jest.fn().mockReturnValue(mockHandler),
-    getClass: jest.fn().mockReturnValue(mockClass),
+    getHandler: jest.fn().mockReturnValue({}),
+    getClass: jest.fn().mockReturnValue({}),
   } as unknown as jest.Mocked<ExecutionContext>;
 
-  // Attach reflector so callers can inspect it if needed
-  (ctx as any).__reflector = mockReflector;
-  return ctx;
+  return { context, request, response };
 }
 
 function makeInterceptor(metadataValue: boolean | undefined): {
   interceptor: ResponseInterceptor;
   context: jest.Mocked<ExecutionContext>;
+  response: { statusCode: number; setHeader: jest.Mock };
 } {
-  const mockHandler = {} as object;
-  const mockClass = {} as object;
   const reflector = {
     getAllAndOverride: jest.fn().mockReturnValue(metadataValue),
   } as unknown as Reflector;
 
   const interceptor = new ResponseInterceptor(reflector);
+  const { context, response } = makeHttpContext(200);
 
-  const context = {
-    switchToHttp: jest.fn().mockReturnValue({
-      getResponse: jest.fn().mockReturnValue({ statusCode: 200 }),
-    }),
-    getHandler: jest.fn().mockReturnValue(mockHandler),
-    getClass: jest.fn().mockReturnValue(mockClass),
-  } as unknown as jest.Mocked<ExecutionContext>;
-
-  return { interceptor, context };
+  return { interceptor, context, response };
 }
 
 describe('ResponseInterceptor', () => {
   let interceptor: ResponseInterceptor;
   let mockExecutionContext: jest.Mocked<ExecutionContext>;
   let mockCallHandler: jest.Mocked<CallHandler>;
-  let mockResponse: { statusCode: number };
+  let mockResponse: { statusCode: number; setHeader: jest.Mock };
+  let mockRequest: { headers: Record<string, string>; id?: string };
 
   beforeEach(() => {
-    mockResponse = { statusCode: 200 };
+    const http = makeHttpContext(200);
+    mockResponse = http.response;
+    mockRequest = http.request;
+    mockExecutionContext = http.context;
 
     const reflector = {
       getAllAndOverride: jest.fn().mockReturnValue(undefined),
@@ -69,17 +70,13 @@ describe('ResponseInterceptor', () => {
 
     interceptor = new ResponseInterceptor(reflector);
 
-    mockExecutionContext = {
-      switchToHttp: jest.fn().mockReturnValue({
-        getResponse: jest.fn().mockReturnValue(mockResponse),
-      }),
-      getHandler: jest.fn().mockReturnValue({}),
-      getClass: jest.fn().mockReturnValue({}),
-    } as unknown as jest.Mocked<ExecutionContext>;
-
     mockCallHandler = {
       handle: jest.fn(),
     } as unknown as jest.Mocked<CallHandler>;
+  });
+
+  afterEach(() => {
+    correlationIdStorage.enterWith(undefined as unknown as string);
   });
 
   // ─── existing: normal response wrapping ──────────────────────────────────
@@ -245,6 +242,96 @@ describe('ResponseInterceptor', () => {
         .subscribe((result) => {
           expect(result).toHaveProperty('success', true);
           expect(result).toHaveProperty('data', { error: 'invalid input' });
+          done();
+        });
+    });
+  });
+
+  describe('correlation id', () => {
+    it('returns a generated correlation id in the response header', (done) => {
+      mockCallHandler.handle.mockReturnValue(of({ ok: true }));
+
+      interceptor
+        .intercept(mockExecutionContext, mockCallHandler)
+        .subscribe(() => {
+          expect(mockResponse.setHeader).toHaveBeenCalledWith(
+            CORRELATION_ID_HEADER,
+            expect.stringMatching(
+              /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+            ),
+          );
+          expect(getCorrelationId()).toBeDefined();
+          done();
+        });
+    });
+
+    it('respects an incoming x-correlation-id header', (done) => {
+      mockRequest.headers[CORRELATION_ID_HEADER] = 'incoming-corr-123';
+      mockCallHandler.handle.mockReturnValue(of({ ok: true }));
+
+      interceptor
+        .intercept(mockExecutionContext, mockCallHandler)
+        .subscribe(() => {
+          expect(mockResponse.setHeader).toHaveBeenCalledWith(
+            CORRELATION_ID_HEADER,
+            'incoming-corr-123',
+          );
+          expect(mockRequest.id).toBe('incoming-corr-123');
+          expect(getCorrelationId()).toBe('incoming-corr-123');
+          done();
+        });
+    });
+
+    it('respects an incoming x-request-id fallback header', (done) => {
+      mockRequest.headers[ALT_INCOMING_HEADER] = 'fallback-trace-456';
+      mockCallHandler.handle.mockReturnValue(of({ ok: true }));
+
+      interceptor
+        .intercept(mockExecutionContext, mockCallHandler)
+        .subscribe(() => {
+          expect(mockResponse.setHeader).toHaveBeenCalledWith(
+            CORRELATION_ID_HEADER,
+            'fallback-trace-456',
+          );
+          expect(mockRequest.id).toBe('fallback-trace-456');
+          expect(getCorrelationId()).toBe('fallback-trace-456');
+          done();
+        });
+    });
+
+    it('preserves existing request.id if already set', (done) => {
+      mockRequest.id = 'pre-assigned-req-id';
+      mockCallHandler.handle.mockReturnValue(of({ ok: true }));
+
+      interceptor
+        .intercept(mockExecutionContext, mockCallHandler)
+        .subscribe(() => {
+          expect(mockResponse.setHeader).toHaveBeenCalledWith(
+            CORRELATION_ID_HEADER,
+            'pre-assigned-req-id',
+          );
+          expect(mockRequest.id).toBe('pre-assigned-req-id');
+          done();
+        });
+    });
+
+    it('safely passes through non-HTTP execution contexts', (done) => {
+      const nonHttpContext = {
+        getType: jest.fn().mockReturnValue('ws'),
+        switchToHttp: jest.fn().mockReturnValue({
+          getResponse: jest.fn().mockReturnValue(null),
+          getRequest: jest.fn().mockReturnValue(null),
+        }),
+        getHandler: jest.fn().mockReturnValue({}),
+        getClass: jest.fn().mockReturnValue({}),
+      } as unknown as jest.Mocked<ExecutionContext>;
+
+      mockCallHandler.handle.mockReturnValue(of({ event: 'pong' }));
+
+      interceptor
+        .intercept(nonHttpContext, mockCallHandler)
+        .subscribe((result) => {
+          expect(result).toHaveProperty('data', { event: 'pong' });
           done();
         });
     });

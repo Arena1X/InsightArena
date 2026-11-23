@@ -4,6 +4,7 @@ import {
   CallHandler,
   INestApplication,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { of } from 'rxjs';
 import { ActivityLoggingInterceptor } from './activity-logging.interceptor';
 import { AnalyticsService } from '../../analytics/analytics.service';
@@ -11,8 +12,10 @@ import { AnalyticsService } from '../../analytics/analytics.service';
 describe('ActivityLoggingInterceptor', () => {
   let interceptor: ActivityLoggingInterceptor;
   let analyticsService: AnalyticsService;
+  let configService: { get: jest.Mock };
 
   beforeEach(async () => {
+    configService = { get: jest.fn() };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ActivityLoggingInterceptor,
@@ -21,6 +24,10 @@ describe('ActivityLoggingInterceptor', () => {
           useValue: {
             logActivity: jest.fn(),
           },
+        },
+        {
+          provide: ConfigService,
+          useValue: configService,
         },
       ],
     }).compile();
@@ -311,6 +318,84 @@ describe('ActivityLoggingInterceptor', () => {
         url: '/markets',
         user: { id: 'user-123' },
         body: { title: 'Test Market', password: 'secret123' },
+        ip: '127.0.0.1',
+      };
+
+      const context = {
+        switchToHttp: () => ({
+          getRequest: () => mockRequest,
+        }),
+      } as any as ExecutionContext;
+
+      const next = {
+        handle: () => of({}),
+      } as CallHandler;
+
+      interceptor.intercept(context, next).subscribe(() => {
+        expect(analyticsService.logActivity).toHaveBeenCalledWith(
+          'user-123',
+          'MARKET_CREATED',
+          { title: 'Test Market' },
+          '127.0.0.1',
+        );
+        done();
+      });
+    });
+  });
+
+  describe('sensitive field sanitization', () => {
+    it('should redact sensitive fields while preserving non-sensitive context', (done) => {
+      const mockRequest = {
+        method: 'POST',
+        url: '/markets',
+        user: { id: 'user-123' },
+        body: {
+          title: 'Test Market',
+          email: 'person@example.com',
+          accessToken: 'access-token',
+          metadata: {
+            secretValue: 'secret',
+            category: 'sports',
+          },
+        },
+        ip: '127.0.0.1',
+      };
+
+      const context = {
+        switchToHttp: () => ({
+          getRequest: () => mockRequest,
+        }),
+      } as any as ExecutionContext;
+
+      const next = {
+        handle: () => of({}),
+      } as CallHandler;
+
+      interceptor.intercept(context, next).subscribe(() => {
+        expect(analyticsService.logActivity).toHaveBeenCalledWith(
+          'user-123',
+          'MARKET_CREATED',
+          {
+            title: 'Test Market',
+            metadata: { category: 'sports' },
+          },
+          '127.0.0.1',
+        );
+        done();
+      });
+    });
+
+    it('should redact configured fields', (done) => {
+      configService.get.mockReturnValue('internalId, private_note');
+      const mockRequest = {
+        method: 'POST',
+        url: '/markets',
+        user: { id: 'user-123' },
+        body: {
+          title: 'Test Market',
+          internalId: 'internal-id',
+          privateNote: 'private',
+        },
         ip: '127.0.0.1',
       };
 

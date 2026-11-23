@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Download, X, Wifi, WifiOff } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Download, RefreshCw, X, Wifi, WifiOff } from "lucide-react";
 
 import { registerServiceWorker } from "@/lib/registerServiceWorker";
 import { processQueue } from "@/lib/actionQueue";
@@ -12,15 +12,47 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 const DISMISS_STORAGE_KEY = "insightarena.installPromptDismissed";
+const UPDATE_REPROMPT_MS = 30 * 60 * 1000;
 
 export function PwaManager() {
   const [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [visible, setVisible] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  const [waitingWorker, setWaitingWorker] = useState<ServiceWorker | null>(null);
+  const [updateVisible, setUpdateVisible] = useState(false);
+  const reloadOnControllerChange = useRef(false);
+  const updateTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    registerServiceWorker();
+    registerServiceWorker((worker) => {
+      setWaitingWorker(worker);
+      setUpdateVisible(true);
+    });
+
+    if (!("serviceWorker" in navigator)) return;
+    // Reload only after the user accepted the update, not on the first clients.claim().
+    const handleControllerChange = () => {
+      if (reloadOnControllerChange.current) window.location.reload();
+    };
+    navigator.serviceWorker.addEventListener("controllerchange", handleControllerChange);
+    return () => {
+      navigator.serviceWorker.removeEventListener("controllerchange", handleControllerChange);
+      window.clearTimeout(updateTimer.current);
+    };
   }, []);
+
+  const dismissUpdate = () => {
+    setUpdateVisible(false);
+    window.clearTimeout(updateTimer.current);
+    updateTimer.current = window.setTimeout(() => setUpdateVisible(true), UPDATE_REPROMPT_MS);
+  };
+
+  const applyUpdate = () => {
+    if (!waitingWorker) return;
+    reloadOnControllerChange.current = true;
+    waitingWorker.postMessage({ type: "SKIP_WAITING" });
+    setUpdateVisible(false);
+  };
 
   useEffect(() => {
     const handleOnline = async () => {
@@ -98,6 +130,37 @@ export function PwaManager() {
             <p className="text-xs text-yellow-200/70">Actions will sync when online</p>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  if (updateVisible && waitingWorker) {
+    return (
+      <div
+        role="region"
+        aria-label="Update InsightArena"
+        className="fixed inset-x-4 bottom-4 z-[200] mx-auto flex max-w-sm items-center gap-3 rounded-2xl border border-white/10 bg-[#111726] p-4 shadow-2xl sm:inset-x-auto sm:right-6 sm:bottom-6"
+      >
+        <RefreshCw className="h-5 w-5 shrink-0 text-[#4FD1C5]" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-white">Update available</p>
+          <p className="text-xs text-[#9aa4bc]">Reload to get the latest version.</p>
+        </div>
+        <button
+          type="button"
+          onClick={applyUpdate}
+          className="shrink-0 rounded-lg bg-[#4FD1C5] px-3 py-2 text-xs font-semibold text-[#0a0f1a] transition hover:bg-[#43bfb4]"
+        >
+          Update
+        </button>
+        <button
+          type="button"
+          onClick={dismissUpdate}
+          aria-label="Dismiss update prompt"
+          className="shrink-0 rounded-md p-1 text-[#9aa4bc] transition hover:text-white"
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
     );
   }
