@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { SlippageExceededException } from '../exceptions/slippage-exceeded.exception';
 import { InsufficientLiquidityException } from '../exceptions/insufficient-liquidity.exception';
 
@@ -14,6 +14,11 @@ import { InsufficientLiquidityException } from '../exceptions/insufficient-liqui
  * treated as an unpriceable, zero-liquidity fill.
  */
 export const MIN_LIQUIDITY_SHARES_STROOPS = 1n;
+
+/** Global fallback tolerance (bps) for markets without an override. 0 = exact bounds. */
+export const DEFAULT_SLIPPAGE_TOLERANCE_BPS = 0;
+/** Upper bound (bps) accepted for any configured tolerance (50%). */
+export const MAX_SLIPPAGE_TOLERANCE_BPS = 5000;
 
 /** Parse an integer stroop string, returning null for anything malformed. */
 function parseStroops(value: string): bigint | null {
@@ -37,17 +42,21 @@ export class SlippageCheckerService {
    * @param minSharesOut Minimum acceptable shares received (optional)
    * @param actualPrice Realized price from contract
    * @param actualShares Realized shares from contract
+   * @param marketToleranceBps Per-market tolerance in bps; falls back to the global default
    */
   checkSlippage(
     maxPrice: string | undefined,
     minSharesOut: string | undefined,
     actualPrice: string,
     actualShares: string,
+    marketToleranceBps?: number | null,
   ): void {
     this.assertSufficientLiquidity(actualPrice, actualShares);
+    const tolerance = BigInt(this.getEffectiveTolerance(marketToleranceBps));
 
     if (maxPrice) {
-      const maxPriceBigInt = BigInt(maxPrice);
+      // Tolerance widens the user's price bound: allow up to +tolerance bps.
+      const maxPriceBigInt = (BigInt(maxPrice) * (10000n + tolerance)) / 10000n;
       const actualPriceBigInt = BigInt(actualPrice);
 
       if (actualPriceBigInt > maxPriceBigInt) {
@@ -64,7 +73,9 @@ export class SlippageCheckerService {
     }
 
     if (minSharesOut) {
-      const minSharesBigInt = BigInt(minSharesOut);
+      // Tolerance widens the user's shares bound: allow down to -tolerance bps.
+      const minSharesBigInt =
+        (BigInt(minSharesOut) * (10000n - tolerance)) / 10000n;
       const actualSharesBigInt = BigInt(actualShares);
 
       if (actualSharesBigInt < minSharesBigInt) {
@@ -83,6 +94,21 @@ export class SlippageCheckerService {
     this.logger.debug(
       `Slippage check passed: price=${actualPrice} shares=${actualShares}`,
     );
+  }
+
+  /** Effective tolerance (bps): the market override, else the global default. */
+  getEffectiveTolerance(marketToleranceBps?: number | null): number {
+    const bps = marketToleranceBps ?? DEFAULT_SLIPPAGE_TOLERANCE_BPS;
+    if (
+      !Number.isInteger(bps) ||
+      bps < 0 ||
+      bps > MAX_SLIPPAGE_TOLERANCE_BPS
+    ) {
+      throw new BadRequestException(
+        `Slippage tolerance must be an integer between 0 and ${MAX_SLIPPAGE_TOLERANCE_BPS} bps`,
+      );
+    }
+    return bps;
   }
 
   /**
