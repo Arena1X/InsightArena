@@ -1,8 +1,15 @@
 /// Storage helper functions for the CreatorEventManager contract.
 ///
-/// All reads extend the TTL of the accessed entry by one year (~6_307_200 ledgers
-/// at ~5 s/ledger).  All writes apply the same TTL so freshly written entries
-/// do not expire before they can be read.
+/// TTL policy (issue #2201):
+/// * **Writes** — every persistent entry written or updated through these
+///   helpers has its TTL extended with [`extend_on_write`], using the
+///   configured [`TTL_THRESHOLD`] / [`TTL_BUMP`], regardless of the parent
+///   event's status. A write therefore never leaves an entry close to expiry
+///   (e.g. the final `set_event` during finalization). Counter writes extend
+///   the contract instance TTL the same way.
+/// * **Reads** — event-scoped entries are only extended while their event is
+///   active, so finalized/cancelled state is allowed to expire once it stops
+///   being written. Global and claim-related entries are extended on read.
 ///
 /// Counter helpers return the *new* value after incrementing so callers can use
 /// the returned ID immediately.
@@ -34,6 +41,19 @@ pub const THRESHOLD: u32 = TTL_THRESHOLD;
 
 /// Named alias for bump.
 pub const BUMP: u32 = TTL_BUMP;
+
+/// Extend the TTL of a persistent entry that has just been written, using the
+/// configured TTL threshold and bump amount.
+pub fn extend_on_write(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, TTL_THRESHOLD, TTL_BUMP);
+}
+
+/// Extend the contract instance TTL after a write to instance storage.
+fn extend_instance_on_write(env: &Env) {
+    env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_BUMP);
+}
 
 // ---------------------------------------------------------------------------
 // Invite-code helpers
@@ -67,9 +87,7 @@ pub fn get_invite_data(env: &Env, code: &Symbol) -> Option<InviteCodeData> {
 pub fn set_invite_data(env: &Env, code: &Symbol, data: &InviteCodeData) {
     let key = DataKey::InviteCode(code.clone());
     env.storage().persistent().set(&key, data);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+    extend_on_write(env, &key);
     extend_invite_revoked_ttl(env, code);
 }
 
@@ -91,9 +109,7 @@ pub fn is_invite_revoked(env: &Env, code: &Symbol) -> bool {
 pub fn set_invite_revoked(env: &Env, code: &Symbol) {
     let key = DataKey::InviteRevoked(code.clone());
     env.storage().persistent().set(&key, &true);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,15 +205,11 @@ pub fn get_event(env: &Env, event_id: u64) -> Result<Event, StorageError> {
     }
 }
 
-/// Write an `Event` to persistent storage and set its TTL if active.
+/// Write an `Event` to persistent storage and extend its TTL.
 pub fn set_event(env: &Env, event_id: u64, event: &Event) {
     let key = DataKey::Event(event_id);
     env.storage().persistent().set(&key, event);
-    if is_event_active_record(event) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-    }
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -220,15 +232,11 @@ pub fn get_match(env: &Env, match_id: u64) -> Result<Match, StorageError> {
     }
 }
 
-/// Write a `Match` to persistent storage and set its TTL if parent event is active.
+/// Write a `Match` to persistent storage and extend its TTL.
 pub fn set_match(env: &Env, match_id: u64, m: &Match) {
     let key = DataKey::Match(match_id);
     env.storage().persistent().set(&key, m);
-    if is_event_active(env, m.event_id) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-    }
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -251,15 +259,11 @@ pub fn get_prediction(env: &Env, prediction_id: u64) -> Result<Prediction, Stora
     }
 }
 
-/// Write a `Prediction` to persistent storage and set its TTL if parent event is active.
+/// Write a `Prediction` to persistent storage and extend its TTL.
 pub fn set_prediction(env: &Env, prediction_id: u64, prediction: &Prediction) {
     let key = DataKey::Prediction(prediction_id);
     env.storage().persistent().set(&key, prediction);
-    if is_event_active(env, prediction.event_id) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-    }
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +280,7 @@ pub fn next_event_id(env: &Env) -> u64 {
         .unwrap_or(0);
     let next = current + 1;
     env.storage().instance().set(&key, &next);
+    extend_instance_on_write(env);
     next
 }
 
@@ -289,6 +294,7 @@ pub fn next_match_id(env: &Env) -> u64 {
         .unwrap_or(0);
     let next = current + 1;
     env.storage().instance().set(&key, &next);
+    extend_instance_on_write(env);
     next
 }
 
@@ -302,6 +308,7 @@ pub fn next_prediction_id(env: &Env) -> u64 {
         .unwrap_or(0);
     let next = current + 1;
     env.storage().instance().set(&key, &next);
+    extend_instance_on_write(env);
     next
 }
 
@@ -331,11 +338,7 @@ pub fn add_event_match(env: &Env, event_id: u64, match_id: u64) {
     let mut list = get_event_matches(env, event_id);
     list.push_back(match_id);
     env.storage().persistent().set(&key, &list);
-    if is_event_active(env, event_id) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-    }
+    extend_on_write(env, &key);
 }
 
 /// Return the list of prediction IDs for a match, or an empty Vec if none exist.
@@ -362,13 +365,7 @@ pub fn add_match_prediction(env: &Env, match_id: u64, prediction_id: u64) {
     let mut list = get_match_predictions(env, match_id);
     list.push_back(prediction_id);
     env.storage().persistent().set(&key, &list);
-    if let Some(m) = get_match_raw(env, match_id) {
-        if is_event_active(env, m.event_id) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-        }
-    }
+    extend_on_write(env, &key);
 }
 
 /// Return the list of prediction IDs a user has placed in an event.
@@ -393,11 +390,7 @@ pub fn add_user_prediction(env: &Env, user: &Address, event_id: u64, prediction_
     let mut list = get_user_predictions(env, user, event_id);
     list.push_back(prediction_id);
     env.storage().persistent().set(&key, &list);
-    if is_event_active(env, event_id) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-    }
+    extend_on_write(env, &key);
 }
 
 /// Return the list of participant addresses for an event.
@@ -426,11 +419,7 @@ pub fn add_event_participant(env: &Env, event_id: u64, participant: &Address) {
     let mut list = get_event_participants(env, event_id);
     list.push_back(participant.clone());
     env.storage().persistent().set(&key, &list);
-    if is_event_active(env, event_id) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-    }
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -462,11 +451,7 @@ pub fn get_participant_score(env: &Env, event_id: u64, user: &Address) -> Option
 pub fn set_participant_score(env: &Env, score: &ParticipantScore) {
     let key = DataKey::ParticipantScore(score.user.clone(), score.event_id);
     env.storage().persistent().set(&key, score);
-    if is_event_active(env, score.event_id) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-    }
+    extend_on_write(env, &key);
 }
 
 /// Read the stored weighted standings snapshot for an event, or an empty Vec
@@ -494,11 +479,7 @@ pub fn get_event_standings(env: &Env, event_id: u64) -> Vec<StandingEntry> {
 pub fn set_event_standings(env: &Env, event_id: u64, standings: &Vec<StandingEntry>) {
     let key = DataKey::EventStandings(event_id);
     env.storage().persistent().set(&key, standings);
-    if is_event_active(env, event_id) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-    }
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -528,9 +509,7 @@ pub fn get_prize_allocation(env: &Env, event_id: u64, winner: &Address) -> Optio
 pub fn set_prize_allocation(env: &Env, allocation: &PrizeAllocation) {
     let key = DataKey::PrizeAllocation(allocation.winner.clone(), allocation.event_id);
     env.storage().persistent().set(&key, allocation);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+    extend_on_write(env, &key);
 }
 
 /// Read an event's claim deadline, or `None` if the event has not been
@@ -552,9 +531,7 @@ pub fn get_claim_deadline(env: &Env, event_id: u64) -> Option<u64> {
 pub fn set_claim_deadline(env: &Env, event_id: u64, deadline: u64) {
     let key = DataKey::ClaimDeadline(event_id);
     env.storage().persistent().set(&key, &deadline);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -588,11 +565,7 @@ pub fn add_event_verification_signer(env: &Env, event_id: u64, signer: &Address)
     let mut list = get_event_verification_signers(env, event_id);
     list.push_back(signer.clone());
     env.storage().persistent().set(&key, &list);
-    if is_event_active(env, event_id) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-    }
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -622,9 +595,7 @@ pub fn get_oracle_sources(env: &Env) -> Vec<Address> {
 pub fn set_oracle_sources(env: &Env, sources: &Vec<Address>) {
     let key = DataKey::OracleSources;
     env.storage().persistent().set(&key, sources);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+    extend_on_write(env, &key);
 }
 
 /// Return the configured minimum oracle source count, or `0` if
@@ -646,9 +617,31 @@ pub fn get_oracle_min_sources(env: &Env) -> u32 {
 pub fn set_oracle_min_sources(env: &Env, min_sources: u32) {
     let key = DataKey::OracleMinSources;
     env.storage().persistent().set(&key, &min_sources);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+    extend_on_write(env, &key);
+}
+
+/// Return an event's configured oracle consensus threshold, or `None` when it
+/// has never been set (the global minimum then applies) (#2202).
+pub fn get_event_consensus_threshold(env: &Env, event_id: u64) -> Option<u32> {
+    let key = DataKey::EventConsensusThreshold(event_id);
+    match env.storage().persistent().get::<DataKey, u32>(&key) {
+        Some(threshold) => {
+            if is_event_active(env, event_id) {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+            }
+            Some(threshold)
+        }
+        None => None,
+    }
+}
+
+/// Write an event's oracle consensus threshold and extend its TTL (#2202).
+pub fn set_event_consensus_threshold(env: &Env, event_id: u64, threshold: u32) {
+    let key = DataKey::EventConsensusThreshold(event_id);
+    env.storage().persistent().set(&key, &threshold);
+    extend_on_write(env, &key);
 }
 
 /// Return every oracle submission recorded for a match, or an empty Vec if
@@ -680,13 +673,7 @@ pub fn add_oracle_submission(env: &Env, match_id: u64, submission: &OracleSubmis
     let mut list = get_oracle_submissions(env, match_id);
     list.push_back(submission.clone());
     env.storage().persistent().set(&key, &list);
-    if let Some(m) = get_match_raw(env, match_id) {
-        if is_event_active(env, m.event_id) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-        }
-    }
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -722,13 +709,7 @@ pub fn add_match_result_proposal(env: &Env, match_id: u64, submission: &MatchRes
     let mut list = get_match_result_proposals(env, match_id);
     list.push_back(submission.clone());
     env.storage().persistent().set(&key, &list);
-    if let Some(m) = get_match_raw(env, match_id) {
-        if is_event_active(env, m.event_id) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-        }
-    }
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -762,13 +743,7 @@ pub fn get_pending_match_result(env: &Env, match_id: u64) -> Option<PendingMatch
 pub fn set_pending_match_result(env: &Env, pending: &PendingMatchResult) {
     let key = DataKey::PendingMatchResult(pending.match_id);
     env.storage().persistent().set(&key, pending);
-    if let Some(m) = get_match_raw(env, pending.match_id) {
-        if is_event_active(env, m.event_id) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-        }
-    }
+    extend_on_write(env, &key);
 }
 
 /// Remove a match's staged pending result once it has been finalized.
@@ -808,13 +783,7 @@ pub fn add_match_verification_signer(env: &Env, match_id: u64, signer: &Address)
     let mut list = get_match_verification_signers(env, match_id);
     list.push_back(signer.clone());
     env.storage().persistent().set(&key, &list);
-    if let Some(m) = get_match_raw(env, match_id) {
-        if is_event_active(env, m.event_id) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
-        }
-    }
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -843,9 +812,7 @@ pub fn get_finalization_bond(env: &Env, event_id: u64) -> Option<FinalizationBon
 pub fn set_finalization_bond(env: &Env, bond: &FinalizationBond) {
     let key = DataKey::FinalizationBond(bond.event_id);
     env.storage().persistent().set(&key, bond);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+    extend_on_write(env, &key);
 }
 
 // ---------------------------------------------------------------------------
@@ -880,7 +847,5 @@ pub fn get_creator_vesting(
 pub fn set_creator_vesting(env: &Env, schedule: &CreatorVestingSchedule) {
     let key = DataKey::CreatorVesting(schedule.creator.clone(), schedule.event_id);
     env.storage().persistent().set(&key, schedule);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+    extend_on_write(env, &key);
 }
