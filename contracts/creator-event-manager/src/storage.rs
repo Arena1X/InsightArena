@@ -506,10 +506,36 @@ pub fn get_prize_allocation(env: &Env, event_id: u64, winner: &Address) -> Optio
 }
 
 /// Write a winner's prize allocation and set its TTL.
+///
+/// The `claimed` flag is **sticky**: once an allocation has been settled
+/// (claimed or clawed back) it can never be written back to unclaimed, so no
+/// call ordering can re-open an already-paid allocation for a second claim.
 pub fn set_prize_allocation(env: &Env, allocation: &PrizeAllocation) {
     let key = DataKey::PrizeAllocation(allocation.winner.clone(), allocation.event_id);
     env.storage().persistent().set(&key, allocation);
     extend_on_write(env, &key);
+}
+
+/// Atomically settle a winner's prize allocation.
+///
+/// Reads the allocation and, only if it exists, is unclaimed and has a
+/// positive amount, persists it with `claimed = true` and returns the settled
+/// record. Returns `None` (and writes nothing) otherwise. Callers must invoke
+/// this **before** transferring funds (Checks-Effects-Interactions) so the
+/// claimed state is committed together with the payout in one invocation —
+/// if the transfer fails the whole invocation reverts, including this write.
+pub fn mark_prize_allocation_claimed(
+    env: &Env,
+    event_id: u64,
+    winner: &Address,
+) -> Option<PrizeAllocation> {
+    let mut allocation = get_prize_allocation(env, event_id, winner)?;
+    if allocation.claimed || allocation.amount <= 0 {
+        return None;
+    }
+    allocation.claimed = true;
+    set_prize_allocation(env, &allocation);
+    Some(allocation)
 }
 
 /// Read an event's claim deadline, or `None` if the event has not been
@@ -532,6 +558,34 @@ pub fn set_claim_deadline(env: &Env, event_id: u64, deadline: u64) {
     let key = DataKey::ClaimDeadline(event_id);
     env.storage().persistent().set(&key, &deadline);
     extend_on_write(env, &key);
+}
+
+// ---------------------------------------------------------------------------
+// Match-result finality helpers
+// ---------------------------------------------------------------------------
+
+/// Return the timestamp at which a match's result became final, or `None`
+/// if the result is still inside its overturn window (or not submitted).
+pub fn get_match_result_finalized_at(env: &Env, match_id: u64) -> Option<u64> {
+    let key = DataKey::MatchResultFinalizedAt(match_id);
+    match env.storage().persistent().get::<DataKey, u64>(&key) {
+        Some(finalized_at) => {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+            Some(finalized_at)
+        }
+        None => None,
+    }
+}
+
+/// Record that a match's result became final at `finalized_at`.
+pub fn set_match_result_finalized_at(env: &Env, match_id: u64, finalized_at: u64) {
+    let key = DataKey::MatchResultFinalizedAt(match_id);
+    env.storage().persistent().set(&key, &finalized_at);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
 }
 
 // ---------------------------------------------------------------------------

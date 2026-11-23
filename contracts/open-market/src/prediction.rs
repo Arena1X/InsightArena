@@ -1178,6 +1178,9 @@ pub fn claim_payout(
         return Err(InsightArenaError::MarketNotResolved);
     }
 
+    // Payouts are paused while a dispute against the resolution is open.
+    config::ensure_payouts_unlocked(env, market_id)?;
+
     let resolved_outcome = market
         .resolved_outcome
         .clone()
@@ -1340,6 +1343,9 @@ pub fn batch_distribute_payouts(
     if !market.is_resolved {
         return Err(InsightArenaError::MarketNotResolved);
     }
+
+    // Payouts are paused while a dispute against the resolution is open.
+    config::ensure_payouts_unlocked(env, market_id)?;
 
     let resolved_outcome = market
         .resolved_outcome

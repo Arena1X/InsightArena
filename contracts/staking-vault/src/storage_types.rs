@@ -44,8 +44,13 @@ pub struct PoolState {
     pub total_shares: i128,
     /// Accumulated rewards per share, scaled by `ACC_PRECISION`.
     pub acc_reward_per_share: i128,
-    /// Rewards received but not yet distributed (when `total_shares == 0`).
+    /// Rewards received but not yet distributed (when `total_shares == 0`),
+    /// plus whole-unit distribution leftovers carried to the next distribution.
     pub pending_rewards: i128,
+    /// Sub-unit distribution leftover in scaled units (`0..ACC_PRECISION`),
+    /// carried into the next distribution so accrual never drifts.
+    /// See [`crate::config`] for the precision guarantees.
+    pub reward_remainder: i128,
 }
 
 /// A single staker's position.
@@ -59,7 +64,9 @@ pub struct Position {
     pub shares: i128,
     /// Ledger timestamp when the lock expires and unstaking is allowed.
     pub unlock_at: u64,
-    /// Reward debt — bookkeeping for the accumulator model.
+    /// Reward debt — bookkeeping for the accumulator model, in scaled units
+    /// (token units × `ACC_PRECISION`) so earned sub-unit fractions carry
+    /// across settlements.
     pub reward_debt: i128,
     /// Timestamp when unlock was requested (0 if not requested).
     pub unlock_requested_at: u64,

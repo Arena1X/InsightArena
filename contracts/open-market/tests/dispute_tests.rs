@@ -1299,3 +1299,179 @@ fn test_list_active_disputes_and_count_stay_consistent_through_all_steps() {
     assert_eq!(active.len(), 0);
     assert_eq!(client.get_open_dispute_count(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Resolution dispute window: payouts pause while a dispute is open
+// ---------------------------------------------------------------------------
+
+/// Create a market with one winning ("yes") and one losing ("no") prediction,
+/// then resolve it to "yes". Returns `(market_id, winner, oracle, admin, token)`.
+fn resolved_market_with_winner(
+    env: &Env,
+    client: &InsightArenaContractClient<'_>,
+    admin: &Address,
+    oracle: &Address,
+    xlm_token: &Address,
+) -> (u64, Address, Address, Address) {
+    let creator = Address::generate(env);
+    let winner = Address::generate(env);
+    let loser = Address::generate(env);
+
+    let id = client.create_market(&creator, &market_params(env));
+    let asset = StellarAssetClient::new(env, xlm_token);
+    asset.mint(&winner, &30_000_000);
+    asset.mint(&loser, &30_000_000);
+    client.submit_prediction(&winner, &id, &symbol_short!("yes"), &20_000_000);
+    client.submit_prediction(&loser, &id, &symbol_short!("no"), &20_000_000);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 20);
+    client.resolve_market(oracle, &id, &symbol_short!("yes"));
+
+    (id, winner, oracle.clone(), admin.clone())
+}
+
+fn raise_funded_dispute(
+    env: &Env,
+    client: &InsightArenaContractClient<'_>,
+    xlm_token: &Address,
+    market_id: u64,
+) -> Address {
+    let disputer = Address::generate(env);
+    let bond = 10_000_000_i128;
+    StellarAssetClient::new(env, xlm_token).mint(&disputer, &bond);
+    TokenClient::new(env, xlm_token).approve(&disputer, &client.address, &bond, &9999);
+    client.raise_dispute(&disputer, &market_id, &bond);
+    disputer
+}
+
+fn has_dispute_event(env: &Env, contract: &Address, action: Symbol) -> bool {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::TryIntoVal;
+    env.events().all().iter().any(|event| {
+        if event.0 != *contract || event.1.len() != 2 {
+            return false;
+        }
+        let t0: Result<Symbol, _> = event.1.get(0).unwrap().try_into_val(env);
+        let t1: Result<Symbol, _> = event.1.get(1).unwrap().try_into_val(env);
+        matches!((t0, t1), (Ok(t0), Ok(t1)) if t0 == symbol_short!("dsp") && t1 == action)
+    })
+}
+
+#[test]
+fn test_dispute_within_window_pauses_payouts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (id, winner, oracle, _admin) =
+        resolved_market_with_winner(&env, &client, &admin, &oracle, &xlm_token);
+
+    assert!(!client.are_payouts_paused(&id));
+    raise_funded_dispute(&env, &client, &xlm_token, id);
+    assert!(client.are_payouts_paused(&id));
+
+    // Both payout paths are blocked while the dispute is open.
+    assert_eq!(
+        client.try_claim_payout(&winner, &id),
+        Err(Ok(InsightArenaError::DisputeAlreadyFiled))
+    );
+    assert_eq!(
+        client.try_batch_distribute_payouts(&oracle, &id),
+        Err(Ok(InsightArenaError::DisputeAlreadyFiled))
+    );
+
+    // Still blocked after the window itself closes, until the dispute is
+    // settled.
+    let window_end = client.get_dispute_window_end(&id).unwrap();
+    env.ledger().set_timestamp(window_end + 1);
+    assert_eq!(
+        client.try_claim_payout(&winner, &id),
+        Err(Ok(InsightArenaError::DisputeAlreadyFiled))
+    );
+    let token = TokenClient::new(&env, &xlm_token);
+    assert_eq!(token.balance(&winner), 10_000_000);
+}
+
+#[test]
+fn test_rejected_dispute_releases_payouts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (id, winner, _oracle, admin) =
+        resolved_market_with_winner(&env, &client, &admin, &oracle, &xlm_token);
+
+    raise_funded_dispute(&env, &client, &xlm_token, id);
+    client.resolve_dispute(&admin, &id, &false);
+    assert!(!client.are_payouts_paused(&id));
+
+    let payout = client.claim_payout(&winner, &id);
+    assert!(payout > 0);
+}
+
+#[test]
+fn test_upheld_dispute_keeps_payouts_blocked_until_reresolution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (id, winner, _oracle, admin) =
+        resolved_market_with_winner(&env, &client, &admin, &oracle, &xlm_token);
+
+    raise_funded_dispute(&env, &client, &xlm_token, id);
+    client.resolve_dispute(&admin, &id, &true);
+
+    // The market is reopened; no payout on the contested outcome.
+    assert_eq!(
+        client.try_claim_payout(&winner, &id),
+        Err(Ok(InsightArenaError::MarketNotResolved))
+    );
+}
+
+#[test]
+fn test_no_dispute_lets_payouts_proceed_after_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (id, winner, _oracle, _admin) =
+        resolved_market_with_winner(&env, &client, &admin, &oracle, &xlm_token);
+
+    let window_end = client.get_dispute_window_end(&id).unwrap();
+    let market = client.get_market(&id);
+    assert_eq!(window_end, market.resolved_at.unwrap() + market.dispute_window);
+
+    env.ledger().set_timestamp(window_end + 1);
+    assert!(!client.are_payouts_paused(&id));
+
+    // The outcome can no longer be contested ...
+    let disputer = Address::generate(&env);
+    let bond = 10_000_000_i128;
+    StellarAssetClient::new(&env, &xlm_token).mint(&disputer, &bond);
+    TokenClient::new(&env, &xlm_token).approve(&disputer, &client.address, &bond, &9999);
+    assert_eq!(
+        client.try_raise_dispute(&disputer, &id, &bond),
+        Err(Ok(InsightArenaError::DisputeWindowClosed))
+    );
+
+    // ... and payouts proceed.
+    let payout = client.claim_payout(&winner, &id);
+    assert!(payout > 0);
+}
+
+#[test]
+fn test_dispute_lifecycle_emits_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy(&env);
+    let (id, _winner, _oracle, admin) =
+        resolved_market_with_winner(&env, &client, &admin, &oracle, &xlm_token);
+
+    raise_funded_dispute(&env, &client, &xlm_token, id);
+    assert!(
+        has_dispute_event(&env, &client.address, symbol_short!("raised")),
+        "dispute open must emit (dsp, raised)"
+    );
+
+    client.resolve_dispute(&admin, &id, &false);
+    assert!(
+        has_dispute_event(&env, &client.address, symbol_short!("reslvd")),
+        "dispute resolution must emit (dsp, reslvd)"
+    );
+}

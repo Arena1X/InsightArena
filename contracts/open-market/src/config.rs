@@ -8,7 +8,7 @@ pub enum ReputationDecayMode {
 }
 
 use crate::errors::InsightArenaError;
-use crate::storage_types::{DataKey, VolumeFeeConfig};
+use crate::storage_types::{DataKey, Dispute, Market, VolumeFeeConfig};
 
 // ── TTL constants ─────────────────────────────────────────────────────────────
 // Assuming ~5 s per ledger:
@@ -1500,6 +1500,68 @@ fn emit_max_outcomes_updated(env: &Env, old_max: u32, new_max: u32) {
         (symbol_short!("cfg"), symbol_short!("max_out")),
         (old_max, new_max),
     );
+}
+
+// ── Resolution dispute window & payout gate ──────────────────────────────────
+//
+// A resolved market is not immediately final: for `market.dispute_window`
+// seconds after `resolved_at` anyone may contest the outcome via
+// `dispute::raise_dispute` (emits `("dsp", "raised")`). While such a dispute
+// is open, every payout path (`claim_payout`, `batch_distribute_payouts`) is
+// blocked. The dispute is closed by `dispute::resolve_dispute` (emits
+// `("dsp", "reslvd")`): a rejected dispute releases payouts on the original
+// outcome; an upheld one reopens the market, so payouts stay blocked by
+// `MarketNotResolved` until it is re-resolved. With no dispute, payouts
+// proceed normally — including once the window has closed, after which the
+// outcome can no longer be contested at all.
+
+/// Timestamp at which a resolved market's dispute window closes
+/// (`resolved_at + dispute_window`, saturating). `None` when the market is
+/// not resolved.
+pub fn dispute_window_end(market: &Market) -> Option<u64> {
+    if !market.is_resolved {
+        return None;
+    }
+    market
+        .resolved_at
+        .map(|resolved_at| resolved_at.saturating_add(market.dispute_window))
+}
+
+/// `true` while a resolved market's outcome can still be contested.
+/// The window is inclusive of its end timestamp, matching `raise_dispute`.
+pub fn is_dispute_window_open(env: &Env, market: &Market) -> bool {
+    match dispute_window_end(market) {
+        Some(end) => env.ledger().timestamp() <= end,
+        None => false,
+    }
+}
+
+/// `true` when a dispute has been raised against the market's resolution and
+/// has not been settled yet.
+pub fn has_open_dispute(env: &Env, market_id: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get::<DataKey, Dispute>(&DataKey::Dispute(market_id))
+        .map(|dispute| !dispute.is_resolved)
+        .unwrap_or(false)
+}
+
+/// Reject payouts for a market while a dispute against its resolution is
+/// open.
+///
+/// Returns [`InsightArenaError::DisputeAlreadyFiled`] (reused — the error
+/// enum is at its 50-case cap) when payouts are paused by an open dispute.
+pub fn ensure_payouts_unlocked(env: &Env, market_id: u64) -> Result<(), InsightArenaError> {
+    if has_open_dispute(env, market_id) {
+        return Err(InsightArenaError::DisputeAlreadyFiled);
+    }
+    Ok(())
+}
+
+/// `true` when payouts for `market_id` are currently paused by an open
+/// dispute.
+pub fn are_payouts_paused(env: &Env, market_id: u64) -> bool {
+    has_open_dispute(env, market_id)
 }
 
 // ── Volume Fee Config ──────────────────────────────────────────────────────────

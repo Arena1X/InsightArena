@@ -15,10 +15,11 @@
 ///   equals the original prize pool.
 use creator_event_manager::storage;
 use creator_event_manager::storage_types::{
-    MatchResult, CLAIM_PERIOD_SECONDS, FINALIZATION_BOND_STROOPS,
+    MatchResult, PrizeAllocation, CLAIM_PERIOD_SECONDS, FINALIZATION_BOND_STROOPS,
 };
 use creator_event_manager::CreatorEventManagerContractClient;
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::Events as _;
 use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::{Address, Env, String, Symbol, Vec};
@@ -640,4 +641,157 @@ fn test_property_claims_plus_clawback_equals_prize_pool() {
         assert_eq!(client.clawback_unclaimed(&caller, &event_id), 0);
         assert_eq!(claimed_total + swept, prize_pool);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Double-claim guard: persisted claimed flag & single claim event
+// ---------------------------------------------------------------------------
+
+/// Count `("prize", "claimed")` events emitted by the contract for `winner`.
+fn count_claim_events(env: &Env, contract_id: &Address, winner: &Address) -> u32 {
+    use soroban_sdk::TryIntoVal;
+    let mut count = 0u32;
+    for event in env.events().all().iter() {
+        if event.0 != *contract_id || event.1.len() != 2 {
+            continue;
+        }
+        let t0: Result<Symbol, _> = event.1.get(0).unwrap().try_into_val(env);
+        let t1: Result<Symbol, _> = event.1.get(1).unwrap().try_into_val(env);
+        if let (Ok(t0), Ok(t1)) = (t0, t1) {
+            if t0 == Symbol::new(env, "prize") && t1 == Symbol::new(env, "claimed") {
+                let data: Result<(u64, Address, i128), _> = event.2.try_into_val(env);
+                if let Ok(data) = data {
+                    if data.1 == *winner {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
+/// Finalize a one-match, single-winner event and return `(event_id, winner)`.
+fn finalized_single_winner_event(
+    env: &Env,
+    client: &CreatorEventManagerContractClient<'static>,
+    contract_id: &Address,
+    creator: &Address,
+    ai_agent: &Address,
+    xlm_token: &Address,
+) -> (u64, Address) {
+    let dist = reward_dist(env, &[100]);
+    let (event_id, invite_code, match_ids) = create_funded_event(
+        env,
+        contract_id,
+        client,
+        creator,
+        xlm_token,
+        PRIZE,
+        dist,
+        1,
+    );
+
+    let user = Address::generate(env);
+    client.join_event(&user, &invite_code);
+    client.submit_prediction(&user, &match_ids.get(0).unwrap(), &1u32, &0u32);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 7300);
+    submit_result(client, ai_agent, match_ids.get(0).unwrap(), MatchResult::TeamA);
+
+    let caller = Address::generate(env);
+    fund(env, xlm_token, &caller, FINALIZATION_BOND_STROOPS);
+    client.finalize_event(&caller, &event_id);
+
+    (event_id, user)
+}
+
+fn read_allocation(
+    env: &Env,
+    contract_id: &Address,
+    event_id: u64,
+    winner: &Address,
+) -> PrizeAllocation {
+    env.as_contract(contract_id, || {
+        storage::get_prize_allocation(env, event_id, winner).expect("allocation exists")
+    })
+}
+
+#[test]
+fn test_first_claim_pays_out_and_persists_claimed_flag() {
+    let (env, client, contract_id, creator, ai_agent, xlm_token, _treasury) = setup();
+    let (event_id, user) =
+        finalized_single_winner_event(&env, &client, &contract_id, &creator, &ai_agent, &xlm_token);
+
+    assert!(!read_allocation(&env, &contract_id, event_id, &user).claimed);
+
+    let claimed = client.claim_prize(&user, &event_id);
+    assert_eq!(claimed, PRIZE);
+    assert_eq!(balance(&env, &xlm_token, &user), PRIZE);
+
+    let allocation = read_allocation(&env, &contract_id, event_id, &user);
+    assert!(allocation.claimed);
+    assert_eq!(allocation.amount, PRIZE);
+}
+
+#[test]
+fn test_second_claim_rejected_without_extra_payout_or_event() {
+    let (env, client, contract_id, creator, ai_agent, xlm_token, _treasury) = setup();
+    let (event_id, user) =
+        finalized_single_winner_event(&env, &client, &contract_id, &creator, &ai_agent, &xlm_token);
+
+    client.claim_prize(&user, &event_id);
+    assert_eq!(count_claim_events(&env, &contract_id, &user), 1);
+
+    let second = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.claim_prize(&user, &event_id);
+    }));
+    assert!(second.is_err(), "second claim must be rejected");
+
+    // No additional funds moved and the allocation stays settled.
+    assert_eq!(balance(&env, &xlm_token, &user), PRIZE);
+    assert!(read_allocation(&env, &contract_id, event_id, &user).claimed);
+    assert!(count_claim_events(&env, &contract_id, &user) <= 1);
+}
+
+#[test]
+fn test_exactly_one_claim_event_emitted() {
+    let (env, client, contract_id, creator, ai_agent, xlm_token, _treasury) = setup();
+    let (event_id, user) =
+        finalized_single_winner_event(&env, &client, &contract_id, &creator, &ai_agent, &xlm_token);
+
+    assert_eq!(count_claim_events(&env, &contract_id, &user), 0);
+    client.claim_prize(&user, &event_id);
+    assert_eq!(count_claim_events(&env, &contract_id, &user), 1);
+}
+
+#[test]
+fn test_claimed_flag_cannot_be_reset_in_storage() {
+    let (env, client, contract_id, creator, ai_agent, xlm_token, _treasury) = setup();
+    let (event_id, user) =
+        finalized_single_winner_event(&env, &client, &contract_id, &creator, &ai_agent, &xlm_token);
+
+    client.claim_prize(&user, &event_id);
+
+    // Attempt to overwrite the settled allocation as unclaimed: the claimed
+    // flag is sticky, so the record stays settled.
+    env.as_contract(&contract_id, || {
+        storage::set_prize_allocation(
+            &env,
+            &PrizeAllocation {
+                winner: user.clone(),
+                event_id,
+                amount: PRIZE,
+                claimed: false,
+            },
+        );
+        assert!(storage::mark_prize_allocation_claimed(&env, event_id, &user).is_none());
+    });
+    assert!(read_allocation(&env, &contract_id, event_id, &user).claimed);
+
+    let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.claim_prize(&user, &event_id);
+    }));
+    assert!(again.is_err(), "claim after reset attempt must be rejected");
+    assert_eq!(balance(&env, &xlm_token, &user), PRIZE);
 }

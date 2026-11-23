@@ -147,6 +147,7 @@ impl StakingVault {
             total_shares: 0,
             acc_reward_per_share: 0,
             pending_rewards: 0,
+            reward_remainder: 0,
         };
         env.storage().instance().set(&DataKey::Pool, &pool_state);
 
@@ -215,13 +216,18 @@ impl StakingVault {
 
         // Settle any pending rewards on the existing position before changing
         // its share balance, so the boost from this deposit does not
-        // retroactively apply to already-accrued rewards.
-        if position.shares > 0 {
-            let owed = pool::pending(&pool_state, &position)?;
-            if owed > 0 {
-                let token_client = TokenClient::new(&env, &config.token);
-                token_client.transfer(&env.current_contract_address(), &staker, &owed);
-            }
+        // retroactively apply to already-accrued rewards. `settle` rebases the
+        // debt onto the new share count while carrying any earned sub-unit
+        // fraction.
+        let total_position_shares = position
+            .shares
+            .checked_add(new_shares)
+            .ok_or(StakingError::Overflow)?;
+        let owed = pool::settle(&pool_state, &mut position, total_position_shares)?;
+        let owed = config::record_distributed(&env, owed)?;
+        if owed > 0 {
+            let token_client = TokenClient::new(&env, &config.token);
+            token_client.transfer(&env.current_contract_address(), &staker, &owed);
         }
 
         let token_client = TokenClient::new(&env, &config.token);
@@ -231,12 +237,7 @@ impl StakingVault {
             .amount
             .checked_add(amount)
             .ok_or(StakingError::Overflow)?;
-        position.shares = position
-            .shares
-            .checked_add(new_shares)
-            .ok_or(StakingError::Overflow)?;
         position.unlock_at = env.ledger().timestamp() + lock_duration;
-        position.reward_debt = pool::reward_debt(&pool_state, &position);
 
         pool_state.total_shares = pool_state
             .total_shares
@@ -316,8 +317,6 @@ impl StakingVault {
 
         let amount_after_penalty = amount.checked_sub(penalty).ok_or(StakingError::Overflow)?;
 
-        let owed = pool::pending(&pool_state, &position)?;
-
         let shares_to_burn = if amount == position.amount {
             position.shares
         } else {
@@ -334,10 +333,14 @@ impl StakingVault {
             .amount
             .checked_sub(amount)
             .ok_or(StakingError::Overflow)?;
-        position.shares = position
+        // Pay rewards earned on the current shares, then rebase onto the
+        // remaining shares (carrying any earned sub-unit fraction).
+        let remaining_shares = position
             .shares
             .checked_sub(shares_to_burn)
             .ok_or(StakingError::Overflow)?;
+        let owed = pool::settle(&pool_state, &mut position, remaining_shares)?;
+        let owed = config::record_distributed(&env, owed)?;
         position.pending_unlock_amount = 0;
         position.unlock_requested_at = 0;
 
@@ -345,8 +348,6 @@ impl StakingVault {
             .total_shares
             .checked_sub(shares_to_burn)
             .ok_or(StakingError::Overflow)?;
-
-        pool::settle_debt(&pool_state, &mut position)?;
 
         set_position(&env, &staker, &position);
         set_pool_state(&env, &pool_state);
@@ -394,8 +395,6 @@ impl StakingVault {
 
         lock::enforce_lock_period(env.ledger().timestamp(), position.unlock_at)?;
 
-        let owed = pool::pending(&pool_state, &position)?;
-
         let shares_to_burn = if amount == position.amount {
             position.shares
         } else {
@@ -411,17 +410,19 @@ impl StakingVault {
             .amount
             .checked_sub(amount)
             .ok_or(StakingError::Overflow)?;
-        position.shares = position
+        // Pay rewards earned on the current shares, then rebase onto the
+        // remaining shares (carrying any earned sub-unit fraction).
+        let remaining_shares = position
             .shares
             .checked_sub(shares_to_burn)
             .ok_or(StakingError::Overflow)?;
+        let owed = pool::settle(&pool_state, &mut position, remaining_shares)?;
+        let owed = config::record_distributed(&env, owed)?;
 
         pool_state.total_shares = pool_state
             .total_shares
             .checked_sub(shares_to_burn)
             .ok_or(StakingError::Overflow)?;
-
-        pool::settle_debt(&pool_state, &mut position)?;
 
         set_position(&env, &staker, &position);
         set_pool_state(&env, &pool_state);
@@ -580,12 +581,17 @@ impl StakingVault {
         let pool_state = get_pool_state(&env)?;
         let mut position = get_position_raw(&env, &staker).ok_or(StakingError::PositionNotFound)?;
 
-        let owed = pool::pending(&pool_state, &position)?;
+        let shares = position.shares;
+        let owed = pool::settle(&pool_state, &mut position, shares)?;
+        if owed <= 0 {
+            return Err(StakingError::NothingToClaim);
+        }
+        // Never pay out more than has been funded into the reward pool.
+        let owed = config::record_distributed(&env, owed)?;
         if owed <= 0 {
             return Err(StakingError::NothingToClaim);
         }
 
-        pool::settle_debt(&pool_state, &mut position)?;
         set_position(&env, &staker, &position);
 
         let token_client = TokenClient::new(&env, &config.token);

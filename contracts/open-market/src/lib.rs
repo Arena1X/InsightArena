@@ -372,6 +372,22 @@ impl InsightArenaContract {
         dispute::get_open_dispute_count(&env)
     }
 
+    /// `true` while payouts for `market_id` are paused by an open dispute
+    /// against its resolution.
+    pub fn are_payouts_paused(env: Env, market_id: u64) -> bool {
+        config::are_payouts_paused(&env, market_id)
+    }
+
+    /// Timestamp at which a resolved market's dispute window closes, or
+    /// `None` if the market is not resolved.
+    pub fn get_dispute_window_end(
+        env: Env,
+        market_id: u64,
+    ) -> Result<Option<u64>, InsightArenaError> {
+        let market = market::get_market(&env, market_id)?;
+        Ok(config::dispute_window_end(&market))
+    }
+
     // ── Weighted arbiter quorum voting ───────────────────────────────────────
 
     /// Deposit a bond making `arbiter` eligible for panel assignment via

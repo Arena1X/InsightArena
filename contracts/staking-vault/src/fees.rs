@@ -7,6 +7,7 @@
 
 use soroban_sdk::{contracttype, token::Client as TokenClient, Address, Env};
 
+use crate::config;
 use crate::errors::StakingError;
 use crate::pool;
 use crate::storage_types::{Config, DataKey, PoolState};
@@ -143,6 +144,7 @@ pub fn deposit_fees(env: &Env, from: Address, amount: i128) -> Result<(), Stakin
     pool::distribute(env, &mut pool_state, amount)?;
 
     env.storage().instance().set(&DataKey::Pool, &pool_state);
+    config::record_funded(env, amount)?;
 
     let mut ledger = load_ledger(env);
     ledger.accrued = ledger
@@ -188,6 +190,7 @@ pub fn route_penalty_to_pool(env: &Env, penalty_amount: i128) -> Result<(), Stak
     }
 
     env.storage().instance().set(&DataKey::Pool, &pool_state);
+    config::record_funded(env, penalty_amount)?;
 
     Ok(())
 }
