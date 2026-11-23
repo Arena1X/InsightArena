@@ -2,10 +2,12 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Copy, Share2, Twitter, ChevronRight, Loader2, AlertCircle } from "lucide-react";
+import { Check, Copy, Share2, Twitter, ChevronRight, Loader2, AlertCircle, Trash2 } from "lucide-react";
 import { Button } from "@/component/ui/button";
 import { useWallet } from "@/context/WalletContext";
 import { useCreatorEvents } from "@/hooks/useCreatorEvents";
+import type { MatchFormData } from "./AddMatchForm";
+import BulkMatchEntry from "./BulkMatchEntry";
 
 type Step = 1 | 2 | 3;
 
@@ -28,6 +30,7 @@ interface EventDraft {
   entryFee: number;
   category: string;
   bannerUrl: string;
+  initialMatches: MatchFormData[];
 }
 
 const DRAFT_KEY = "creator_event_draft";
@@ -52,6 +55,7 @@ function defaultDraft(): EventDraft {
     entryFee: 0,
     category: "",
     bannerUrl: "",
+    initialMatches: [],
   };
 }
 
@@ -65,6 +69,7 @@ function loadDraft(): EventDraft | null {
       ...defaultDraft(),
       ...parsed,
       rewardDistribution: { ...defaultReward(), ...parsed.rewardDistribution },
+      initialMatches: Array.isArray(parsed.initialMatches) ? parsed.initialMatches : [],
     };
   } catch {
     return null;
@@ -100,7 +105,10 @@ export default function CreateEventForm() {
     entryFee,
     category,
     bannerUrl,
+    initialMatches,
   } = draft;
+
+  const [showBulkMatches, setShowBulkMatches] = useState(false);
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [creationFee, setCreationFee] = useState<string | null>(null);
@@ -492,6 +500,74 @@ export default function CreateEventForm() {
             </div>
           </div>
 
+          {/* Optional bulk match staging */}
+          <div className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-medium text-white">
+                  Initial Matches{" "}
+                  <span className="text-slate-400">
+                    ({initialMatches.length} staged)
+                  </span>
+                </p>
+                <p className="text-xs text-slate-400">
+                  Optionally add multiple matches in bulk before creating your event.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setShowBulkMatches((prev) => !prev)}
+                className="border-white/10 text-slate-300 hover:border-amber-400/40 hover:text-white"
+              >
+                {showBulkMatches ? "Hide Bulk Entry" : "Bulk Add Matches"}
+              </Button>
+            </div>
+
+            {initialMatches.length > 0 && (
+              <ul className="space-y-2" data-testid="staged-initial-matches">
+                {initialMatches.map((m, idx) => (
+                  <li
+                    key={`${m.teamA}-${m.teamB}-${m.matchTime}-${idx}`}
+                    className="flex items-center justify-between gap-2 rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-xs text-slate-200"
+                  >
+                    <span>
+                      <strong>{m.teamA}</strong> vs <strong>{m.teamB}</strong>{" "}
+                      <span className="text-slate-400">· {m.matchTime}</span>
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`Remove staged match ${idx + 1}`}
+                      onClick={() =>
+                        patch({
+                          initialMatches: initialMatches.filter((_, i) => i !== idx),
+                        })
+                      }
+                      className="text-slate-400 hover:text-rose-300"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {showBulkMatches && (
+              <BulkMatchEntry
+                currentMatchCount={initialMatches.length}
+                maxMatches={100}
+                existingMatches={initialMatches}
+                submitLabel="Stage Valid Matches"
+                onSubmitValid={(validMatches) => {
+                  patch({
+                    initialMatches: [...initialMatches, ...validMatches],
+                  });
+                }}
+              />
+            )}
+          </div>
+
           <div className="flex items-center justify-between pt-2">
             <Button
               type="button"
@@ -568,6 +644,14 @@ export default function CreateEventForm() {
                 <span className="text-slate-500">Category</span>
                 <span className="font-medium text-white">{category || "—"}</span>
               </div>
+              {initialMatches.length > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Initial Matches</span>
+                  <span className="font-medium text-white">
+                    {initialMatches.length} staged
+                  </span>
+                </div>
+              )}
               {bannerUrl && (
                 <div className="flex justify-between">
                   <span className="text-slate-500">Banner</span>
