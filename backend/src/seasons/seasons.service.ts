@@ -38,6 +38,16 @@ export type SeasonRolloverResult = {
   rewardsComputed: boolean;
   skipped: boolean;
   reason?: string;
+  /** Only set on dry runs: what a real rollover would change. */
+  plan?: SeasonRolloverPlan;
+};
+
+export type SeasonRolloverPlan = {
+  closedSeasonNumber: number | null;
+  openedSeasonNumber: number | null;
+  topWinnerId: string | null;
+  leaderboardSize: number;
+  rewardPoolStroops: string;
 };
 
 @Injectable()
@@ -466,14 +476,15 @@ export class SeasonsService {
    * already-rolled season is a no-op (checked both before and again inside
    * the transaction to close the race between two concurrent ticks).
    */
-  async processSeasonRollover(now = new Date()): Promise<SeasonRolloverResult> {
-    const ending = await this.seasonsRepository
-      .createQueryBuilder('s')
-      .where('s.is_active = :active', { active: true })
-      .andWhere('s.ends_at <= :now', { now })
-      .andWhere('s.rollover_processed_at IS NULL')
-      .orderBy('s.ends_at', 'ASC')
-      .getOne();
+  async processSeasonRollover(
+    now = new Date(),
+    options: { dryRun?: boolean } = {},
+  ): Promise<SeasonRolloverResult> {
+    const ending = await this.findEndingSeason(this.dataSource.manager, now);
+
+    if (options.dryRun) {
+      return this.previewSeasonRollover(ending, now);
+    }
 
     if (!ending) {
       const openedOnly = await this.activateDueSeason(now);
@@ -534,14 +545,15 @@ export class SeasonsService {
         };
       }
 
-      const topWinner = await queryRunner.manager.findOne(User, {
-        where: {},
-        order: { season_points: 'DESC' },
-      });
+      const planned = await this.planRollover(
+        queryRunner.manager,
+        season,
+        now,
+      );
 
       season.is_active = false;
       season.is_finalized = true;
-      season.top_winner = topWinner ?? null;
+      season.top_winner = planned.topWinner;
       season.rollover_processed_at = now;
       closed = await queryRunner.manager.save(Season, season);
 
@@ -549,22 +561,13 @@ export class SeasonsService {
 
       await queryRunner.manager.update(User, {}, { season_points: 0 });
 
-      opened =
-        (await queryRunner.manager.findOne(Season, {
-          where: { season_number: closed.season_number + 1 },
-        })) ?? null;
-
-      if (opened && !opened.is_finalized) {
-        opened.is_active = true;
-        if (opened.starts_at > now) {
-          opened.starts_at = now;
+      opened = null;
+      if (planned.opened) {
+        planned.opened.is_active = true;
+        if (planned.opened.starts_at > now) {
+          planned.opened.starts_at = now;
         }
-        opened = await queryRunner.manager.save(Season, opened);
-      } else {
-        opened = await this.activateDueSeasonWithManager(
-          queryRunner.manager,
-          now,
-        );
+        opened = await queryRunner.manager.save(Season, planned.opened);
       }
 
       await queryRunner.commitTransaction();
@@ -647,16 +650,37 @@ export class SeasonsService {
     await manager.save(SeasonLeaderboardSnapshot, snapshots);
   }
 
-  private async activateDueSeason(now: Date): Promise<Season | null> {
-    const due = await this.seasonsRepository
-      .createQueryBuilder('s')
+  /** The active season whose end time has passed and is not yet rolled over. Read-only. */
+  private findEndingSeason(
+    manager: EntityManager,
+    now: Date,
+  ): Promise<Season | null> {
+    return manager
+      .createQueryBuilder(Season, 's')
+      .where('s.is_active = :active', { active: true })
+      .andWhere('s.ends_at <= :now', { now })
+      .andWhere('s.rollover_processed_at IS NULL')
+      .orderBy('s.ends_at', 'ASC')
+      .getOne();
+  }
+
+  /** The next season that should go live at `now`. Read-only. */
+  private findDueSeason(
+    manager: EntityManager,
+    now: Date,
+  ): Promise<Season | null> {
+    return manager
+      .createQueryBuilder(Season, 's')
       .where('s.is_active = :active', { active: false })
       .andWhere('s.is_finalized = :fin', { fin: false })
       .andWhere('s.starts_at <= :now', { now })
       .andWhere('s.ends_at > :now', { now })
       .orderBy('s.season_number', 'ASC')
       .getOne();
+  }
 
+  private async activateDueSeason(now: Date): Promise<Season | null> {
+    const due = await this.findDueSeason(this.dataSource.manager, now);
     if (!due) {
       return null;
     }
@@ -665,25 +689,87 @@ export class SeasonsService {
     return this.seasonsRepository.save(due);
   }
 
-  private async activateDueSeasonWithManager(
+  /**
+   * Decides what a rollover of `ending` will do, without writing anything.
+   * Both the real rollover and the dry run call this, so the plan cannot
+   * drift from what gets applied.
+   */
+  private async planRollover(
     manager: EntityManager,
+    ending: Season,
     now: Date,
-  ): Promise<Season | null> {
-    const due = await manager
-      .createQueryBuilder(Season, 's')
-      .where('s.is_active = :active', { active: false })
-      .andWhere('s.is_finalized = :fin', { fin: false })
-      .andWhere('s.starts_at <= :now', { now })
-      .andWhere('s.ends_at > :now', { now })
-      .orderBy('s.season_number', 'ASC')
-      .getOne();
+  ): Promise<{
+    topWinner: User | null;
+    opened: Season | null;
+    leaderboardSize: number;
+  }> {
+    const topWinner = await manager.findOne(User, {
+      where: {},
+      order: { season_points: 'DESC' },
+    });
 
-    if (!due) {
-      return null;
+    const next = await manager.findOne(Season, {
+      where: { season_number: ending.season_number + 1 },
+    });
+    const opened =
+      next && !next.is_finalized
+        ? next
+        : await this.findDueSeason(manager, now);
+
+    const leaderboardSize = await manager.count(User);
+
+    return { topWinner, opened, leaderboardSize };
+  }
+
+  /**
+   * Dry run: returns the rollover that `processSeasonRollover` would apply,
+   * with no writes, notifications, webhooks or reward computation.
+   */
+  private async previewSeasonRollover(
+    ending: Season | null,
+    now: Date,
+  ): Promise<SeasonRolloverResult> {
+    const manager = this.dataSource.manager;
+
+    if (!ending) {
+      const due = await this.findDueSeason(manager, now);
+      return {
+        closedSeasonId: null,
+        openedSeasonId: due?.id ?? null,
+        rewardsComputed: false,
+        skipped: !due,
+        reason: due ? 'activated_due_season' : 'nothing_to_rollover',
+        plan: {
+          closedSeasonNumber: null,
+          openedSeasonNumber: due?.season_number ?? null,
+          topWinnerId: null,
+          leaderboardSize: 0,
+          rewardPoolStroops: '0',
+        },
+      };
     }
 
-    due.is_active = true;
-    return manager.save(Season, due);
+    const { topWinner, opened, leaderboardSize } = await this.planRollover(
+      manager,
+      ending,
+      now,
+    );
+    const pool = BigInt(ending.reward_pool_stroops || '0');
+
+    return {
+      closedSeasonId: ending.id,
+      openedSeasonId: opened?.id ?? null,
+      rewardsComputed: pool > 0n && !!topWinner?.stellar_address,
+      skipped: false,
+      reason: 'dry_run',
+      plan: {
+        closedSeasonNumber: ending.season_number,
+        openedSeasonNumber: opened?.season_number ?? null,
+        topWinnerId: topWinner?.id ?? null,
+        leaderboardSize,
+        rewardPoolStroops: pool.toString(),
+      },
+    };
   }
 
   /**
