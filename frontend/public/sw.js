@@ -9,12 +9,12 @@ const STATIC_ASSET_PATTERN =
   /\.(?:png|jpg|jpeg|svg|gif|webp|ico|woff2?|ttf)$/;
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches
-      .open(SHELL_CACHE)
-      .then((cache) => cache.addAll(APP_SHELL))
-      .then(() => self.skipWaiting()),
-  );
+  // No skipWaiting here: the new worker waits until the user accepts the update prompt.
+  event.waitUntil(caches.open(SHELL_CACHE).then((cache) => cache.addAll(APP_SHELL)));
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {

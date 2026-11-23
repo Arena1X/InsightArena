@@ -17,7 +17,10 @@ import { ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { plainToInstance } from 'class-transformer';
 import { Public } from '../common/decorators/public.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { UsersService } from './users.service';
+import {
+  UsersService,
+  computeProfileCompleteness,
+} from './users.service';
 import { PublicUserDto } from './dto/public-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -72,9 +75,7 @@ export class UsersController {
   })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   getOwnProfile(@CurrentUser() user: User) {
-    return plainToInstance(UserResponseDto, user, {
-      excludeExtraneousValues: true,
-    });
+    return this.toOwnProfileResponse(user);
   }
 
   @Get('me/stats')
@@ -226,9 +227,15 @@ export class UsersController {
     @Body() dto: UpdateUserDto,
   ) {
     const updated = await this.usersService.updateProfile(user.id, dto);
-    return plainToInstance(UserResponseDto, updated, {
+    return this.toOwnProfileResponse(updated);
+  }
+
+  private toOwnProfileResponse(user: User): UserResponseDto {
+    const dto = plainToInstance(UserResponseDto, user, {
       excludeExtraneousValues: true,
     });
+    dto.profile_completeness = computeProfileCompleteness(user);
+    return dto;
   }
 
   @Get(':address')

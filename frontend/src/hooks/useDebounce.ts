@@ -25,6 +25,10 @@ export function useDebounce<T>(value: T, delay: number): T {
  * The returned function also exposes a `.cancel()` method to clear any pending
  * invocation imperatively (e.g. on component unmount or form reset).
  *
+ * Pass `{ leading: true }` to invoke `fn` immediately on the first call of a
+ * burst; follow-up calls within `delay` ms are then debounced, and the latest
+ * one fires on the trailing edge. Default is trailing-only.
+ *
  * @example
  * const debouncedValidate = useDebouncedCallback(
  *   (value: string) => checkAvailability(value),
@@ -39,11 +43,15 @@ export function useDebounce<T>(value: T, delay: number): T {
  */
 export function useDebouncedCallback<T extends (...args: any[]) => any>(
   fn: T,
-  delay: number
+  delay: number,
+  options?: { leading?: boolean }
 ): T & { cancel: () => void } {
+  const leading = options?.leading ?? false;
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined
   );
+  // Latest args queued for the trailing edge; undefined when nothing is pending.
+  const pendingArgsRef = useRef<Parameters<T> | undefined>(undefined);
   // Keep a stable ref to the latest `fn` so callers don't need to memo it.
   const fnRef = useRef<T>(fn);
   useEffect(() => {
@@ -55,17 +63,29 @@ export function useDebouncedCallback<T extends (...args: any[]) => any>(
       clearTimeout(timerRef.current);
       timerRef.current = undefined;
     }
+    pendingArgsRef.current = undefined;
   }, []);
 
   const debounced = useCallback(
     (...args: Parameters<T>) => {
-      cancel();
+      // Idle = no active quiet-period timer, i.e. this call starts a new burst.
+      const isIdle = timerRef.current === undefined;
+      if (timerRef.current !== undefined) {
+        clearTimeout(timerRef.current);
+      }
+      if (leading && isIdle) {
+        fnRef.current(...args);
+      } else {
+        pendingArgsRef.current = args;
+      }
       timerRef.current = setTimeout(() => {
         timerRef.current = undefined;
-        fnRef.current(...args);
+        const pending = pendingArgsRef.current;
+        pendingArgsRef.current = undefined;
+        if (pending) fnRef.current(...pending);
       }, delay);
     },
-    [cancel, delay]
+    [delay, leading]
   ) as T;
 
   // Attach cancel so consumers can call debounced.cancel().

@@ -1,6 +1,6 @@
 use soroban_sdk::{Env, Symbol};
 
-use crate::storage::TTL_LEDGERS;
+use crate::storage;
 use crate::storage_types::{DataKey, InviteCodeData, InviteCodeInfo};
 
 // ---------------------------------------------------------------------------
@@ -18,6 +18,8 @@ pub enum InviteError {
     CodeExpired = 3,
     /// The code has already been redeemed `max_uses` times.
     CodeUsesExceeded = 4,
+    /// The event creator has revoked this code.
+    CodeRevoked = 5,
 }
 
 // ---------------------------------------------------------------------------
@@ -78,29 +80,12 @@ pub fn generate_invite_code(env: &Env) -> Result<Symbol, InviteError> {
 
 /// Persist a code's [`InviteCodeData`] and set its TTL.
 pub fn set_invite_data(env: &Env, code: &Symbol, data: &InviteCodeData) {
-    let key = DataKey::InviteCode(code.clone());
-    env.storage().persistent().set(&key, data);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
+    storage::set_invite_data(env, code, data);
 }
 
 /// Read a code's [`InviteCodeData`], extending its TTL on success.
 pub fn get_invite_data(env: &Env, code: &Symbol) -> Result<InviteCodeData, InviteError> {
-    let key = DataKey::InviteCode(code.clone());
-    match env
-        .storage()
-        .persistent()
-        .get::<DataKey, InviteCodeData>(&key)
-    {
-        Some(data) => {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, TTL_LEDGERS, TTL_LEDGERS);
-            Ok(data)
-        }
-        None => Err(InviteError::InvalidCode),
-    }
+    storage::get_invite_data(env, code).ok_or(InviteError::InvalidCode)
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +98,8 @@ pub fn get_invite_data(env: &Env, code: &Symbol) -> Result<InviteCodeData, Invit
 /// Checks (in order):
 /// 1. The code exists ([`InviteError::InvalidCode`]).
 /// 2. The code has not expired ([`InviteError::CodeExpired`]).
-/// 3. The code has not reached its use cap ([`InviteError::CodeUsesExceeded`]).
+/// 3. The creator has not revoked it ([`InviteError::CodeRevoked`]).
+/// 4. The code has not reached its use cap ([`InviteError::CodeUsesExceeded`]).
 ///
 /// On success, `use_count` is incremented and persisted before returning, so
 /// the increment and the validity checks happen atomically within a single
@@ -123,7 +109,14 @@ pub fn redeem(env: &Env, code: &Symbol, current_time: u64) -> Result<u64, Invite
     let mut data = get_invite_data(env, code)?;
 
     if data.is_expired(current_time) {
+        env.events().publish(
+            (Symbol::new(env, "invite"), Symbol::new(env, "expired")),
+            (data.event_id, code.clone()),
+        );
         return Err(InviteError::CodeExpired);
+    }
+    if storage::is_invite_revoked(env, code) {
+        return Err(InviteError::CodeRevoked);
     }
     if data.is_at_cap() {
         return Err(InviteError::CodeUsesExceeded);
@@ -132,6 +125,13 @@ pub fn redeem(env: &Env, code: &Symbol, current_time: u64) -> Result<u64, Invite
     data.use_count += 1;
     set_invite_data(env, code, &data);
 
+    Ok(data.event_id)
+}
+
+/// Revoke an invite code so it can no longer be redeemed.
+pub fn revoke(env: &Env, code: &Symbol) -> Result<u64, InviteError> {
+    let data = get_invite_data(env, code)?;
+    storage::set_invite_revoked(env, code);
     Ok(data.event_id)
 }
 
@@ -163,6 +163,8 @@ pub fn get_invite_code_info(env: &Env, code: &Symbol) -> Result<InviteCodeInfo, 
         max_uses: data.max_uses,
         use_count: data.use_count,
         remaining_uses,
-        is_valid: !data.is_expired(now) && !data.is_at_cap(),
+        is_valid: !data.is_expired(now)
+            && !data.is_at_cap()
+            && !storage::is_invite_revoked(env, code),
     })
 }

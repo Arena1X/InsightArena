@@ -158,7 +158,6 @@ export default function PortfolioPage() {
   const toggleSortDir = () => setSortDir((d) => (d === "asc" ? "desc" : "asc"));
 
   const handleExportCsv = () => {
-    if (positions.length === 0) return;
     const csv = positionsToCsv(positions);
     const datePart = new Date().toISOString().slice(0, 10);
     downloadCsv(`insightarena-portfolio-${datePart}.csv`, csv);
@@ -200,7 +199,7 @@ export default function PortfolioPage() {
             <button
               type="button"
               onClick={handleExportCsv}
-              disabled={isLoading || positions.length === 0}
+              disabled={isLoading || Boolean(error)}
               className="inline-flex items-center gap-2 self-start rounded-lg border border-white/10 bg-gray-950/60 px-4 py-2 text-sm font-medium text-gray-300 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Download className="h-4 w-4" />

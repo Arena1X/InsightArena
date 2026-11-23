@@ -41,17 +41,49 @@ pub enum FeeError {
 ///
 /// # Errors
 /// * [`FeeError::InvalidConfig`] — `share_bps > MAX_FEE_BPS`.
-/// * [`FeeError::Overflow`] — the multiplication overflowed `i128` (only
-///   possible for pathologically large `amount` values).
+/// * [`FeeError::Overflow`] — checked intermediate arithmetic overflowed.
 pub fn calculate_bounded_fee(amount: i128, share_bps: u32) -> Result<i128, FeeError> {
     if share_bps > MAX_FEE_BPS {
         return Err(FeeError::InvalidConfig);
     }
 
-    amount
-        .checked_mul(share_bps as i128)
-        .and_then(|scaled| scaled.checked_div(MAX_FEE_BPS as i128))
-        .ok_or(FeeError::Overflow)
+    let denominator = MAX_FEE_BPS as i128;
+    let share = share_bps as i128;
+    let whole = amount
+        .checked_div(denominator)
+        .and_then(|quotient| quotient.checked_mul(share))
+        .ok_or(FeeError::Overflow)?;
+    let fraction = amount
+        .checked_rem(denominator)
+        .and_then(|remainder| remainder.checked_mul(share))
+        .and_then(|scaled| scaled.checked_div(denominator))
+        .ok_or(FeeError::Overflow)?;
+    whole.checked_add(fraction).ok_or(FeeError::Overflow)
+}
+
+/// Split an amount between two shares, assigning integer-division remainder
+/// to the second share.
+///
+/// The basis-point shares must sum to exactly [`MAX_FEE_BPS`]. Calculating
+/// the second share as `amount - first_share` conserves the input exactly;
+/// callers can deterministically assign rounding dust to that recipient.
+pub fn split_fee_amount(
+    amount: i128,
+    first_share_bps: u32,
+    remainder_share_bps: u32,
+) -> Result<(i128, i128), FeeError> {
+    if amount < 0 {
+        return Err(FeeError::InvalidAmount);
+    }
+    if first_share_bps.checked_add(remainder_share_bps) != Some(MAX_FEE_BPS) {
+        return Err(FeeError::InvalidConfig);
+    }
+
+    let first_share = calculate_bounded_fee(amount, first_share_bps)?;
+    let remainder_share = amount
+        .checked_sub(first_share)
+        .ok_or(FeeError::Overflow)?;
+    Ok((first_share, remainder_share))
 }
 
 /// Return the XLM balance of the configured treasury address.
@@ -279,4 +311,28 @@ pub fn claim_vested_revenue(env: &Env, creator: Address, event_id: u64) -> Resul
     );
 
     Ok(claimable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fee_split_conserves_amount_and_assigns_rounding_to_second_share() {
+        let (first, second) = split_fee_amount(101, 3_333, 6_667).unwrap();
+        assert_eq!(first, 33);
+        assert_eq!(second, 68);
+        assert_eq!(first + second, 101);
+
+        let (first, second) = split_fee_amount(i128::MAX, 3_333, 6_667).unwrap();
+        assert_eq!(first + second, i128::MAX);
+    }
+
+    #[test]
+    fn fee_split_rejects_shares_that_do_not_sum_to_one_hundred_percent() {
+        assert_eq!(
+            split_fee_amount(100, 3_000, 6_000),
+            Err(FeeError::InvalidConfig)
+        );
+    }
 }

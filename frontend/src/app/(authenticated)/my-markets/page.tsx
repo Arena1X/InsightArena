@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo, type ReactNode } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { FileText, Bookmark, Search } from "lucide-react";
 import { EmptyState } from "@/component/ui/empty-state";
 import { formatXlm } from "@/component/PrizePoolSummary";
@@ -18,6 +19,7 @@ import {
 
 type MarketStatus = "Open" | "Resolved" | "Cancelled";
 type Tab = "All Markets" | "My Markets" | "Bookmarked";
+type MarketView = "active" | "archived";
 
 interface Market {
   id: string;
@@ -196,6 +198,10 @@ function CreatorAnalyticsPanel() {
 }
 
 export default function MarketsPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // Kept in the URL (?view=archived) so the toggle survives navigation and reloads.
+  const view: MarketView = searchParams.get("view") === "archived" ? "archived" : "active";
   const [activeTab, setActiveTab] = useState<Tab>("All Markets");
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
@@ -204,8 +210,19 @@ export default function MarketsPage() {
 
   const categories = ["All", ...Array.from(new Set(PLACEHOLDER_MARKETS.map((m) => m.category)))];
 
+  function setView(next: MarketView) {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "archived") params.set("view", "archived");
+    else params.delete("view");
+    const query = params.toString();
+    router.replace(query ? `?${query}` : "?", { scroll: false });
+  }
+
   const filtered = useMemo(() => {
-    let list = PLACEHOLDER_MARKETS;
+    // Anything not Open (Resolved, Cancelled) is archived.
+    let list = PLACEHOLDER_MARKETS.filter((m) =>
+      view === "archived" ? m.status !== "Open" : m.status === "Open",
+    );
     if (activeTab === "My Markets") list = list.filter((m) => m.createdByMe);
     if (activeTab === "Bookmarked") list = list.filter((m) => m.bookmarked);
     if (search) list = list.filter((m) => m.title.toLowerCase().includes(search.toLowerCase()));
@@ -214,7 +231,7 @@ export default function MarketsPage() {
     if (sort === "Popular") list = [...list].sort((a, b) => b.participants - a.participants);
     if (sort === "Ending Soon") list = [...list].sort((a, b) => a.endsAt.localeCompare(b.endsAt));
     return list;
-  }, [activeTab, search, categoryFilter, statusFilter, sort]);
+  }, [view, activeTab, search, categoryFilter, statusFilter, sort]);
 
   const isEmpty = filtered.length === 0;
 
@@ -255,6 +272,23 @@ export default function MarketsPage() {
             }`}
           >
             {tab}
+          </button>
+        ))}
+      </div>
+
+      {/* Active / Archived */}
+      <div className="flex gap-1 rounded-lg bg-white/5 p-1 w-fit" role="group" aria-label="Market view">
+        {(["active", "archived"] as MarketView[]).map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => setView(option)}
+            aria-pressed={view === option}
+            className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+              view === option ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white"
+            }`}
+          >
+            {option === "active" ? "Active" : "Archived"}
           </button>
         ))}
       </div>

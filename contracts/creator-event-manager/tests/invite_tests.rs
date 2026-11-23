@@ -131,6 +131,23 @@ fn test_set_invite_limits_expiry_allows_before_expiry() {
     assert_eq!(event.participant_count, 1);
 }
 
+#[test]
+fn test_creator_can_revoke_invite_and_revoked_code_cannot_be_accepted() {
+    let (env, client, _contract_id, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    fund(&env, &xlm_token, &creator, FEE);
+    let (event_id, invite_code) = create_event_default(&client, &env, &creator, 10);
+    let expires_at = env.ledger().timestamp() + 100;
+    client.set_invite_limits(&creator, &event_id, &expires_at, &0u32);
+
+    client.revoke_invite(&creator, &event_id);
+
+    let user = Address::generate(&env);
+    assert!(client.try_join_event(&user, &invite_code).is_err());
+    assert!(!client.get_invite_code_info(&invite_code).is_valid);
+    assert_eq!(client.get_event(&event_id).participant_count, 0);
+}
+
 // ---------------------------------------------------------------------------
 // Use cap
 // ---------------------------------------------------------------------------

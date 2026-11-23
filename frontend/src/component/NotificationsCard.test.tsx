@@ -8,8 +8,12 @@
 
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import NotificationsCard from "./NotificationsCard";
-import { NotificationProvider } from "@/context/NotificationContext";
+import {
+  NotificationProvider,
+  useNotifications,
+} from "@/context/NotificationContext";
 import * as apiModule from "@/lib/api";
 
 // Mock the API module
@@ -51,9 +55,19 @@ const notifications = [
 function renderWithProvider(component: React.ReactElement) {
   return render(
     <NotificationProvider>
-      {component}
+      <SeedNotifications>{component}</SeedNotifications>
     </NotificationProvider>
   );
+}
+
+function SeedNotifications({ children }: { children: React.ReactNode }) {
+  const { setNotifications } = useNotifications();
+
+  useEffect(() => {
+    setNotifications(notifications);
+  }, [setNotifications]);
+
+  return children;
 }
 
 describe("NotificationsCard", () => {
@@ -61,12 +75,10 @@ describe("NotificationsCard", () => {
     vi.clearAllMocks();
   });
 
-  it("filters the list when a category tab is selected", () => {
-    renderWithProvider(
-      <NotificationsCard notifications={notifications} />
-    );
+  it("filters the list when a category tab is selected", async () => {
+    renderWithProvider(<NotificationsCard />);
 
-    expect(screen.getByText("Your BTC prediction settles in 3 hours")).toBeVisible();
+    expect(await screen.findByText("Your BTC prediction settles in 3 hours")).toBeVisible();
     expect(screen.getByText("Rewards from Weekend Market Clash claimable")).toBeVisible();
     expect(screen.getByText("A dispute was opened on your market")).toBeVisible();
 
@@ -77,16 +89,13 @@ describe("NotificationsCard", () => {
     expect(screen.queryByText("A dispute was opened on your market")).not.toBeInTheDocument();
   });
 
-  it("marks every notification as read and clears unread counts across all tabs", () => {
-    renderWithProvider(
-      <NotificationsCard notifications={notifications} />
-    );
+  it("marks every notification as read and clears unread counts across all tabs", async () => {
+    renderWithProvider(<NotificationsCard />);
 
-    const markAllButton = screen.getByRole("button", { name: "Mark all as read" });
+    const markAllButton = await screen.findByRole("button", { name: "Mark all as read" });
     fireEvent.click(markAllButton);
 
     expect(screen.queryByRole("button", { name: "Mark all as read" })).not.toBeInTheDocument();
     expect(screen.queryByText("3", { selector: "span" })).not.toBeInTheDocument();
   });
 });
-

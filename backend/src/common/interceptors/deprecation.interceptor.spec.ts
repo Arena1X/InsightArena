@@ -36,16 +36,24 @@ describe('DeprecationInterceptor', () => {
   });
 
   it('sets Deprecation and Sunset headers when the route carries @Deprecated metadata', (done) => {
+    const sunset = 'Wed, 31 Dec 2026 23:59:59 GMT';
     reflector.getAllAndOverride.mockReturnValue({
-      sunset: 'Wed, 31 Dec 2026 23:59:59 GMT',
+      sunset,
     });
 
     interceptor.intercept(makeContext(), nextHandler).subscribe(() => {
       expect(setHeader).toHaveBeenCalledWith('Deprecation', 'true');
-      expect(setHeader).toHaveBeenCalledWith(
-        'Sunset',
-        'Wed, 31 Dec 2026 23:59:59 GMT',
-      );
+      expect(setHeader).toHaveBeenCalledWith('Sunset', sunset);
+      done();
+    });
+  });
+
+  it('omits the Sunset header when no sunset date is configured', (done) => {
+    reflector.getAllAndOverride.mockReturnValue({});
+
+    interceptor.intercept(makeContext(), nextHandler).subscribe(() => {
+      expect(setHeader).toHaveBeenCalledWith('Deprecation', 'true');
+      expect(setHeader).not.toHaveBeenCalledWith('Sunset', expect.anything());
       done();
     });
   });

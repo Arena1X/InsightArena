@@ -218,7 +218,7 @@ export function InteractiveChart({
               className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                 isVisible
                   ? "bg-white/10 text-white"
-                  : "bg-white/5 text-slate-500 opacity-50"
+                  : "bg-white/5 text-muted-foreground"
               } hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-[#4FD1C5] focus:ring-offset-2 focus:ring-offset-slate-900`}
               aria-pressed={isVisible}
               title={isVisible ? `Hide ${s.name}` : `Show ${s.name}`}
@@ -244,7 +244,7 @@ export function InteractiveChart({
         aria-label={title}
       >
         {/* Y-axis labels */}
-        <div className="absolute left-0 top-0 flex h-full flex-col justify-between bg-gradient-to-r from-slate-900 to-transparent px-3 py-2 text-xs text-slate-500">
+        <div className="absolute left-0 top-0 flex h-full flex-col justify-between bg-gradient-to-r from-slate-900 to-transparent px-3 py-2 text-xs text-muted-foreground">
           <span>{maxValue.toFixed(0)}</span>
           <span>{(maxValue * 0.5).toFixed(0)}</span>
           <span>0</span>
@@ -340,7 +340,7 @@ export function InteractiveChart({
       </div>
 
       {/* X-axis labels (sample) */}
-      <div className="mt-3 flex justify-between text-xs text-slate-500">
+      <div className="mt-3 flex justify-between text-xs text-muted-foreground">
         <span>{series[0]?.data[0]?.label}</span>
         <span>{series[0]?.data[Math.floor(dataPoints / 2)]?.label}</span>
         <span>{series[0]?.data[dataPoints - 1]?.label}</span>

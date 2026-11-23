@@ -28,6 +28,8 @@ pub enum PredictionError {
     InviteCodeExpired = 15,
     /// The invite code has already been redeemed `max_uses` times (#1699).
     InviteCodeUsesExceeded = 16,
+    /// The invite code has been revoked by its creator.
+    InviteCodeRevoked = 17,
 }
 
 impl From<InviteError> for PredictionError {
@@ -36,6 +38,7 @@ impl From<InviteError> for PredictionError {
             InviteError::InvalidCode => PredictionError::InvalidInviteCode,
             InviteError::CodeExpired => PredictionError::InviteCodeExpired,
             InviteError::CodeUsesExceeded => PredictionError::InviteCodeUsesExceeded,
+            InviteError::CodeRevoked => PredictionError::InviteCodeRevoked,
             InviteError::CodeGenerationFailed => PredictionError::InvalidInviteCode,
         }
     }
