@@ -29,6 +29,7 @@ jobs:
         run: |
           rustup update stable
           rustup default stable
+          rustup component add llvm-tools-preview
           rustup target add wasm32-unknown-unknown
 
       - name: Rust Cache
@@ -36,8 +37,18 @@ jobs:
         with:
           workspaces: "contracts/open-market -> target"
 
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.6
+
       - name: Unit Tests
         run: cargo test
+
+      - name: Coverage
+        run: |
+          cargo llvm-cov --no-report
+          cargo llvm-cov report --summary-only
 
       - name: WASM Build
         run: cargo build --target wasm32-unknown-unknown --release
@@ -58,6 +69,7 @@ jobs:
         run: |
           rustup update stable
           rustup default stable
+          rustup component add llvm-tools-preview
           rustup target add wasm32-unknown-unknown
 
       - name: Rust Cache
@@ -65,8 +77,18 @@ jobs:
         with:
           workspaces: "contracts/creator-event-manager -> target"
 
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.6
+
       - name: Unit Tests
         run: cargo test
+
+      - name: Coverage
+        run: |
+          cargo llvm-cov --no-report
+          cargo llvm-cov report --summary-only
 
       - name: WASM Build
         run: cargo build --target wasm32-unknown-unknown --release
@@ -87,6 +109,7 @@ jobs:
         run: |
           rustup update stable
           rustup default stable
+          rustup component add llvm-tools-preview
           rustup target add wasm32-unknown-unknown
 
       - name: Rust Cache
@@ -94,8 +117,18 @@ jobs:
         with:
           workspaces: "contracts/staking-vault -> target"
 
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.6
+
       - name: Unit Tests
         run: cargo test
+
+      - name: Coverage
+        run: |
+          cargo llvm-cov --no-report
+          cargo llvm-cov report --summary-only
 
       - name: WASM Build
         run: cargo build --target wasm32-unknown-unknown --release
