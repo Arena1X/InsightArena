@@ -28,6 +28,7 @@ import { UserTrendsDto } from './dto/user-trends.dto';
 import { CategoryAnalyticsResponseDto } from './dto/category-analytics.dto';
 import { RetentionResponseDto, RetentionQueryDto } from './dto/retention.dto';
 import { PlatformStatsDto } from './dto/platform-stats.dto';
+import { ConversionFunnelDto } from './dto/conversion-funnel.dto';
 
 @ApiTags('Analytics')
 @Controller('analytics')
@@ -176,6 +177,27 @@ export class AnalyticsController {
       query.period ?? 'week',
       query.periods ?? 8,
     );
+  }
+
+  @Get('conversion-funnel')
+  @ApiBearerAuth()
+  @Roles(Role.Admin)
+  @ApiOperation({
+    summary: 'Get signup to first-prediction to payout conversion funnel',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Counts and stage-to-stage conversion rates for users who signed up in the date range',
+    type: ConversionFunnelDto,
+  })
+  @ApiResponse({ status: 400, description: 'Invalid date range query' })
+  async getConversionFunnel(
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    query: DateRangeQueryDto,
+  ): Promise<ConversionFunnelDto> {
+    const { from, to } = query.resolveRange();
+    return this.analyticsService.getConversionFunnel(from, to);
   }
 
   @Get('platform')

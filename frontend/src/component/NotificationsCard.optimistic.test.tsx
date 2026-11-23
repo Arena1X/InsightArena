@@ -9,6 +9,7 @@
 
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import NotificationsCard from "./NotificationsCard";
 import { NotificationProvider, useNotifications } from "@/context/NotificationContext";
 import UserWalletControls from "@/component/header/UserWalletControls";
@@ -48,19 +49,37 @@ const notifications = [
     timestamp: "5h ago",
     isRead: false,
   },
+  {
+    id: "4",
+    type: "system" as const,
+    icon: "megaphone" as const,
+    message: "Previously read notification",
+    timestamp: "2d ago",
+    isRead: true,
+  },
 ];
+
+function SeedNotifications({ children }: { children: React.ReactNode }) {
+  const { setNotifications } = useNotifications();
+
+  useEffect(() => {
+    setNotifications(notifications);
+  }, [setNotifications]);
+
+  return children;
+}
 
 function renderWithProvider(component: React.ReactElement) {
   return render(
     <NotificationProvider>
-      {component}
+      <SeedNotifications>{component}</SeedNotifications>
     </NotificationProvider>
   );
 }
 
 // Wrapper component for testing badge sync
 function TestBadgeSync() {
-  const { unreadCount } = useNotifications();
+  const { notifications: currentNotifications, unreadCount } = useNotifications();
   return (
     <div>
       <UserWalletControls
@@ -77,8 +96,11 @@ function TestBadgeSync() {
         onDisconnect={() => {}}
         setIsDropdownOpen={() => {}}
       />
-      <NotificationsCard notifications={notifications} />
+      <NotificationsCard />
       <div data-testid="unread-count">{unreadCount}</div>
+      <output data-testid="notifications-state">
+        {JSON.stringify(currentNotifications)}
+      </output>
     </div>
   );
 }
@@ -94,13 +116,13 @@ describe("NotificationsCard — Optimistic UI (Issue #2000)", () => {
       () => new Promise((resolve) => setTimeout(resolve, 100))
     );
 
-    renderWithProvider(
-      <NotificationsCard notifications={notifications} />
-    );
+    renderWithProvider(<NotificationsCard />);
 
     // Verify initial state: 3 unread notifications
-    expect(screen.getByRole("button", { name: "Mark all as read" })).toBeInTheDocument();
-    expect(screen.getByText("3", { selector: "span" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Mark all as read" })).toBeInTheDocument();
+      expect(screen.getByText("3", { selector: "span" })).toBeInTheDocument();
+    });
 
     // Click mark all as read
     const markAllButton = screen.getByRole("button", { name: "Mark all as read" });
@@ -122,13 +144,13 @@ describe("NotificationsCard — Optimistic UI (Issue #2000)", () => {
     const mockApi = vi.spyOn(apiModule, "markAllNotificationsAsRead");
     mockApi.mockRejectedValue(new Error("Network error"));
 
-    renderWithProvider(
-      <NotificationsCard notifications={notifications} />
-    );
+    renderWithProvider(<NotificationsCard />);
 
     // Verify initial state
-    expect(screen.getByRole("button", { name: "Mark all as read" })).toBeInTheDocument();
-    expect(screen.getByText("3", { selector: "span" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Mark all as read" })).toBeInTheDocument();
+      expect(screen.getByText("3", { selector: "span" })).toBeInTheDocument();
+    });
 
     // Click mark all as read
     const markAllButton = screen.getByRole("button", { name: "Mark all as read" });
@@ -159,8 +181,10 @@ describe("NotificationsCard — Optimistic UI (Issue #2000)", () => {
 
     renderWithProvider(<TestBadgeSync />);
 
-    // Verify initial unread count is 3
-    expect(screen.getByTestId("unread-count")).toHaveTextContent("3");
+    // Verify initial unread count is 3; the seeded read item is not counted.
+    await waitFor(() => {
+      expect(screen.getByTestId("unread-count")).toHaveTextContent("3");
+    });
 
     // Verify badge is visible
     const bellIcon = screen.getByRole("link", { name: "" }).querySelector("svg");
@@ -178,6 +202,11 @@ describe("NotificationsCard — Optimistic UI (Issue #2000)", () => {
     await waitFor(() => {
       expect(screen.getByTestId("unread-count")).toHaveTextContent("0");
     });
+    expect(screen.getByText("Previously read notification")).toBeInTheDocument();
+    const alreadyReadNotification = JSON.parse(
+      screen.getByTestId("notifications-state").textContent ?? "[]",
+    ).find((notification: { id: string }) => notification.id === "4");
+    expect(alreadyReadNotification.isRead).toBe(true);
 
     // Wait for API to succeed
     await waitFor(() => {
@@ -188,5 +217,8 @@ describe("NotificationsCard — Optimistic UI (Issue #2000)", () => {
     const linkElement = screen.getByRole("link", { name: "" });
     // The badge span should not have the animated ping span when unreadCount is 0
     expect(linkElement.querySelectorAll("span").length).toBeLessThan(3);
+    expect(
+      screen.queryByText("Previously read notification"),
+    ).toBeInTheDocument();
   });
 });
