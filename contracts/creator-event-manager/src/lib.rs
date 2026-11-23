@@ -1468,12 +1468,46 @@ impl CreatorEventManagerContract {
         }
     }
 
+    /// Configure the oracle consensus threshold for a single event (#2202):
+    /// the number of distinct oracle sources that must agree on a scoreline
+    /// before `propose_match_result` finalizes one of its matches. Only the
+    /// admin may call this. Events without an override use the global
+    /// `min_sources`.
+    ///
+    /// # Panics
+    /// * `"unauthorized"` — caller is not the admin.
+    /// * `"event_not_found"` — no event exists with the given ID.
+    /// * `"invalid_consensus_threshold"` — `threshold` is `0` or exceeds the
+    ///   number of configured oracle sources.
+    pub fn set_event_consensus_threshold(
+        env: Env,
+        caller: Address,
+        event_id: u64,
+        threshold: u32,
+    ) {
+        match oracle::set_event_consensus_threshold(&env, caller, event_id, threshold) {
+            Ok(()) => {}
+            Err(oracle::OracleError::Unauthorized) => panic!("unauthorized"),
+            Err(oracle::OracleError::EventNotFound) => panic!("event_not_found"),
+            Err(oracle::OracleError::InvalidConsensusThreshold) => {
+                panic!("invalid_consensus_threshold")
+            }
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Return the oracle consensus threshold that applies to an event: its
+    /// configured override, or the global `min_sources` when unset (#2202).
+    pub fn get_event_consensus_threshold(env: Env, event_id: u64) -> u32 {
+        oracle::get_event_consensus_threshold(&env, event_id)
+    }
+
     /// Propose a match's final scoreline as an authorized oracle source,
     /// toward the multi-submitter consensus that finalizes match results
     /// (#1698).
     ///
-    /// Once distinct sources have proposed the same scoreline `min_sources`
-    /// (the configured agreement threshold) times, the match is finalized:
+    /// Once distinct sources have proposed the same scoreline as many times
+    /// as the event's consensus threshold (`get_event_consensus_threshold`), the match is finalized:
     /// the winning outcome is recorded, every prediction is graded, and the
     /// event's weighted standings are recomputed. Returns `true` if this
     /// call reached the threshold and finalized the match.

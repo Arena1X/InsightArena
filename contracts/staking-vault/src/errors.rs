@@ -47,6 +47,13 @@ pub enum StakingError {
     InvalidPenaltyConfig = 31,
     /// No pending unlock exists for this position.
     NoPendingUnlock = 32,
+    /// Unstake cooldown exceeds `config::MAX_UNSTAKE_COOLDOWN`.
+    InvalidCooldown = 33,
+    /// The staker already has an unstake request waiting on its cooldown.
+    UnstakeRequestPending = 34,
+    /// Immediate `unstake` is disabled while an unstake cooldown is configured;
+    /// use `request_unstake` / `complete_unstake` instead.
+    CooldownRequired = 35,
 
     // ── General ───────────────────────────────────────────────────────────────
     /// A checked arithmetic operation overflowed.

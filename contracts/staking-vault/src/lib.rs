@@ -9,9 +9,15 @@ pub mod pool;
 pub mod storage_types;
 
 pub use crate::errors::StakingError;
-pub use crate::storage_types::{Config, DataKey, LockTier, PoolState, Position, UnbondingConfig};
+pub use crate::storage_types::{
+    Config, DataKey, LockTier, PoolState, Position, UnbondingConfig, UnstakeRequest,
+};
 
-use soroban_sdk::{contract, contractimpl, token::Client as TokenClient, Address, Env, Vec};
+use soroban_sdk::{
+    contract, contractimpl, token::Client as TokenClient, Address, Env, Symbol, Vec,
+};
+
+use crate::config::require_not_paused;
 
 use crate::storage_types::{bump_position, LEDGER_BUMP_PERMANENT};
 
@@ -68,16 +74,20 @@ fn set_position(env: &Env, staker: &Address, position: &Position) {
     bump_position(env, staker);
 }
 
-fn require_not_paused(env: &Env) -> Result<(), StakingError> {
-    let paused = env
-        .storage()
-        .instance()
-        .get::<DataKey, bool>(&DataKey::Paused)
-        .unwrap_or(false);
-    if paused {
-        return Err(StakingError::Paused);
-    }
-    Ok(())
+fn get_unstake_request(env: &Env, staker: &Address) -> Option<UnstakeRequest> {
+    env.storage()
+        .persistent()
+        .get::<DataKey, UnstakeRequest>(&DataKey::UnstakeRequest(staker.clone()))
+}
+
+fn set_unstake_request(env: &Env, staker: &Address, request: &UnstakeRequest) {
+    let key = DataKey::UnstakeRequest(staker.clone());
+    env.storage().persistent().set(&key, request);
+    env.storage().persistent().extend_ttl(
+        &key,
+        storage_types::LEDGER_THRESHOLD_POSITION,
+        storage_types::LEDGER_BUMP_POSITION,
+    );
 }
 
 fn get_unbonding_config(env: &Env) -> Result<UnbondingConfig, StakingError> {
@@ -359,9 +369,17 @@ impl StakingVault {
 
     /// Withdraw `amount` once the lock has elapsed, without the unbonding cooldown.
     /// State is updated before the token transfer.
+    ///
+    /// Reverts with `CooldownRequired` while an unstake cooldown is configured
+    /// (issue #2198); stakers must then go through `request_unstake` and
+    /// `complete_unstake`.
     pub fn unstake(env: Env, staker: Address, amount: i128) -> Result<(), StakingError> {
         staker.require_auth();
         require_not_paused(&env)?;
+
+        if config::unstake_cooldown(&env) > 0 {
+            return Err(StakingError::CooldownRequired);
+        }
 
         if amount <= 0 {
             return Err(StakingError::InvalidAmount);
@@ -418,6 +436,141 @@ impl StakingVault {
         Ok(())
     }
 
+    // ── Cooldown unstaking (issue #2198) ────────────────────────────────────────
+
+    /// Request to unstake `amount` once the lock has elapsed, starting the
+    /// configured unstake cooldown.
+    ///
+    /// The amount leaves the position immediately: its shares are burned (so
+    /// it stops earning rewards) and rewards accrued so far are paid out. The
+    /// principal is held until `complete_unstake` after the cooldown.
+    /// Emits `("unstake", "requested")` with `(staker, amount, available_at)`.
+    pub fn request_unstake(
+        env: Env,
+        staker: Address,
+        amount: i128,
+    ) -> Result<u64, StakingError> {
+        staker.require_auth();
+        require_not_paused(&env)?;
+
+        if amount <= 0 {
+            return Err(StakingError::InvalidAmount);
+        }
+
+        if get_unstake_request(&env, &staker).is_some() {
+            return Err(StakingError::UnstakeRequestPending);
+        }
+
+        let config = get_config(&env)?;
+        let mut pool_state = get_pool_state(&env)?;
+        let mut position = get_position_raw(&env, &staker).ok_or(StakingError::PositionNotFound)?;
+
+        if amount > position.amount {
+            return Err(StakingError::InsufficientStake);
+        }
+
+        let now = env.ledger().timestamp();
+        lock::enforce_lock_period(now, position.unlock_at)?;
+
+        let available_at = now
+            .checked_add(config::unstake_cooldown(&env))
+            .ok_or(StakingError::Overflow)?;
+
+        let owed = pool::pending(&pool_state, &position)?;
+
+        let shares_to_burn = if amount == position.amount {
+            position.shares
+        } else {
+            position
+                .shares
+                .checked_mul(amount)
+                .ok_or(StakingError::Overflow)?
+                .checked_div(position.amount)
+                .ok_or(StakingError::Overflow)?
+        };
+
+        // Effects before the external token transfer.
+        position.amount = position
+            .amount
+            .checked_sub(amount)
+            .ok_or(StakingError::Overflow)?;
+        position.shares = position
+            .shares
+            .checked_sub(shares_to_burn)
+            .ok_or(StakingError::Overflow)?;
+
+        pool_state.total_shares = pool_state
+            .total_shares
+            .checked_sub(shares_to_burn)
+            .ok_or(StakingError::Overflow)?;
+
+        pool::settle_debt(&pool_state, &mut position)?;
+
+        set_position(&env, &staker, &position);
+        set_pool_state(&env, &pool_state);
+        set_unstake_request(
+            &env,
+            &staker,
+            &UnstakeRequest {
+                amount,
+                requested_at: now,
+                available_at,
+            },
+        );
+
+        if owed > 0 {
+            let token_client = TokenClient::new(&env, &config.token);
+            token_client.transfer(&env.current_contract_address(), &staker, &owed);
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "unstake"), Symbol::new(&env, "requested")),
+            (staker, amount, available_at),
+        );
+
+        Ok(available_at)
+    }
+
+    /// Pay out a pending unstake request once its cooldown has elapsed.
+    ///
+    /// Reverts with `NoPendingUnlock` when there is no request and with
+    /// `WithdrawalLocked` before `available_at`. The request is removed before
+    /// the token transfer, so it cannot be completed twice.
+    /// Emits `("unstake", "completed")` with `(staker, amount)`.
+    pub fn complete_unstake(env: Env, staker: Address) -> Result<i128, StakingError> {
+        staker.require_auth();
+        require_not_paused(&env)?;
+
+        let config = get_config(&env)?;
+        let request = get_unstake_request(&env, &staker).ok_or(StakingError::NoPendingUnlock)?;
+
+        config::enforce_cooldown(env.ledger().timestamp(), request.available_at)?;
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::UnstakeRequest(staker.clone()));
+
+        let token_client = TokenClient::new(&env, &config.token);
+        token_client.transfer(&env.current_contract_address(), &staker, &request.amount);
+
+        env.events().publish(
+            (Symbol::new(&env, "unstake"), Symbol::new(&env, "completed")),
+            (staker, request.amount),
+        );
+
+        Ok(request.amount)
+    }
+
+    /// Return the staker's pending unstake request, if any.
+    pub fn get_unstake_request(env: Env, staker: Address) -> Option<UnstakeRequest> {
+        get_unstake_request(&env, &staker)
+    }
+
+    /// Return the configured unstake cooldown in seconds (0 when unset).
+    pub fn get_unstake_cooldown(env: Env) -> u64 {
+        config::unstake_cooldown(&env)
+    }
+
     /// Claim accrued rewards without unstaking.
     /// Debt is checkpointed before the token transfer so a second claim pays nothing.
     pub fn claim_rewards(env: Env, staker: Address) -> Result<i128, StakingError> {
@@ -468,12 +621,37 @@ impl StakingVault {
     /// is mutated, so a non-admin caller is rejected via auth failure and the
     /// flag is left unchanged.
     pub fn set_paused(env: Env, paused: bool) -> Result<(), StakingError> {
-        let config = get_config(&env)?;
-        config.admin.require_auth();
+        config::set_paused(&env, paused)
+    }
 
-        env.storage().instance().set(&DataKey::Paused, &paused);
+    /// Emergency pause (issue #2200). Admin only.
+    ///
+    /// Blocks every user-facing state change (stake, unstake, unlock requests,
+    /// withdrawals, reward claims and fee deposits) until `unpause`. Funds stay
+    /// in the vault and are withdrawable again once unpaused.
+    /// Emits `("vault", "paused")`.
+    pub fn pause(env: Env) -> Result<(), StakingError> {
+        config::set_paused(&env, true)
+    }
 
-        Ok(())
+    /// Lift the emergency pause and restore normal operation. Admin only.
+    /// Emits `("vault", "unpaused")`.
+    pub fn unpause(env: Env) -> Result<(), StakingError> {
+        config::set_paused(&env, false)
+    }
+
+    /// Return whether the vault is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        config::is_paused(&env)
+    }
+
+    /// Set the unstake cooldown in seconds (issue #2198). Admin only.
+    ///
+    /// Rejects values above `config::MAX_UNSTAKE_COOLDOWN` with
+    /// `InvalidCooldown`. A non-zero cooldown disables the immediate `unstake`
+    /// path. Emits `("config", "cooldown_set")`.
+    pub fn set_unstake_cooldown(env: Env, cooldown: u64) -> Result<(), StakingError> {
+        config::set_unstake_cooldown(&env, cooldown)
     }
 }
 

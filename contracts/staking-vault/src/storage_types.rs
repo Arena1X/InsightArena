@@ -74,6 +74,22 @@ pub struct Position {
     pub pending_unlock_amount: i128,
 }
 
+/// A pending cooldown unstake (issue #2198).
+///
+/// Created by `request_unstake`: the requested amount is removed from the
+/// staker's position (it stops earning rewards) and parked here until
+/// `available_at`, when `complete_unstake` pays it out.
+#[contracttype]
+#[derive(Clone)]
+pub struct UnstakeRequest {
+    /// Principal waiting to be paid out.
+    pub amount: i128,
+    /// Ledger timestamp when the request was made.
+    pub requested_at: u64,
+    /// Ledger timestamp from which `complete_unstake` is allowed.
+    pub available_at: u64,
+}
+
 /// A configured lock tier: longer locks earn a higher boost multiplier.
 #[contracttype]
 #[derive(Clone)]
@@ -100,6 +116,10 @@ pub enum DataKey {
     LockTiers,
     /// Unbonding configuration for early-exit penalties.
     UnbondingConfig,
+    /// Seconds between `request_unstake` and `complete_unstake` (issue #2198).
+    UnstakeCooldown,
+    /// Per-staker pending [`UnstakeRequest`] (issue #2198).
+    UnstakeRequest(Address),
 }
 
 /// Extend the TTL of a staker's `Position` entry so it never expires while

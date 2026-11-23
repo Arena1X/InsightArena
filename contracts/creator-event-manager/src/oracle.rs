@@ -5,6 +5,7 @@ use crate::leaderboard;
 use crate::storage::{self, StorageError};
 use crate::storage_types::{
     Event, Match, MatchResult, MatchResultSubmission, OracleSubmission, PendingMatchResult,
+    MIN_ORACLE_CONSENSUS_THRESHOLD,
 };
 
 // ---------------------------------------------------------------------------
@@ -57,6 +58,9 @@ pub enum OracleError {
     ResultPendingVerification = 16,
     /// The event's submission deadline has passed (current time > deadline). (#2010)
     SubmissionDeadlinePassed = 17,
+    /// The requested per-event consensus threshold is outside the allowed
+    /// range `MIN_ORACLE_CONSENSUS_THRESHOLD..=sources.len()`. (#2202)
+    InvalidConsensusThreshold = 18,
 }
 
 impl From<StorageError> for OracleError {
@@ -98,6 +102,16 @@ fn emit_oracle_sources_configured(env: &Env, source_count: u32, min_sources: u32
     env.events().publish(
         (Symbol::new(env, "oracle"), Symbol::new(env, "sources_set")),
         (source_count, min_sources),
+    );
+}
+
+fn emit_consensus_threshold_set(env: &Env, event_id: u64, threshold: u32) {
+    env.events().publish(
+        (
+            Symbol::new(env, "oracle"),
+            Symbol::new(env, "threshold_set"),
+        ),
+        (event_id, threshold),
     );
 }
 
@@ -425,6 +439,53 @@ pub fn configure_oracle_sources(
 }
 
 // ---------------------------------------------------------------------------
+// Per-event consensus threshold (#2202)
+// ---------------------------------------------------------------------------
+
+/// Configure how many distinct oracle sources must agree on a scoreline
+/// before a match in `event_id` is finalized by [`propose_match_result`].
+///
+/// Only the admin may call this. The threshold must lie within
+/// `MIN_ORACLE_CONSENSUS_THRESHOLD..=sources.len()` — at least one source,
+/// and never more than the number of configured sources (which would make
+/// consensus unreachable). Events without an override use the global
+/// `min_sources` from [`configure_oracle_sources`].
+///
+/// # Errors
+/// * [`OracleError::Unauthorized`] — caller is not the admin.
+/// * [`OracleError::EventNotFound`] — no event with the given id.
+/// * [`OracleError::InvalidConsensusThreshold`] — `threshold` is out of range.
+pub fn set_event_consensus_threshold(
+    env: &Env,
+    caller: Address,
+    event_id: u64,
+    threshold: u32,
+) -> Result<(), OracleError> {
+    admin::require_is_admin(env, &caller).map_err(|_| OracleError::Unauthorized)?;
+
+    if storage::get_event_raw(env, event_id).is_none() {
+        return Err(OracleError::EventNotFound);
+    }
+
+    let source_count = storage::get_oracle_sources(env).len();
+    if threshold < MIN_ORACLE_CONSENSUS_THRESHOLD || threshold > source_count {
+        return Err(OracleError::InvalidConsensusThreshold);
+    }
+
+    storage::set_event_consensus_threshold(env, event_id, threshold);
+    emit_consensus_threshold_set(env, event_id, threshold);
+
+    Ok(())
+}
+
+/// Return the consensus threshold that applies to `event_id`: its configured
+/// override, or the global `min_sources` when none has been set.
+pub fn get_event_consensus_threshold(env: &Env, event_id: u64) -> u32 {
+    storage::get_event_consensus_threshold(env, event_id)
+        .unwrap_or_else(|| storage::get_oracle_min_sources(env))
+}
+
+// ---------------------------------------------------------------------------
 // Multi-submitter match result consensus (#1698)
 // ---------------------------------------------------------------------------
 
@@ -433,8 +494,9 @@ pub fn configure_oracle_sources(
 ///
 /// Each configured source (`oracle::configure_oracle_sources`) may submit one
 /// proposal per match. Once distinct sources have proposed the **same**
-/// scoreline `min_sources` times (the configured agreement threshold), the
-/// match is finalized exactly as `submit_match_result` would: the winning
+/// scoreline as many times as the event's consensus threshold
+/// ([`get_event_consensus_threshold`]: the per-event override, or the global
+/// `min_sources` by default — #2202), the match is finalized exactly as `submit_match_result` would: the winning
 /// outcome is recorded, every prediction for the match is graded, and the
 /// event's weighted standings are recomputed.
 ///
@@ -525,8 +587,8 @@ pub fn propose_match_result(
         }
     }
 
-    let min_sources = storage::get_oracle_min_sources(env);
-    if min_sources == 0 || agreement_count < min_sources {
+    let threshold = get_event_consensus_threshold(env, match_record.event_id);
+    if threshold == 0 || agreement_count < threshold {
         return Ok(false);
     }
 

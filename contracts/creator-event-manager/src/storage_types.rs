@@ -27,6 +27,9 @@ pub const MAX_EVENT_DURATION_SECONDS: u64 = 7_776_000;
 /// their allocation before it becomes eligible for `clawback_unclaimed` to
 /// treasury (#1312).
 pub const CLAIM_PERIOD_SECONDS: u64 = 2_592_000; // 30 days
+/// Smallest per-event oracle consensus threshold that may be configured
+/// (#2202). The upper bound is the number of configured oracle sources.
+pub const MIN_ORACLE_CONSENSUS_THRESHOLD: u32 = 1;
 /// XLM bond (in stroops) that must be locked to call `finalize_event` (#1344).
 /// Held during the challenge window; returned if unchallenged, or fully
 /// slashed to treasury if a challenge succeeds.
@@ -446,6 +449,13 @@ pub enum DataKey {
     /// oracle sources for a match  (match_id). Written by
     /// `oracle::submit_oracle_value`.
     OracleSubmissions(u64),
+
+    /// Per-event override of the oracle consensus threshold  (event_id): the
+    /// number of distinct oracle sources that must agree on a scoreline
+    /// before `oracle::propose_match_result` finalizes a match in this event.
+    /// Absent means the global `OracleMinSources` applies. Written by
+    /// `oracle::set_event_consensus_threshold` (#2202).
+    EventConsensusThreshold(u64),
 
     // ── Finalization challenge bond (#1344) ──────────────────────────────────
     /// Bond locked by the caller of `finalize_event` for an event  (event_id).
