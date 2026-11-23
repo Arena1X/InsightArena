@@ -7,9 +7,12 @@
 /// change, and only the admin may invoke it, only before the parent event is
 /// finalized.
 use creator_event_manager::storage;
-use creator_event_manager::storage_types::{Match, FINALIZATION_BOND_STROOPS};
+use creator_event_manager::storage_types::{
+    Match, FINALIZATION_BOND_STROOPS, MATCH_RESULT_OVERTURN_WINDOW_SECONDS,
+};
 use creator_event_manager::CreatorEventManagerContractClient;
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::Events as _;
 use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::token::StellarAssetClient;
 use soroban_sdk::{Address, Env, String, Symbol, Vec};
@@ -280,4 +283,171 @@ fn test_payouts_consistent_when_overturn_rejected_post_finalization() {
     let prediction = client.get_prediction(&prediction_id);
     assert_eq!(prediction.points_earned, Some(4));
     assert_eq!(prediction.is_correct, Some(true));
+}
+
+// ---------------------------------------------------------------------------
+// Bounded overturn window & result finality
+// ---------------------------------------------------------------------------
+
+/// Count `("match", "result_final")` events emitted by the contract for
+/// `match_id`.
+fn count_result_final_events(env: &Env, contract_id: &Address, match_id: u64) -> u32 {
+    use soroban_sdk::TryIntoVal;
+    let mut count = 0u32;
+    for event in env.events().all().iter() {
+        if event.0 != *contract_id || event.1.len() != 2 {
+            continue;
+        }
+        let t0: Result<Symbol, _> = event.1.get(0).unwrap().try_into_val(env);
+        let t1: Result<Symbol, _> = event.1.get(1).unwrap().try_into_val(env);
+        if let (Ok(t0), Ok(t1)) = (t0, t1) {
+            if t0 == Symbol::new(env, "match") && t1 == Symbol::new(env, "result_final") {
+                let data: Result<(u64, u64, u32, u32, u64), _> = event.2.try_into_val(env);
+                if let Ok(data) = data {
+                    if data.0 == match_id {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
+#[test]
+fn test_overturn_within_window_succeeds() {
+    let (env, client, contract_id, admin, ai_agent, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let (_event_id, _invite, match_id) =
+        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1_000);
+
+    env.ledger().with_mut(|l| l.timestamp += 2_000);
+    client.submit_match_result(&ai_agent, &match_id, &2u32, &1u32);
+    let submitted_at = env.ledger().timestamp();
+
+    // One second before the window closes — still allowed.
+    env.ledger()
+        .set_timestamp(submitted_at + MATCH_RESULT_OVERTURN_WINDOW_SECONDS - 1);
+    client.overturn_match_result(&admin, &match_id, &0u32, &3u32);
+
+    let m = read_match(&env, &contract_id, match_id);
+    assert_eq!(m.home_score, Some(0));
+    assert_eq!(m.away_score, Some(3));
+    // The window stays anchored to the original submission.
+    assert_eq!(m.submitted_at, Some(submitted_at));
+    assert_eq!(client.get_match_result_finalized_at(&match_id), None);
+}
+
+#[test]
+#[should_panic(expected = "overturn_window_closed")]
+fn test_overturn_after_window_rejected() {
+    let (env, client, contract_id, admin, ai_agent, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let (_event_id, _invite, match_id) =
+        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1_000);
+
+    env.ledger().with_mut(|l| l.timestamp += 2_000);
+    client.submit_match_result(&ai_agent, &match_id, &2u32, &1u32);
+    let submitted_at = env.ledger().timestamp();
+
+    env.ledger()
+        .set_timestamp(submitted_at + MATCH_RESULT_OVERTURN_WINDOW_SECONDS);
+    client.overturn_match_result(&admin, &match_id, &0u32, &3u32);
+}
+
+#[test]
+#[should_panic(expected = "overturn_window_closed")]
+fn test_repeated_overturn_does_not_extend_window() {
+    let (env, client, contract_id, admin, ai_agent, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let (_event_id, _invite, match_id) =
+        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1_000);
+
+    env.ledger().with_mut(|l| l.timestamp += 2_000);
+    client.submit_match_result(&ai_agent, &match_id, &2u32, &1u32);
+    let submitted_at = env.ledger().timestamp();
+
+    // An overturn late in the window must not restart it.
+    env.ledger()
+        .set_timestamp(submitted_at + MATCH_RESULT_OVERTURN_WINDOW_SECONDS - 10);
+    client.overturn_match_result(&admin, &match_id, &0u32, &3u32);
+
+    env.ledger()
+        .set_timestamp(submitted_at + MATCH_RESULT_OVERTURN_WINDOW_SECONDS + 10);
+    client.overturn_match_result(&admin, &match_id, &1u32, &1u32);
+}
+
+#[test]
+#[should_panic(expected = "overturn_window_open")]
+fn test_finalize_match_result_before_window_rejected() {
+    let (env, client, contract_id, _admin, ai_agent, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let (_event_id, _invite, match_id) =
+        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1_000);
+
+    env.ledger().with_mut(|l| l.timestamp += 2_000);
+    client.submit_match_result(&ai_agent, &match_id, &2u32, &1u32);
+
+    client.finalize_match_result(&match_id);
+}
+
+#[test]
+fn test_finalize_match_result_emits_event_and_blocks_overturn() {
+    let (env, client, contract_id, admin, ai_agent, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let (_event_id, _invite, match_id) =
+        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 1_000);
+
+    env.ledger().with_mut(|l| l.timestamp += 2_000);
+    client.submit_match_result(&ai_agent, &match_id, &2u32, &1u32);
+    let submitted_at = env.ledger().timestamp();
+
+    let final_at = submitted_at + MATCH_RESULT_OVERTURN_WINDOW_SECONDS;
+    env.ledger().set_timestamp(final_at);
+    let finalized_at = client.finalize_match_result(&match_id);
+    assert_eq!(finalized_at, final_at);
+    assert_eq!(count_result_final_events(&env, &contract_id, match_id), 1);
+    assert_eq!(
+        client.get_match_result_finalized_at(&match_id),
+        Some(final_at)
+    );
+
+    // Finality is recorded only once.
+    let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.finalize_match_result(&match_id);
+    }));
+    assert!(again.is_err(), "finality must only be recorded once");
+
+    // And the result can no longer be overturned.
+    let overturn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.overturn_match_result(&admin, &match_id, &0u32, &3u32);
+    }));
+    assert!(overturn.is_err(), "final result must not be overturned");
+
+    let m = read_match(&env, &contract_id, match_id);
+    assert_eq!(m.home_score, Some(2));
+    assert_eq!(m.away_score, Some(1));
+}
+
+#[test]
+fn test_finalize_event_marks_results_final_and_emits_event() {
+    let (env, client, contract_id, _admin, ai_agent, xlm_token) = setup();
+    let creator = Address::generate(&env);
+    let (event_id, _invite, match_id) =
+        create_event_with_match(&env, &contract_id, &client, &creator, &xlm_token, 10_000);
+
+    env.ledger().with_mut(|l| l.timestamp += 20_000);
+    client.submit_match_result(&ai_agent, &match_id, &2u32, &1u32);
+
+    // Past the event end (creation + 100_000) but still inside the result's
+    // overturn window (submission + MATCH_RESULT_OVERTURN_WINDOW_SECONDS).
+    env.ledger().with_mut(|l| l.timestamp += 80_000);
+    fund(&env, &xlm_token, &creator, FINALIZATION_BOND_STROOPS);
+    client.finalize_event(&creator, &event_id);
+
+    assert_eq!(count_result_final_events(&env, &contract_id, match_id), 1);
+    assert_eq!(
+        client.get_match_result_finalized_at(&match_id),
+        Some(env.ledger().timestamp())
+    );
 }

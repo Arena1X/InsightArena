@@ -727,6 +727,9 @@ impl CreatorEventManagerContract {
     /// * `"event_not_found"` — the match's parent event is missing.
     /// * `"event_already_finalized"` — the parent event has already been
     ///   finalized, so the result is immutable.
+    /// * `"overturn_window_closed"` — more than
+    ///   `MATCH_RESULT_OVERTURN_WINDOW_SECONDS` have passed since the result
+    ///   was originally submitted, or the result was already marked final.
     pub fn overturn_match_result(
         env: Env,
         caller: Address,
@@ -742,8 +745,39 @@ impl CreatorEventManagerContract {
             Err(MatchError::ResultNotSubmitted) => panic!("result_not_submitted"),
             Err(MatchError::EventNotFound) => panic!("event_not_found"),
             Err(MatchError::EventAlreadyFinalized) => panic!("event_already_finalized"),
+            Err(MatchError::OverturnWindowClosed) => panic!("overturn_window_closed"),
             Err(_) => panic!("unexpected_error"),
         }
+    }
+
+    /// Mark a match result final once its overturn window has closed.
+    /// Permissionless. After this, `overturn_match_result` is rejected.
+    /// `finalize_event` also marks every result of the event final.
+    ///
+    /// Emits `("match", "result_final")` with
+    /// `(match_id, event_id, home_score, away_score, finalized_at)` and returns
+    /// the finality timestamp.
+    ///
+    /// # Panics
+    /// * `"match_not_found"` — no match exists with the given ID.
+    /// * `"result_not_submitted"` — the match has no result yet.
+    /// * `"result_already_final"` — finality was already recorded.
+    /// * `"overturn_window_open"` — the overturn window has not closed yet.
+    pub fn finalize_match_result(env: Env, match_id: u64) -> u64 {
+        match finalize::finalize_match_result(&env, match_id) {
+            Ok(finalized_at) => finalized_at,
+            Err(MatchError::MatchNotFound) => panic!("match_not_found"),
+            Err(MatchError::ResultNotSubmitted) => panic!("result_not_submitted"),
+            Err(MatchError::ResultAlreadyFinal) => panic!("result_already_final"),
+            Err(MatchError::OverturnWindowOpen) => panic!("overturn_window_open"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Return the timestamp at which a match's result became final, or
+    /// `None` while it is still within its overturn window.
+    pub fn get_match_result_finalized_at(env: Env, match_id: u64) -> Option<u64> {
+        finalize::get_match_result_finalized_at(&env, match_id)
     }
 
     /// Configure the prediction lock lead-time (seconds before `match_time`)

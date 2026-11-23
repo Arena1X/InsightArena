@@ -34,6 +34,15 @@ pub const FINALIZATION_BOND_STROOPS: i128 = 10_000_000; // 1 XLM
 /// Challenge window (seconds) after finalization during which the result may
 /// be disputed via `challenge_finalization` (#1344).
 pub const FINALIZATION_CHALLENGE_WINDOW_SECONDS: u64 = 86_400; // 1 day
+/// Window (seconds) after a match result is first submitted during which the
+/// admin may still correct it via `overturn_match_result`. Once the window
+/// closes the result is final: overturns are rejected and anyone may call
+/// `finalize_match_result` to record (and announce) finality.
+///
+/// The window is anchored to the **original** submission time — overturning
+/// a result does not restart it, so a result can never be kept contestable
+/// indefinitely.
+pub const MATCH_RESULT_OVERTURN_WINDOW_SECONDS: u64 = 86_400; // 1 day
 /// Valid predicted outcome symbols
 pub const OUTCOME_TEAM_A: &str = "TEAM_A";
 pub const OUTCOME_TEAM_B: &str = "TEAM_B";
@@ -495,6 +504,13 @@ pub enum DataKey {
     /// Revocation marker for an invite code. Kept separate from
     /// [`InviteCodeData`] so existing invite records remain readable.
     InviteRevoked(Symbol),
+
+    // ── Bounded match-result overturn window ─────────────────────────────────
+    /// Ledger timestamp at which a match's result became final  (match_id) →
+    /// u64. Written once, either by `finalize::finalize_match_result` after
+    /// the overturn window closes, or by `finalize::finalize_event` for every
+    /// match of the event. Its presence makes the result immutable.
+    MatchResultFinalizedAt(u64),
 }
 
 // ---------------------------------------------------------------------------

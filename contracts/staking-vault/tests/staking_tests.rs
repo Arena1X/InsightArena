@@ -1316,3 +1316,58 @@ fn test_state_is_consistent_after_withdraw() {
     assert_eq!(other_position.shares, 1_000);
     assert_eq!(client.get_pool().total_shares, other_position.shares);
 }
+
+// ---------------------------------------------------------------------------
+// Precise reward accrual — no cumulative drift, distributed <= funded
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_many_small_deposits_never_overpay_and_do_not_drift() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, fee_source, token, asset) = setup(&env);
+
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    asset.mint(&a, &1_000_000);
+    asset.mint(&b, &1_000_000);
+    asset.mint(&c, &1_000_000);
+    asset.mint(&fee_source, &1_000_000);
+
+    // Share counts that do not divide the deposits evenly (1.0x / 1.5x / 2.0x).
+    client.stake(&a, &7, &(30 * 86_400));
+    client.stake(&b, &13, &(90 * 86_400));
+    client.stake(&c, &31, &(365 * 86_400));
+
+    let mut funded = 0_i128;
+    let mut claimed = 0_i128;
+    for step in 0..200_i128 {
+        let amount = 1 + (step * 7) % 5;
+        client.deposit_fees(&fee_source, &amount);
+        funded += amount;
+
+        // `a` claims every few steps; claims must never outrun funding.
+        if step % 3 == 0 {
+            if let Ok(Ok(paid)) = client.try_claim_rewards(&a) {
+                claimed += paid;
+            }
+        }
+        let outstanding = client.pending_rewards(&a)
+            + client.pending_rewards(&b)
+            + client.pending_rewards(&c);
+        assert!(claimed + outstanding <= funded, "rewards exceed funding");
+    }
+
+    let total_accrued = claimed
+        + client.pending_rewards(&a)
+        + client.pending_rewards(&b)
+        + client.pending_rewards(&c);
+    // Only sub-unit carries (< 1 unit per position) remain undistributed —
+    // no drift accumulates across 200 deposits and repeated claims.
+    assert!(funded - total_accrued <= 3);
+
+    // The vault still holds every staker's principal plus unclaimed rewards.
+    let principal = 7 + 13 + 31;
+    assert!(token.balance(&client.address) >= principal + (funded - claimed) - 3);
+}
