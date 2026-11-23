@@ -1,5 +1,8 @@
 import { makeAuthenticatedRequest, checkResponse } from './k6-config.js';
 
+// Apply the shared load profile and pass/fail thresholds (#2212).
+export { options } from './k6-config.js';
+
 // Test data
 const TEST_USER = {
   email: 'perf-test@example.com',

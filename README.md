@@ -28,7 +28,8 @@ InsightArena/
 - pnpm 9 → npm install -g pnpm@9
 - Rust (stable) → curl https://sh.rustup.rs -sSf | sh
 - wasm32 target → rustup target add wasm32-unknown-unknown
-- PostgreSQL 14+ → https://postgresql.org
+- Docker with Docker Compose v2 (recommended for local services) → https://docs.docker.com/get-docker/
+  — or a local PostgreSQL 14+ → https://postgresql.org
 - Make
 
 ### 1. Clone
@@ -38,12 +39,42 @@ git clone https://github.com/Arena1X/InsightArena.git
 cd InsightArena
 ```
 
-### 2. Backend (NestJS API)
+### 2. Local services (Docker Compose)
+
+The root [`docker-compose.yml`](docker-compose.yml) starts everything the
+backend needs locally (PostgreSQL 16), with defaults that match
+`backend/.env.example`:
+
+```bash
+docker compose up -d                 # start Postgres on localhost:5432
+docker compose ps                    # wait until postgres is "healthy"
+docker compose --profile tools up -d # optional: Adminer DB UI on http://localhost:8080
+```
+
+| Setting  | Default        |
+| -------- | -------------- |
+| Host     | `localhost`    |
+| Port     | `5432`         |
+| User     | `insightarena` |
+| Password | `insightarena` |
+| Database | `insightarena` |
+
+These resolve to `DATABASE_URL=postgresql://insightarena:insightarena@localhost:5432/insightarena`.
+Override any of them by exporting `POSTGRES_USER`, `POSTGRES_PASSWORD`,
+`POSTGRES_DB` or `POSTGRES_PORT` before `docker compose up` (and update
+`DATABASE_URL` to match). Stop with `docker compose down`; add `-v` to wipe
+the local database volume.
+
+These defaults are for local development only — never reuse them in a
+deployed environment.
+
+### 3. Backend (NestJS API)
 
 ```bash
 cd backend
 cp .env.example .env
-# Edit .env — set DATABASE_URL, JWT_SECRET, SERVER_SECRET_KEY
+# DATABASE_URL and JWT_SECRET already match docker-compose for local use.
+# Set SOROBAN_CONTRACT_ID and SERVER_SECRET_KEY for chain features.
 pnpm install
 pnpm migration:run
 pnpm start:dev
@@ -51,7 +82,7 @@ pnpm start:dev
 # → http://localhost:3000/api/v1/docs (Swagger UI)
 ```
 
-### 3. Frontend (Next.js)
+### 4. Frontend (Next.js)
 
 ```bash
 cd frontend
@@ -62,7 +93,7 @@ pnpm dev
 # → http://localhost:3001
 ```
 
-### 4. Contract (Soroban/Rust) — optional
+### 5. Contract (Soroban/Rust) — optional
 
 ```bash
 cd contract

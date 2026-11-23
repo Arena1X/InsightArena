@@ -1,5 +1,21 @@
 import 'reflect-metadata';
-import { validate } from './env.validation';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { LOCAL_DEV_DATABASE_URL, validate } from './env.validation';
+
+/** Parse backend/.env.example (KEY=VALUE lines, `#` comments ignored). */
+function readEnvExample(): Record<string, string> {
+  const raw = readFileSync(join(__dirname, '../../.env.example'), 'utf8');
+  const env: Record<string, string> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    env[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+  }
+  return env;
+}
 
 const validEnv: Record<string, string> = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/insightarena',
@@ -65,5 +81,22 @@ describe('validate()', () => {
     expect(result.PORT).toBe(4000);
     expect(result.EXPORT_DIR).toBe('/tmp/exports');
     expect(result.EMAIL_FROM).toBe('notifications@insightarena.app');
+  });
+
+  describe('local development defaults (docker-compose)', () => {
+    it('documents a DATABASE_URL in .env.example that matches docker-compose', () => {
+      expect(readEnvExample().DATABASE_URL).toBe(LOCAL_DEV_DATABASE_URL);
+    });
+
+    it('validates the documented .env.example as-is', () => {
+      const result = validate(readEnvExample());
+
+      expect(result.DATABASE_URL).toBe(LOCAL_DEV_DATABASE_URL);
+      expect(result.STELLAR_NETWORK).toBe('testnet');
+    });
+
+    it('points to the docker-compose workflow when validation fails', () => {
+      expect(() => validate({})).toThrow(/docker compose up -d/);
+    });
   });
 });

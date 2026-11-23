@@ -89,6 +89,28 @@ type CoachPredictionRow = {
   } | null;
 };
 
+/** A single ranked row of a fully computed leaderboard snapshot. */
+export type LeaderboardBoardRow = Readonly<{
+  rank: number;
+  user_id: string;
+  reputation_score: number;
+  season_points: number;
+  total_predictions: number;
+  correct_predictions: number;
+  total_winnings_stroops: string;
+}>;
+
+/**
+ * An immutable, fully computed leaderboard. Readers only ever receive a
+ * complete snapshot: a new one is published by swapping a single reference
+ * once the recompute has been fully built and persisted.
+ */
+export type LeaderboardBoardSnapshot = Readonly<{
+  version: number;
+  computed_at: Date;
+  entries: ReadonlyArray<LeaderboardBoardRow>;
+}>;
+
 @Injectable()
 export class LeaderboardService {
   private readonly logger = new Logger(LeaderboardService.name);
@@ -96,6 +118,17 @@ export class LeaderboardService {
 
   /** Insights are week-scoped; TTL is only a safety net so nothing lives indefinitely. */
   private readonly COACH_CACHE_TTL_MS = 8 * 24 * 60 * 60 * 1000;
+
+  /**
+   * Last fully computed leaderboard. Replaced by a single reference
+   * assignment only after a recompute has completed and committed, so
+   * concurrent readers see either the previous or the new board, never a
+   * partially recomputed one.
+   */
+  private publishedBoard: LeaderboardBoardSnapshot | null = null;
+
+  /** In-flight recompute, shared by overlapping callers. */
+  private recomputeInFlight: Promise<void> | null = null;
 
   constructor(
     @InjectRepository(LeaderboardEntry)
@@ -533,10 +566,36 @@ export class LeaderboardService {
   }
 
   /**
+   * Return the most recently published, fully computed leaderboard.
+   * While a recompute is running this keeps returning the previous complete
+   * snapshot; the new one becomes visible only once it is fully built.
+   */
+  getPublishedBoard(): LeaderboardBoardSnapshot | null {
+    return this.publishedBoard;
+  }
+
+  /** Whether a leaderboard recompute is currently in progress. */
+  isRecomputing(): boolean {
+    return this.recomputeInFlight !== null;
+  }
+
+  /**
    * Recalculate all leaderboard ranks based on current user stats.
-   * Called by the hourly cron job.
+   * Called by the hourly cron job. Overlapping calls share a single run so
+   * two recomputes never interleave their writes.
    */
   async recalculateRanks(): Promise<void> {
+    if (this.recomputeInFlight) {
+      return this.recomputeInFlight;
+    }
+
+    this.recomputeInFlight = this.runRecompute().finally(() => {
+      this.recomputeInFlight = null;
+    });
+    return this.recomputeInFlight;
+  }
+
+  private async runRecompute(): Promise<void> {
     const start = Date.now();
     this.logger.log('Starting leaderboard rank recalculation...');
 
@@ -557,22 +616,37 @@ export class LeaderboardService {
       return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     });
 
-    await this.dataSource.transaction(async (manager) => {
-      for (let i = 0; i < sorted.length; i++) {
-        const user = sorted[i];
-        const rank = i + 1;
+    // Build the complete next board off to the side. Nothing here is
+    // visible to readers until the swap below.
+    const nextEntries: LeaderboardBoardRow[] = sorted.map((user, i) =>
+      Object.freeze({
+        rank: i + 1,
+        user_id: user.id,
+        reputation_score: user.reputation_score,
+        season_points: user.season_points,
+        total_predictions: user.total_predictions,
+        correct_predictions: user.correct_predictions,
+        total_winnings_stroops: user.total_winnings_stroops,
+      }),
+    );
 
+    // Persist in a single transaction so DB readers also only ever observe
+    // the previous committed board or the new one.
+    await this.dataSource.transaction(async (manager) => {
+      for (const row of nextEntries) {
         await this.upsertEntry(manager, {
-          user_id: user.id,
+          ...row,
           season_id: undefined,
-          rank,
-          reputation_score: user.reputation_score,
-          season_points: user.season_points,
-          total_predictions: user.total_predictions,
-          correct_predictions: user.correct_predictions,
-          total_winnings_stroops: user.total_winnings_stroops,
         });
       }
+    });
+
+    // Atomic swap: a single reference assignment publishes the new board.
+    // If anything above threw, the previous snapshot stays in place.
+    this.publishedBoard = Object.freeze({
+      version: (this.publishedBoard?.version ?? 0) + 1,
+      computed_at: new Date(),
+      entries: Object.freeze(nextEntries),
     });
 
     const elapsed = Date.now() - start;
