@@ -1058,6 +1058,65 @@ impl CreatorEventManagerContract {
         }
     }
 
+    /// Edit the scoreline of an existing prediction before its on-chain
+    /// edit deadline (#2204).
+    ///
+    /// The deadline derives from match start: `match_time` minus the
+    /// prediction lock lead-time configured when the match was created.
+    ///
+    /// Returns `true` when the edit was applied. Returns `false` when the
+    /// edit was rejected because the deadline has passed; in that case the
+    /// prediction is left unchanged and a `("prediction", "edit_rejected")`
+    /// event is emitted. The rejection is reported via the return value
+    /// rather than a panic so that the rejection event is persisted.
+    ///
+    /// # Panics
+    /// * `"paused"` — the contract is paused.
+    /// * `"prediction_not_found"` — no prediction with the given ID.
+    /// * `"not_prediction_owner"` — caller did not place the prediction.
+    /// * `"match_not_found"` / `"event_not_found"` — parent records missing.
+    /// * `"event_cancelled"` — the parent event is inactive or cancelled.
+    /// * `"already_graded"` — the match result is in; predictions are final.
+    pub fn edit_prediction(
+        env: Env,
+        predictor: Address,
+        prediction_id: u64,
+        predicted_home_score: u32,
+        predicted_away_score: u32,
+    ) -> bool {
+        match prediction::edit_prediction(
+            &env,
+            predictor,
+            prediction_id,
+            predicted_home_score,
+            predicted_away_score,
+        ) {
+            Ok(()) => true,
+            Err(prediction::PredictionError::EditDeadlinePassed) => false,
+            Err(prediction::PredictionError::Paused) => panic!("paused"),
+            Err(prediction::PredictionError::PredictionNotFound) => panic!("prediction_not_found"),
+            Err(prediction::PredictionError::NotPredictionOwner) => panic!("not_prediction_owner"),
+            Err(prediction::PredictionError::MatchNotFound) => panic!("match_not_found"),
+            Err(prediction::PredictionError::EventNotFound) => panic!("event_not_found"),
+            Err(prediction::PredictionError::EventCancelled) => panic!("event_cancelled"),
+            Err(prediction::PredictionError::AlreadyGraded) => panic!("already_graded"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Return the timestamp at and after which predictions for `match_id`
+    /// can no longer be edited (#2204).
+    ///
+    /// # Panics
+    /// * `"match_not_found"` — no match with the given ID.
+    pub fn get_prediction_edit_deadline(env: Env, match_id: u64) -> u64 {
+        match r#match::get_prediction_edit_deadline(&env, match_id) {
+            Ok(deadline) => deadline,
+            Err(MatchError::MatchNotFound) => panic!("match_not_found"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
     /// Return a stored prediction by ID.
     pub fn get_prediction(env: Env, prediction_id: u64) -> Prediction {
         match prediction::get_prediction(&env, prediction_id) {

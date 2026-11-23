@@ -493,6 +493,123 @@ describe('LeaderboardService', () => {
     });
   });
 
+  describe('snapshot consistency during recompute', () => {
+    const managerSave = jest.fn();
+    const mockManager = {
+      create: jest.fn((_entity: unknown, data: unknown) => data),
+      save: managerSave,
+      update: jest.fn(),
+    };
+
+    const makeUsers = (scores: number[]) =>
+      scores.map((score, i) => ({
+        ...mockUser,
+        id: `u${i + 1}`,
+        reputation_score: score,
+      }));
+
+    beforeEach(() => {
+      managerSave.mockResolvedValue(undefined);
+      mockDataSource.transaction.mockImplementation(
+        async (cb: (m: typeof mockManager) => Promise<void>) =>
+          cb(mockManager),
+      );
+    });
+
+    it('returns the complete prior snapshot while a recompute is in progress', async () => {
+      mockUsersService.findAll.mockResolvedValueOnce(makeUsers([10, 20]));
+      await service.recalculateRanks();
+      const prior = service.getPublishedBoard();
+      expect(prior?.entries).toHaveLength(2);
+
+      // Second recompute: block midway through the persisted writes.
+      mockUsersService.findAll.mockResolvedValueOnce(makeUsers([30, 40, 50]));
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let writes = 0;
+      managerSave.mockImplementation(async () => {
+        writes++;
+        if (writes === 2) await gate;
+      });
+
+      const running = service.recalculateRanks();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(service.isRecomputing()).toBe(true);
+      const duringRead = service.getPublishedBoard();
+      expect(duringRead).toBe(prior);
+      expect(duringRead?.version).toBe(1);
+      expect(duringRead?.entries.map((e) => e.user_id)).toEqual(['u2', 'u1']);
+
+      release();
+      await running;
+    });
+
+    it('returns the new snapshot after the recompute completes', async () => {
+      mockUsersService.findAll.mockResolvedValueOnce(makeUsers([10, 20]));
+      await service.recalculateRanks();
+
+      mockUsersService.findAll.mockResolvedValueOnce(makeUsers([30, 40, 50]));
+      await service.recalculateRanks();
+
+      const board = service.getPublishedBoard();
+      expect(service.isRecomputing()).toBe(false);
+      expect(board?.version).toBe(2);
+      expect(board?.entries.map((e) => [e.user_id, e.rank])).toEqual([
+        ['u3', 1],
+        ['u2', 2],
+        ['u1', 3],
+      ]);
+    });
+
+    it('swaps atomically and never exposes a partial board', async () => {
+      mockUsersService.findAll.mockResolvedValueOnce(makeUsers([1, 2]));
+      await service.recalculateRanks();
+
+      const observed: Array<number | undefined> = [];
+      mockUsersService.findAll.mockResolvedValueOnce(makeUsers([5, 4, 3, 2, 1]));
+      managerSave.mockImplementation(async () => {
+        // Sample the readable board at every intermediate write.
+        observed.push(service.getPublishedBoard()?.entries.length);
+        await Promise.resolve();
+      });
+
+      await service.recalculateRanks();
+      observed.push(service.getPublishedBoard()?.entries.length);
+
+      // Only ever the full prior board (2) or the full new board (5).
+      expect(observed.slice(0, -1).every((len) => len === 2)).toBe(true);
+      expect(observed[observed.length - 1]).toBe(5);
+      expect(Object.isFrozen(service.getPublishedBoard())).toBe(true);
+      expect(Object.isFrozen(service.getPublishedBoard()?.entries)).toBe(true);
+    });
+
+    it('keeps the prior snapshot when a recompute fails', async () => {
+      mockUsersService.findAll.mockResolvedValueOnce(makeUsers([10, 20]));
+      await service.recalculateRanks();
+      const prior = service.getPublishedBoard();
+
+      mockUsersService.findAll.mockResolvedValueOnce(makeUsers([1, 2, 3]));
+      managerSave.mockRejectedValueOnce(new Error('db down'));
+
+      await expect(service.recalculateRanks()).rejects.toThrow('db down');
+      expect(service.getPublishedBoard()).toBe(prior);
+      expect(service.isRecomputing()).toBe(false);
+    });
+
+    it('shares a single run between overlapping recompute calls', async () => {
+      mockUsersService.findAll.mockResolvedValue(makeUsers([10, 20]));
+
+      await Promise.all([
+        service.recalculateRanks(),
+        service.recalculateRanks(),
+      ]);
+
+      expect(mockUsersService.findAll).toHaveBeenCalledTimes(1);
+      expect(service.getPublishedBoard()?.version).toBe(1);
+    });
+  });
+
   describe('getTopN', () => {
     it('should return top N entries and cap at 20', async () => {
       const entries = Array.from({ length: 20 }, (_, i) => ({

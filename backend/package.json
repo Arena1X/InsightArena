@@ -31,7 +31,9 @@
     "perf:database": "k6 run performance/database-performance-test.js",
     "perf:cache": "k6 run performance/cache-effectiveness-test.js",
     "perf:websocket": "k6 run performance/websocket-load-test.js",
-    "perf:all": "npm run perf:api && npm run perf:oracle && npm run perf:webhook && npm run perf:database && npm run perf:cache"
+    "perf:all": "npm run perf:api && npm run perf:oracle && npm run perf:webhook && npm run perf:database && npm run perf:cache",
+    "perf:smoke": "k6 run performance/smoke-test.js",
+    "perf:smoke:breach-check": "sh performance/threshold-breach-check.sh"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.1",

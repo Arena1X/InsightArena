@@ -9,21 +9,48 @@ const p95Latency = new Trend('p95_latency');
 const p99Latency = new Trend('p99_latency');
 const throughput = new Counter('throughput');
 
-// Configuration
+// Pass/fail thresholds (#2212).
+//
+// k6 evaluates these at the end of every run and exits non-zero (code 99)
+// when any of them is breached, so a latency or error-rate regression fails
+// the run (and therefore CI). Limits can be tightened/loosened per run via
+// environment variables without editing the scripts:
+//   K6_P95_MS     — p(95) request latency budget in ms   (default 200)
+//   K6_P99_MS     — p(99) request latency budget in ms   (default 500)
+//   K6_ERROR_RATE — max failed-request / failed-check ratio (default 0.05)
+const P95_MS = Number(__ENV.K6_P95_MS || 200);
+const P99_MS = Number(__ENV.K6_P99_MS || 500);
+const ERROR_RATE = Number(__ENV.K6_ERROR_RATE || 0.05);
+
+export function buildThresholds({
+  p95 = P95_MS,
+  p99 = P99_MS,
+  errorRate = ERROR_RATE,
+} = {}) {
+  return {
+    http_req_duration: [`p(95)<${p95}`, `p(99)<${p99}`],
+    http_req_failed: [`rate<${errorRate}`],
+    errors: [`rate<${errorRate}`],
+  };
+}
+
+export const thresholds = buildThresholds();
+
+export const loadStages = [
+  { duration: '30s', target: 10 },   // Ramp up to 10 users
+  { duration: '1m', target: 50 },    // Ramp up to 50 users
+  { duration: '2m', target: 100 },   // Ramp up to 100 users
+  { duration: '2m', target: 100 },   // Stay at 100 users
+  { duration: '1m', target: 50 },    // Ramp down to 50 users
+  { duration: '30s', target: 0 },    // Ramp down to 0
+];
+
+// Full load profile. Scripts must re-export this (`export { options } from
+// './k6-config.js'`) — k6 only applies `options`, and therefore thresholds,
+// that are exported from the entry script itself.
 export const options = {
-  stages: [
-    { duration: '30s', target: 10 },   // Ramp up to 10 users
-    { duration: '1m', target: 50 },    // Ramp up to 50 users
-    { duration: '2m', target: 100 },   // Ramp up to 100 users
-    { duration: '2m', target: 100 },   // Stay at 100 users
-    { duration: '1m', target: 50 },    // Ramp down to 50 users
-    { duration: '30s', target: 0 },    // Ramp down to 0
-  ],
-  thresholds: {
-    http_req_duration: ['p(95)<200'], // 95% of requests must complete below 200ms
-    http_req_failed: ['rate<0.05'],    // Error rate must be below 5%
-    errors: ['rate<0.05'],             // Custom error rate below 5%
-  },
+  stages: loadStages,
+  thresholds,
 };
 
 // Base URL from environment variable

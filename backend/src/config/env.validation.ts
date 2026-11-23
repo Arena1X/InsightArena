@@ -30,6 +30,11 @@ export enum NodeEnvironment {
  * Optional variables document their runtime default in comments below.
  */
 class EnvironmentVariables {
+  /**
+   * Required. For local development, `docker compose up -d` from the repo
+   * root starts Postgres reachable at LOCAL_DEV_DATABASE_URL, which is the
+   * value shipped in backend/.env.example.
+   */
   @IsString()
   @IsNotEmpty()
   DATABASE_URL: string;
@@ -371,6 +376,13 @@ class EnvironmentVariables {
   SWAGGER_EXPORT?: string;
 }
 
+/**
+ * Connection string for the Postgres service defined in the root
+ * docker-compose.yml. Mirrors the default in backend/.env.example.
+ */
+export const LOCAL_DEV_DATABASE_URL =
+  'postgresql://insightarena:insightarena@localhost:5432/insightarena';
+
 const DEFAULT_SOROBAN_RPC: Record<StellarNetwork, string> = {
   [StellarNetwork.TESTNET]: 'https://soroban-testnet.stellar.org',
   [StellarNetwork.MAINNET]: 'https://soroban-mainnet.stellar.org',
@@ -396,7 +408,8 @@ export function validate(config: Record<string, unknown>) {
       .join('\n');
 
     throw new Error(
-      `Environment validation failed:\n${errorMessages}\n\nPlease check your .env file and ensure all required variables are set.`,
+      `Environment validation failed:\n${errorMessages}\n\nPlease check your .env file and ensure all required variables are set.\n` +
+        `For local development, run \`docker compose up -d\` from the repo root and copy backend/.env.example to backend/.env (DATABASE_URL=${LOCAL_DEV_DATABASE_URL}).`,
     );
   }
 

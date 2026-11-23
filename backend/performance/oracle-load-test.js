@@ -1,5 +1,8 @@
 import { makeAuthenticatedRequest, checkResponse } from './k6-config.js';
 
+// Apply the shared load profile and pass/fail thresholds (#2212).
+export { options } from './k6-config.js';
+
 // Test data
 const ORACLE_API_KEY = __ENV.ORACLE_API_KEY || 'test-oracle-api-key';
 const MIN_QUORUM = __ENV.ORACLE_MIN_QUORUM || '3';

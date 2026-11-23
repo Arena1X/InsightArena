@@ -237,6 +237,26 @@ pub fn list_event_matches(env: &Env, event_id: u64) -> Result<Vec<Match>, EventE
     Ok(matches)
 }
 
+/// Return the on-chain deadline after which predictions for `match_record`
+/// can no longer be edited (#2204).
+///
+/// The deadline is derived from the match start: it is `match_time` minus
+/// the prediction lock lead-time configured (via
+/// `admin::set_prediction_lock_lead_seconds`) when the match was created,
+/// i.e. the stored `prediction_lock_time`. Edits are allowed strictly before
+/// this timestamp and rejected at or after it.
+pub fn prediction_edit_deadline(match_record: &Match) -> u64 {
+    match_record.prediction_lock_time
+}
+
+/// Return the prediction edit deadline for `match_id` (#2204).
+///
+/// Returns [`MatchError::MatchNotFound`] if the match does not exist.
+pub fn get_prediction_edit_deadline(env: &Env, match_id: u64) -> Result<u64, MatchError> {
+    let match_record = get_match(env, match_id)?;
+    Ok(prediction_edit_deadline(&match_record))
+}
+
 /// Retrieve a single match by its unique match_id.
 ///
 /// Extends the storage TTL on read.
