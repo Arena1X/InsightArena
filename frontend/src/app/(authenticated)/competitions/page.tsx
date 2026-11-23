@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import CompetitionBracket, {
+  type BracketRound,
+} from "@/component/competitions/CompetitionBracket";
 import PrizePoolSummary from "@/component/PrizePoolSummary";
 import { useWallet } from "@/context/WalletContext";
 import {
@@ -9,6 +12,168 @@ import {
   getUserPayout,
   type UserPayout,
 } from "@/lib/eventRewards";
+
+const WEEKLY_PREDICTIONS_BRACKET: BracketRound[] = [
+  {
+    id: "qf",
+    name: "Quarterfinals",
+    isCurrent: false,
+    matchups: [
+      {
+        id: "qf-1",
+        status: "completed",
+        winnerId: "p1",
+        scheduledAt: "Apr 10",
+        home: { id: "p1", name: "NovaOracle", seed: 1, score: 88 },
+        away: { id: "p8", name: "ByteRunner", seed: 8, score: 71 },
+      },
+      {
+        id: "qf-2",
+        status: "completed",
+        winnerId: "p4",
+        scheduledAt: "Apr 10",
+        home: { id: "p4", name: "StellarSage", seed: 4, score: 92 },
+        away: { id: "p5", name: "GammaPulse", seed: 5, score: 84 },
+      },
+      {
+        id: "qf-3",
+        status: "completed",
+        winnerId: "p2",
+        scheduledAt: "Apr 11",
+        home: { id: "p2", name: "AlphaScout", seed: 2, score: 79 },
+        away: { id: "p7", name: "DriftSignal", seed: 7, score: 65 },
+      },
+      {
+        id: "qf-4",
+        status: "completed",
+        winnerId: "p3",
+        scheduledAt: "Apr 11",
+        home: { id: "p3", name: "QuasarEdge", seed: 3, score: 86 },
+        away: { id: "p6", name: "VortexMind", seed: 6, score: 81 },
+      },
+    ],
+  },
+  {
+    id: "sf",
+    name: "Semifinals",
+    isCurrent: true,
+    matchups: [
+      {
+        id: "sf-1",
+        status: "completed",
+        winnerId: "p4",
+        scheduledAt: "Apr 18",
+        home: { id: "p1", name: "NovaOracle", seed: 1, score: 82 },
+        away: { id: "p4", name: "StellarSage", seed: 4, score: 91 },
+      },
+      {
+        id: "sf-2",
+        status: "live",
+        winnerId: null,
+        scheduledAt: "Live now",
+        home: { id: "p2", name: "AlphaScout", seed: 2, score: 74 },
+        away: { id: "p3", name: "QuasarEdge", seed: 3, score: 76 },
+      },
+    ],
+  },
+  {
+    id: "final",
+    name: "Final",
+    isCurrent: false,
+    matchups: [
+      {
+        id: "final-1",
+        status: "upcoming",
+        winnerId: null,
+        scheduledAt: "Apr 28",
+        home: { id: "p4", name: "StellarSage", seed: 4 },
+        away: null,
+      },
+    ],
+  },
+];
+
+const ALPHA_LEAGUE_BRACKET: BracketRound[] = [
+  {
+    id: "r1",
+    name: "Semifinals",
+    isCurrent: true,
+    matchups: [
+      {
+        id: "al-sf-1",
+        status: "completed",
+        winnerId: "a1",
+        scheduledAt: "Apr 16",
+        home: { id: "a1", name: "OrbitTrader", seed: 1, score: 95 },
+        away: { id: "a4", name: "CipherFlow", seed: 4, score: 77 },
+      },
+      {
+        id: "al-sf-2",
+        status: "live",
+        winnerId: null,
+        scheduledAt: "Live now",
+        home: { id: "a2", name: "ApexSignal", seed: 2, score: 81 },
+        away: { id: "a3", name: "LumenQuant", seed: 3, score: 79 },
+      },
+    ],
+  },
+  {
+    id: "r2",
+    name: "Final",
+    isCurrent: false,
+    matchups: [
+      {
+        id: "al-final-1",
+        status: "upcoming",
+        winnerId: null,
+        scheduledAt: "May 08",
+        home: { id: "a1", name: "OrbitTrader", seed: 1 },
+        away: null,
+      },
+    ],
+  },
+];
+
+const SEASON_1_FINALS_BRACKET: BracketRound[] = [
+  {
+    id: "s1-sf",
+    name: "Semifinals",
+    isCurrent: false,
+    matchups: [
+      {
+        id: "s1-sf-1",
+        status: "completed",
+        winnerId: "s1",
+        scheduledAt: "Mar 24",
+        home: { id: "s1", name: "ChronoBull", seed: 1, score: 94 },
+        away: { id: "s4", name: "DeltaNode", seed: 4, score: 80 },
+      },
+      {
+        id: "s1-sf-2",
+        status: "completed",
+        winnerId: "s2",
+        scheduledAt: "Mar 24",
+        home: { id: "s2", name: "PolarisX", seed: 2, score: 89 },
+        away: { id: "s3", name: "NebulaCall", seed: 3, score: 85 },
+      },
+    ],
+  },
+  {
+    id: "s1-final",
+    name: "Final",
+    isCurrent: false,
+    matchups: [
+      {
+        id: "s1-final-1",
+        status: "completed",
+        winnerId: "s1",
+        scheduledAt: "Mar 31",
+        home: { id: "s1", name: "ChronoBull", seed: 1, score: 97 },
+        away: { id: "s2", name: "PolarisX", seed: 2, score: 91 },
+      },
+    ],
+  },
+];
 
 export default function CompetitionsPage() {
   type CompetitionStatus = "Active" | "Upcoming" | "Ended" | "Cancelled";
@@ -28,6 +193,7 @@ export default function CompetitionsPage() {
     joined: boolean;
     isFinalized: boolean;
     rewardBreakdown: { label: string; amountXlm: number; percentage: number }[];
+    bracket: BracketRound[];
   };
 
   const [activeTab, setActiveTab] = useState<
@@ -35,6 +201,7 @@ export default function CompetitionsPage() {
   >("All");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [selectedBracketId, setSelectedBracketId] = useState<string>("comp-1");
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const { address } = useWallet();
   const [userPayouts, setUserPayouts] = useState<
@@ -70,6 +237,7 @@ export default function CompetitionsPage() {
         { label: "2nd place", amountXlm: 750, percentage: 30 },
         { label: "3rd place", amountXlm: 500, percentage: 20 },
       ],
+      bracket: WEEKLY_PREDICTIONS_BRACKET,
     },
     {
       id: "comp-2",
@@ -90,6 +258,7 @@ export default function CompetitionsPage() {
         { label: "2nd place", amountXlm: 360, percentage: 30 },
         { label: "3rd place", amountXlm: 240, percentage: 20 },
       ],
+      bracket: [],
     },
     {
       id: "comp-3",
@@ -110,6 +279,7 @@ export default function CompetitionsPage() {
         { label: "2nd place", amountXlm: 1500, percentage: 30 },
         { label: "3rd place", amountXlm: 1000, percentage: 20 },
       ],
+      bracket: ALPHA_LEAGUE_BRACKET,
     },
     {
       id: "comp-4",
@@ -130,6 +300,7 @@ export default function CompetitionsPage() {
         { label: "2nd place", amountXlm: 2400, percentage: 30 },
         { label: "3rd place", amountXlm: 1600, percentage: 20 },
       ],
+      bracket: SEASON_1_FINALS_BRACKET,
     },
     {
       id: "comp-5",
@@ -146,6 +317,7 @@ export default function CompetitionsPage() {
       joined: false,
       isFinalized: true,
       rewardBreakdown: [],
+      bracket: [],
     },
   ]);
 
@@ -255,6 +427,7 @@ export default function CompetitionsPage() {
           percentage: 20,
         },
       ],
+      bracket: [],
     };
 
     setCompetitions((prev) => [newCompetition, ...prev]);
@@ -320,6 +493,14 @@ export default function CompetitionsPage() {
     { label: "My Competitions" as const, count: tabCounts.mine },
   ];
 
+  const selectedBracketCompetition = useMemo(
+    () =>
+      competitions.find((c) => c.id === selectedBracketId) ??
+      competitions.find((c) => c.bracket.length > 0) ??
+      null,
+    [competitions, selectedBracketId],
+  );
+
   return (
     <div className="space-y-6 p-4 sm:p-6">
       <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur md:flex-row md:items-center md:justify-between">
@@ -338,6 +519,13 @@ export default function CompetitionsPage() {
           Create Competition
         </button>
       </div>
+
+      {selectedBracketCompetition && (
+        <CompetitionBracket
+          title={selectedBracketCompetition.title}
+          rounds={selectedBracketCompetition.bracket}
+        />
+      )}
 
       <div className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur md:flex-row md:items-center md:justify-between">
         <div className="flex flex-wrap gap-2">
@@ -487,6 +675,23 @@ export default function CompetitionsPage() {
                   </div>
 
                   <div className="mt-5 flex flex-col items-center justify-between gap-3">
+                    {competition.bracket.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBracketId(competition.id)}
+                        aria-pressed={selectedBracketCompetition?.id === competition.id}
+                        className={[
+                          "w-full rounded-xl border px-4 py-2 text-sm font-semibold transition",
+                          selectedBracketCompetition?.id === competition.id
+                            ? "border-orange-500/40 bg-orange-500/15 text-orange-200"
+                            : "border-white/10 bg-white/5 text-gray-200 hover:bg-white/10",
+                        ].join(" ")}
+                      >
+                        {selectedBracketCompetition?.id === competition.id
+                          ? "Viewing Bracket"
+                          : "View Bracket"}
+                      </button>
+                    )}
                     {canFinalize ? (
                       <button
                         type="button"
