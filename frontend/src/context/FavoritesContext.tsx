@@ -49,11 +49,9 @@ function getStorageKey(address: string | null): string {
 function readStoredFavorites(key: string): Set<string> {
   if (typeof window === "undefined") return new Set();
   try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw) as string[] | null;
-    return new Set(Array.isArray(parsed) ? parsed : []);
+    return parseStoredFavorites(window.localStorage.getItem(key));
   } catch {
+    // Storage unavailable (e.g. blocked by privacy settings).
     return new Set();
   }
 }
@@ -129,10 +127,13 @@ export function FavoritesProvider({ children }: { children: React.ReactNode }) {
               .map((item) => [item.market.id, item.id]),
           );
 
-          const merged = new Set([...stored, ...serverIds]);
           confirmedRef.current = new Set(serverIds);
-          setFavoriteIds(merged);
-          writeStoredFavorites(storageKey, merged);
+          // Merge into current state so toggles made during the fetch aren't lost.
+          setFavoriteIds((prev) => {
+            const merged = new Set([...prev, ...serverIds]);
+            writeStoredFavorites(storageKey, merged);
+            return merged;
+          });
 
           const localOnly = [...stored].filter((id) => !serverIds.has(id));
           for (const id of localOnly) {
