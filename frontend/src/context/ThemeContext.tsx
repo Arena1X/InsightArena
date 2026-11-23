@@ -74,11 +74,6 @@ function getSystemPreference(): Theme {
     : "light";
 }
 
-function resolveTheme(mode: ThemeMode): Theme {
-  if (mode === "system") return getSystemPreference();
-  return mode;
-}
-
 function applyThemeToDocument(theme: Theme): void {
   if (typeof document === "undefined") return;
   document.documentElement.classList.toggle("dark", theme === "dark");
@@ -127,16 +122,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => {
-      const nextTheme = e.matches ? "dark" : "light";
-      setSystemTheme(nextTheme);
-      setModeState((currentMode) => {
-        if (currentMode === "system") {
-          applyThemeToDocument(nextTheme);
-        }
-        return currentMode;
-      });
-    };
+    const handler = (e: MediaQueryListEvent) =>
+      setSystemTheme(e.matches ? "dark" : "light");
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, []);
@@ -144,7 +131,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const setTheme = useCallback((next: ThemeMode) => {
     setModeState(next);
     if (next === "system") setSystemTheme(getSystemPreference());
-    applyThemeToDocument(resolveTheme(next));
     persistMode(next);
   }, []);
 
@@ -152,7 +138,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     setModeState((prev) => {
       const idx = CYCLE.indexOf(prev);
       const next = CYCLE[(idx + 1) % CYCLE.length];
-      applyThemeToDocument(resolveTheme(next));
+      if (next === "system") setSystemTheme(getSystemPreference());
       persistMode(next);
       return next;
     });
@@ -181,6 +167,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   // Derive the resolved theme for consumers that only care about light/dark.
   const theme: Theme = mode === "system" ? systemTheme : mode;
+
+  // Single source of truth: an explicit mode wins, otherwise follow the OS.
+  useIsomorphicLayoutEffect(() => {
+    applyThemeToDocument(theme);
+  }, [theme]);
 
   const value = useMemo(
     () => ({
