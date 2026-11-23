@@ -17,6 +17,11 @@ import { useDebounce } from "@/hooks/useDebounce";
 import MarketCard from "@/component/MarketCard";
 import { MarketsPageLoadingSkeleton } from "@/component/loading-route-skeletons";
 import { EmptyState } from "@/component/ui/empty-state";
+import CategoryFilterChips, {
+  filterByCategories,
+  parseCategoriesParam,
+  serializeCategories,
+} from "@/component/markets/CategoryFilterChips";
 import { Heart, AlertCircle, Inbox, Loader2, Search, X, Clock } from "lucide-react";
 
 interface Market {
@@ -30,7 +35,7 @@ interface Market {
   createdAt?: string;
 }
 
-const CATEGORIES = ["All", "Sports", "Finance", "Crypto", "Politics", "Tech"];
+const CATEGORIES = ["Sports", "Finance", "Crypto", "Politics", "Tech"];
 const STATUSES = ["All", "active", "upcoming", "closed"];
 const PAGE_SIZE = 12;
 const SCROLL_POSITION_KEY = "markets_scroll_position";
@@ -54,8 +59,8 @@ export default function MarketsPage() {
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMoreState] = useState(true);
-  const [selectedCategory, setSelectedCategory] = useState<string>(
-    searchParams.get("category") || "All",
+  const [selectedCategories, setSelectedCategories] = useState<string[]>(
+    () => parseCategoriesParam(searchParams.get("category"), CATEGORIES),
   );
   const [selectedStatus, setSelectedStatus] = useState<string>(
     searchParams.get("status") || "All",
@@ -160,10 +165,10 @@ export default function MarketsPage() {
   // Update URL when category, status, sort, ending-soon, search, or view changes
   useEffect(() => {
     const params = new URLSearchParams(searchParams);
-    if (selectedCategory === "All") {
+    if (selectedCategories.length === 0) {
       params.delete("category");
     } else {
-      params.set("category", selectedCategory);
+      params.set("category", serializeCategories(selectedCategories));
     }
     if (selectedStatus === "All") {
       params.delete("status");
@@ -192,7 +197,7 @@ export default function MarketsPage() {
     }
     router.push(`?${params.toString()}`);
   }, [
-    selectedCategory,
+    selectedCategories,
     selectedStatus,
     endingSoonOnly,
     sortKey,
@@ -204,13 +209,7 @@ export default function MarketsPage() {
 
   // Filter markets by category, status, ending-soon, search, and favorites; then sort
   const filteredMarkets = useMemo(() => {
-    let filtered = markets;
-
-    if (selectedCategory !== "All") {
-      filtered = filtered.filter(
-        (m) => m.category.toLowerCase() === selectedCategory.toLowerCase(),
-      );
-    }
+    let filtered = filterByCategories(markets, selectedCategories);
 
     if (selectedStatus !== "All") {
       filtered = filtered.filter(
@@ -242,7 +241,7 @@ export default function MarketsPage() {
     return filtered;
   }, [
     markets,
-    selectedCategory,
+    selectedCategories,
     selectedStatus,
     endingSoonOnly,
     debouncedSearch,
@@ -251,8 +250,16 @@ export default function MarketsPage() {
     sortKey,
   ]);
 
-  const handleCategoryChange = useCallback((category: string) => {
-    setSelectedCategory(category);
+  const handleCategoryToggle = useCallback((category: string) => {
+    setSelectedCategories((prev) =>
+      prev.includes(category)
+        ? prev.filter((c) => c !== category)
+        : CATEGORIES.filter((c) => c === category || prev.includes(c)),
+    );
+  }, []);
+
+  const handleClearCategories = useCallback(() => {
+    setSelectedCategories([]);
   }, []);
 
   const handleStatusChange = useCallback((status: string) => {
@@ -264,7 +271,7 @@ export default function MarketsPage() {
   }, []);
 
   const handleClearAll = useCallback(() => {
-    setSelectedCategory("All");
+    setSelectedCategories([]);
     setSelectedStatus("All");
     setEndingSoonOnly(false);
     setSortKey(null);
@@ -272,7 +279,7 @@ export default function MarketsPage() {
   }, []);
 
   const hasActiveFilters =
-    selectedCategory !== "All" ||
+    selectedCategories.length > 0 ||
     selectedStatus !== "All" ||
     endingSoonOnly ||
     sortKey !== null ||
@@ -307,13 +314,9 @@ export default function MarketsPage() {
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     CATEGORIES.forEach((cat) => {
-      if (cat === "All") {
-        counts[cat] = markets.length;
-      } else {
-        counts[cat] = markets.filter(
-          (m) => m.category.toLowerCase() === cat.toLowerCase(),
-        ).length;
-      }
+      counts[cat] = markets.filter(
+        (m) => m.category.toLowerCase() === cat.toLowerCase(),
+      ).length;
     });
     return counts;
   }, [markets]);
@@ -379,26 +382,15 @@ export default function MarketsPage() {
           </button>
         </div>
 
-        {/* Category Tabs */}
+        {/* Category Chips (multi-select) */}
         {viewMode === "all" && (
-          <div className="mb-6 overflow-x-auto pb-2">
-            <div className="flex gap-2">
-              {CATEGORIES.map((category) => (
-                <button
-                  key={category}
-                  onClick={() => handleCategoryChange(category)}
-                  className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium transition-all ${
-                    selectedCategory === category
-                      ? "bg-orange-500 text-white"
-                      : "bg-white/10 text-gray-300 hover:bg-white/20"
-                  }`}
-                  aria-pressed={selectedCategory === category}
-                >
-                  {category} ({categoryCounts[category] || 0})
-                </button>
-              ))}
-            </div>
-          </div>
+          <CategoryFilterChips
+            categories={CATEGORIES}
+            selected={selectedCategories}
+            counts={categoryCounts}
+            onToggle={handleCategoryToggle}
+            onClear={handleClearCategories}
+          />
         )}
 
         {/* Status + Ending Soon chips, Sort, Clear all */}
@@ -546,9 +538,9 @@ export default function MarketsPage() {
                 ? "No Results Found"
                 : viewMode === "favorites"
                   ? "No Favorite Markets Yet"
-                  : selectedCategory === "All"
+                  : selectedCategories.length === 0
                     ? "No Markets Available"
-                    : `No ${selectedCategory} Markets`
+                    : `No ${selectedCategories.join(", ")} Markets`
             }
             description={
               debouncedSearch

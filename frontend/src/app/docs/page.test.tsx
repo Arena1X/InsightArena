@@ -1,6 +1,6 @@
 import React from "react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import DocsPage from "./page";
 
 // Header/Footer pull in wallet context, toast, and routing hooks that aren't
@@ -34,8 +34,14 @@ vi.mock("framer-motion", () => {
 });
 
 // jsdom doesn't implement IntersectionObserver; DocsPage uses it to
-// highlight the active TOC entry while scrolling.
+// highlight the active TOC entry while scrolling. The stub keeps the latest
+// callback so tests can simulate a section scrolling into view.
+let latestObserverCallback: IntersectionObserverCallback | null = null;
+
 class IntersectionObserverStub implements IntersectionObserver {
+  constructor(callback: IntersectionObserverCallback) {
+    latestObserverCallback = callback;
+  }
   readonly root: Element | Document | null = null;
   readonly rootMargin: string = "";
   readonly thresholds: ReadonlyArray<number> = [];
@@ -47,9 +53,34 @@ class IntersectionObserverStub implements IntersectionObserver {
   }
 }
 
+const scrolledElements: Element[] = [];
+const scrollIntoViewMock = vi.fn(function (this: Element) {
+  scrolledElements.push(this);
+});
+
 beforeAll(() => {
   vi.stubGlobal("IntersectionObserver", IntersectionObserverStub);
+  // jsdom doesn't implement scrollIntoView either.
+  Element.prototype.scrollIntoView = scrollIntoViewMock;
 });
+
+function simulateSectionInView(id: string) {
+  const target = document.getElementById(id);
+  if (!target || !latestObserverCallback) {
+    throw new Error(`Cannot simulate intersection for #${id}`);
+  }
+  const entry = {
+    target,
+    isIntersecting: true,
+    boundingClientRect: { top: 0 } as DOMRectReadOnly,
+  } as IntersectionObserverEntry;
+  act(() => {
+    latestObserverCallback?.(
+      [entry],
+      {} as IntersectionObserver
+    );
+  });
+}
 
 describe("DocsPage table of contents", () => {
   it("renders one TOC entry per documentation heading, in the same order", () => {
@@ -88,6 +119,82 @@ describe("DocsPage table of contents", () => {
     tocLinks.slice(1).forEach((link) => {
       expect(link).not.toHaveAttribute("aria-current");
     });
+  });
+});
+
+describe("DocsPage table of contents navigation", () => {
+  beforeEach(() => {
+    scrollIntoViewMock.mockClear();
+    scrolledElements.length = 0;
+    window.history.replaceState(null, "", "/docs");
+  });
+
+  it("scrolls to the section and marks it active when a TOC item is clicked", () => {
+    render(<DocsPage />);
+
+    const toc = screen.getByRole("navigation", { name: /table of contents/i });
+    const tradeLink = within(toc).getByRole("link", { name: "How to Trade" });
+
+    fireEvent.click(tradeLink);
+
+    expect(scrollIntoViewMock).toHaveBeenCalledTimes(1);
+    expect(scrolledElements[0]?.id).toBe("trading-guide");
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "start",
+    });
+    expect(tradeLink).toHaveAttribute("aria-current", "true");
+    expect(window.location.hash).toBe("#trading-guide");
+  });
+
+  it("highlights the section currently in view while scrolling", () => {
+    render(<DocsPage />);
+
+    const toc = screen.getByRole("navigation", { name: /table of contents/i });
+
+    simulateSectionInView("smart-contracts");
+
+    expect(
+      within(toc).getByRole("link", { name: "Smart Contracts" })
+    ).toHaveAttribute("aria-current", "true");
+    expect(
+      within(toc).getByRole("link", { name: "Getting Started" })
+    ).not.toHaveAttribute("aria-current");
+
+    simulateSectionInView("wallet-connection");
+
+    expect(
+      within(toc).getByRole("link", { name: "Wallet Connection" })
+    ).toHaveAttribute("aria-current", "true");
+    expect(
+      within(toc).getByRole("link", { name: "Smart Contracts" })
+    ).not.toHaveAttribute("aria-current");
+  });
+
+  it("collapses and expands the TOC on narrow screens", () => {
+    render(<DocsPage />);
+
+    const toggle = screen.getByRole("button", { name: /on this page/i });
+    const mobileList = document.getElementById("docs-mobile-toc");
+
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(mobileList).toHaveAttribute("hidden");
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(mobileList).not.toHaveAttribute("hidden");
+
+    // Picking an entry navigates and collapses the menu again.
+    fireEvent.click(
+      within(mobileList as HTMLElement).getByRole("link", {
+        name: "API Documentation",
+      })
+    );
+
+    expect(scrollIntoViewMock).toHaveBeenCalled();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(mobileList).toHaveAttribute("hidden");
   });
 });
 
