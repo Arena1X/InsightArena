@@ -15,6 +15,7 @@ import {
 import { Button } from "@/component/ui/button";
 import { useWallet } from "@/context/WalletContext";
 import AddMatchForm, { type MatchFormData } from "@/component/creator-events/AddMatchForm";
+import BulkMatchEntry from "@/component/creator-events/BulkMatchEntry";
 import BulkMatchUpload from "@/component/creator-events/BulkMatchUpload";
 import SubmitResultForm from "@/component/creator-events/SubmitResultForm";
 import { type MatchOutcome, useCreatorEvents } from "@/hooks/useCreatorEvents";
@@ -124,6 +125,7 @@ export default function MatchManagementPage() {
   const [isCreator, setIsCreator] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [activeSubmitMatchId, setActiveSubmitMatchId] = useState<string | null>(null);
+  const [entryMode, setEntryMode] = useState<"single" | "bulk">("single");
 
   useEffect(() => {
     setHydrated(true);
@@ -353,13 +355,57 @@ export default function MatchManagementPage() {
           )}
         </section>
 
-        {/* Add match form */}
+        {/* Add match / bulk entry */}
         {matches.length < MAX_MATCHES && (
           <section className="mb-8">
-            <h2 className="mb-4 text-xl font-semibold text-white">
-              Add a Match
-            </h2>
-            <AddMatchForm onAddMatch={handleAddMatch} />
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-xl font-semibold text-white">
+                {entryMode === "single" ? "Add a Match" : "Bulk Entry"}
+              </h2>
+              <div
+                role="tablist"
+                aria-label="Match entry mode"
+                className="inline-flex rounded-full border border-white/10 bg-slate-900/90 p-1"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={entryMode === "single"}
+                  onClick={() => setEntryMode("single")}
+                  className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
+                    entryMode === "single"
+                      ? "bg-amber-400 text-slate-950"
+                      : "text-slate-300 hover:text-white"
+                  }`}
+                >
+                  Single Match
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={entryMode === "bulk"}
+                  onClick={() => setEntryMode("bulk")}
+                  className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
+                    entryMode === "bulk"
+                      ? "bg-amber-400 text-slate-950"
+                      : "text-slate-300 hover:text-white"
+                  }`}
+                >
+                  Bulk Entry
+                </button>
+              </div>
+            </div>
+
+            {entryMode === "single" ? (
+              <AddMatchForm onAddMatch={handleAddMatch} />
+            ) : (
+              <BulkMatchEntry
+                currentMatchCount={matches.length}
+                maxMatches={MAX_MATCHES}
+                existingMatches={matches}
+                onSubmitValid={handleBulkImport}
+              />
+            )}
           </section>
         )}
 
