@@ -51,6 +51,8 @@ type OracleDashboardState = {
     marketId: string,
     outcome: string,
   ) => Promise<{ txHash: string }>;
+  approveSubmission: (marketId: string) => Promise<{ txHash: string }>;
+  rejectSubmission: (marketId: string) => Promise<void>;
 };
 
 const MOCK_PENDING: PendingResolution[] = [
@@ -271,6 +273,51 @@ export function useOracleDashboard(): OracleDashboardState {
     [pending],
   );
 
+  const approveSubmission = useCallback(
+    async (marketId: string) => {
+      const market = pending.find((p) => p.marketId === marketId);
+      const outcome = market?.outcomes[0] ?? "APPROVED";
+      const txHash = `tx${Date.now().toString(16)}`;
+
+      setPending((prev) => prev.filter((p) => p.marketId !== marketId));
+      setHistory((prev) => [
+        {
+          id: `sub-${Date.now()}`,
+          marketId,
+          title: market?.title ?? marketId,
+          outcome,
+          status: "success",
+          submittedAt: new Date().toISOString(),
+          txHash,
+        },
+        ...prev,
+      ]);
+
+      return { txHash };
+    },
+    [pending],
+  );
+
+  const rejectSubmission = useCallback(
+    async (marketId: string) => {
+      const market = pending.find((p) => p.marketId === marketId);
+
+      setPending((prev) => prev.filter((p) => p.marketId !== marketId));
+      setHistory((prev) => [
+        {
+          id: `sub-${Date.now()}`,
+          marketId,
+          title: market?.title ?? marketId,
+          outcome: "REJECTED",
+          status: "failed",
+          submittedAt: new Date().toISOString(),
+        },
+        ...prev,
+      ]);
+    },
+    [pending],
+  );
+
   const reliability = useMemo(() => computeReliability(history), [history]);
   const queue = useMemo(() => buildPendingQueue(pending), [pending]);
   const pendingCount = queue.length;
@@ -287,5 +334,7 @@ export function useOracleDashboard(): OracleDashboardState {
     error,
     refresh,
     submitResolution,
+    approveSubmission,
+    rejectSubmission,
   };
 }
