@@ -1,4 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { Cache } from 'cache-manager';
@@ -104,17 +109,9 @@ export class SearchService {
     const query = sanitizeSearchInput(dto.query ?? '');
 
     if (!query) {
-      return {
-        markets: [],
-        users: [],
-        competitions: [],
-        total: 0,
-        total_markets: 0,
-        total_users: 0,
-        total_competitions: 0,
-        page,
-        limit,
-      };
+      throw new BadRequestException(
+        'Search query cannot be empty after sanitization',
+      );
     }
 
     const [
@@ -333,7 +330,9 @@ export class SearchService {
   async fuzzySearch(dto: FuzzySearchDto): Promise<FuzzySearchResponseDto> {
     const query = sanitizeSearchInput(dto.query ?? '');
     if (!query) {
-      return { data: [], total: 0, query: dto.query ?? '' };
+      throw new BadRequestException(
+        'Search query cannot be empty after sanitization',
+      );
     }
     const threshold = dto.threshold ?? 0.1;
     const limit = Math.min(dto.limit ?? 20, 50);

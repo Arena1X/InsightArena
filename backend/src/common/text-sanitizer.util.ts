@@ -17,6 +17,14 @@ const HTML_TAG_PATTERN = /<[^>]*>/g;
 const CONTROL_CHAR_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
 /**
+ * Removes control characters (tab/newline/CR are kept as whitespace).
+ * Used by search sanitization, where NUL bytes would otherwise reach Postgres.
+ */
+export function stripControlChars(input: string): string {
+  return input.replace(CONTROL_CHAR_PATTERN, '');
+}
+
+/**
  * Strips HTML tags and control characters from free-text input, then trims
  * surrounding whitespace. Safe to apply repeatedly (idempotent).
  */
