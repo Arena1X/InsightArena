@@ -18,6 +18,8 @@ export enum NotificationType {
   DisputeSlaBreached = 'dispute_sla_breached',
   AchievementUnlocked = 'achievement_unlocked',
   OracleResultDivergence = 'oracle_result_divergence',
+  DisputeChainDriftDetected = 'dispute_chain_drift_detected',
+  DisputeQuorumValidationFailed = 'dispute_quorum_validation_failed',
 }
 
 @Entity('notifications')

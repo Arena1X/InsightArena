@@ -48,6 +48,9 @@ export class WebhookDeliveryLog {
   attempt_count: number;
 
   @Column({ type: 'int', nullable: true })
+  max_retry_limit: number | null;
+
+  @Column({ type: 'int', nullable: true })
   http_status_code: number | null;
 
   @Column({ type: 'text', nullable: true })

@@ -346,4 +346,29 @@ describe('FeatureFlagsService - rollout evaluation and per-request caching', () 
 
     expect(featureFlagsRepository.findOne).not.toHaveBeenCalled();
   });
+
+  it('invalidates cache on flag update so subsequent lookup re-queries repository', async () => {
+    const flag = buildFlag({ id: 'flag-1', key: 'new_slip_ui', is_enabled: true });
+    featureFlagsRepository.findOne.mockResolvedValue(flag);
+    featureFlagsRepository.save = jest.fn().mockResolvedValue({
+      ...flag,
+      is_enabled: false,
+    });
+    const user = buildUser('user-cache-update');
+
+    // First resolve caches is_enabled: true
+    const first = await service.resolveFlagForUser('new_slip_ui', user);
+    expect(first?.is_enabled).toBe(true);
+
+    // Update the flag (toggle off)
+    await service.update('flag-1', { is_enabled: false }, 'admin-1');
+
+    // Next lookup should re-fetch from repository and see updated state
+    featureFlagsRepository.findOne.mockResolvedValue({
+      ...flag,
+      is_enabled: false,
+    });
+    const second = await service.resolveFlagForUser('new_slip_ui', user);
+    expect(second?.is_enabled).toBe(false);
+  });
 });

@@ -19,6 +19,14 @@ export enum BulkUserAction {
   Flag = 'flag',
 }
 
+export enum BulkUserActionErrorCode {
+  UserNotFound = 'USER_NOT_FOUND',
+  AlreadyBanned = 'ALREADY_BANNED',
+  NotBanned = 'NOT_BANNED',
+  SelfActionNotAllowed = 'SELF_ACTION_NOT_ALLOWED',
+  InternalError = 'INTERNAL_ERROR',
+}
+
 export class BulkUserActionDto {
   @ApiProperty({
     type: [String],
@@ -48,12 +56,19 @@ export class BulkUserActionResultDto {
   @ApiProperty() user_id: string;
   @ApiProperty() success: boolean;
   @ApiPropertyOptional() error?: string;
+  @ApiPropertyOptional({
+    enum: BulkUserActionErrorCode,
+    description: 'Machine-readable failure reason, present when success=false',
+  })
+  error_code?: BulkUserActionErrorCode;
 }
 
 export class BulkUserActionResponseDto {
   @ApiProperty({ type: [BulkUserActionResultDto] })
   results: BulkUserActionResultDto[];
 
+  @ApiProperty({ enum: BulkUserAction }) action: BulkUserAction;
+  @ApiProperty() total: number;
   @ApiProperty() succeeded: number;
   @ApiProperty() failed: number;
 }

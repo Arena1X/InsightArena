@@ -1,4 +1,8 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository, SelectQueryBuilder, UpdateResult } from 'typeorm';
@@ -11,7 +15,11 @@ import {
   FlagResolutionAction,
   FlagStatus,
 } from './entities/flag.entity';
-import { FlagsService } from './flags.service';
+import {
+  FlagsService,
+  calculateRolloutBucket,
+  isUserInRollout,
+} from './flags.service';
 
 describe('FlagsService', () => {
   let service: FlagsService;
@@ -478,6 +486,149 @@ describe('FlagsService', () => {
       await expect(
         service.resolveFlag('flag-1', resolveFlagDto, 'admin-1'),
       ).rejects.toThrow(ConflictException);
+    });
+
+    it('should throw ConflictException if flag is already dismissed', async () => {
+      const resolveFlagDto = {
+        action: FlagResolutionAction.DISMISS,
+      };
+
+      const dismissedFlag = {
+        ...createMockFlag(),
+        status: FlagStatus.DISMISSED,
+      };
+
+      jest.spyOn(flagsRepository, 'findOne').mockResolvedValue(dismissedFlag);
+
+      await expect(
+        service.resolveFlag('flag-1', resolveFlagDto, 'admin-1'),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('should throw BadRequestException for a resolution action outside the defined enum', async () => {
+      // ResolveFlagDto's @IsEnum only takes effect behind a ValidationPipe,
+      // which nothing wires up for this route — the service itself must
+      // reject an out-of-enum value directly (see the comment in
+      // flags.service.ts above this check).
+      const resolveFlagDto = {
+        action: 'delete_everything' as FlagResolutionAction,
+      };
+
+      jest
+        .spyOn(flagsRepository, 'findOne')
+        .mockResolvedValue(createMockFlag());
+
+      await expect(
+        service.resolveFlag('flag-1', resolveFlagDto, 'admin-1'),
+      ).rejects.toThrow(BadRequestException);
+      expect(flagsRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('resolving a pending flag with a valid status succeeds and is reflected by listFlags', async () => {
+      const resolveFlagDto = {
+        action: FlagResolutionAction.DISMISS,
+        admin_notes: 'Reviewed, no violation found',
+      };
+
+      jest
+        .spyOn(flagsRepository, 'findOne')
+        .mockResolvedValue(createMockFlag());
+      const resolved = {
+        ...createMockFlag(),
+        status: FlagStatus.DISMISSED,
+        resolution_action: FlagResolutionAction.DISMISS,
+        admin_notes: 'Reviewed, no violation found',
+        resolved_by: 'admin-1',
+        resolved_at: new Date(),
+      };
+      jest.spyOn(flagsRepository, 'save').mockResolvedValue(resolved);
+
+      const result = await service.resolveFlag(
+        'flag-1',
+        resolveFlagDto,
+        'admin-1',
+      );
+      expect(result.status).toBe(FlagStatus.DISMISSED);
+
+      // listFlags reflects the now-resolved flag when filtered by its new status.
+      const mockQueryBuilder = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[resolved], 1]),
+      };
+      jest
+        .spyOn(flagsRepository, 'createQueryBuilder')
+        .mockReturnValue(
+          mockQueryBuilder as unknown as SelectQueryBuilder<Flag>,
+        );
+
+      const listResult = await service.listFlags({
+        status: FlagStatus.DISMISSED,
+      });
+      expect(listResult.data).toEqual([resolved]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Feature Flag Percentage Rollout Bucketing Stability (Issue #1956)
+  // -------------------------------------------------------------------------
+
+  describe('Feature Flag Percentage Rollout Bucketing Stability', () => {
+    it("a user's bucket is identical across repeated evaluations", () => {
+      const flagKey = 'new_ui_feature';
+      const userId = 'user-abc-123';
+
+      const firstBucket = service.getRolloutBucket(flagKey, userId);
+      const secondBucket = service.getRolloutBucket(flagKey, userId);
+      const thirdBucket = calculateRolloutBucket(flagKey, userId);
+
+      expect(firstBucket).toBe(secondBucket);
+      expect(firstBucket).toBe(thirdBucket);
+      expect(firstBucket).toBeGreaterThanOrEqual(0);
+      expect(firstBucket).toBeLessThan(100);
+    });
+
+    it('raising the percentage only adds users, never removes previously-included ones (monotonic)', () => {
+      const flagKey = 'dark_mode_rollout';
+      const userIds = Array.from({ length: 100 }, (_, i) => `user-${i}`);
+
+      const includedAt10 = new Set(
+        userIds.filter((uid) => service.isUserInRollout(flagKey, uid, 10)),
+      );
+      const includedAt30 = new Set(
+        userIds.filter((uid) => service.isUserInRollout(flagKey, uid, 30)),
+      );
+      const includedAt75 = new Set(
+        userIds.filter((uid) => service.isUserInRollout(flagKey, uid, 75)),
+      );
+
+      // Every user in 10% must also be in 30%
+      for (const uid of includedAt10) {
+        expect(includedAt30.has(uid)).toBe(true);
+      }
+
+      // Every user in 30% must also be in 75%
+      for (const uid of includedAt30) {
+        expect(includedAt75.has(uid)).toBe(true);
+      }
+    });
+
+    it('0% includes nobody and 100% includes everyone', () => {
+      const flagKey = 'critical_infra';
+      const userIds = Array.from({ length: 50 }, (_, i) => `user-${i}`);
+
+      for (const uid of userIds) {
+        expect(service.isUserInRollout(flagKey, uid, 0)).toBe(false);
+        expect(isUserInRollout(flagKey, uid, 0)).toBe(false);
+        expect(service.isUserInRollout(flagKey, uid, -10)).toBe(false);
+
+        expect(service.isUserInRollout(flagKey, uid, 100)).toBe(true);
+        expect(isUserInRollout(flagKey, uid, 100)).toBe(true);
+        expect(service.isUserInRollout(flagKey, uid, 120)).toBe(true);
+      }
     });
   });
 });

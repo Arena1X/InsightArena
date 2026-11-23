@@ -45,22 +45,48 @@ export interface AchievementProgressPayload {
   progress_percentage: number;
 }
 
+interface DeliveryConfirmationEntry {
+  notificationIds: Set<number>;
+  confirmedAt: number;
+}
+
+/**
+ * Per-user fanout policy: a single user may hold many sockets (tabs,
+ * devices). Every user-targeted emit is delivered to at most
+ * `maxFanoutPerUser` of that user's sockets. When the user has more
+ * connections than the limit, the most-recently connected sockets
+ * (by `handshake.issued`) are chosen and the oldest are skipped — older
+ * tabs are the most likely to be stale/backgrounded. A user at or under
+ * the limit receives the normal room-wide emit, unchanged.
+ */
+export const MAX_FANOUT_PER_USER = 5;
+
 @Injectable()
 export class NotificationBroadcasterService implements OnModuleDestroy {
   private readonly logger = new Logger(NotificationBroadcasterService.name);
   private readonly batchQueue = new Map<string, NotificationPayload[]>();
   private readonly batchInterval = 1000; // 1 second
   private readonly maxBatchSize = 10;
-  private deliveryConfirmations = new Map<string, Set<number>>();
+  private readonly maxFanoutPerUser = MAX_FANOUT_PER_USER;
+  private readonly confirmationTtlMs = 5 * 60 * 1000; // 5 minutes
+  private readonly confirmationCleanupIntervalMs = 60 * 1000; // 1 minute
+  private deliveryConfirmations = new Map<string, DeliveryConfirmationEntry>();
   private batchProcessorInterval?: NodeJS.Timeout;
+  private confirmationCleanupInterval?: NodeJS.Timeout;
 
   constructor(private readonly gateway: EventsGateway) {
     this.startBatchProcessor();
+    this.startConfirmationCleanup();
   }
 
   onModuleDestroy(): void {
     if (this.batchProcessorInterval) {
       clearInterval(this.batchProcessorInterval);
+      this.batchProcessorInterval = undefined;
+    }
+    if (this.confirmationCleanupInterval) {
+      clearInterval(this.confirmationCleanupInterval);
+      this.confirmationCleanupInterval = undefined;
     }
   }
 
@@ -82,9 +108,7 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
       event: 'notification:read',
       data: { notification_id: notificationId, read_at: new Date() },
     };
-    this.gateway.server
-      .to(`user:${userAddress}`)
-      .emit('notification:read', payload);
+    this.emitToUser(userAddress, 'notification:read', payload);
     this.logger.log(
       `Broadcast notification:read → user:${userAddress} (id=${notificationId})`,
     );
@@ -108,9 +132,7 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
         timestamp: new Date(),
       },
     };
-    this.gateway.server
-      .to(`user:${userAddress}`)
-      .emit('prediction:result', payload);
+    this.emitToUser(userAddress, 'prediction:result', payload);
     this.logger.log(
       `Broadcast prediction:result → user:${userAddress} (match=${result.match_id}, correct=${result.is_correct})`,
     );
@@ -132,7 +154,7 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
         timestamp: new Date(),
       },
     };
-    this.gateway.server.to(`user:${userAddress}`).emit('event:winner', payload);
+    this.emitToUser(userAddress, 'event:winner', payload);
     this.logger.log(
       `Broadcast event:winner → user:${userAddress} (event=${winner.event_id}, rank=${winner.rank})`,
     );
@@ -158,9 +180,7 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
         timestamp: new Date(),
       },
     };
-    this.gateway.server
-      .to(`user:${userAddress}`)
-      .emit('achievement:unlocked', payload);
+    this.emitToUser(userAddress, 'achievement:unlocked', payload);
     this.logger.log(
       `Broadcast achievement:unlocked → user:${userAddress} (achievement=${achievement.achievement_id})`,
     );
@@ -184,9 +204,7 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
         timestamp: new Date(),
       },
     };
-    this.gateway.server
-      .to(`user:${userAddress}`)
-      .emit('achievement:progress', payload);
+    this.emitToUser(userAddress, 'achievement:progress', payload);
     this.logger.log(
       `Broadcast achievement:progress → user:${userAddress} (achievement=${progress.achievement_id}, pct=${progress.progress_percentage})`,
     );
@@ -199,19 +217,25 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
     userAddress: string,
     notificationId: number,
   ): void {
-    this.gateway.server
-      .to(`user:${userAddress}`)
-      .emit('notification:confirm', { notification_id: notificationId });
+    this.emitToUser(userAddress, 'notification:confirm', {
+      notification_id: notificationId,
+    });
   }
 
   /**
    * Record delivery confirmation
    */
   confirmDelivery(userAddress: string, notificationId: number): void {
-    if (!this.deliveryConfirmations.has(userAddress)) {
-      this.deliveryConfirmations.set(userAddress, new Set());
+    const existing = this.deliveryConfirmations.get(userAddress);
+    if (existing) {
+      existing.notificationIds.add(notificationId);
+      existing.confirmedAt = Date.now();
+    } else {
+      this.deliveryConfirmations.set(userAddress, {
+        notificationIds: new Set([notificationId]),
+        confirmedAt: Date.now(),
+      });
     }
-    this.deliveryConfirmations.get(userAddress)!.add(notificationId);
     this.logger.debug(
       `Delivery confirmed: user=${userAddress}, notification=${notificationId}`,
     );
@@ -222,8 +246,60 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
    */
   isDelivered(userAddress: string, notificationId: number): boolean {
     return (
-      this.deliveryConfirmations.get(userAddress)?.has(notificationId) ?? false
+      this.deliveryConfirmations
+        .get(userAddress)
+        ?.notificationIds.has(notificationId) ?? false
     );
+  }
+
+  /**
+   * Purge delivery confirmation entries that have exceeded the configured age.
+   * Recently-confirmed, still-pending entries are left untouched.
+   */
+  cleanupConfirmations(now: number = Date.now()): void {
+    for (const [userAddress, entry] of this.deliveryConfirmations) {
+      if (now - entry.confirmedAt >= this.confirmationTtlMs) {
+        this.deliveryConfirmations.delete(userAddress);
+        this.logger.debug(
+          `Purged expired delivery confirmations for user=${userAddress}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Emit `event` to a user's sockets, applying the per-user fanout cap
+   * (see MAX_FANOUT_PER_USER).
+   */
+  private emitToUser(
+    userAddress: string,
+    event: string,
+    payload: unknown,
+  ): void {
+    const room = `user:${userAddress}`;
+    const server = this.gateway.server;
+    const socketIds = server.sockets?.adapter?.rooms?.get(room);
+
+    if (!socketIds || socketIds.size <= this.maxFanoutPerUser) {
+      server.to(room).emit(event, payload);
+      return;
+    }
+
+    const targets = this.selectMostRecentSockets(socketIds);
+    server.to(targets).emit(event, payload);
+    this.logger.debug(
+      `Fanout capped for user:${userAddress} (${targets.length}/${socketIds.size} sockets)`,
+    );
+  }
+
+  /** Returns the `maxFanoutPerUser` most-recently connected socket ids. */
+  private selectMostRecentSockets(socketIds: Set<string>): string[] {
+    const connectedAt = (id: string): number =>
+      this.gateway.server.sockets.sockets.get(id)?.handshake?.issued ?? 0;
+
+    return [...socketIds]
+      .sort((a, b) => connectedAt(b) - connectedAt(a))
+      .slice(0, this.maxFanoutPerUser);
   }
 
   /**
@@ -264,7 +340,7 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
       },
     };
 
-    this.gateway.server.to(`user:${userAddress}`).emit(eventType, payload);
+    this.emitToUser(userAddress, eventType, payload);
     this.logger.log(
       `Broadcast ${eventType} → user:${userAddress} (batch=${queue.length})`,
     );
@@ -290,13 +366,11 @@ export class NotificationBroadcasterService implements OnModuleDestroy {
   }
 
   /**
-   * Clean up old confirmations (call periodically)
+   * Periodically purge expired delivery confirmations
    */
-  cleanupConfirmations(): void {
-    // Simple cleanup - in production, track timestamps
-    if (this.deliveryConfirmations.size > 10000) {
-      this.deliveryConfirmations.clear();
-      this.logger.log('Cleared delivery confirmations cache');
-    }
+  private startConfirmationCleanup(): void {
+    this.confirmationCleanupInterval = setInterval(() => {
+      this.cleanupConfirmations();
+    }, this.confirmationCleanupIntervalMs);
   }
 }

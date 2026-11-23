@@ -3,7 +3,7 @@
 //! Covers:
 //! - Unit tests for the pure weighting function (`weighted_contribution`)
 //! - Unit tests for the `StandingEntry` tie-break chain
-//!   (weighted score → correct count → earliest achievement → address)
+//!   (weighted score → earliest prediction submission → address)
 //! - Integration tests over the full event lifecycle: early predictions
 //!   outweigh late ones, against-the-crowd picks outweigh consensus picks,
 //!   score components are exposed for transparency, and standings are
@@ -88,7 +88,12 @@ fn test_weighting_early_underdog_strictly_beats_late_consensus() {
 // Unit tests: StandingEntry tie-break chain
 // ===========================================================================
 
-fn entry(user: &Address, weighted: u64, correct: u32, achieved_at: u64) -> StandingEntry {
+fn entry(
+    user: &Address,
+    weighted: u64,
+    correct: u32,
+    achieved_at: u64,
+) -> StandingEntry {
     StandingEntry {
         user: user.clone(),
         event_id: 1,
@@ -107,30 +112,30 @@ fn test_tiebreak_weighted_score_is_primary() {
     // Lower correct count and later achievement, but higher weighted score wins.
     let high = entry(&a, 20_000, 1, 500);
     let low = entry(&b, 15_000, 3, 100);
-    assert!(high.outranks(&low));
-    assert!(!low.outranks(&high));
+    assert!(high.outranks(&low, 300, 100));
+    assert!(!low.outranks(&high, 100, 300));
 }
 
 #[test]
-fn test_tiebreak_correct_count_on_equal_weighted_score() {
+fn test_tiebreak_earlier_submission_on_equal_weighted_score() {
     let env = Env::default();
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    let more_correct = entry(&a, 20_000, 2, 500);
-    let fewer_correct = entry(&b, 20_000, 1, 100);
-    assert!(more_correct.outranks(&fewer_correct));
-    assert!(!fewer_correct.outranks(&more_correct));
+    let earlier_submission = entry(&a, 20_000, 1, 500);
+    let later_submission = entry(&b, 20_000, 2, 100);
+    assert!(earlier_submission.outranks(&later_submission, 100, 500));
+    assert!(!later_submission.outranks(&earlier_submission, 500, 100));
 }
 
 #[test]
-fn test_tiebreak_earlier_achievement_on_equal_score_and_count() {
+fn test_tiebreak_does_not_depend_on_achievement_time() {
     let env = Env::default();
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    let earlier = entry(&a, 20_000, 2, 100);
-    let later = entry(&b, 20_000, 2, 500);
-    assert!(earlier.outranks(&later));
-    assert!(!later.outranks(&earlier));
+    let earlier_achievement = entry(&a, 20_000, 2, 100);
+    let later_achievement = entry(&b, 20_000, 2, 500);
+    assert!(!earlier_achievement.outranks(&later_achievement, 500, 100));
+    assert!(later_achievement.outranks(&earlier_achievement, 100, 500));
 }
 
 #[test]
@@ -141,8 +146,8 @@ fn test_tiebreak_address_is_final() {
     let (smaller, larger) = if a < b { (a, b) } else { (b, a) };
     let s = entry(&smaller, 20_000, 2, 100);
     let l = entry(&larger, 20_000, 2, 100);
-    assert!(s.outranks(&l));
-    assert!(!l.outranks(&s));
+    assert!(s.outranks(&l, 100, 100));
+    assert!(!l.outranks(&s, 100, 100));
 }
 
 // ===========================================================================
@@ -359,10 +364,10 @@ fn test_against_crowd_pick_outranks_consensus_pick() {
     assert_eq!(score.underdog_component, 4 * UNDERDOG_BONUS_BPS);
 }
 
-/// Equal weighted scores and correct counts: the participant who reached the
-/// score first (earlier result submission) ranks higher.
+/// Equal weighted scores: the participant who submitted a prediction first
+/// ranks higher, regardless of which result later credited their points first.
 #[test]
-fn test_tiebreak_earlier_achievement_in_lifecycle() {
+fn test_tiebreak_earlier_prediction_in_lifecycle() {
     let (env, client, ai_agent, xlm_token, _) = setup();
     let t0 = env.ledger().timestamp();
 
@@ -380,6 +385,8 @@ fn test_tiebreak_earlier_achievement_in_lifecycle() {
     // winner → 2·1 == 2, not a minority), so weighted scores are equal.
     client.submit_prediction(&user1, &match_ids[0], &1u32, &0u32);
     client.submit_prediction(&user1, &match_ids[1], &0u32, &1u32);
+
+    env.ledger().set_timestamp(t0 + 10);
     client.submit_prediction(&user2, &match_ids[0], &0u32, &1u32);
     client.submit_prediction(&user2, &match_ids[1], &1u32, &0u32);
 

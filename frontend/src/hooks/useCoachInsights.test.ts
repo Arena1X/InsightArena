@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { renderHook, waitFor, act } from "@testing-library/react";
 import { useCoachInsights } from "./useCoachInsights";
 import { useWallet } from "@/context/WalletContext";
 import { getCoachInsights } from "@/lib/coach";
@@ -9,9 +9,17 @@ vi.mock("@/context/WalletContext", () => ({
   useWallet: vi.fn(),
 }));
 
-vi.mock("@/lib/coach", () => ({
-  getCoachInsights: vi.fn(),
-}));
+// Only the network call is mocked; the dismiss/snooze lifecycle helpers run
+// for real against jsdom's localStorage so this test exercises the actual
+// persistence logic, not a mock of it.
+vi.mock("@/lib/coach", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/coach")>("@/lib/coach");
+  return {
+    ...actual,
+    getCoachInsights: vi.fn(),
+  };
+});
 
 const mockedUseWallet = vi.mocked(useWallet);
 const mockedGetCoachInsights = vi.mocked(getCoachInsights);
@@ -55,6 +63,7 @@ describe("useCoachInsights", () => {
   beforeEach(() => {
     mockedUseWallet.mockReset();
     mockedGetCoachInsights.mockReset();
+    localStorage.clear();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
@@ -116,5 +125,100 @@ describe("useCoachInsights", () => {
 
     expect(mockedGetCoachInsights).not.toHaveBeenCalled();
     expect(result.current.insights).toBeNull();
+  });
+
+  it("starts not hidden for a fresh insight", async () => {
+    mockWallet("GADDRESS");
+    mockedGetCoachInsights.mockResolvedValue(buildHistoryResponse());
+
+    const { result } = renderHook(() => useCoachInsights());
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.isHidden).toBe(false);
+  });
+
+  it("marks the insight hidden after dismiss() and persists it per wallet", async () => {
+    mockWallet("GADDRESS");
+    mockedGetCoachInsights.mockResolvedValue(buildHistoryResponse());
+
+    const { result } = renderHook(() => useCoachInsights());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    act(() => {
+      result.current.dismiss();
+    });
+
+    expect(result.current.isHidden).toBe(true);
+
+    // A different wallet is unaffected by GADDRESS's dismissal.
+    mockWallet("GOTHERWALLET");
+    mockedGetCoachInsights.mockResolvedValue(buildHistoryResponse());
+    const other = renderHook(() => useCoachInsights());
+    await waitFor(() => expect(other.result.current.isLoading).toBe(false));
+    expect(other.result.current.isHidden).toBe(false);
+  });
+
+  it("marks the insight hidden after snooze() for the current week", async () => {
+    mockWallet("GADDRESS");
+    mockedGetCoachInsights.mockResolvedValue(buildHistoryResponse());
+
+    const { result } = renderHook(() => useCoachInsights());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    act(() => {
+      result.current.snooze();
+    });
+
+    expect(result.current.isHidden).toBe(true);
+  });
+
+  it("reports isEmpty=false when insights payload exists", async () => {
+    mockWallet("GADDRESS");
+    mockedGetCoachInsights.mockResolvedValue(buildHistoryResponse());
+
+    const { result } = renderHook(() => useCoachInsights());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.isEmpty).toBe(false);
+  });
+
+  it("reports isEmpty=true for explicit empty state (has_history=true but insights=null)", async () => {
+    mockWallet("GADDRESS");
+    mockedGetCoachInsights.mockResolvedValue({
+      has_history: true,
+      message: "No recommendations available at this time.",
+      insights: null,
+    });
+
+    const { result } = renderHook(() => useCoachInsights());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.isEmpty).toBe(true);
+    expect(result.current.hasHistory).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("reports isEmpty=false when still loading", async () => {
+    mockWallet("GADDRESS");
+    mockedGetCoachInsights.mockImplementation(
+      () => new Promise(() => {}), // Never resolves
+    );
+
+    const { result } = renderHook(() => useCoachInsights());
+
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.isEmpty).toBe(false);
+  });
+
+  it("reports isEmpty=false when there is an error", async () => {
+    mockWallet("GADDRESS");
+    mockedGetCoachInsights.mockRejectedValue(new Error("network down"));
+
+    const { result } = renderHook(() => useCoachInsights());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.isEmpty).toBe(false);
   });
 });

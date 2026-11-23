@@ -99,6 +99,7 @@ export default function DocsPage() {
   const [activeFaq, setActiveFaq] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
+  const [isMobileTocOpen, setIsMobileTocOpen] = useState(false);
 
   const filteredSections = useMemo(
     () => filterDocSections(docSections, searchQuery),
@@ -162,6 +163,7 @@ export default function DocsPage() {
   ) => {
     e.preventDefault();
     scrollToSection(id);
+    setIsMobileTocOpen(false);
   };
 
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -244,27 +246,54 @@ export default function DocsPage() {
           </nav>
 
           <div className="flex-1 min-w-0">
-            {/* Table of Contents - mobile horizontal scroller */}
+            {/* Table of Contents - collapsible on narrow screens */}
             {tocEntries.length > 0 && (
-              <div className="lg:hidden mb-8 -mx-6 px-6 overflow-x-auto">
-                <div className="flex gap-2 min-w-max">
+              <div className="lg:hidden mb-8 rounded-2xl border border-white/10 bg-white/5">
+                <button
+                  type="button"
+                  onClick={() => setIsMobileTocOpen((open) => !open)}
+                  aria-expanded={isMobileTocOpen}
+                  aria-controls="docs-mobile-toc"
+                  className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold text-gray-300"
+                >
+                  <span>
+                    On this page
+                    {activeSectionId && (
+                      <span className="ml-2 font-normal text-[#4FD1C5]">
+                        {tocEntries.find((entry) => entry.id === activeSectionId)?.title}
+                      </span>
+                    )}
+                  </span>
+                  <ChevronDown
+                    className={cn(
+                      "w-4 h-4 text-gray-500 transition-transform",
+                      isMobileTocOpen && "rotate-180 text-[#4FD1C5]"
+                    )}
+                  />
+                </button>
+                <ul
+                  id="docs-mobile-toc"
+                  hidden={!isMobileTocOpen}
+                  className="space-y-1 border-t border-white/10 px-2 py-2"
+                >
                   {tocEntries.map((entry) => (
-                    <a
-                      key={entry.id}
-                      href={`#${entry.id}`}
-                      onClick={(e) => handleTocClick(e, entry.id)}
-                      aria-current={activeSectionId === entry.id ? "true" : undefined}
-                      className={cn(
-                        "px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition-colors border",
-                        activeSectionId === entry.id
-                          ? "bg-[#4FD1C5]/20 border-[#4FD1C5]/40 text-[#4FD1C5]"
-                          : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
-                      )}
-                    >
-                      {entry.title}
-                    </a>
+                    <li key={entry.id}>
+                      <a
+                        href={`#${entry.id}`}
+                        onClick={(e) => handleTocClick(e, entry.id)}
+                        aria-current={activeSectionId === entry.id ? "true" : undefined}
+                        className={cn(
+                          "block px-3 py-2 rounded-lg text-sm transition-colors",
+                          activeSectionId === entry.id
+                            ? "bg-[#4FD1C5]/20 text-[#4FD1C5] font-semibold"
+                            : "text-gray-400 hover:text-white hover:bg-white/5"
+                        )}
+                      >
+                        {entry.title}
+                      </a>
+                    </li>
                   ))}
-                </div>
+                </ul>
               </div>
             )}
 

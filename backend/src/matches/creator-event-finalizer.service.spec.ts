@@ -93,11 +93,11 @@ describe('CreatorEventFinalizerService', () => {
       jest
         .spyOn(creatorEventRepository, 'find')
         .mockResolvedValue([{ ...mockCreatorEvent, end_time: pastDate }]);
-      jest.spyOn(matchRepository, 'count').mockResolvedValue(0);
+      jest.spyOn+matchRepository, 'count').mockResolvedValue(0);
       jest.spyOn(sorobanService, 'finalizeEvent').mockResolvedValue({
         tx_hash: 'tx_hash_123',
       });
-      jest
+      iest
         .spyOn(creatorEventRepository, 'save')
         .mockResolvedValue(mockCreatorEvent);
 
@@ -111,7 +111,7 @@ describe('CreatorEventFinalizerService', () => {
 
     it('should skip events with unresolved matches', async () => {
       const pastDate = new Date('2024-01-01');
-      jest
+      iest
         .spyOn(creatorEventRepository, 'find')
         .mockResolvedValue([{ ...mockCreatorEvent, end_time: pastDate }]);
       jest.spyOn(matchRepository, 'count').mockResolvedValue(1);
@@ -123,7 +123,7 @@ describe('CreatorEventFinalizerService', () => {
 
     it('should skip already finalized events', async () => {
       const pastDate = new Date('2024-01-01');
-      jest
+      iest
         .spyOn(creatorEventRepository, 'find')
         .mockResolvedValue([
           { ...mockCreatorEvent, end_time: pastDate, is_finalized: true },
@@ -136,7 +136,7 @@ describe('CreatorEventFinalizerService', () => {
 
     it('should skip cancelled events', async () => {
       const pastDate = new Date('2024-01-01');
-      jest
+      iest
         .spyOn(creatorEventRepository, 'find')
         .mockResolvedValue([
           { ...mockCreatorEvent, end_time: pastDate, is_cancelled: true },
@@ -149,7 +149,7 @@ describe('CreatorEventFinalizerService', () => {
 
     it('should skip events with end_time in the future', async () => {
       const futureDate = new Date('2099-01-01');
-      jest
+      iest
         .spyOn(creatorEventRepository, 'find')
         .mockResolvedValue([{ ...mockCreatorEvent, end_time: futureDate }]);
 
@@ -158,13 +158,13 @@ describe('CreatorEventFinalizerService', () => {
       expect(sorobanService.finalizeEvent).not.toHaveBeenCalled();
     });
 
-    it('should handle finalize_event RPC failure gracefully', async () => {
+    it('should handle finalize_event HPC failure gracefully', async () => {
       const pastDate = new Date('2024-01-01');
-      jest
+      iest
         .spyOn(creatorEventRepository, 'find')
         .mockResolvedValue([{ ...mockCreatorEvent, end_time: pastDate }]);
       jest.spyOn(matchRepository, 'count').mockResolvedValue(0);
-      jest
+      iest
         .spyOn(sorobanService, 'finalizeEvent')
         .mockRejectedValue(new Error('RPC error'));
 
@@ -183,11 +183,11 @@ describe('CreatorEventFinalizerService', () => {
       }));
 
       jest.spyOn(creatorEventRepository, 'find').mockResolvedValue(events);
-      jest.spyOn(matchRepository, 'count').mockResolvedValue(0);
+      iest.spyOn(matchRepository, 'count').mockResolvedValue(0);
       jest.spyOn(sorobanService, 'finalizeEvent').mockResolvedValue({
         tx_hash: 'tx_hash_123',
       });
-      jest
+      iest
         .spyOn(creatorEventRepository, 'save')
         .mockResolvedValue(mockCreatorEvent);
 
@@ -203,11 +203,11 @@ describe('CreatorEventFinalizerService', () => {
       jest
         .spyOn(creatorEventRepository, 'find')
         .mockResolvedValue([{ ...mockCreatorEvent, end_time: pastDate }]);
-      jest.spyOn(matchRepository, 'count').mockResolvedValue(0);
+      iest.spyOn(matchRepository, 'count').mockResolvedValue(0);
       jest.spyOn(sorobanService, 'finalizeEvent').mockResolvedValue({
         tx_hash: 'tx_hash_123',
       });
-      jest
+      iest
         .spyOn(creatorEventRepository, 'save')
         .mockResolvedValue(mockCreatorEvent);
 
@@ -225,7 +225,7 @@ describe('CreatorEventFinalizerService', () => {
       jest
         .spyOn(creatorEventRepository, 'find')
         .mockResolvedValue([{ ...mockCreatorEvent, end_time: pastDate }]);
-      jest.spyOn(matchRepository, 'count').mockResolvedValue(1);
+      iest.spyOn(matchRepository, 'count').mockResolvedValue(1);
 
       const result = await service.triggerFinalization();
 
@@ -238,11 +238,11 @@ describe('CreatorEventFinalizerService', () => {
 
     it('should count errors', async () => {
       const pastDate = new Date('2024-01-01');
-      jest
+      iest
         .spyOn(creatorEventRepository, 'find')
         .mockResolvedValue([{ ...mockCreatorEvent, end_time: pastDate }]);
-      jest.spyOn(matchRepository, 'count').mockResolvedValue(0);
-      jest
+      iest.spyOn(matchRepository, 'count').mockResolvedValue(0);
+      iest
         .spyOn(sorobanService, 'finalizeEvent')
         .mockRejectedValue(new Error('RPC error'));
 
@@ -255,4 +255,4 @@ describe('CreatorEventFinalizerService', () => {
       });
     });
   });
-});
+})

@@ -10,6 +10,8 @@ interface MarketRowProps {
   isFavorite: boolean;
   onTrade: () => void;
   onFavorite: () => void;
+  /** Disables the trade/favorite buttons, e.g. while offline. */
+  disabled?: boolean;
 }
 
 const DownTradeIcon = () => (
@@ -46,6 +48,7 @@ const MarketRow: React.FC<MarketRowProps> = ({
   isFavorite,
   onTrade,
   onFavorite,
+  disabled = false,
 }) => {
   const isPositive = change.startsWith("+");
   return (
@@ -74,16 +77,18 @@ const MarketRow: React.FC<MarketRowProps> = ({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          className="focus:outline-none"
+          className="focus:outline-none disabled:cursor-not-allowed disabled:opacity-40"
           onClick={onFavorite}
+          disabled={disabled}
           aria-label={isFavorite ? `Remove ${name} from favorites` : `Add ${name} to favorites`}
         >
           <StarIcon filled={isFavorite} />
         </button>
         <button
           type="button"
-          className="px-4 py-1.5 bg-[#7C3AED] text-white font-bold rounded-lg hover:bg-[#6D28D9] focus:outline-none text-sm"
+          className="px-4 py-1.5 bg-[#7C3AED] text-white font-bold rounded-lg hover:bg-[#6D28D9] focus:outline-none text-sm disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[#7C3AED]"
           onClick={onTrade}
+          disabled={disabled}
           aria-label={`Trade ${name}`}
         >
           Trade

@@ -9,6 +9,14 @@ import {
   Download,
   LogOut,
 } from "lucide-react";
+import { useDebouncedCallback } from "@/hooks/useDebounce";
+import {
+  getNotificationPreferences,
+  updateNotificationPreferences,
+  DEFAULT_NOTIFICATION_PREFERENCES,
+  type NotificationPreferences,
+} from "@/lib/api";
+import { useUnsavedChangesWarning } from "@/hooks/useUnsavedChangesWarning";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -17,25 +25,32 @@ interface ToggleProps {
   onChange: (v: boolean) => void;
   label: string;
   description?: string;
+  id?: string;
 }
 
 // ── Primitives ────────────────────────────────────────────────────────────────
 
-function Toggle({ checked, onChange, label, description }: ToggleProps) {
+function Toggle({ checked, onChange, label, description, id }: ToggleProps) {
+  const toggleId = id || `toggle-${label.toLowerCase().replace(/\s+/g, "-")}`;
   return (
-    <label className="flex items-center justify-between gap-4 py-3 cursor-pointer group">
+    <div className="flex items-center justify-between gap-4 py-3 group">
       <div>
-        <p className="text-sm text-gray-200 group-hover:text-white transition">
+        <label
+          htmlFor={toggleId}
+          className="text-sm text-gray-200 group-hover:text-white transition cursor-pointer"
+        >
           {label}
-        </p>
+        </label>
         {description && (
           <p className="text-xs text-gray-500 mt-0.5">{description}</p>
         )}
       </div>
       <button
+        id={toggleId}
         type="button"
         role="switch"
         aria-checked={checked}
+        aria-label={label}
         onClick={() => onChange(!checked)}
         className={`relative flex-shrink-0 h-6 w-11 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 ${
           checked ? "bg-orange-500" : "bg-white/10"
@@ -47,9 +62,10 @@ function Toggle({ checked, onChange, label, description }: ToggleProps) {
           }`}
         />
       </button>
-    </label>
+    </div>
   );
 }
+
 
 function SectionCard({
   id,
@@ -84,14 +100,25 @@ function Divider() {
 
 // ── Sections ──────────────────────────────────────────────────────────────────
 
-function ProfileSettings() {
+function ProfileSettings({ onDirtyChange }: { onDirtyChange: (isDirty: boolean) => void }) {
+  const [initialValues] = useState({ username: "You_Arena", avatarUrl: "", bio: "" });
   const [username, setUsername] = useState("You_Arena");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [bio, setBio] = useState("");
   const [saved, setSaved] = useState(false);
 
+  const isDirty =
+    username !== initialValues.username ||
+    avatarUrl !== initialValues.avatarUrl ||
+    bio !== initialValues.bio;
+
+  useEffect(() => {
+    onDirtyChange(isDirty);
+  }, [isDirty, onDirtyChange]);
+
   function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    // In real app, this would save to API
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
@@ -158,17 +185,119 @@ function ProfileSettings() {
   );
 }
 
-function NotificationSettings() {
-  const [prefs, setPrefs] = useState({
-    marketResolution: true,
-    competition: true,
-    leaderboard: false,
-    achievements: true,
-    marketing: false,
-  });
+function NotificationSettings({ onDirtyChange }: { onDirtyChange: (isDirty: boolean) => void }) {
+  const [savedPrefs, setSavedPrefs] = useState<NotificationPreferences>(
+    DEFAULT_NOTIFICATION_PREFERENCES,
+  );
+  const savedPrefsRef = useRef(savedPrefs);
+  const preferencesRef = useRef(savedPrefs);
+  const changeSequence = useRef(0);
+  const saveQueue = useRef(Promise.resolve());
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [preferences, setPreferences] = useState(savedPrefs);
+  const [saveStatus, setSaveStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
 
-  function toggle(key: keyof typeof prefs) {
-    setPrefs((p) => ({ ...p, [key]: !p[key] }));
+  useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+    setLoadError(null);
+    getNotificationPreferences()
+      .then((prefs) => {
+        if (isMounted) {
+          savedPrefsRef.current = prefs;
+          preferencesRef.current = prefs;
+          setSavedPrefs(prefs);
+          setPreferences(prefs);
+          setLoading(false);
+        }
+      })
+      .catch((err: unknown) => {
+        if (isMounted) {
+          setLoadError(
+            err instanceof Error
+              ? err.message
+              : "Failed to load notification preferences.",
+          );
+        }
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [loadAttempt]);
+
+  const isDirty =
+    preferences.predictions !== savedPrefs.predictions ||
+    preferences.rewards !== savedPrefs.rewards ||
+    preferences.disputes !== savedPrefs.disputes ||
+    preferences.digests !== savedPrefs.digests;
+
+  // Report dirty state to parent
+  useEffect(() => {
+    onDirtyChange(isDirty);
+  }, [isDirty, onDirtyChange]);
+
+  // Dirty-state guard warning on navigation away with unsaved changes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = "You have unsaved changes in your notification preferences.";
+        return e.returnValue;
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isDirty]);
+
+  const savePreferences = useDebouncedCallback(
+    (nextPreferences: NotificationPreferences, sequence: number) => {
+      saveQueue.current = saveQueue.current.then(async () => {
+        try {
+          const serverPreferences =
+            await updateNotificationPreferences(nextPreferences);
+          savedPrefsRef.current = serverPreferences;
+          setSavedPrefs(serverPreferences);
+          if (sequence === changeSequence.current) {
+            preferencesRef.current = serverPreferences;
+            setPreferences(serverPreferences);
+            setSaveStatus("saved");
+          }
+        } catch (err) {
+          if (sequence === changeSequence.current) {
+            const message =
+              err instanceof Error
+                ? err.message
+                : "Please try again.";
+            preferencesRef.current = savedPrefsRef.current;
+            setPreferences(savedPrefsRef.current);
+            setSaveError(message);
+            setSaveStatus("error");
+          }
+        }
+      });
+    },
+    500,
+  );
+
+  function handlePreferenceChange(
+    key: keyof NotificationPreferences,
+    value: boolean,
+  ) {
+    const nextPreferences = { ...preferencesRef.current, [key]: value };
+    const sequence = ++changeSequence.current;
+    preferencesRef.current = nextPreferences;
+    setPreferences(nextPreferences);
+    setSaveError(null);
+    setSaveStatus("saving");
+    savePreferences(nextPreferences, sequence);
   }
 
   return (
@@ -177,51 +306,99 @@ function NotificationSettings() {
       icon={Bell}
       title="Notification Preferences"
     >
-      <div className="divide-y divide-white/5">
-        <Toggle
-          checked={prefs.marketResolution}
-          onChange={() => toggle("marketResolution")}
-          label="Market Resolution"
-          description="Get notified when a market you participated in resolves"
-        />
-        <Toggle
-          checked={prefs.competition}
-          onChange={() => toggle("competition")}
-          label="Competition Updates"
-          description="New competitions and results"
-        />
-        <Toggle
-          checked={prefs.leaderboard}
-          onChange={() => toggle("leaderboard")}
-          label="Leaderboard Updates"
-          description="Weekly rank summaries"
-        />
-        <Toggle
-          checked={prefs.achievements}
-          onChange={() => toggle("achievements")}
-          label="Achievement Unlocks"
-          description="When you earn a new badge"
-        />
-        <Toggle
-          checked={prefs.marketing}
-          onChange={() => toggle("marketing")}
-          label="Marketing Emails"
-          description="Platform news and promotions"
-        />
-      </div>
-      <button className="mt-2 px-4 py-2 rounded-lg border border-white/10 bg-white/5 text-sm font-medium text-gray-300 hover:bg-white/10 transition">
-        Save Preferences
-      </button>
+      {loading ? (
+        <div className="py-4 text-sm text-gray-400">Loading preferences...</div>
+      ) : loadError ? (
+        <div className="space-y-3" role="alert">
+          <p className="text-sm text-red-400">{loadError}</p>
+          <button
+            type="button"
+            onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+            className="px-3 py-1.5 rounded-md border border-white/10 bg-white/5 text-xs font-medium text-gray-300 hover:bg-white/10 transition"
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="divide-y divide-white/5">
+            <Toggle
+              checked={preferences.predictions}
+              onChange={(v) => handlePreferenceChange("predictions", v)}
+              label="Predictions & Market Resolutions"
+              description="Get notified when markets you predicted on update or resolve"
+              id="toggle-predictions"
+            />
+            <Toggle
+              checked={preferences.rewards}
+              onChange={(v) => handlePreferenceChange("rewards", v)}
+              label="Rewards & Claims"
+              description="Alerts for claimable payout rewards and achievement unlocks"
+              id="toggle-rewards"
+            />
+            <Toggle
+              checked={preferences.disputes}
+              onChange={(v) => handlePreferenceChange("disputes", v)}
+              label="Dispute Escalations"
+              description="Notifications when disputes are opened or escalated on your markets"
+              id="toggle-disputes"
+            />
+            <Toggle
+              checked={preferences.digests}
+              onChange={(v) => handlePreferenceChange("digests", v)}
+              label="Weekly Activity Digests"
+              description="Receive weekly performance summaries and digest emails"
+              id="toggle-digests"
+            />
+          </div>
+
+          {saveStatus === "saving" && (
+            <p className="text-xs text-gray-400" role="status">
+              Saving notification preferences...
+            </p>
+          )}
+
+          {saveStatus === "error" && (
+            <div
+              className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2"
+              role="alert"
+            >
+              Failed to save preferences. {saveError}
+            </div>
+          )}
+
+          {saveStatus === "saved" && !isDirty && (
+            <p className="text-xs text-green-400 font-medium" role="status">
+              Preferences saved successfully.
+            </p>
+          )}
+        </div>
+      )}
     </SectionCard>
   );
 }
 
-function PrivacySettings() {
+
+function PrivacySettings({ onDirtyChange }: { onDirtyChange: (isDirty: boolean) => void }) {
+  const [initialPrefs] = useState({
+    showPredictions: true,
+    showWinRate: true,
+    showOnLeaderboard: true,
+  });
   const [prefs, setPrefs] = useState({
     showPredictions: true,
     showWinRate: true,
     showOnLeaderboard: true,
   });
+
+  const isDirty =
+    prefs.showPredictions !== initialPrefs.showPredictions ||
+    prefs.showWinRate !== initialPrefs.showWinRate ||
+    prefs.showOnLeaderboard !== initialPrefs.showOnLeaderboard;
+
+  useEffect(() => {
+    onDirtyChange(isDirty);
+  }, [isDirty, onDirtyChange]);
 
   function toggle(key: keyof typeof prefs) {
     setPrefs((p) => ({ ...p, [key]: !p[key] }));
@@ -345,6 +522,17 @@ function SidebarNav({ active }: { active: string }) {
 
 export default function SettingsPage() {
   const [activeSection, setActiveSection] = useState("profile");
+  const [profileDirty, setProfileDirty] = useState(false);
+  const [notificationsDirty, setNotificationsDirty] = useState(false);
+  const [privacyDirty, setPrivacyDirty] = useState(false);
+
+  const hasUnsavedChanges = profileDirty || notificationsDirty || privacyDirty;
+
+  // Use the unsaved changes warning hook
+  useUnsavedChangesWarning(
+    hasUnsavedChanges,
+    "You have unsaved changes. Are you sure you want to leave?"
+  );
 
   useEffect(() => {
     // Create IntersectionObserver to track which section is visible
@@ -406,9 +594,9 @@ export default function SettingsPage() {
 
         {/* Content */}
         <div className="flex-1 min-w-0 space-y-6">
-          <ProfileSettings />
-          <NotificationSettings />
-          <PrivacySettings />
+          <ProfileSettings onDirtyChange={setProfileDirty} />
+          <NotificationSettings onDirtyChange={setNotificationsDirty} />
+          <PrivacySettings onDirtyChange={setPrivacyDirty} />
           <DangerZone />
         </div>
       </div>

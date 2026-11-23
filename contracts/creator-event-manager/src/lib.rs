@@ -727,6 +727,9 @@ impl CreatorEventManagerContract {
     /// * `"event_not_found"` — the match's parent event is missing.
     /// * `"event_already_finalized"` — the parent event has already been
     ///   finalized, so the result is immutable.
+    /// * `"overturn_window_closed"` — more than
+    ///   `MATCH_RESULT_OVERTURN_WINDOW_SECONDS` have passed since the result
+    ///   was originally submitted, or the result was already marked final.
     pub fn overturn_match_result(
         env: Env,
         caller: Address,
@@ -742,8 +745,39 @@ impl CreatorEventManagerContract {
             Err(MatchError::ResultNotSubmitted) => panic!("result_not_submitted"),
             Err(MatchError::EventNotFound) => panic!("event_not_found"),
             Err(MatchError::EventAlreadyFinalized) => panic!("event_already_finalized"),
+            Err(MatchError::OverturnWindowClosed) => panic!("overturn_window_closed"),
             Err(_) => panic!("unexpected_error"),
         }
+    }
+
+    /// Mark a match result final once its overturn window has closed.
+    /// Permissionless. After this, `overturn_match_result` is rejected.
+    /// `finalize_event` also marks every result of the event final.
+    ///
+    /// Emits `("match", "result_final")` with
+    /// `(match_id, event_id, home_score, away_score, finalized_at)` and returns
+    /// the finality timestamp.
+    ///
+    /// # Panics
+    /// * `"match_not_found"` — no match exists with the given ID.
+    /// * `"result_not_submitted"` — the match has no result yet.
+    /// * `"result_already_final"` — finality was already recorded.
+    /// * `"overturn_window_open"` — the overturn window has not closed yet.
+    pub fn finalize_match_result(env: Env, match_id: u64) -> u64 {
+        match finalize::finalize_match_result(&env, match_id) {
+            Ok(finalized_at) => finalized_at,
+            Err(MatchError::MatchNotFound) => panic!("match_not_found"),
+            Err(MatchError::ResultNotSubmitted) => panic!("result_not_submitted"),
+            Err(MatchError::ResultAlreadyFinal) => panic!("result_already_final"),
+            Err(MatchError::OverturnWindowOpen) => panic!("overturn_window_open"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Return the timestamp at which a match's result became final, or
+    /// `None` while it is still within its overturn window.
+    pub fn get_match_result_finalized_at(env: Env, match_id: u64) -> Option<u64> {
+        finalize::get_match_result_finalized_at(&env, match_id)
     }
 
     /// Configure the prediction lock lead-time (seconds before `match_time`)
@@ -917,6 +951,7 @@ impl CreatorEventManagerContract {
     /// # Panics
     /// * `"invite_code_expired"` — the code's expiry has passed (#1699).
     /// * `"invite_code_uses_exceeded"` — the code has reached its use cap (#1699).
+    /// * `"invite_code_revoked"` — the creator revoked the invite code.
     pub fn join_event(env: Env, user: Address, invite_code: Symbol) {
         match prediction::join_event(&env, user, invite_code) {
             Ok(()) => {}
@@ -935,6 +970,7 @@ impl CreatorEventManagerContract {
             Err(prediction::PredictionError::InviteCodeUsesExceeded) => {
                 panic!("invite_code_uses_exceeded")
             }
+            Err(prediction::PredictionError::InviteCodeRevoked) => panic!("invite_code_revoked"),
             Err(_) => panic!("unexpected_error"),
         }
     }
@@ -956,6 +992,20 @@ impl CreatorEventManagerContract {
         max_uses: u32,
     ) {
         match event::set_invite_limits(&env, caller, event_id, expires_at, max_uses) {
+            Ok(()) => {}
+            Err(EventError::EventNotFound) => panic!("event_not_found"),
+            Err(EventError::Unauthorized) => panic!("unauthorized"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Revoke an event's invite code. Only its creator may call this.
+    ///
+    /// # Panics
+    /// * `"event_not_found"` — no event exists with the given ID.
+    /// * `"unauthorized"` — caller is not the event creator.
+    pub fn revoke_invite(env: Env, caller: Address, event_id: u64) {
+        match event::revoke_invite(&env, caller, event_id) {
             Ok(()) => {}
             Err(EventError::EventNotFound) => panic!("event_not_found"),
             Err(EventError::Unauthorized) => panic!("unauthorized"),
@@ -1004,6 +1054,65 @@ impl CreatorEventManagerContract {
             Err(prediction::PredictionError::NotJoined) => panic!("not_joined"),
             Err(prediction::PredictionError::MatchStarted) => panic!("match_started"),
             Err(prediction::PredictionError::AlreadyPredicted) => panic!("already_predicted"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Edit the scoreline of an existing prediction before its on-chain
+    /// edit deadline (#2204).
+    ///
+    /// The deadline derives from match start: `match_time` minus the
+    /// prediction lock lead-time configured when the match was created.
+    ///
+    /// Returns `true` when the edit was applied. Returns `false` when the
+    /// edit was rejected because the deadline has passed; in that case the
+    /// prediction is left unchanged and a `("prediction", "edit_rejected")`
+    /// event is emitted. The rejection is reported via the return value
+    /// rather than a panic so that the rejection event is persisted.
+    ///
+    /// # Panics
+    /// * `"paused"` — the contract is paused.
+    /// * `"prediction_not_found"` — no prediction with the given ID.
+    /// * `"not_prediction_owner"` — caller did not place the prediction.
+    /// * `"match_not_found"` / `"event_not_found"` — parent records missing.
+    /// * `"event_cancelled"` — the parent event is inactive or cancelled.
+    /// * `"already_graded"` — the match result is in; predictions are final.
+    pub fn edit_prediction(
+        env: Env,
+        predictor: Address,
+        prediction_id: u64,
+        predicted_home_score: u32,
+        predicted_away_score: u32,
+    ) -> bool {
+        match prediction::edit_prediction(
+            &env,
+            predictor,
+            prediction_id,
+            predicted_home_score,
+            predicted_away_score,
+        ) {
+            Ok(()) => true,
+            Err(prediction::PredictionError::EditDeadlinePassed) => false,
+            Err(prediction::PredictionError::Paused) => panic!("paused"),
+            Err(prediction::PredictionError::PredictionNotFound) => panic!("prediction_not_found"),
+            Err(prediction::PredictionError::NotPredictionOwner) => panic!("not_prediction_owner"),
+            Err(prediction::PredictionError::MatchNotFound) => panic!("match_not_found"),
+            Err(prediction::PredictionError::EventNotFound) => panic!("event_not_found"),
+            Err(prediction::PredictionError::EventCancelled) => panic!("event_cancelled"),
+            Err(prediction::PredictionError::AlreadyGraded) => panic!("already_graded"),
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Return the timestamp at and after which predictions for `match_id`
+    /// can no longer be edited (#2204).
+    ///
+    /// # Panics
+    /// * `"match_not_found"` — no match with the given ID.
+    pub fn get_prediction_edit_deadline(env: Env, match_id: u64) -> u64 {
+        match r#match::get_prediction_edit_deadline(&env, match_id) {
+            Ok(deadline) => deadline,
+            Err(MatchError::MatchNotFound) => panic!("match_not_found"),
             Err(_) => panic!("unexpected_error"),
         }
     }
@@ -1079,6 +1188,8 @@ impl CreatorEventManagerContract {
     /// * `"match_not_found"` — no match exists with the given ID.
     /// * `"result_already_submitted"` — a result was already submitted.
     /// * `"match_not_started"` — current time is before the match start time.
+    /// * `"submission_deadline_passed"` — current time is past the event's
+    ///   submission deadline.
     /// * `"result_pending_verification"` — a result is already staged for
     ///   this match, awaiting verifier sign-off.
     pub fn submit_match_result(
@@ -1095,6 +1206,9 @@ impl CreatorEventManagerContract {
             Err(oracle::OracleError::MatchNotFound) => panic!("match_not_found"),
             Err(oracle::OracleError::ResultAlreadySubmitted) => panic!("result_already_submitted"),
             Err(oracle::OracleError::MatchNotStarted) => panic!("match_not_started"),
+            Err(oracle::OracleError::SubmissionDeadlinePassed) => {
+                panic!("submission_deadline_passed")
+            }
             Err(oracle::OracleError::ResultPendingVerification) => {
                 panic!("result_pending_verification")
             }
@@ -1413,12 +1527,46 @@ impl CreatorEventManagerContract {
         }
     }
 
+    /// Configure the oracle consensus threshold for a single event (#2202):
+    /// the number of distinct oracle sources that must agree on a scoreline
+    /// before `propose_match_result` finalizes one of its matches. Only the
+    /// admin may call this. Events without an override use the global
+    /// `min_sources`.
+    ///
+    /// # Panics
+    /// * `"unauthorized"` — caller is not the admin.
+    /// * `"event_not_found"` — no event exists with the given ID.
+    /// * `"invalid_consensus_threshold"` — `threshold` is `0` or exceeds the
+    ///   number of configured oracle sources.
+    pub fn set_event_consensus_threshold(
+        env: Env,
+        caller: Address,
+        event_id: u64,
+        threshold: u32,
+    ) {
+        match oracle::set_event_consensus_threshold(&env, caller, event_id, threshold) {
+            Ok(()) => {}
+            Err(oracle::OracleError::Unauthorized) => panic!("unauthorized"),
+            Err(oracle::OracleError::EventNotFound) => panic!("event_not_found"),
+            Err(oracle::OracleError::InvalidConsensusThreshold) => {
+                panic!("invalid_consensus_threshold")
+            }
+            Err(_) => panic!("unexpected_error"),
+        }
+    }
+
+    /// Return the oracle consensus threshold that applies to an event: its
+    /// configured override, or the global `min_sources` when unset (#2202).
+    pub fn get_event_consensus_threshold(env: Env, event_id: u64) -> u32 {
+        oracle::get_event_consensus_threshold(&env, event_id)
+    }
+
     /// Propose a match's final scoreline as an authorized oracle source,
     /// toward the multi-submitter consensus that finalizes match results
     /// (#1698).
     ///
-    /// Once distinct sources have proposed the same scoreline `min_sources`
-    /// (the configured agreement threshold) times, the match is finalized:
+    /// Once distinct sources have proposed the same scoreline as many times
+    /// as the event's consensus threshold (`get_event_consensus_threshold`), the match is finalized:
     /// the winning outcome is recorded, every prediction is graded, and the
     /// event's weighted standings are recomputed. Returns `true` if this
     /// call reached the threshold and finalized the match.
@@ -1431,6 +1579,8 @@ impl CreatorEventManagerContract {
     ///   result; no further proposals are accepted.
     /// * `"duplicate_result_proposal"` — caller already proposed a scoreline
     ///   for this match's consensus round.
+    /// * `"submission_deadline_passed"` — current time is past the event's
+    ///   submission deadline.
     pub fn propose_match_result(
         env: Env,
         source: Address,
@@ -1448,6 +1598,9 @@ impl CreatorEventManagerContract {
             }
             Err(oracle::OracleError::DuplicateResultProposal) => {
                 panic!("duplicate_result_proposal")
+            }
+            Err(oracle::OracleError::SubmissionDeadlinePassed) => {
+                panic!("submission_deadline_passed")
             }
             Err(_) => panic!("unexpected_error"),
         }
@@ -1469,6 +1622,8 @@ impl CreatorEventManagerContract {
     /// * `"not_an_oracle_source"` — caller is not a configured oracle source.
     /// * `"duplicate_oracle_submission"` — caller already submitted a value
     ///   for this match.
+    /// * `"submission_deadline_passed"` — current time is past the event's
+    ///   submission deadline.
     pub fn submit_oracle_value(env: Env, source: Address, match_id: u64, value: i128) {
         match oracle::submit_oracle_value(&env, source, match_id, value) {
             Ok(()) => {}
@@ -1477,6 +1632,9 @@ impl CreatorEventManagerContract {
             Err(oracle::OracleError::NotAnOracleSource) => panic!("not_an_oracle_source"),
             Err(oracle::OracleError::DuplicateOracleSubmission) => {
                 panic!("duplicate_oracle_submission")
+            }
+            Err(oracle::OracleError::SubmissionDeadlinePassed) => {
+                panic!("submission_deadline_passed")
             }
             Err(_) => panic!("unexpected_error"),
         }

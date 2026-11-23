@@ -16,9 +16,10 @@ use crate::admin;
 use crate::event::{self, EventError};
 use crate::fee;
 use crate::leaderboard;
+use crate::r#match::{self, MatchError};
 use crate::storage::{self, TTL_LEDGERS};
 use crate::storage_types::{
-    CreatorVestingSchedule, DataKey, FinalizationBond, PrizeAllocation, CLAIM_PERIOD_SECONDS,
+    CreatorVestingSchedule, DataKey, FinalizationBond, Match, PrizeAllocation, CLAIM_PERIOD_SECONDS,
     FINALIZATION_BOND_STROOPS, FINALIZATION_CHALLENGE_WINDOW_SECONDS,
 };
 use crate::token::TokenHelper;
@@ -48,7 +49,7 @@ use crate::token::TokenHelper;
 ///
 /// # Payout
 /// The leaderboard ([`leaderboard::get_event_leaderboard`]) is fully
-/// deterministic (points → exact_scores → earliest prediction → address), so
+/// deterministic (points → earliest prediction → address), so
 /// there are **no shared ranks**: every participant has a distinct rank and
 /// therefore a distinct (possibly zero) payout. There is intentionally no
 /// "split the rank" logic here — determinism is handled upstream.
@@ -200,9 +201,14 @@ pub fn finalize_event(
     let refund_to_creator = prize_pool - total_distributed;
     if refund_to_creator > 0 {
         let vest_share_bps = fee::get_creator_vest_share_bps(env);
-        let vested_amount = fee::calculate_bounded_fee(refund_to_creator, vest_share_bps)
-            .map_err(|_| EventError::Overflow)?;
-        let immediate_amount = refund_to_creator - vested_amount;
+        let immediate_share_bps =
+            crate::storage_types::MAX_FEE_BPS.saturating_sub(vest_share_bps);
+        let (vested_amount, immediate_amount) = fee::split_fee_amount(
+            refund_to_creator,
+            vest_share_bps,
+            immediate_share_bps,
+        )
+        .map_err(|_| EventError::Overflow)?;
 
         if immediate_amount > 0 {
             TokenHelper::distribute_winnings(env, &xlm_token, &event.creator, immediate_amount)
@@ -242,6 +248,16 @@ pub fn finalize_event(
     event.is_finalized = true;
     storage::set_event(env, event_id, &event);
 
+    // Payouts are now staged from these results, so every match result of the
+    // event becomes final here even if its overturn window is still open.
+    for match_id in match_ids.iter() {
+        if storage::get_match_result_finalized_at(env, match_id).is_none() {
+            if let Ok(m) = storage::get_match(env, match_id) {
+                mark_match_result_final(env, &m, now);
+            }
+        }
+    }
+
     // Store the payout snapshot for historical queries.
     let payouts_key = DataKey::EventPayouts(event_id);
     env.storage().persistent().set(&payouts_key, &payouts);
@@ -259,6 +275,69 @@ pub fn finalize_event(
     );
 
     Ok(payouts)
+}
+
+// ---------------------------------------------------------------------------
+// Match-result finality (bounded overturn window)
+// ---------------------------------------------------------------------------
+
+/// Persist the finality marker for a match result and emit
+/// `(Symbol("match"), Symbol("result_final"))` with data
+/// `(match_id, event_id, home_score, away_score, finalized_at)`.
+fn mark_match_result_final(env: &Env, m: &Match, now: u64) {
+    storage::set_match_result_finalized_at(env, m.match_id, now);
+    env.events().publish(
+        (Symbol::new(env, "match"), Symbol::new(env, "result_final")),
+        (
+            m.match_id,
+            m.event_id,
+            m.home_score.unwrap_or(0),
+            m.away_score.unwrap_or(0),
+            now,
+        ),
+    );
+}
+
+/// Mark a match result final once its overturn window has closed.
+///
+/// Permissionless: anyone may call it once
+/// `now >= submitted_at + MATCH_RESULT_OVERTURN_WINDOW_SECONDS` (measured from
+/// the original submission). After this, `overturn_match_result` is rejected
+/// with [`MatchError::OverturnWindowClosed`]. `finalize_event` marks every
+/// still-open result of the event final as well, so each result emits the
+/// finality event exactly once.
+///
+/// # Errors
+/// * [`MatchError::MatchNotFound`] — no match with the given id.
+/// * [`MatchError::ResultNotSubmitted`] — the match has no result yet.
+/// * [`MatchError::ResultAlreadyFinal`] — finality was already recorded.
+/// * [`MatchError::OverturnWindowOpen`] — the overturn window has not closed.
+///
+/// # Events
+/// Emits `(Symbol("match"), Symbol("result_final"))` with data
+/// `(match_id, event_id, home_score, away_score, finalized_at)`.
+pub fn finalize_match_result(env: &Env, match_id: u64) -> Result<u64, MatchError> {
+    let m = storage::get_match(env, match_id).map_err(|_| MatchError::MatchNotFound)?;
+
+    let window_end = r#match::overturn_window_end(&m).ok_or(MatchError::ResultNotSubmitted)?;
+
+    if storage::get_match_result_finalized_at(env, match_id).is_some() {
+        return Err(MatchError::ResultAlreadyFinal);
+    }
+
+    let now = env.ledger().timestamp();
+    if now < window_end {
+        return Err(MatchError::OverturnWindowOpen);
+    }
+
+    mark_match_result_final(env, &m, now);
+    Ok(now)
+}
+
+/// Return the timestamp at which a match's result became final, or `None`
+/// while it is still within its overturn window (or not yet submitted).
+pub fn get_match_result_finalized_at(env: &Env, match_id: u64) -> Option<u64> {
+    storage::get_match_result_finalized_at(env, match_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -295,20 +374,22 @@ pub fn claim_prize(env: &Env, winner: Address, event_id: u64) -> Result<i128, Ev
         return Err(EventError::EventNotFinalized);
     }
 
-    let mut allocation =
+    let existing =
         storage::get_prize_allocation(env, event_id, &winner).ok_or(EventError::NoAllocation)?;
 
-    if allocation.claimed {
+    if existing.claimed {
         return Err(EventError::AlreadyClaimed);
     }
 
-    if allocation.amount <= 0 {
+    if existing.amount <= 0 {
         return Err(EventError::NoAllocation);
     }
 
-    // Mark as claimed in storage before external interaction (Checks-Effects-Interactions pattern)
-    allocation.claimed = true;
-    storage::set_prize_allocation(env, &allocation);
+    // Mark as claimed in storage before external interaction
+    // (Checks-Effects-Interactions). The helper re-checks the flag and writes
+    // `claimed = true` in one step; the flag can never be reset afterwards.
+    let allocation = storage::mark_prize_allocation_claimed(env, event_id, &winner)
+        .ok_or(EventError::AlreadyClaimed)?;
 
     let xlm_token = admin::get_xlm_token(env).unwrap_or_else(|| panic!("not_initialized"));
     TokenHelper::distribute_winnings(env, &xlm_token, &winner, allocation.amount)

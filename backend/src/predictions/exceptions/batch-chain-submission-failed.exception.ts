@@ -1,7 +1,11 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
+import type { BatchPredictionResultDto } from '../dto/batch-submit-response.dto';
 
 export class BatchChainSubmissionFailedException extends HttpException {
-  constructor(errors: Array<{ index: number; error: string }>) {
+  constructor(
+    errors: Array<{ index: number; error: string }>,
+    results: BatchPredictionResultDto[] = [],
+  ) {
     super(
       {
         success: false,
@@ -11,6 +15,7 @@ export class BatchChainSubmissionFailedException extends HttpException {
           message:
             'Batch submission failed on-chain - no predictions were persisted',
           errors,
+          results,
         },
       },
       HttpStatus.BAD_REQUEST,

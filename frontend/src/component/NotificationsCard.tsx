@@ -1,58 +1,43 @@
 "use client";
 
-import { TrendingUp, Trophy, Gift, Users, Bell } from "lucide-react";
+import { useMemo, useState } from "react";
+import { TrendingUp, Trophy, Gift, Users, Bell, Megaphone } from "lucide-react";
 import { EmptyState } from "@/component/ui/empty-state";
+import { Tabs, TabsList, TabsTrigger } from "@/component/ui/tabs";
+import { useNotifications, type NotificationItem } from "@/context/NotificationContext";
 
-interface NotificationItem {
-  id: string;
-  type: "market" | "competition" | "reward" | "social";
-  icon: "trend" | "trophy" | "gift" | "users";
-  message: string;
-  timestamp: string;
-  isRead: boolean;
-}
+type NotificationCategory = "all" | "predictions" | "rewards" | "disputes" | "system";
 
-// Mock data matching the Figma design
-const mockNotifications: NotificationItem[] = [
-  {
-    id: "1",
-    type: "market",
-    icon: "trend",
-    message: "Your BTC prediction settles in 3 hours",
-    timestamp: "2h ago",
-    isRead: false,
-  },
-  {
-    id: "2",
-    type: "competition",
-    icon: "trophy",
-    message: "You moved up 3 spots on leaderboard",
-    timestamp: "5h ago",
-    isRead: false,
-  },
-  {
-    id: "3",
-    type: "reward",
-    icon: "gift",
-    message: "Rewards from Weekend Market Clash claimable",
-    timestamp: "1d ago",
-    isRead: true,
-  },
-  {
-    id: "4",
-    type: "social",
-    icon: "users",
-    message: "Invite to Crypto Elite League",
-    timestamp: "1d ago",
-    isRead: true,
-  },
+const CATEGORY_TABS: { key: NotificationCategory; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "predictions", label: "Predictions" },
+  { key: "rewards", label: "Rewards" },
+  { key: "disputes", label: "Disputes" },
+  { key: "system", label: "System" },
 ];
+
+/** Maps a notification's underlying `type` to the tab category it belongs to. */
+function categoryForType(type: NotificationItem["type"]): Exclude<NotificationCategory, "all"> {
+  switch (type) {
+    case "market":
+    case "competition":
+    case "social":
+      return "predictions";
+    case "reward":
+      return "rewards";
+    case "dispute":
+      return "disputes";
+    case "system":
+      return "system";
+  }
+}
 
 const iconMap = {
   trend: TrendingUp,
   trophy: Trophy,
   gift: Gift,
   users: Users,
+  megaphone: Megaphone,
 };
 
 const iconColorMap = {
@@ -60,6 +45,7 @@ const iconColorMap = {
   trophy: "text-orange-400",
   gift: "text-yellow-400",
   users: "text-gray-300",
+  megaphone: "text-blue-300",
 };
 
 const iconBgMap = {
@@ -67,32 +53,106 @@ const iconBgMap = {
   trophy: "bg-orange-500/10",
   gift: "bg-yellow-500/10",
   users: "bg-white/10",
+  megaphone: "bg-blue-500/10",
 };
 
-interface NotificationsCardProps {
-  notifications?: NotificationItem[];
-}
+export default function NotificationsCard() {
+  const context = useNotifications();
+  const notifications = context.notifications;
+  
+  const [activeCategory, setActiveCategory] = useState<NotificationCategory>("all");
+  const [markAllError, setMarkAllError] = useState<string | null>(null);
 
-export default function NotificationsCard({
-  notifications = mockNotifications,
-}: NotificationsCardProps) {
-  const unreadCount = notifications.filter((n) => !n.isRead).length;
+  const unreadCountByCategory = useMemo(() => {
+    const counts: Record<NotificationCategory, number> = {
+      all: 0,
+      predictions: 0,
+      rewards: 0,
+      disputes: 0,
+      system: 0,
+    };
+    for (const notification of notifications) {
+      if (notification.isRead) continue;
+      counts.all += 1;
+      counts[categoryForType(notification.type)] += 1;
+    }
+    return counts;
+  }, [notifications]);
+
+  const filteredNotifications = useMemo(() => {
+    if (activeCategory === "all") return notifications;
+    return notifications.filter((n) => categoryForType(n.type) === activeCategory);
+  }, [notifications, activeCategory]);
+
+  const unreadCount = unreadCountByCategory.all;
+
+  async function handleMarkAllRead() {
+    setMarkAllError(null);
+
+    try {
+      // Call the context's markAllAsRead which handles optimistic update and rollback
+      await context.markAllAsRead();
+    } catch (error) {
+      setMarkAllError(
+        error instanceof Error
+          ? error.message
+          : "Couldn't mark notifications as read. Please try again.",
+      );
+    }
+  }
 
   return (
     <div className="relative rounded-2xl border border-white/10 bg-white/5 p-6 w-full overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h2 className="text-white font-semibold text-lg">Notifications</h2>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           {unreadCount > 0 && (
-            <div className="w-2 h-2 bg-orange-400 rounded-full" />
+            <button
+              type="button"
+              onClick={handleMarkAllRead}
+              className="text-xs font-medium text-orange-300 hover:text-orange-200 transition-colors"
+            >
+              Mark all as read
+            </button>
           )}
-          <div className="w-2 h-2 bg-red-500 rounded-full" />
+          {unreadCount > 0 && (
+            <div className="w-2 h-2 bg-red-500 rounded-full" />
+          )}
         </div>
       </div>
 
+      {markAllError && (
+        <p className="mb-3 text-xs text-red-400" role="alert">
+          {markAllError}
+        </p>
+      )}
+
+      {/* Category filter tabs */}
+      <Tabs
+        value={activeCategory}
+        onValueChange={(value) => setActiveCategory(value as NotificationCategory)}
+        className="mb-4"
+      >
+        <TabsList>
+          {CATEGORY_TABS.map((tab) => {
+            const count = unreadCountByCategory[tab.key];
+            return (
+              <TabsTrigger key={tab.key} value={tab.key} className="gap-1.5">
+                {tab.label}
+                {count > 0 && (
+                  <span className="ml-1 rounded-full bg-orange-500/20 px-1.5 text-[10px] font-semibold text-orange-300">
+                    {count}
+                  </span>
+                )}
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
+      </Tabs>
+
       {/* Notifications List */}
-      {notifications.length === 0 ? (
+      {filteredNotifications.length === 0 ? (
         <EmptyState
           icon={<Bell className="h-7 w-7" />}
           title="No notifications yet"
@@ -100,9 +160,9 @@ export default function NotificationsCard({
         />
       ) : (
         <div className="space-y-0">
-          {notifications.map((notification, index) => {
+          {filteredNotifications.map((notification, index) => {
             const IconComponent = iconMap[notification.icon];
-            const isLast = index === notifications.length - 1;
+            const isLast = index === filteredNotifications.length - 1;
 
             return (
               <div key={notification.id}>

@@ -8,6 +8,10 @@ import {
   Validate,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { stripControlChars } from '../../common/text-sanitizer.util';
+
+/** Upper bound on the sanitized search term length (matches the DTO MaxLength) */
+export const SEARCH_QUERY_MAX_LENGTH = 100;
 
 /**
  * Custom validator to ensure the query is not whitespace-only after trimming
@@ -56,18 +60,37 @@ export class SearchQueryDto {
 }
 
 /**
- * Escapes SQL LIKE wildcards (% and _) in user input so they match literally.
- * This prevents users from injecting wildcard patterns that could cause
- * performance issues or unexpected behavior.
+ * Escapes SQL LIKE wildcards (%, _, and \) in user input so they match literally.
+ * This prevents users from injecting wildcard patterns or escape sequences that
+ * could cause performance issues or unexpected behavior.
  *
  * @param input - The user-provided search string
- * @returns The sanitized string with % and _ escaped as \% and \_
+ * @returns The sanitized string with \, %, and _ escaped
  *
  * @example
  * escapeLikeWildcards('100%') // returns '100\\%'
  * escapeLikeWildcards('user_name') // returns 'user\\_name'
+ * escapeLikeWildcards('path\\name') // returns 'path\\\\name'
  */
 export function escapeLikeWildcards(input: string): string {
   if (!input) return input;
-  return input.replace(/([%_])/g, '\\$1');
+  return input.replace(/\\/g, '\\\\').replace(/([%_])/g, '\\$1');
+}
+
+/**
+ * Sanitizes user input for full-text search: strips control characters, neutralizes
+ * query operators that could manipulate query structure or cause malformed tsquery
+ * syntax, normalizes whitespace, and bounds the result to SEARCH_QUERY_MAX_LENGTH.
+ *
+ * @param input - The raw search input
+ * @returns Sanitized, trimmed and length-bounded input (may be empty)
+ */
+export function sanitizeSearchInput(input: string): string {
+  if (!input) return '';
+  return stripControlChars(input)
+    .replace(/[&|!():*<>'"\\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, SEARCH_QUERY_MAX_LENGTH)
+    .trim();
 }

@@ -29,8 +29,12 @@ export class CreateOracleReliabilityHistory1788042840000 implements MigrationInt
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`DROP INDEX "IDX_oracle_reliability_history_data_source_created_at"`);
-    await queryRunner.query(`DROP INDEX "IDX_oracle_reliability_history_data_source"`);
+    await queryRunner.query(
+      `DROP INDEX "IDX_oracle_reliability_history_data_source_created_at"`,
+    );
+    await queryRunner.query(
+      `DROP INDEX "IDX_oracle_reliability_history_data_source"`,
+    );
     await queryRunner.query(`DROP TABLE "oracle_reliability_history"`);
   }
 }

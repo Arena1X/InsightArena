@@ -561,11 +561,9 @@ describe('AnalyticsService', () => {
     });
 
     it('uses a distinct cache entry for a different user', async () => {
-      const otherUser = { ...baseUser, id: 'user-id-2' } as User;
+      const otherUser = { ...baseUser, id: 'user-id-2' };
       usersRepository.findOne.mockImplementation((opts: any) =>
-        Promise.resolve(
-          opts.where.id === otherUser.id ? otherUser : baseUser,
-        ),
+        Promise.resolve(opts.where.id === otherUser.id ? otherUser : baseUser),
       );
       leaderboardRepository.createQueryBuilder.mockReturnValue(
         mockLeaderboardQb(null) as any,
@@ -606,9 +604,9 @@ describe('AnalyticsService', () => {
 
       expect(second).toEqual(first);
       expect(marketsRepository.findOne).toHaveBeenCalledTimes(1);
-      expect(
-        marketHistoryRepository.createQueryBuilder,
-      ).toHaveBeenCalledTimes(1);
+      expect(marketHistoryRepository.createQueryBuilder).toHaveBeenCalledTimes(
+        1,
+      );
     });
 
     it('uses a distinct cache entry when the date range differs', async () => {
@@ -629,9 +627,9 @@ describe('AnalyticsService', () => {
         new Date('2026-07-01T00:00:00.000Z'),
       );
 
-      expect(
-        marketHistoryRepository.createQueryBuilder,
-      ).toHaveBeenCalledTimes(2);
+      expect(marketHistoryRepository.createQueryBuilder).toHaveBeenCalledTimes(
+        2,
+      );
     });
 
     it('uses a distinct cache entry for a different market id', async () => {
@@ -648,9 +646,9 @@ describe('AnalyticsService', () => {
       await service.getMarketHistory('market-1', from, to);
       await service.getMarketHistory('market-2', from, to);
 
-      expect(
-        marketHistoryRepository.createQueryBuilder,
-      ).toHaveBeenCalledTimes(2);
+      expect(marketHistoryRepository.createQueryBuilder).toHaveBeenCalledTimes(
+        2,
+      );
     });
   });
 
@@ -677,10 +675,8 @@ describe('AnalyticsService', () => {
         Promise.resolve('dash-2'),
       );
       // Left alone: keyed by an unbounded parameter space, expires on its own TTL.
-      await cacheService.getOrSet(
-        'analytics:user-trends',
-        'GADDR:30',
-        () => Promise.resolve('trends'),
+      await cacheService.getOrSet('analytics:user-trends', 'GADDR:30', () =>
+        Promise.resolve('trends'),
       );
 
       await service.invalidateMarketResolutionCaches('market-1', 'chain-1', [
@@ -694,9 +690,7 @@ describe('AnalyticsService', () => {
       expect(
         await cacheManager.get('analytics:market:chain-1'),
       ).toBeUndefined();
-      expect(
-        await cacheManager.get('analytics:category:all'),
-      ).toBeUndefined();
+      expect(await cacheManager.get('analytics:category:all')).toBeUndefined();
       expect(
         await cacheManager.get('analytics:platform-stats:all'),
       ).toBeUndefined();
@@ -722,9 +716,7 @@ describe('AnalyticsService', () => {
       expect(
         await cacheManager.get('analytics:market:market-1'),
       ).toBeUndefined();
-      expect(
-        await cacheManager.get('analytics:category:all'),
-      ).toBeUndefined();
+      expect(await cacheManager.get('analytics:category:all')).toBeUndefined();
     });
 
     it('logs a warning instead of throwing when a cache backend call fails', async () => {
@@ -741,6 +733,160 @@ describe('AnalyticsService', () => {
       ).resolves.toBeUndefined();
 
       expect(warnSpy).toHaveBeenCalled();
+    });
+
+    it('getMarketAnalytics read right after invalidation reflects post-resolution predictions, not the cached pre-resolution value', async () => {
+      const predictionsRepo = module.get(getRepositoryToken(Prediction));
+      const market = {
+        id: 'market-1',
+        on_chain_market_id: 'chain-1',
+        title: 'Will it rain tomorrow?',
+        outcome_options: ['Yes', 'No'],
+        total_pool_stroops: '1000',
+        participant_count: 1,
+        end_time: new Date(Date.now() + 60_000),
+      } as Market;
+
+      marketsRepository.findOne.mockResolvedValue(market);
+      predictionsRepo.find = jest
+        .fn()
+        .mockResolvedValueOnce([]) // pre-resolution: no predictions counted yet
+        .mockResolvedValueOnce([{ chosen_outcome: 'Yes' }]); // post-resolution: the settled prediction now counts
+
+      const beforeResolution = await service.getMarketAnalytics('market-1');
+      expect(
+        beforeResolution.outcome_distribution.find((o) => o.outcome === 'Yes')
+          ?.count,
+      ).toBe(0);
+
+      await service.invalidateMarketResolutionCaches('market-1', 'chain-1', []);
+
+      const afterResolution = await service.getMarketAnalytics('market-1');
+      expect(
+        afterResolution.outcome_distribution.find((o) => o.outcome === 'Yes')
+          ?.count,
+      ).toBe(1);
+      expect(marketsRepository.findOne).toHaveBeenCalledTimes(2);
+    });
+
+    it('getCategoryAnalytics read right after invalidation reflects the resolved market, not the cached pre-resolution active count', async () => {
+      const market = {
+        id: 'market-1',
+        category: 'Weather',
+        is_resolved: false,
+        is_cancelled: false,
+        total_pool_stroops: '1000',
+        participant_count: 1,
+      } as Market;
+
+      marketsRepository.find
+        .mockResolvedValueOnce([market]) // pre-resolution: still active
+        .mockResolvedValueOnce([{ ...market, is_resolved: true }]); // post-resolution
+
+      const beforeResolution = await service.getCategoryAnalytics();
+      const weatherBefore = beforeResolution.categories.find(
+        (c) => c.name === 'Weather',
+      );
+      expect(weatherBefore?.active_markets).toBe(1);
+
+      await service.invalidateMarketResolutionCaches('market-1', null, []);
+
+      const afterResolution = await service.getCategoryAnalytics();
+      const weatherAfter = afterResolution.categories.find(
+        (c) => c.name === 'Weather',
+      );
+      expect(weatherAfter?.active_markets).toBe(0);
+      expect(marketsRepository.find).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('analytics event aggregation bucket alignment (#1952)', () => {
+    const from = new Date('2026-06-01T00:00:00.000Z');
+    const to = new Date('2026-06-01T04:00:00.000Z'); // 4 hours window
+    const oneHourMs = 60 * 60 * 1000;
+
+    it('an edge-timestamp event lands in exactly one bucket', () => {
+      // Event exactly on the boundary between bucket 0 [00:00, 01:00) and bucket 1 [01:00, 02:00)
+      const edgeTimestamp = new Date('2026-06-01T01:00:00.000Z');
+      const events = [
+        { id: 'e1', timestamp: edgeTimestamp, value: 10 },
+      ];
+
+      const result = service.aggregateEventsByTimeBucket(events, {
+        from,
+        to,
+        interval: 'hour',
+        fillEmptyBuckets: true,
+      });
+
+      expect(result.buckets).toHaveLength(4);
+      // Bucket 0 [00:00, 01:00): edgeTimestamp is exclusive (< 01:00 is false), so count is 0
+      expect(result.buckets[0].count).toBe(0);
+      expect(result.buckets[0].events).toHaveLength(0);
+
+      // Bucket 1 [01:00, 02:00): edgeTimestamp is inclusive (>= 01:00 is true), so count is 1
+      expect(result.buckets[1].count).toBe(1);
+      expect(result.buckets[1].events[0].id).toBe('e1');
+
+      // Other buckets have 0
+      expect(result.buckets[2].count).toBe(0);
+      expect(result.buckets[3].count).toBe(0);
+
+      // Exactly one bucket holds the event
+      const bucketsWithEvent = result.buckets.filter((b) => b.count > 0);
+      expect(bucketsWithEvent).toHaveLength(1);
+    });
+
+    it('sum of buckets equals the ungrouped total', () => {
+      const events = [
+        { id: 'e1', timestamp: new Date('2026-06-01T00:15:00.000Z'), value: 5 },
+        { id: 'e2', timestamp: new Date('2026-06-01T01:00:00.000Z'), value: 12 },
+        { id: 'e3', timestamp: new Date('2026-06-01T01:45:00.000Z'), value: 8 },
+        { id: 'e4', timestamp: new Date('2026-06-01T03:30:00.000Z'), value: 20 },
+      ];
+
+      const expectedTotalCount = events.length;
+      const expectedTotalValue = events.reduce((sum, e) => sum + e.value, 0);
+
+      const result = service.aggregateEventsByTimeBucket(events, {
+        from,
+        to,
+        intervalMs: oneHourMs,
+        valueField: 'value',
+      });
+
+      const bucketCountSum = result.buckets.reduce((sum, b) => sum + b.count, 0);
+      const bucketValueSum = result.buckets.reduce((sum, b) => sum + b.total_value, 0);
+
+      expect(bucketCountSum).toBe(expectedTotalCount);
+      expect(result.total_count).toBe(expectedTotalCount);
+      expect(bucketValueSum).toBe(expectedTotalValue);
+      expect(result.total_value).toBe(expectedTotalValue);
+    });
+
+    it('empty buckets are represented as zero, not omitted where continuity is required', () => {
+      // Only 1 event in bucket 2 [02:00, 03:00)
+      const events = [
+        { id: 'e-only', timestamp: new Date('2026-06-01T02:30:00.000Z'), value: 50 },
+      ];
+
+      const result = service.aggregateEventsByTimeBucket(events, {
+        from,
+        to,
+        interval: 'hour',
+        fillEmptyBuckets: true,
+      });
+
+      // All 4 buckets must be present to maintain time series continuity
+      expect(result.buckets).toHaveLength(4);
+      expect(result.buckets[0].count).toBe(0);
+      expect(result.buckets[0].total_value).toBe(0);
+      expect(result.buckets[1].count).toBe(0);
+      expect(result.buckets[1].total_value).toBe(0);
+      expect(result.buckets[2].count).toBe(1);
+      expect(result.buckets[2].total_value).toBe(50);
+      expect(result.buckets[3].count).toBe(0);
+      expect(result.buckets[3].total_value).toBe(0);
     });
   });
 });

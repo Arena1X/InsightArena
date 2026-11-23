@@ -18,6 +18,7 @@ import { OptionalIdempotencyInterceptor } from '../common/idempotency/optional-i
 import { AuthModule } from '../auth/auth.module';
 import { ApiKeyGuard } from '../common/guards/api-key.guard';
 import { PublicMarketsController } from './public-markets.controller';
+import { CacheServiceModule } from '../cache/cache.module';
 
 import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
 import { SettlementAttempt } from './entities/settlement-attempt.entity';
@@ -40,6 +41,7 @@ import { SettlementAttempt } from './entities/settlement-attempt.entity';
     SearchModule,
     CommonModule,
     AuthModule,
+    CacheServiceModule,
   ],
   controllers: [MarketsController, PublicMarketsController],
   providers: [

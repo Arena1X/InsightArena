@@ -38,6 +38,16 @@ export type SeasonRolloverResult = {
   rewardsComputed: boolean;
   skipped: boolean;
   reason?: string;
+  /** Only set on dry runs: what a real rollover would change. */
+  plan?: SeasonRolloverPlan;
+};
+
+export type SeasonRolloverPlan = {
+  closedSeasonNumber: number | null;
+  openedSeasonNumber: number | null;
+  topWinnerId: string | null;
+  leaderboardSize: number;
+  rewardPoolStroops: string;
 };
 
 @Injectable()
@@ -160,6 +170,117 @@ export class SeasonsService {
     }
 
     return season;
+  }
+
+  /**
+   * Deterministically checks if a timestamp falls within a season's boundary.
+   * Documented boundary policy: half-open interval [starts_at, ends_at)
+   * - Inclusive of starts_at (starts_at <= timestamp)
+   * - Exclusive of ends_at (timestamp < ends_at)
+   */
+  isTimestampInSeason(timestamp: Date | string, season: Season): boolean {
+    const t = new Date(timestamp).getTime();
+    const start = new Date(season.starts_at).getTime();
+    const end = new Date(season.ends_at).getTime();
+    return t >= start && t < end;
+  }
+
+  /**
+   * Deterministically attributes a prediction to a season according to the documented boundary rule.
+   *
+   * Documented policy:
+   * 1. A prediction's season attribution is determined by when it was submitted/placed
+   *    (`submitted_at` or `created_at`), NOT when it was resolved.
+   * 2. Predictions made before a rollover (submitted_at < prior_season.ends_at) score in that prior
+   *    season, even if the prediction is resolved after the rollover has already completed.
+   * 3. Boundary policy: [starts_at, ends_at) — inclusive of starts_at, exclusive of ends_at.
+   *    An event submitted at the exact rollover timestamp (t === ends_at === next_season.starts_at)
+   *    belongs to the new season, not the prior season.
+   */
+  async attributePredictionToSeason(
+    prediction: {
+      id?: string;
+      submitted_at?: Date | string;
+      created_at?: Date | string;
+      resolved_at?: Date | string | null;
+      timestamp?: Date | string;
+    },
+    candidateSeasons?: Season[],
+  ): Promise<Season | null> {
+    const submissionTime =
+      prediction.submitted_at ??
+      prediction.created_at ??
+      prediction.timestamp;
+
+    if (!submissionTime) {
+      return null;
+    }
+
+    const t = new Date(submissionTime).getTime();
+    const seasons =
+      candidateSeasons ??
+      (await this.seasonsRepository.find({
+        order: { starts_at: 'ASC' },
+      }));
+
+    for (const s of seasons) {
+      if (this.isTimestampInSeason(t, s)) {
+        return s;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Alias for attributePredictionToSeason
+   */
+  async attributePrediction(
+    prediction: {
+      id?: string;
+      submitted_at?: Date | string;
+      created_at?: Date | string;
+      resolved_at?: Date | string | null;
+      timestamp?: Date | string;
+    },
+    candidateSeasons?: Season[],
+  ): Promise<Season | null> {
+    return this.attributePredictionToSeason(prediction, candidateSeasons);
+  }
+
+  /**
+   * Scores a prediction for its attributed season, ensuring that:
+   * 1. Predictions placed before rollover score in the prior season even when resolved after rollover.
+   * 2. Boundary timestamps follow the [starts_at, ends_at) half-open policy.
+   */
+  async scorePredictionForSeason(
+    prediction: {
+      userId?: string;
+      user_id?: string;
+      submitted_at?: Date | string;
+      created_at?: Date | string;
+      resolved_at?: Date | string | null;
+      is_correct?: boolean;
+    },
+    points: number = 10,
+    candidateSeasons?: Season[],
+  ): Promise<{
+    season: Season | null;
+    pointsAwarded: number;
+    attributedSeasonNumber: number | null;
+  }> {
+    const season = await this.attributePredictionToSeason(
+      prediction,
+      candidateSeasons,
+    );
+
+    const isCorrect = prediction.is_correct ?? true;
+    const pointsAwarded = season && isCorrect ? points : 0;
+
+    return {
+      season,
+      pointsAwarded,
+      attributedSeasonNumber: season ? season.season_number : null,
+    };
   }
 
   async create(dto: CreateSeasonDto): Promise<Season> {
@@ -355,14 +476,15 @@ export class SeasonsService {
    * already-rolled season is a no-op (checked both before and again inside
    * the transaction to close the race between two concurrent ticks).
    */
-  async processSeasonRollover(now = new Date()): Promise<SeasonRolloverResult> {
-    const ending = await this.seasonsRepository
-      .createQueryBuilder('s')
-      .where('s.is_active = :active', { active: true })
-      .andWhere('s.ends_at <= :now', { now })
-      .andWhere('s.rollover_processed_at IS NULL')
-      .orderBy('s.ends_at', 'ASC')
-      .getOne();
+  async processSeasonRollover(
+    now = new Date(),
+    options: { dryRun?: boolean } = {},
+  ): Promise<SeasonRolloverResult> {
+    const ending = await this.findEndingSeason(this.dataSource.manager, now);
+
+    if (options.dryRun) {
+      return this.previewSeasonRollover(ending, now);
+    }
 
     if (!ending) {
       const openedOnly = await this.activateDueSeason(now);
@@ -423,14 +545,15 @@ export class SeasonsService {
         };
       }
 
-      const topWinner = await queryRunner.manager.findOne(User, {
-        where: {},
-        order: { season_points: 'DESC' },
-      });
+      const planned = await this.planRollover(
+        queryRunner.manager,
+        season,
+        now,
+      );
 
       season.is_active = false;
       season.is_finalized = true;
-      season.top_winner = topWinner ?? null;
+      season.top_winner = planned.topWinner;
       season.rollover_processed_at = now;
       closed = await queryRunner.manager.save(Season, season);
 
@@ -438,22 +561,13 @@ export class SeasonsService {
 
       await queryRunner.manager.update(User, {}, { season_points: 0 });
 
-      opened =
-        (await queryRunner.manager.findOne(Season, {
-          where: { season_number: closed.season_number + 1 },
-        })) ?? null;
-
-      if (opened && !opened.is_finalized) {
-        opened.is_active = true;
-        if (opened.starts_at > now) {
-          opened.starts_at = now;
+      opened = null;
+      if (planned.opened) {
+        planned.opened.is_active = true;
+        if (planned.opened.starts_at > now) {
+          planned.opened.starts_at = now;
         }
-        opened = await queryRunner.manager.save(Season, opened);
-      } else {
-        opened = await this.activateDueSeasonWithManager(
-          queryRunner.manager,
-          now,
-        );
+        opened = await queryRunner.manager.save(Season, planned.opened);
       }
 
       await queryRunner.commitTransaction();
@@ -536,16 +650,37 @@ export class SeasonsService {
     await manager.save(SeasonLeaderboardSnapshot, snapshots);
   }
 
-  private async activateDueSeason(now: Date): Promise<Season | null> {
-    const due = await this.seasonsRepository
-      .createQueryBuilder('s')
+  /** The active season whose end time has passed and is not yet rolled over. Read-only. */
+  private findEndingSeason(
+    manager: EntityManager,
+    now: Date,
+  ): Promise<Season | null> {
+    return manager
+      .createQueryBuilder(Season, 's')
+      .where('s.is_active = :active', { active: true })
+      .andWhere('s.ends_at <= :now', { now })
+      .andWhere('s.rollover_processed_at IS NULL')
+      .orderBy('s.ends_at', 'ASC')
+      .getOne();
+  }
+
+  /** The next season that should go live at `now`. Read-only. */
+  private findDueSeason(
+    manager: EntityManager,
+    now: Date,
+  ): Promise<Season | null> {
+    return manager
+      .createQueryBuilder(Season, 's')
       .where('s.is_active = :active', { active: false })
       .andWhere('s.is_finalized = :fin', { fin: false })
       .andWhere('s.starts_at <= :now', { now })
       .andWhere('s.ends_at > :now', { now })
       .orderBy('s.season_number', 'ASC')
       .getOne();
+  }
 
+  private async activateDueSeason(now: Date): Promise<Season | null> {
+    const due = await this.findDueSeason(this.dataSource.manager, now);
     if (!due) {
       return null;
     }
@@ -554,25 +689,87 @@ export class SeasonsService {
     return this.seasonsRepository.save(due);
   }
 
-  private async activateDueSeasonWithManager(
+  /**
+   * Decides what a rollover of `ending` will do, without writing anything.
+   * Both the real rollover and the dry run call this, so the plan cannot
+   * drift from what gets applied.
+   */
+  private async planRollover(
     manager: EntityManager,
+    ending: Season,
     now: Date,
-  ): Promise<Season | null> {
-    const due = await manager
-      .createQueryBuilder(Season, 's')
-      .where('s.is_active = :active', { active: false })
-      .andWhere('s.is_finalized = :fin', { fin: false })
-      .andWhere('s.starts_at <= :now', { now })
-      .andWhere('s.ends_at > :now', { now })
-      .orderBy('s.season_number', 'ASC')
-      .getOne();
+  ): Promise<{
+    topWinner: User | null;
+    opened: Season | null;
+    leaderboardSize: number;
+  }> {
+    const topWinner = await manager.findOne(User, {
+      where: {},
+      order: { season_points: 'DESC' },
+    });
 
-    if (!due) {
-      return null;
+    const next = await manager.findOne(Season, {
+      where: { season_number: ending.season_number + 1 },
+    });
+    const opened =
+      next && !next.is_finalized
+        ? next
+        : await this.findDueSeason(manager, now);
+
+    const leaderboardSize = await manager.count(User);
+
+    return { topWinner, opened, leaderboardSize };
+  }
+
+  /**
+   * Dry run: returns the rollover that `processSeasonRollover` would apply,
+   * with no writes, notifications, webhooks or reward computation.
+   */
+  private async previewSeasonRollover(
+    ending: Season | null,
+    now: Date,
+  ): Promise<SeasonRolloverResult> {
+    const manager = this.dataSource.manager;
+
+    if (!ending) {
+      const due = await this.findDueSeason(manager, now);
+      return {
+        closedSeasonId: null,
+        openedSeasonId: due?.id ?? null,
+        rewardsComputed: false,
+        skipped: !due,
+        reason: due ? 'activated_due_season' : 'nothing_to_rollover',
+        plan: {
+          closedSeasonNumber: null,
+          openedSeasonNumber: due?.season_number ?? null,
+          topWinnerId: null,
+          leaderboardSize: 0,
+          rewardPoolStroops: '0',
+        },
+      };
     }
 
-    due.is_active = true;
-    return manager.save(Season, due);
+    const { topWinner, opened, leaderboardSize } = await this.planRollover(
+      manager,
+      ending,
+      now,
+    );
+    const pool = BigInt(ending.reward_pool_stroops || '0');
+
+    return {
+      closedSeasonId: ending.id,
+      openedSeasonId: opened?.id ?? null,
+      rewardsComputed: pool > 0n && !!topWinner?.stellar_address,
+      skipped: false,
+      reason: 'dry_run',
+      plan: {
+        closedSeasonNumber: ending.season_number,
+        openedSeasonNumber: opened?.season_number ?? null,
+        topWinnerId: topWinner?.id ?? null,
+        leaderboardSize,
+        rewardPoolStroops: pool.toString(),
+      },
+    };
   }
 
   /**
@@ -671,17 +868,36 @@ export class SeasonsService {
   /**
    * Sums SUCCEEDED ledger rows for a season and compares to its reward
    * pool, logging a mismatch instead of failing silently.
+   *
+   * Also identifies exactly which ledger rows are still missing a confirmed
+   * (SUCCEEDED) payout - i.e. any PENDING or FAILED row - rather than
+   * re-flagging the whole season as undistributed on a partial failure. A
+   * SUCCEEDED row is never included in `missingRecipients`, so re-running
+   * reconciliation after a retry (via computeSeasonRewards, which is itself
+   * idempotent per recipient) correctly narrows to only what's still owed.
+   * A season whose ledger rows are all SUCCEEDED and whose total matches the
+   * pool reports `matches: true` and an empty `missingRecipients`, i.e. a
+   * no-op requiring no further action.
    */
   async reconcileSeasonDistribution(
     seasonId: string,
     pool: bigint,
-  ): Promise<{ matches: boolean; totalDistributed: string }> {
-    const succeeded = await this.distributionLedgerRepository.find({
-      where: {
-        season: { id: seasonId },
-        status: DistributionLedgerStatus.SUCCEEDED,
-      },
+  ): Promise<{
+    matches: boolean;
+    totalDistributed: string;
+    missingRecipients: SeasonDistributionLedgerEntry[];
+  }> {
+    const allEntries = await this.distributionLedgerRepository.find({
+      where: { season: { id: seasonId } },
     });
+
+    const succeeded = allEntries.filter(
+      (entry) => entry.status === DistributionLedgerStatus.SUCCEEDED,
+    );
+    const missingRecipients = allEntries.filter(
+      (entry) => entry.status !== DistributionLedgerStatus.SUCCEEDED,
+    );
+
     const totalDistributed = succeeded.reduce(
       (sum, entry) => sum + BigInt(entry.amount_stroops),
       0n,
@@ -689,10 +905,14 @@ export class SeasonsService {
     const matches = totalDistributed === pool;
     if (!matches) {
       this.logger.error(
-        `Season ${seasonId} distribution mismatch: distributed=${totalDistributed.toString()} pool=${pool.toString()}`,
+        `Season ${seasonId} distribution mismatch: distributed=${totalDistributed.toString()} pool=${pool.toString()} missing=${missingRecipients.length}`,
       );
     }
-    return { matches, totalDistributed: totalDistributed.toString() };
+    return {
+      matches,
+      totalDistributed: totalDistributed.toString(),
+      missingRecipients,
+    };
   }
 
   async getDistributionLedger(

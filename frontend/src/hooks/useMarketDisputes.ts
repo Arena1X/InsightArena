@@ -1,19 +1,42 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { apiClient, ApiError } from "@/lib/api";
+
+export const DISPUTE_REASON_CATEGORIES = [
+  "incorrect_outcome",
+  "missing_evidence",
+  "manipulation",
+  "technical_error",
+  "other",
+] as const;
+
+export type DisputeReasonCategory = (typeof DISPUTE_REASON_CATEGORIES)[number];
+
+export const DISPUTE_REASON_CATEGORY_LABELS: Record<DisputeReasonCategory, string> = {
+  incorrect_outcome: "Incorrect outcome",
+  missing_evidence: "Missing evidence",
+  manipulation: "Market manipulation",
+  technical_error: "Technical error",
+  other: "Other",
+};
 
 export type MarketDispute = {
   id: string;
   marketId: string;
+  category: DisputeReasonCategory;
   reason: string;
   status: "pending" | "under_review" | "resolved" | "rejected";
   createdAt: string;
   evidenceUrls: string[];
+  /** True while this row is an optimistic, not-yet-confirmed submission. */
+  isOptimistic?: boolean;
 };
 
 export type CreateDisputeInput = {
   marketId: string;
+  category: DisputeReasonCategory;
   reason: string;
   evidenceLinks: string[];
 };
@@ -25,9 +48,17 @@ type UseMarketDisputesResult = {
   submitting: boolean;
   submitError: string | null;
   submitSuccess: string | null;
+  /** ID of the dispute currently open in the detail view, synced to ?dispute= */
+  activeDisputeId: string | null;
+  /** Whether the new-dispute form is open, synced to ?disputeForm=1 */
+  showForm: boolean;
   refresh: (marketId: string) => Promise<void>;
   submitDispute: (input: CreateDisputeInput) => Promise<MarketDispute>;
   clearStatus: () => void;
+  openDispute: (id: string) => void;
+  closeDispute: () => void;
+  openForm: () => void;
+  closeForm: () => void;
 };
 
 function normalizeStatus(status: string): MarketDispute["status"] {
@@ -36,6 +67,31 @@ function normalizeStatus(status: string): MarketDispute["status"] {
     return value;
   }
   return "pending";
+}
+
+const CATEGORY_TAG_PATTERN = /^\[category:([a-z_]+)\]\n/;
+
+/**
+ * The backend dispute DTO only has `market_id`/`reason`, so the category is
+ * encoded as a leading tag on the reason text (mirroring how evidence links
+ * are appended below). This round-trips it back out for display.
+ */
+function encodeReasonWithCategory(
+  category: DisputeReasonCategory,
+  reason: string,
+): string {
+  return `[category:${category}]\n${reason}`;
+}
+
+function decodeReasonWithCategory(raw: string): {
+  category: DisputeReasonCategory;
+  reason: string;
+} {
+  const match = raw.match(CATEGORY_TAG_PATTERN);
+  if (!match) return { category: "other", reason: raw };
+  const tag = match[1] as DisputeReasonCategory;
+  const category = DISPUTE_REASON_CATEGORIES.includes(tag) ? tag : "other";
+  return { category, reason: raw.slice(match[0].length) };
 }
 
 function isValidUrl(value: string): boolean {
@@ -58,12 +114,54 @@ function guessMimeType(url: string): string | null {
 }
 
 export function useMarketDisputes(): UseMarketDisputesResult {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [disputes, setDisputes] = useState<MarketDispute[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+
+  // Derive URL-driven state from search params.
+  const activeDisputeId = searchParams.get("dispute");
+  const showForm = searchParams.get("disputeForm") === "1";
+
+  /** Replace search params, preserving unrelated params. */
+  const updateParams = useCallback(
+    (patch: Record<string, string | null>) => {
+      const next = new URLSearchParams(searchParams.toString());
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === null) {
+          next.delete(key);
+        } else {
+          next.set(key, value);
+        }
+      }
+      router.replace(`?${next.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
+
+  const openDispute = useCallback(
+    (id: string) => {
+      updateParams({ dispute: id, disputeForm: null });
+    },
+    [updateParams],
+  );
+
+  const closeDispute = useCallback(() => {
+    updateParams({ dispute: null });
+  }, [updateParams]);
+
+  const openForm = useCallback(() => {
+    updateParams({ disputeForm: "1", dispute: null });
+  }, [updateParams]);
+
+  const closeForm = useCallback(() => {
+    updateParams({ disputeForm: null });
+  }, [updateParams]);
 
   const refresh = useCallback(async (marketId: string) => {
     setLoading(true);
@@ -88,14 +186,18 @@ export function useMarketDisputes(): UseMarketDisputesResult {
       });
 
       setDisputes(
-        rows.map((d) => ({
-          id: d.id,
-          marketId: d.marketId ?? d.market_id ?? marketId,
-          reason: d.reason,
-          status: normalizeStatus(d.status),
-          createdAt: d.createdAt ?? d.created_at ?? new Date().toISOString(),
-          evidenceUrls: [],
-        })),
+        rows.map((d) => {
+          const { category, reason } = decodeReasonWithCategory(d.reason);
+          return {
+            id: d.id,
+            marketId: d.marketId ?? d.market_id ?? marketId,
+            category,
+            reason,
+            status: normalizeStatus(d.status),
+            createdAt: d.createdAt ?? d.created_at ?? new Date().toISOString(),
+            evidenceUrls: [],
+          };
+        }),
       );
     } catch (err) {
       setDisputes((prev) => prev.filter((d) => d.marketId === marketId));
@@ -117,25 +219,49 @@ export function useMarketDisputes(): UseMarketDisputesResult {
     setSubmitError(null);
     setSubmitSuccess(null);
 
+    if (!input.reason.trim()) {
+      setSubmitting(false);
+      const message = "A dispute reason is required.";
+      setSubmitError(message);
+      throw new Error(message);
+    }
+    if (input.reason.trim().length < 20) {
+      setSubmitting(false);
+      const message = "Please provide at least 20 characters of detail.";
+      setSubmitError(message);
+      throw new Error(message);
+    }
+    for (const link of input.evidenceLinks) {
+      if (!isValidUrl(link)) {
+        setSubmitting(false);
+        const message = `Invalid evidence link: ${link}`;
+        setSubmitError(message);
+        throw new Error(message);
+      }
+    }
+
+    const reasonWithEvidence =
+      input.evidenceLinks.length > 0
+        ? `${input.reason.trim()}\n\nEvidence:\n${input.evidenceLinks.join("\n")}`
+        : input.reason.trim();
+
+    // Optimistically insert the dispute immediately so the UI reflects
+    // "filed" without waiting on the network. `optimisticId` lets us find and
+    // roll this exact row back if the request ultimately fails.
+    const optimisticId = `optimistic-${Date.now()}`;
+    const optimisticDispute: MarketDispute = {
+      id: optimisticId,
+      marketId: input.marketId,
+      category: input.category,
+      reason: input.reason.trim(),
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      evidenceUrls: input.evidenceLinks,
+      isOptimistic: true,
+    };
+    setDisputes((prev) => [optimisticDispute, ...prev]);
+
     try {
-      if (!input.reason.trim()) {
-        throw new Error("A dispute reason is required.");
-      }
-      if (input.reason.trim().length < 20) {
-        throw new Error("Please provide at least 20 characters of detail.");
-      }
-
-      for (const link of input.evidenceLinks) {
-        if (!isValidUrl(link)) {
-          throw new Error(`Invalid evidence link: ${link}`);
-        }
-      }
-
-      const reasonWithEvidence =
-        input.evidenceLinks.length > 0
-          ? `${input.reason.trim()}\n\nEvidence:\n${input.evidenceLinks.join("\n")}`
-          : input.reason.trim();
-
       let created: MarketDispute;
       try {
         const response = await apiClient.post<{
@@ -148,13 +274,14 @@ export function useMarketDisputes(): UseMarketDisputesResult {
           created_at?: string;
         }>("/disputes", {
           market_id: input.marketId,
-          reason: reasonWithEvidence,
+          reason: encodeReasonWithCategory(input.category, reasonWithEvidence),
         });
 
         created = {
           id: response.id,
           marketId: response.marketId ?? response.market_id ?? input.marketId,
-          reason: response.reason,
+          category: input.category,
+          reason: input.reason.trim(),
           status: normalizeStatus(response.status),
           createdAt:
             response.createdAt ?? response.created_at ?? new Date().toISOString(),
@@ -177,10 +304,13 @@ export function useMarketDisputes(): UseMarketDisputesResult {
         }
       } catch (err) {
         if (err instanceof ApiError && err.kind === "network") {
+          // Offline: keep a locally-pending row instead of rolling back, since
+          // there was never a server response confirming or rejecting this.
           created = {
             id: `local-${Date.now()}`,
             marketId: input.marketId,
-            reason: reasonWithEvidence,
+            category: input.category,
+            reason: input.reason.trim(),
             status: "pending",
             createdAt: new Date().toISOString(),
             evidenceUrls: input.evidenceLinks,
@@ -192,10 +322,16 @@ export function useMarketDisputes(): UseMarketDisputesResult {
         }
       }
 
-      setDisputes((prev) => [created, ...prev.filter((d) => d.id !== created.id)]);
+      // Replace the optimistic row with the confirmed (or locally-pending) one.
+      setDisputes((prev) => [
+        created,
+        ...prev.filter((d) => d.id !== optimisticId && d.id !== created.id),
+      ]);
       setSubmitSuccess("Dispute submitted successfully.");
       return created;
     } catch (err) {
+      // Roll back: the server rejected the dispute, so drop the optimistic row.
+      setDisputes((prev) => prev.filter((d) => d.id !== optimisticId));
       const message =
         err instanceof Error ? err.message : "Failed to submit dispute";
       setSubmitError(message);
@@ -212,8 +348,14 @@ export function useMarketDisputes(): UseMarketDisputesResult {
     submitting,
     submitError,
     submitSuccess,
+    activeDisputeId,
+    showForm,
     refresh,
     submitDispute,
     clearStatus,
+    openDispute,
+    closeDispute,
+    openForm,
+    closeForm,
   };
 }

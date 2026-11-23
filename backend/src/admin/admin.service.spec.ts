@@ -6,7 +6,10 @@ import { AdminService } from './admin.service';
 import { VerifiedAddress } from './entities/verified-address.entity';
 import { UserFlag } from './entities/user-flag.entity';
 import { ListVerifiedAddressesQueryDto } from './dto/list-verified-addresses-query.dto';
-import { BulkUserAction } from './dto/bulk-user-action.dto';
+import {
+  BulkUserAction,
+  BulkUserActionErrorCode,
+} from './dto/bulk-user-action.dto';
 
 describe('AdminService (Verified Addresses)', () => {
   let service: AdminService;
@@ -126,6 +129,15 @@ describe('AdminService (Verified Addresses)', () => {
             require('../indexer/entities/fee-history.entity').FeeHistory,
           ),
           useValue: { findOne: jest.fn(), find: jest.fn() },
+        },
+        {
+          provide: getRepositoryToken(
+            require('./entities/admin-audit-log.entity').AdminAuditLog,
+          ),
+          useValue: {
+            create: jest.fn((entry: any) => entry),
+            save: jest.fn((entry: any) => Promise.resolve(entry)),
+          },
         },
         {
           provide: require('../analytics/analytics.service').AnalyticsService,
@@ -264,9 +276,48 @@ describe('AdminService (Verified Addresses)', () => {
   });
   describe('banUser and unbanUser', () => {
     let userRepository: any;
+    let auditRepository: any;
 
     beforeEach(() => {
       userRepository = service['usersRepository'];
+      auditRepository = service['adminAuditLogsRepository'];
+    });
+
+    it('should reject a ban without a non-empty reason', async () => {
+      await expect(service.banUser('u1', '   ', 'admin')).rejects.toThrow(
+        'A non-empty ban reason is required',
+      );
+      expect(userRepository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('should store the reason on the ban record and in the admin audit log', async () => {
+      const user = {
+        id: 'u1',
+        is_banned: false,
+        ban_reason: null,
+        banned_at: null,
+        banned_by: null,
+      };
+      userRepository.findOne.mockResolvedValue(user);
+      userRepository.save = jest.fn().mockResolvedValue(user);
+
+      const result = await service.banUser('u1', '  repeated spam  ', 'admin');
+
+      expect(result.ban_reason).toBe('repeated spam');
+      expect(auditRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actor_id: 'admin',
+          action: 'BAN_USER',
+          target_type: 'user',
+          target_id: 'u1',
+          metadata: { reason: 'repeated spam' },
+        }),
+      );
+      expect(service['analyticsService'].logActivity).toHaveBeenCalledWith(
+        'u1',
+        'USER_BANNED',
+        { reason: 'repeated spam', banned_by: 'admin' },
+      );
     });
 
     it('should throw ConflictException if user is already banned', async () => {
@@ -344,6 +395,7 @@ describe('AdminService (Verified Addresses)', () => {
           user_id: 'missing',
           success: false,
           error: 'User "missing" not found',
+          error_code: BulkUserActionErrorCode.UserNotFound,
         },
       ]);
     });
@@ -360,6 +412,7 @@ describe('AdminService (Verified Addresses)', () => {
         user_id: 'u1',
         success: false,
         error: 'User is already banned',
+        error_code: BulkUserActionErrorCode.AlreadyBanned,
       });
     });
 
@@ -375,7 +428,63 @@ describe('AdminService (Verified Addresses)', () => {
         user_id: 'u1',
         success: false,
         error: 'User is not banned',
+        error_code: BulkUserActionErrorCode.NotBanned,
       });
+    });
+
+    it('isolates unexpected errors to the failing user and masks details', async () => {
+      mockManager.findOne.mockImplementation((_entity: any, opts: any) =>
+        Promise.resolve({ id: opts.where.id, is_banned: false }),
+      );
+      mockManager.save.mockImplementation((a: any, b: any) => {
+        const entity = b ?? a;
+        if (entity?.id === 'u2') {
+          return Promise.reject(new Error('deadlock detected on relation'));
+        }
+        return Promise.resolve(entity);
+      });
+
+      const result = await service.bulkUserAction(
+        {
+          user_ids: ['u1', 'u2', 'u3'],
+          action: BulkUserAction.Ban,
+          reason: 'spam',
+        },
+        'admin-1',
+      );
+
+      expect(result.total).toBe(3);
+      expect(result.succeeded).toBe(2);
+      expect(result.failed).toBe(1);
+      expect(result.results[1]).toEqual({
+        user_id: 'u2',
+        success: false,
+        error: 'Unexpected error while processing user',
+        error_code: BulkUserActionErrorCode.InternalError,
+      });
+      expect(userRepository.manager.transaction).toHaveBeenCalledTimes(3);
+    });
+
+    it('rejects banning yourself without affecting other users', async () => {
+      mockManager.findOne.mockImplementation((_entity: any, opts: any) =>
+        Promise.resolve({ id: opts.where.id, is_banned: false }),
+      );
+
+      const result = await service.bulkUserAction(
+        { user_ids: ['admin-1', 'u1'], action: BulkUserAction.Ban },
+        'admin-1',
+      );
+
+      expect(result.results).toEqual([
+        {
+          user_id: 'admin-1',
+          success: false,
+          error: 'Admins cannot ban themselves',
+          error_code: BulkUserActionErrorCode.SelfActionNotAllowed,
+        },
+        { user_id: 'u1', success: true },
+      ]);
+      expect(userRepository.manager.transaction).toHaveBeenCalledTimes(1);
     });
 
     it('creates a UserFlag record for the flag action', async () => {
@@ -399,6 +508,134 @@ describe('AdminService (Verified Addresses)', () => {
           flagged_by: 'admin-1',
         }),
       );
+    });
+  });
+
+  describe('adminResolveMarket', () => {
+    let marketRepository: any;
+    let predictionRepository: any;
+    let analyticsService: any;
+    let sorobanService: any;
+    let notificationsService: any;
+
+    const makeMarket = (overrides: Record<string, unknown> = {}) => ({
+      id: 'market-1',
+      on_chain_market_id: 'chain-1',
+      title: 'Will it rain tomorrow?',
+      is_resolved: false,
+      is_cancelled: false,
+      resolved_outcome: null,
+      outcome_options: ['Yes', 'No'],
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      marketRepository = service['marketsRepository'];
+      predictionRepository = service['predictionsRepository'];
+      analyticsService = service['analyticsService'];
+      sorobanService = service['sorobanService'];
+      notificationsService = service['notificationsService'];
+
+      marketRepository.save = jest
+        .fn()
+        .mockImplementation((entity: any) => Promise.resolve(entity));
+      predictionRepository.find = jest.fn().mockResolvedValue([]);
+      notificationsService.create.mockResolvedValue(undefined);
+      sorobanService.resolveMarket.mockResolvedValue(undefined);
+      analyticsService.invalidateMarketResolutionCaches.mockResolvedValue(
+        undefined,
+      );
+    });
+
+    it('invalidates the market resolution caches only after the resolution is persisted', async () => {
+      const market = makeMarket();
+      marketRepository.findOne.mockResolvedValue(market);
+
+      const saveOrder: string[] = [];
+      marketRepository.save.mockImplementation(async (entity: any) => {
+        saveOrder.push('save');
+        return entity;
+      });
+      analyticsService.invalidateMarketResolutionCaches.mockImplementation(
+        async () => {
+          saveOrder.push('invalidate');
+        },
+      );
+
+      await service.adminResolveMarket(
+        'market-1',
+        { resolved_outcome: 'Yes' },
+        'admin-1',
+      );
+
+      expect(saveOrder).toEqual(['save', 'invalidate']);
+      expect(
+        analyticsService.invalidateMarketResolutionCaches,
+      ).toHaveBeenCalledWith('market-1', 'chain-1', []);
+    });
+
+    it('passes the affected users from every prediction on the market', async () => {
+      const market = makeMarket();
+      marketRepository.findOne.mockResolvedValue(market);
+      predictionRepository.find.mockResolvedValue([
+        {
+          user: { id: 'user-1', stellar_address: 'GADDR1' },
+          chosen_outcome: 'Yes',
+        },
+        {
+          user: { id: 'user-2', stellar_address: 'GADDR2' },
+          chosen_outcome: 'No',
+        },
+      ]);
+
+      await service.adminResolveMarket(
+        'market-1',
+        { resolved_outcome: 'Yes' },
+        'admin-1',
+      );
+
+      expect(
+        analyticsService.invalidateMarketResolutionCaches,
+      ).toHaveBeenCalledWith('market-1', 'chain-1', ['user-1', 'user-2']);
+    });
+
+    it('does not invalidate caches when the on-chain resolution fails', async () => {
+      const market = makeMarket();
+      marketRepository.findOne.mockResolvedValue(market);
+      sorobanService.resolveMarket.mockRejectedValue(
+        new Error('soroban timeout'),
+      );
+
+      await expect(
+        service.adminResolveMarket(
+          'market-1',
+          { resolved_outcome: 'Yes' },
+          'admin-1',
+        ),
+      ).rejects.toThrow('Failed to resolve market on Soroban');
+
+      expect(marketRepository.save).not.toHaveBeenCalled();
+      expect(
+        analyticsService.invalidateMarketResolutionCaches,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('rejects resolving a market that is already resolved', async () => {
+      marketRepository.findOne.mockResolvedValue(
+        makeMarket({ is_resolved: true }),
+      );
+
+      await expect(
+        service.adminResolveMarket(
+          'market-1',
+          { resolved_outcome: 'Yes' },
+          'admin-1',
+        ),
+      ).rejects.toThrow('Market is already resolved');
+
+      expect(
+        analyticsService.invalidateMarketResolutionCaches,
+      ).not.toHaveBeenCalled();
     });
   });
 });

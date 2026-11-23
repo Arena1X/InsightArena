@@ -165,6 +165,40 @@ k6 provides the following output:
 k6 run --out json=results.json performance/api-load-test.js
 ```
 
+## Pass/Fail Thresholds
+
+Every HTTP script enforces latency and error-rate thresholds. k6 checks them
+at the end of the run and **exits non-zero (code 99) when any is breached**,
+so a regression fails the run and the CI job.
+
+The shared thresholds live in `k6-config.js` (`buildThresholds()`), and each
+script that uses them re-exports `options` from it — k6 only applies options
+exported by the entry script.
+
+| Metric              | Load default | Smoke default | Override        |
+| ------------------- | ------------ | ------------- | --------------- |
+| `http_req_duration` | p(95) < 200ms | p(95) < 300ms | `K6_P95_MS`     |
+| `http_req_duration` | p(99) < 500ms | p(99) < 800ms | `K6_P99_MS`     |
+| `http_req_failed`   | rate < 5%    | rate < 1%     | `K6_ERROR_RATE` |
+| `errors` (checks)   | rate < 5%    | rate < 1%     | `K6_ERROR_RATE` |
+
+### Smoke check
+
+`smoke-test.js` is a short run (5 VUs for 30s by default) against public
+health endpoints that need no seed data:
+
+```bash
+pnpm run perf:smoke                # exits 0 when all thresholds pass
+pnpm run perf:smoke:breach-check   # forces p(95)<0ms; passes only if k6 fails
+```
+
+Tune with `API_BASE_URL`, `SMOKE_PATHS`, `SMOKE_VUS` and `SMOKE_DURATION`.
+
+In GitHub Actions the optional **Performance smoke (k6)** job in
+`.github/workflows/backend-ci.yml` runs both commands against a freshly built
+API. It runs when the workflow is dispatched manually or on pull requests
+labelled `perf`, and is capped at 10 minutes.
+
 ## CI/CD Integration
 
 ### GitHub Actions Example

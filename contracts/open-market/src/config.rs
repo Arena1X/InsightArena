@@ -8,7 +8,7 @@ pub enum ReputationDecayMode {
 }
 
 use crate::errors::InsightArenaError;
-use crate::storage_types::{DataKey, VolumeFeeConfig};
+use crate::storage_types::{DataKey, Dispute, Market, VolumeFeeConfig};
 
 // ── TTL constants ─────────────────────────────────────────────────────────────
 // Assuming ~5 s per ledger:
@@ -23,6 +23,148 @@ pub const PERSISTENT_THRESHOLD: u32 = 501_120; // PERSISTENT_BUMP − 1 day
 /// [`set_timelock_delay`].
 pub const DEFAULT_TIMELOCK_DELAY: u64 = 172_800;
 pub const DEFAULT_MAX_OUTCOMES: u32 = 10;
+
+// ── Parameter Bounds ──────────────────────────────────────────────────────────
+
+/// Minimum protocol fee in basis points (0%). Inclusive: `0..=10_000`.
+pub const MIN_PROTOCOL_FEE_BPS: u32 = 0;
+/// Maximum protocol fee in basis points (100%). Inclusive: `0..=10_000`.
+pub const MAX_PROTOCOL_FEE_BPS: u32 = 10_000;
+
+/// Minimum governance proposal timelock delay in seconds (1s). Inclusive: `1..=2_592_000`.
+/// 0 is rejected because proposals must have a non-zero timelock window for guardian veto safety.
+pub const MIN_TIMELOCK_DELAY: u64 = 1;
+/// Maximum governance proposal timelock delay in seconds (~30 days). Inclusive: `1..=2_592_000`.
+/// Prevents accidental permanent lockout and timestamp arithmetic overflow.
+pub const MAX_TIMELOCK_DELAY: u64 = 2_592_000;
+
+/// Minimum creator reputation threshold (0). Inclusive: `0..=1000`.
+pub const MIN_CREATOR_REPUTATION: u32 = 0;
+/// Maximum creator reputation threshold (1000). Inclusive: `0..=1000`.
+/// Reputation scores are clamped to [0, 1000] by reputation engine; higher thresholds would permanently lock out all creators.
+pub const MAX_CREATOR_REPUTATION: u32 = 1000;
+
+/// Minimum reputation decay half-life in seconds (1s). Inclusive: `1..=u32::MAX`.
+/// Must be strictly positive (> 0) to prevent division by zero in decay calculation.
+pub const MIN_REPUTATION_HALF_LIFE_SECONDS: u32 = 1;
+/// Maximum reputation decay half-life in seconds. Inclusive: `1..=u32::MAX`.
+/// u32::MAX allows effectively disabling time decay as tested by test suites.
+pub const MAX_REPUTATION_HALF_LIFE_SECONDS: u32 = u32::MAX;
+
+/// Minimum season decay grace period in inactive seasons (0). Inclusive: `0..=100`.
+pub const MIN_SEASON_DECAY_GRACE: u32 = 0;
+/// Maximum season decay grace period in inactive seasons (100). Inclusive: `0..=100`.
+/// 100 seasons represents ~25 years of inactivity tolerance, bounding excessive config values.
+pub const MAX_SEASON_DECAY_GRACE: u32 = 100;
+
+/// Minimum season decay rate in basis points (0%). Inclusive: `0..=10_000`.
+pub const MIN_SEASON_DECAY_BPS: u32 = 0;
+/// Maximum season decay rate in basis points (100%). Inclusive: `0..=10_000`.
+/// Decay rate cannot exceed 100% (10_000 bps) to prevent underflow in multiplicative decay math.
+pub const MAX_SEASON_DECAY_BPS: u32 = 10_000;
+
+/// Minimum market persistent TTL extension ledgers (1). Inclusive: `1..=5_184_000`.
+/// Soroban extend_ttl requires extension ledgers > 0.
+pub const MIN_MARKET_TTL_EXTENSION: u32 = 1;
+/// Maximum market persistent TTL extension ledgers (~1 year). Inclusive: `1..=5_184_000`.
+/// Matches Soroban permanent ledger bump cap `LEDGER_BUMP_PERMANENT`.
+pub const MAX_MARKET_TTL_EXTENSION: u32 = 5_184_000;
+
+/// Minimum stake bound in stroops (1 stroop). Inclusive: `1..=500_000_000_000_000_000`.
+/// Stakes must be strictly positive (> 0).
+pub const MIN_STAKE_XLM: i128 = 1;
+/// Maximum stake bound in stroops (50B XLM = 5e17 stroops). Inclusive: `1..=500_000_000_000_000_000`.
+/// Capped at total Stellar lumen supply (50 billion XLM) to prevent multiplication overflow in payout math.
+pub const MAX_STAKE_XLM: i128 = 500_000_000_000_000_000;
+
+/// Minimum insurance pool share in basis points (0%). Inclusive: `0..=10_000`.
+pub const MIN_INSURANCE_POOL_SHARE_BPS: u32 = 0;
+/// Maximum insurance pool share in basis points (100%). Inclusive: `0..=10_000`.
+pub const MAX_INSURANCE_POOL_SHARE_BPS: u32 = 10_000;
+
+/// Minimum outcome AMM liquidity cap in stroops (0 = unlimited). Inclusive: `0..=500_000_000_000_000_000`.
+pub const MIN_MAX_LIQUIDITY_PER_OUTCOME: i128 = 0;
+/// Maximum outcome AMM liquidity cap in stroops (50B XLM). Inclusive: `0..=500_000_000_000_000_000`.
+pub const MAX_MAX_LIQUIDITY_PER_OUTCOME: i128 = 500_000_000_000_000_000;
+
+/// Treasury split plus LP split target sum in basis points (10_000 = 100%).
+pub const TOTAL_TREASURY_LP_SPLIT_BPS: u32 = 10_000;
+
+/// Minimum arbiter quorum in basis points (1 bps). Inclusive: `1..=10_000`.
+/// 0 is rejected because a non-zero quorum of assigned arbiter panel is required to settle votes.
+pub const MIN_ARBITER_QUORUM_BPS: u32 = 1;
+/// Maximum arbiter quorum in basis points (100%). Inclusive: `1..=10_000`.
+pub const MAX_ARBITER_QUORUM_BPS: u32 = 10_000;
+
+/// Minimum arbiter slash share in basis points (0%). Inclusive: `0..=10_000`.
+pub const MIN_ARBITER_SLASH_BPS: u32 = 0;
+/// Maximum arbiter slash share in basis points (100%). Inclusive: `0..=10_000`.
+pub const MAX_ARBITER_SLASH_BPS: u32 = 10_000;
+
+/// Minimum arbiter voting window in seconds (1s). Inclusive: `1..=2_592_000`.
+/// Must be strictly positive (> 0) to allow arbiters time to vote.
+pub const MIN_ARBITER_VOTING_PERIOD_SECONDS: u64 = 1;
+/// Maximum arbiter voting window in seconds (~30 days). Inclusive: `1..=2_592_000`.
+/// Prevents indefinitely locking arbiter bonds and proposal resolutions.
+pub const MAX_ARBITER_VOTING_PERIOD_SECONDS: u64 = 2_592_000;
+
+/// Minimum governance quorum in basis points (0%). Inclusive: `0..=10_000`.
+pub const MIN_GOVERNANCE_QUORUM_BPS: u32 = 0;
+/// Maximum governance quorum in basis points (100%). Inclusive: `0..=10_000`.
+pub const MAX_GOVERNANCE_QUORUM_BPS: u32 = 10_000;
+
+/// Minimum allowed market outcomes count (2). Inclusive: `2..=50`.
+/// Prediction markets require at least two mutually exclusive outcomes.
+pub const MIN_MAX_OUTCOMES: u32 = 2;
+/// Maximum allowed market outcomes count (50). Inclusive: `2..=50`.
+/// Caps CPU and storage footprint to avoid quadratic duplicate-check transaction limits.
+pub const MAX_MAX_OUTCOMES: u32 = 50;
+
+/// Minimum number of tiers in volume fee configuration (1). Inclusive: `1..=50`.
+pub const MIN_VOLUME_FEE_TIERS: u32 = 1;
+/// Maximum number of tiers in volume fee configuration (50). Inclusive: `1..=50`.
+/// Bounds loop iteration complexity during swap volume tier lookup.
+pub const MAX_VOLUME_FEE_TIERS: u32 = 50;
+
+/// Minimum oracle resolution stake amount in stroops (1 stroop). Inclusive: `1..=500_000_000_000_000_000`.
+/// Must be strictly positive (> 0) to secure oracle submissions.
+pub const MIN_ORACLE_STAKE_AMOUNT: i128 = 1;
+/// Maximum oracle resolution stake amount in stroops (50B XLM). Inclusive: `1..=500_000_000_000_000_000`.
+pub const MAX_ORACLE_STAKE_AMOUNT: i128 = 500_000_000_000_000_000;
+
+/// Minimum oracle reward rate in basis points (0%). Inclusive: `0..=10_000`.
+pub const MIN_ORACLE_REWARD_BPS: u32 = 0;
+/// Maximum oracle reward rate in basis points (100%). Inclusive: `0..=10_000`.
+pub const MAX_ORACLE_REWARD_BPS: u32 = 10_000;
+
+/// Minimum vesting tranche count (1). Inclusive: `1..=100`.
+/// Must be strictly positive (> 0) to avoid division by zero when calculating tranche amounts.
+pub const MIN_VESTING_TRANCHE_COUNT: u32 = 1;
+/// Maximum vesting tranche count (100). Inclusive: `1..=100`.
+/// Prevents excessive tranche fragmentation and gas exhaustion.
+pub const MAX_VESTING_TRANCHE_COUNT: u32 = 100;
+
+/// Minimum vesting unlock interval in seconds (1s). Inclusive: `1..=31_536_000`.
+/// Must be strictly positive (> 0) to avoid zero interval unlocks.
+pub const MIN_VESTING_INTERVAL_SECONDS: u64 = 1;
+/// Maximum vesting unlock interval in seconds (~1 year). Inclusive: `1..=31_536_000`.
+/// Capped at ~1 year (31_536_000 seconds) to avoid indefinite locking of season rewards.
+pub const MAX_VESTING_INTERVAL_SECONDS: u64 = 31_536_000;
+
+/// Minimum creator anti-spam bond amount in stroops (0 = disabled). Inclusive: `0..=500_000_000_000_000_000`.
+pub const MIN_BOND_AMOUNT: i128 = 0;
+/// Maximum creator anti-spam bond amount in stroops (50B XLM). Inclusive: `0..=500_000_000_000_000_000`.
+pub const MAX_BOND_AMOUNT: i128 = 500_000_000_000_000_000;
+
+/// Minimum early exit fee in basis points (0%). Inclusive: `0..=10_000`.
+pub const MIN_EARLY_EXIT_FEE_BPS: u32 = 0;
+/// Maximum early exit fee in basis points (100%). Inclusive: `0..=10_000`.
+pub const MAX_EARLY_EXIT_FEE_BPS: u32 = 10_000;
+
+/// Trailing window (seconds) of the TWAP used to sanity-check the spot price at settlement.
+pub const TWAP_SETTLEMENT_WINDOW_SECONDS: u64 = 3_600;
+/// Max allowed |spot - TWAP| / TWAP at settlement, in basis points (20%).
+pub const TWAP_SETTLEMENT_MAX_DEVIATION_BPS: u32 = 2_000;
 
 // ── Storage-specific TTL constants (merged from ttl.rs) ───────────────────────
 // ~30 days at ~6s/ledger for frequently accessed market state.
@@ -385,10 +527,18 @@ fn load_config(env: &Env) -> Result<Config, InsightArenaError> {
 }
 
 fn validate_protocol_fee(fee_bps: u32) -> Result<(), InsightArenaError> {
-    if fee_bps > 10_000 {
+    if fee_bps > MAX_PROTOCOL_FEE_BPS {
         return Err(InsightArenaError::InvalidFee);
     }
 
+    Ok(())
+}
+
+/// Validate timelock delay parameter.
+fn validate_timelock_delay(delay: u64) -> Result<(), InsightArenaError> {
+    if !(MIN_TIMELOCK_DELAY..=MAX_TIMELOCK_DELAY).contains(&delay) {
+        return Err(InsightArenaError::InvalidInput);
+    }
     Ok(())
 }
 
@@ -397,7 +547,10 @@ fn validate_protocol_fee(fee_bps: u32) -> Result<(), InsightArenaError> {
 /// used by `validate_protocol_fee` and `set_insurance_pool_share_bps` for
 /// bps-range validation.
 fn validate_treasury_split(treasury_split_bps: u32, lp_split_bps: u32) -> Result<(), InsightArenaError> {
-    if treasury_split_bps.checked_add(lp_split_bps) != Some(10_000) {
+    if treasury_split_bps > MAX_PROTOCOL_FEE_BPS || lp_split_bps > MAX_PROTOCOL_FEE_BPS {
+        return Err(InsightArenaError::InvalidFee);
+    }
+    if treasury_split_bps.checked_add(lp_split_bps) != Some(TOTAL_TREASURY_LP_SPLIT_BPS) {
         return Err(InsightArenaError::InvalidFee);
     }
 
@@ -408,7 +561,7 @@ fn validate_min_reputation(threshold: u32) -> Result<(), InsightArenaError> {
     // Reputation scores are clamped to [0, 1000] by `calculate_creator_reputation`;
     // a higher threshold could never be met by anyone, which is almost certainly
     // a misconfiguration rather than an intentional full lockout.
-    if threshold > 1000 {
+    if threshold > MAX_CREATOR_REPUTATION {
         return Err(InsightArenaError::InvalidInput);
     }
 
@@ -417,13 +570,69 @@ fn validate_min_reputation(threshold: u32) -> Result<(), InsightArenaError> {
 
 /// Validate global (or market-override) stake bounds.
 ///
-/// Both bounds must be strictly positive and `min_stake <= max_stake`.
+/// Both bounds must be strictly positive, within total supply limits, and `min_stake <= max_stake`.
 pub(crate) fn validate_stake_bounds(min_stake: i128, max_stake: i128) -> Result<(), InsightArenaError> {
-    if min_stake <= 0 || max_stake <= 0 {
+    if !(MIN_STAKE_XLM..=MAX_STAKE_XLM).contains(&min_stake)
+        || !(MIN_STAKE_XLM..=MAX_STAKE_XLM).contains(&max_stake)
+    {
         return Err(InsightArenaError::InvalidInput);
     }
     if min_stake > max_stake {
         return Err(InsightArenaError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn validate_insurance_pool_share_bps(share_bps: u32) -> Result<(), InsightArenaError> {
+    if share_bps > MAX_INSURANCE_POOL_SHARE_BPS {
+        return Err(InsightArenaError::InvalidFee);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_max_liquidity_per_outcome(cap: i128) -> Result<(), InsightArenaError> {
+    if !(MIN_MAX_LIQUIDITY_PER_OUTCOME..=MAX_MAX_LIQUIDITY_PER_OUTCOME).contains(&cap) {
+        return Err(InsightArenaError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn validate_arbiter_config(
+    quorum_bps: u32,
+    slash_bps: u32,
+    voting_period_seconds: u64,
+) -> Result<(), InsightArenaError> {
+    if !(MIN_ARBITER_QUORUM_BPS..=MAX_ARBITER_QUORUM_BPS).contains(&quorum_bps) {
+        return Err(InsightArenaError::InvalidInput);
+    }
+    if slash_bps > MAX_ARBITER_SLASH_BPS {
+        return Err(InsightArenaError::InvalidInput);
+    }
+    if !(MIN_ARBITER_VOTING_PERIOD_SECONDS..=MAX_ARBITER_VOTING_PERIOD_SECONDS)
+        .contains(&voting_period_seconds)
+    {
+        return Err(InsightArenaError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn validate_max_outcomes(max_outcomes: u32) -> Result<(), InsightArenaError> {
+    if !(MIN_MAX_OUTCOMES..=MAX_MAX_OUTCOMES).contains(&max_outcomes) {
+        return Err(InsightArenaError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn validate_bond_amount(bond_amount: i128) -> Result<(), InsightArenaError> {
+    if !(MIN_BOND_AMOUNT..=MAX_BOND_AMOUNT).contains(&bond_amount) {
+        return Err(InsightArenaError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn validate_early_exit_fee_bps(early_exit_fee_bps: u32) -> Result<(), InsightArenaError> {
+    if early_exit_fee_bps > MAX_EARLY_EXIT_FEE_BPS {
+        return Err(InsightArenaError::InvalidFee);
     }
     Ok(())
 }
@@ -699,6 +908,8 @@ pub fn set_timelock_delay(
         return Err(InsightArenaError::Unauthorized);
     }
 
+    validate_timelock_delay(new_delay)?;
+
     let old_delay = config.timelock_delay;
     config.timelock_delay = new_delay;
     env.storage().persistent().set(&DataKey::Config, &config);
@@ -808,7 +1019,7 @@ fn emit_min_reputation_updated(env: &Env, old_threshold: u32, new_threshold: u32
 }
 
 fn validate_half_life(half_life_seconds: u32) -> Result<(), InsightArenaError> {
-    if half_life_seconds == 0 {
+    if half_life_seconds < MIN_REPUTATION_HALF_LIFE_SECONDS {
         return Err(InsightArenaError::InvalidInput);
     }
     Ok(())
@@ -853,8 +1064,11 @@ fn emit_reputation_decay_config_updated(env: &Env, half_life_seconds: u32, mode:
     );
 }
 
-fn validate_season_decay_bps(decay_bps: u32) -> Result<(), InsightArenaError> {
-    if decay_bps > 10_000 {
+fn validate_season_decay_config(grace_seasons: u32, decay_bps: u32) -> Result<(), InsightArenaError> {
+    if grace_seasons > MAX_SEASON_DECAY_GRACE {
+        return Err(InsightArenaError::InvalidInput);
+    }
+    if decay_bps > MAX_SEASON_DECAY_BPS {
         return Err(InsightArenaError::InvalidInput);
     }
     Ok(())
@@ -877,7 +1091,7 @@ pub fn set_season_decay_config(
         return Err(InsightArenaError::Unauthorized);
     }
 
-    validate_season_decay_bps(decay_bps)?;
+    validate_season_decay_config(grace_seasons, decay_bps)?;
 
     config.reputation_season_decay_grace = grace_seasons;
     config.reputation_season_decay_bps = decay_bps;
@@ -912,7 +1126,7 @@ pub fn set_market_ttl_extension(
         return Err(InsightArenaError::Unauthorized);
     }
 
-    if new_extension == 0 {
+    if !(MIN_MARKET_TTL_EXTENSION..=MAX_MARKET_TTL_EXTENSION).contains(&new_extension) {
         return Err(InsightArenaError::InvalidInput);
     }
 
@@ -1013,9 +1227,7 @@ pub fn set_insurance_pool_share_bps(
         return Err(InsightArenaError::Unauthorized);
     }
 
-    if new_share_bps > 10_000 {
-        return Err(InsightArenaError::InvalidFee);
-    }
+    validate_insurance_pool_share_bps(new_share_bps)?;
 
     let old_share_bps = config.insurance_pool_share_bps;
     config.insurance_pool_share_bps = new_share_bps;
@@ -1050,9 +1262,7 @@ pub fn set_max_liquidity_per_outcome(
         return Err(InsightArenaError::Unauthorized);
     }
 
-    if new_cap < 0 {
-        return Err(InsightArenaError::InvalidInput);
-    }
+    validate_max_liquidity_per_outcome(new_cap)?;
 
     let old_cap = config.max_liquidity_per_outcome;
     config.max_liquidity_per_outcome = new_cap;
@@ -1166,15 +1376,7 @@ pub fn set_arbiter_config(
         return Err(InsightArenaError::Unauthorized);
     }
 
-    if quorum_bps > 10_000 || quorum_bps == 0 {
-        return Err(InsightArenaError::InvalidInput);
-    }
-    if slash_bps > 10_000 {
-        return Err(InsightArenaError::InvalidInput);
-    }
-    if voting_period_seconds == 0 {
-        return Err(InsightArenaError::InvalidInput);
-    }
+    validate_arbiter_config(quorum_bps, slash_bps, voting_period_seconds)?;
 
     config.arbiter_quorum_bps = quorum_bps;
     config.arbiter_slash_bps = slash_bps;
@@ -1254,7 +1456,7 @@ pub fn update_governance_quorum_from_governance(
 }
 
 fn validate_quorum_bps(quorum_bps: u32) -> Result<(), InsightArenaError> {
-    if quorum_bps > 10_000 {
+    if quorum_bps > MAX_GOVERNANCE_QUORUM_BPS {
         return Err(InsightArenaError::InvalidInput);
     }
     Ok(())
@@ -1281,9 +1483,7 @@ pub fn set_max_outcomes(
         return Err(InsightArenaError::Unauthorized);
     }
 
-    if new_max < 2 {
-        return Err(InsightArenaError::InvalidInput);
-    }
+    validate_max_outcomes(new_max)?;
 
     let old_max = config.max_outcomes;
     config.max_outcomes = new_max;
@@ -1302,10 +1502,73 @@ fn emit_max_outcomes_updated(env: &Env, old_max: u32, new_max: u32) {
     );
 }
 
+// ── Resolution dispute window & payout gate ──────────────────────────────────
+//
+// A resolved market is not immediately final: for `market.dispute_window`
+// seconds after `resolved_at` anyone may contest the outcome via
+// `dispute::raise_dispute` (emits `("dsp", "raised")`). While such a dispute
+// is open, every payout path (`claim_payout`, `batch_distribute_payouts`) is
+// blocked. The dispute is closed by `dispute::resolve_dispute` (emits
+// `("dsp", "reslvd")`): a rejected dispute releases payouts on the original
+// outcome; an upheld one reopens the market, so payouts stay blocked by
+// `MarketNotResolved` until it is re-resolved. With no dispute, payouts
+// proceed normally — including once the window has closed, after which the
+// outcome can no longer be contested at all.
+
+/// Timestamp at which a resolved market's dispute window closes
+/// (`resolved_at + dispute_window`, saturating). `None` when the market is
+/// not resolved.
+pub fn dispute_window_end(market: &Market) -> Option<u64> {
+    if !market.is_resolved {
+        return None;
+    }
+    market
+        .resolved_at
+        .map(|resolved_at| resolved_at.saturating_add(market.dispute_window))
+}
+
+/// `true` while a resolved market's outcome can still be contested.
+/// The window is inclusive of its end timestamp, matching `raise_dispute`.
+pub fn is_dispute_window_open(env: &Env, market: &Market) -> bool {
+    match dispute_window_end(market) {
+        Some(end) => env.ledger().timestamp() <= end,
+        None => false,
+    }
+}
+
+/// `true` when a dispute has been raised against the market's resolution and
+/// has not been settled yet.
+pub fn has_open_dispute(env: &Env, market_id: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get::<DataKey, Dispute>(&DataKey::Dispute(market_id))
+        .map(|dispute| !dispute.is_resolved)
+        .unwrap_or(false)
+}
+
+/// Reject payouts for a market while a dispute against its resolution is
+/// open.
+///
+/// Returns [`InsightArenaError::DisputeAlreadyFiled`] (reused — the error
+/// enum is at its 50-case cap) when payouts are paused by an open dispute.
+pub fn ensure_payouts_unlocked(env: &Env, market_id: u64) -> Result<(), InsightArenaError> {
+    if has_open_dispute(env, market_id) {
+        return Err(InsightArenaError::DisputeAlreadyFiled);
+    }
+    Ok(())
+}
+
+/// `true` when payouts for `market_id` are currently paused by an open
+/// dispute.
+pub fn are_payouts_paused(env: &Env, market_id: u64) -> bool {
+    has_open_dispute(env, market_id)
+}
+
 // ── Volume Fee Config ──────────────────────────────────────────────────────────
 
 fn validate_volume_fee_config(config: &VolumeFeeConfig) -> Result<(), InsightArenaError> {
-    if config.tiers.is_empty() {
+    let len = config.tiers.len();
+    if !(MIN_VOLUME_FEE_TIERS..=MAX_VOLUME_FEE_TIERS).contains(&len) {
         return Err(InsightArenaError::InvalidInput);
     }
 
@@ -1314,19 +1577,19 @@ fn validate_volume_fee_config(config: &VolumeFeeConfig) -> Result<(), InsightAre
     if first.volume_threshold != 0 {
         return Err(InsightArenaError::InvalidInput);
     }
-    if first.fee_bps > 10_000 {
+    if first.fee_bps > MAX_PROTOCOL_FEE_BPS {
         return Err(InsightArenaError::InvalidFee);
     }
 
     // Thresholds must be monotonically increasing (non-overlapping tiers);
     // every tier's fee must stay within the valid bps range.
     let mut prev_threshold = first.volume_threshold;
-    for i in 1..config.tiers.len() {
+    for i in 1..len {
         let entry = config.tiers.get(i).unwrap();
         if entry.volume_threshold <= prev_threshold {
             return Err(InsightArenaError::InvalidInput);
         }
-        if entry.fee_bps > 10_000 {
+        if entry.fee_bps > MAX_PROTOCOL_FEE_BPS {
             return Err(InsightArenaError::InvalidFee);
         }
         prev_threshold = entry.volume_threshold;
@@ -1388,10 +1651,10 @@ pub fn get_volume_fee_config(env: &Env) -> VolumeFeeConfig {
 }
 
 fn validate_oracle_stake_config(stake_amount: i128, reward_bps: u32) -> Result<(), InsightArenaError> {
-    if stake_amount <= 0 {
+    if !(MIN_ORACLE_STAKE_AMOUNT..=MAX_ORACLE_STAKE_AMOUNT).contains(&stake_amount) {
         return Err(InsightArenaError::InvalidInput);
     }
-    if reward_bps > 10_000 {
+    if reward_bps > MAX_ORACLE_REWARD_BPS {
         return Err(InsightArenaError::InvalidFee);
     }
     Ok(())
@@ -1434,10 +1697,10 @@ fn emit_oracle_stake_config_updated(env: &Env, stake_amount: i128, reward_bps: u
 }
 
 fn validate_vesting_config(tranche_count: u32, interval_seconds: u64) -> Result<(), InsightArenaError> {
-    if tranche_count == 0 {
+    if !(MIN_VESTING_TRANCHE_COUNT..=MAX_VESTING_TRANCHE_COUNT).contains(&tranche_count) {
         return Err(InsightArenaError::InvalidInput);
     }
-    if interval_seconds == 0 {
+    if !(MIN_VESTING_INTERVAL_SECONDS..=MAX_VESTING_INTERVAL_SECONDS).contains(&interval_seconds) {
         return Err(InsightArenaError::InvalidInput);
     }
     Ok(())
@@ -1499,9 +1762,7 @@ pub fn set_bond_amount(
         return Err(InsightArenaError::Unauthorized);
     }
 
-    if new_bond_amount < 0 {
-        return Err(InsightArenaError::InvalidInput);
-    }
+    validate_bond_amount(new_bond_amount)?;
 
     let old_bond_amount = config.bond_amount;
     config.bond_amount = new_bond_amount;
@@ -1522,9 +1783,7 @@ pub fn update_bond_amount_from_governance(
 ) -> Result<(), InsightArenaError> {
     let mut config = load_config(env)?;
 
-    if new_bond_amount < 0 {
-        return Err(InsightArenaError::InvalidInput);
-    }
+    validate_bond_amount(new_bond_amount)?;
 
     let old_bond_amount = config.bond_amount;
     config.bond_amount = new_bond_amount;
@@ -1579,9 +1838,7 @@ pub fn set_early_exit_fee_bps(
         return Err(InsightArenaError::Unauthorized);
     }
 
-    if new_fee_bps > 10_000 {
-        return Err(InsightArenaError::InvalidFee);
-    }
+    validate_early_exit_fee_bps(new_fee_bps)?;
 
     let old_fee_bps = config.early_exit_fee_bps;
     config.early_exit_fee_bps = new_fee_bps;

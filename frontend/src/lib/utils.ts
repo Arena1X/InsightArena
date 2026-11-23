@@ -5,6 +5,39 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+export interface PoolStats {
+  poolXlm: number;
+  contributorCount: number;
+  averageStakeXlm: number;
+}
+
+/** Calculates the mean stake without allowing an empty pool to produce NaN. */
+export function calculateAverageStake(
+  poolXlm: number,
+  contributorCount: number,
+): number {
+  if (!Number.isFinite(poolXlm) || !Number.isFinite(contributorCount) || contributorCount <= 0) {
+    return 0;
+  }
+  return poolXlm / contributorCount;
+}
+
+export function calculatePoolStats(
+  poolXlm: number,
+  contributorCount: number,
+): PoolStats {
+  const safePoolXlm = Number.isFinite(poolXlm) ? Math.max(0, poolXlm) : 0;
+  const safeContributorCount = Number.isFinite(contributorCount)
+    ? Math.max(0, Math.floor(contributorCount))
+    : 0;
+
+  return {
+    poolXlm: safePoolXlm,
+    contributorCount: safeContributorCount,
+    averageStakeXlm: calculateAverageStake(safePoolXlm, safeContributorCount),
+  };
+}
+
 /** Minimal shape a documentation section must satisfy to be searchable/TOC-able. */
 export interface DocSearchable {
   id: string;
@@ -401,5 +434,374 @@ export function formatXlm(amount: number, digits = 2): string {
 export function formatPnlXlm(pnl: number, digits = 2): string {
   if (!Number.isFinite(pnl)) return "—";
   const sign = pnl > 0 ? "+" : "";
-  return `\( {sign} \){pnl.toFixed(digits)} XLM`;
+  return `${sign}${pnl.toFixed(digits)} XLM`;
+}
+
+/**
+ * Formats cashout amounts correctly across magnitudes and locales without precision loss.
+ *
+ * - Non-finite values (NaN, Infinity, -Infinity) return "—"
+ * - Zero and negative zero return "0.00 XLM" (or locale-equivalent)
+ * - Sub-unit amounts (0 < |amount| < 0.01) use up to 7 significant decimal places
+ *   to avoid showing "0.00 XLM" for non-zero values
+ * - Uses Intl.NumberFormat for locale-aware thousand and decimal separators
+ * - Very large amounts are handled without precision loss
+ *
+ * @param amount The amount to format
+ * @param locale The locale string (default: "en-US")
+ * @param digits Number of decimal places (default: 2)
+ * @returns Formatted string with " XLM" suffix
+ *
+ * @example
+ * formatCashOut(1000.5, "en-US", 2) // "1,000.50 XLM"
+ * formatCashOut(1000.5, "de-DE", 2) // "1.000,50 XLM"
+ * formatCashOut(0.000001)            // "0.000001 XLM"
+ * formatCashOut(NaN)                 // "—"
+ */
+export function formatCashOut(amount: number, locale = "en-US", digits = 2): string {
+  if (!Number.isFinite(amount)) return "—";
+
+  // Treat -0 as 0
+  const value = amount === 0 ? 0 : amount;
+
+  // For amounts that would round to zero at `digits` decimals but are non-zero,
+  // show more decimal places so the user sees a real number.
+  if (value !== 0 && Math.abs(value) < Math.pow(10, -digits)) {
+    const sigFmt = new Intl.NumberFormat(locale, {
+      minimumSignificantDigits: 1,
+      maximumSignificantDigits: 7,
+    });
+    return `${sigFmt.format(value)} XLM`;
+  }
+
+  const fmt = new Intl.NumberFormat(locale, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  return `${fmt.format(value)} XLM`;
+}
+
+// ── Dashboard sidebar auto-collapse (#1584) ─────────────────────────────────
+
+/**
+ * Viewport width (px) below which the dashboard sidebar auto-collapses to an
+ * icon-only rail, regardless of the user's persisted preference. Matches
+ * Tailwind's `lg` breakpoint so the CSS and the JS resize logic stay in sync.
+ */
+export const SIDEBAR_AUTO_COLLAPSE_BREAKPOINT_PX = 1024;
+
+/** Pure predicate so the auto-collapse threshold is testable without a DOM. */
+export function shouldAutoCollapseSidebar(viewportWidth: number): boolean {
+  return viewportWidth < SIDEBAR_AUTO_COLLAPSE_BREAKPOINT_PX;
+}
+
+// ── Portfolio P/L History Utilities (#1581) ────────────────────────────────
+
+export interface PnlDataPoint {
+  date: string;
+  timestamp: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+}
+
+/**
+ * Fills gaps in sparse P/L history data by forward-filling values.
+ * If there's no data for a given date, uses the most recent available value.
+ * This ensures a smooth chart even when there are days with no trading activity.
+ */
+export function fillSparseHistory(
+  data: PnlDataPoint[],
+  range: "7d" | "30d" | "all",
+): PnlDataPoint[] {
+  if (data.length === 0) return [];
+  if (data.length === 1) return data;
+
+  // Sort by timestamp to ensure chronological order
+  const sorted = [...data].sort((a, b) => a.timestamp - b.timestamp);
+
+  // Determine the date range
+  const endDate = new Date();
+  const startDate = new Date();
+
+  if (range === "7d") {
+    startDate.setDate(endDate.getDate() - 7);
+  } else if (range === "30d") {
+    startDate.setDate(endDate.getDate() - 30);
+  } else {
+    // "all" - use the earliest data point
+    return sorted; // No need to fill for "all" range
+  }
+
+  const filled: PnlDataPoint[] = [];
+  const dataByDate = new Map(sorted.map((d) => [d.date, d]));
+
+  let lastKnownValues: PnlDataPoint | null = null;
+
+  // Iterate through each day in the range
+  for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split("T")[0];
+    const existing = dataByDate.get(dateStr);
+
+    if (existing) {
+      filled.push(existing);
+      lastKnownValues = existing;
+    } else if (lastKnownValues) {
+      // Forward-fill with last known values
+      filled.push({
+        date: dateStr,
+        timestamp: d.getTime() / 1000,
+        realized_pnl: lastKnownValues.realized_pnl,
+        unrealized_pnl: lastKnownValues.unrealized_pnl,
+        total_pnl: lastKnownValues.total_pnl,
+      });
+    } else {
+      // No prior data yet - use zeros
+      filled.push({
+        date: dateStr,
+        timestamp: d.getTime() / 1000,
+        realized_pnl: 0,
+        unrealized_pnl: 0,
+        total_pnl: 0,
+      });
+    }
+  }
+
+  return filled;
+}
+
+/**
+ * Aggregates P/L data into larger time buckets to reduce chart noise
+ * for longer time ranges. For "all" range with many data points, groups
+ * by week instead of day.
+ */
+export function aggregatePnlByPeriod(
+  data: PnlDataPoint[],
+  periodDays: number,
+): PnlDataPoint[] {
+  if (data.length === 0 || periodDays <= 1) return data;
+
+  const aggregated: PnlDataPoint[] = [];
+  const sorted = [...data].sort((a, b) => a.timestamp - b.timestamp);
+
+  for (let i = 0; i < sorted.length; i += periodDays) {
+    const chunk = sorted.slice(i, i + periodDays);
+    if (chunk.length === 0) continue;
+
+    // Use the last point in the period for values (most recent)
+    const lastPoint = chunk[chunk.length - 1];
+
+    aggregated.push({
+      date: lastPoint.date,
+      timestamp: lastPoint.timestamp,
+      realized_pnl: lastPoint.realized_pnl,
+      unrealized_pnl: lastPoint.unrealized_pnl,
+      total_pnl: lastPoint.total_pnl,
+    });
+  }
+
+  return aggregated;
+}
+
+/**
+ * Formats P/L value for chart display, handling positive/negative values
+ * and converting from stroops to XLM.
+ */
+export function formatPnlForChart(stroops: number): string {
+  const xlm = stroops / 10_000_000;
+  if (xlm === 0) return "0.00 XLM";
+  const sign = xlm > 0 ? "+" : "";
+  return `${sign}${xlm.toFixed(2)} XLM`;
+}
+
+/**
+ * Calculates summary statistics from P/L history data.
+ * Returns totals and percentages for realized, unrealized, and total P/L.
+ */
+export function calculatePnlSummary(data: PnlDataPoint[]): {
+  totalRealized: number;
+  totalUnrealized: number;
+  totalPnl: number;
+  realizedPercentage: number;
+  unrealizedPercentage: number;
+} {
+  if (data.length === 0) {
+    return {
+      totalRealized: 0,
+      totalUnrealized: 0,
+      totalPnl: 0,
+      realizedPercentage: 0,
+      unrealizedPercentage: 0,
+    };
+  }
+
+  // Use the most recent data point for totals
+  const latest = data[data.length - 1];
+
+  const totalRealized = latest.realized_pnl;
+  const totalUnrealized = latest.unrealized_pnl;
+  const totalPnl = latest.total_pnl;
+
+  const realizedPercentage =
+    totalPnl !== 0 ? (Math.abs(totalRealized) / Math.abs(totalPnl)) * 100 : 0;
+  const unrealizedPercentage =
+    totalPnl !== 0 ? (Math.abs(totalUnrealized) / Math.abs(totalPnl)) * 100 : 0;
+
+  return {
+    totalRealized,
+    totalUnrealized,
+    totalPnl,
+    realizedPercentage,
+    unrealizedPercentage,
+  };
+}
+
+// ── Event Leaderboard Tie-Break Utilities (#1549) ───────────────────────────
+
+/**
+ * Minimal shape needed for event leaderboard tie-break sorting.
+ * Follows the documented tie-break order from the smart contract (#1343):
+ * 1. Higher points (descending)
+ * 2. Higher exact_scores (descending)
+ * 3. Earlier earliestPredictionTime (ascending) — ties broken by who predicted first
+ * 4. Smaller address (ascending, final deterministic tiebreaker)
+ */
+export interface LeaderboardEntryForTieBreak {
+  address: string;
+  points: number;
+  exactScores: number;
+  earliestPredictionTime?: number; // Unix timestamp in seconds; undefined means no predictions yet
+}
+
+/**
+ * Comparator function implementing the documented tie-break order.
+ * Returns negative if `a` outranks `b`, positive if `b` outranks `a`, zero if identical.
+ */
+function compareLeaderboardEntries(
+  a: LeaderboardEntryForTieBreak,
+  b: LeaderboardEntryForTieBreak,
+): number {
+  // 1. Higher points wins
+  if (b.points !== a.points) {
+    return b.points - a.points;
+  }
+
+  // 2. Higher exact_scores wins
+  if (b.exactScores !== a.exactScores) {
+    return b.exactScores - a.exactScores;
+  }
+
+  // 3. Earlier prediction time wins (lower timestamp = earlier = better)
+  const aTime = a.earliestPredictionTime ?? Number.MAX_SAFE_INTEGER;
+  const bTime = b.earliestPredictionTime ?? Number.MAX_SAFE_INTEGER;
+  if (aTime !== bTime) {
+    return aTime - bTime;
+  }
+
+  // 4. Smaller address wins (lexicographic comparison for determinism)
+  return a.address.localeCompare(b.address);
+}
+
+/**
+ * Sorts leaderboard entries according to the documented tie-break order.
+ * Returns a new sorted array without mutating the input.
+ */
+export function sortLeaderboardWithTieBreak<T extends LeaderboardEntryForTieBreak>(
+  entries: T[],
+): T[] {
+  return [...entries].sort(compareLeaderboardEntries);
+}
+
+/**
+ * Detects which entries are tied based on points and exact_scores.
+ * Two entries are considered tied if they have identical points AND exact_scores.
+ * Returns a Set of addresses that are involved in ties (2+ participants with same points + exact_scores).
+ */
+export function detectTies<T extends LeaderboardEntryForTieBreak>(
+  sortedEntries: T[],
+): Set<string> {
+  const tiedAddresses = new Set<string>();
+  const groupKey = (e: T) => `${e.points}-${e.exactScores}`;
+  const groups = new Map<string, T[]>();
+
+  // Group entries by points + exact_scores
+  for (const entry of sortedEntries) {
+    const key = groupKey(entry);
+    const group = groups.get(key);
+    if (group) {
+      group.push(entry);
+    } else {
+      groups.set(key, [entry]);
+    }
+  }
+
+  // Mark all addresses in groups with 2+ participants as tied
+  for (const group of groups.values()) {
+    if (group.length >= 2) {
+      for (const entry of group) {
+        tiedAddresses.add(entry.address);
+      }
+    }
+  }
+
+  return tiedAddresses;
+}
+
+// ── Share deep links (#1567) ────────────────────────────────────────────────
+
+export type ShareEntityType = "market" | "event" | "profile";
+
+/** Where a share was initiated from, recorded as `utm_source`. */
+export type ShareChannel = "copy" | "native" | "twitter";
+
+/**
+ * Adds attribution params to a share URL. Relative URLs are resolved against
+ * `origin`. Existing query params and hash are preserved; UTM params already
+ * on the URL are overwritten so repeated shares don't stack attribution.
+ */
+export function buildShareUrl(
+  url: string,
+  { entity, channel, origin }: { entity: ShareEntityType; channel: ShareChannel; origin: string },
+): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url, origin || undefined);
+  } catch {
+    return url;
+  }
+  parsed.searchParams.set("utm_source", channel);
+  parsed.searchParams.set("utm_medium", "share");
+  parsed.searchParams.set("utm_campaign", `${entity}_share`);
+  return parsed.toString();
+}
+
+/** Share copy tailored to the kind of page being shared. */
+export function getShareText(entity: ShareEntityType, title: string): string {
+  switch (entity) {
+    case "market":
+      return `What's your call on "${title}"? Make your prediction on InsightArena.`;
+    case "event":
+      return `Join "${title}" and compete on InsightArena.`;
+    case "profile":
+      return `Check out ${title}'s predictions on InsightArena.`;
+  }
+}
+
+// ── Onboarding tour (#1568) ─────────────────────────────────────────────────
+
+/**
+ * Minimum viewport width (px) for the onboarding tour. Below Tailwind's `md`
+ * breakpoint the sidebar the tour points at is hidden behind the mobile menu.
+ */
+export const ONBOARDING_TOUR_MIN_VIEWPORT_PX = 768;
+
+export function isOnboardingTourSupported(viewportWidth: number): boolean {
+  return viewportWidth >= ONBOARDING_TOUR_MIN_VIEWPORT_PX;
+}
+
+const ONBOARDING_STORAGE_PREFIX = "insightarena.onboarding.v2";
+
+/** Per-user storage key so each wallet keeps its own tour progress. */
+export function getOnboardingStorageKey(userId?: string | null): string {
+  return `${ONBOARDING_STORAGE_PREFIX}:${userId || "anonymous"}`;
 }

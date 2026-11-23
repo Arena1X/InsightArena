@@ -39,7 +39,7 @@ export function FormField({
       )}
 
       {!showError && helperText && (
-        <p className="text-xs text-slate-500">{helperText}</p>
+        <p className="text-xs text-muted-foreground">{helperText}</p>
       )}
     </div>
   );
@@ -62,7 +62,7 @@ export function TextInput({
     <input
       className={`
         w-full rounded-xl border bg-slate-950/90 px-4 py-2.5 text-sm text-white
-        outline-none transition-colors placeholder:text-slate-600
+        outline-none transition-colors placeholder:text-muted-foreground
         ${
           hasError
             ? "border-rose-500/50 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20"
@@ -96,7 +96,7 @@ export function Textarea({
     <textarea
       className={`
         w-full rounded-xl border bg-slate-950/90 px-4 py-2.5 text-sm text-white
-        outline-none transition-colors placeholder:text-slate-600 resize-none
+        outline-none transition-colors placeholder:text-muted-foreground resize-none
         ${
           hasError
             ? "border-rose-500/50 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20"

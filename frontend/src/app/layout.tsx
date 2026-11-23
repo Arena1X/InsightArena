@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
+import Script from "next/script";
 
 import { StandardPageLoadingSkeleton } from "@/component/loading-route-skeletons";
 import { PwaManager } from "@/component/PwaManager";
@@ -9,6 +10,8 @@ import { CreatorEventsProvider } from "@/context/CreatorEventsContext";
 import { ToastProvider } from "@/context/ToastContext";
 import { ConfirmProvider } from "@/context/ConfirmContext";
 import { FavoritesProvider } from "@/context/FavoritesContext";
+import { NotificationProvider } from "@/context/NotificationContext";
+import { PriceAlertProvider } from "@/context/PriceAlertContext";
 import { PredictionSlipProvider } from "@/context/PredictionSlipContext";
 import { PredictionSlipPanel, PredictionSlipFloatingButton } from "@/component/PredictionSlip";
 import { ThemeProvider } from "@/context/ThemeContext";
@@ -91,9 +94,11 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <script
+        <Script
+          id="theme-initialization"
+          strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('insightarena.theme.v1');if(!t){t=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}document.documentElement.classList.toggle('dark',t==='dark')}catch(e){}})()`,
+            __html: `(function(){try{var m=localStorage.getItem('insightarena.theme.v1');var d=(m==='dark')||(m!=='light'&&window.matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.classList.toggle('dark',d)}catch(e){}})()`,
           }}
         />
       </head>
@@ -101,28 +106,32 @@ export default function RootLayout({
         <ThemeProvider>
           <WalletProvider>
             <FavoritesProvider>
-              <CreatorEventsProvider>
-                <ToastProvider>
-                  <PredictionSlipProvider>
-                  <ConfirmProvider>
-                    <Suspense fallback={null}>
-                      <RouteProgress />
-                    </Suspense>
-                    <PwaManager />
-                    <a href="#main-content" className="skip-link">
-                      Skip to main content
-                    </a>
-                    <div id="main-content" tabIndex={-1}>
-                      <Suspense fallback={<StandardPageLoadingSkeleton />}>
-                        {children}
-                      </Suspense>
-                    </div>
-                    <PredictionSlipFloatingButton />
-                    <PredictionSlipPanel />
-                  </ConfirmProvider>
-                  </PredictionSlipProvider>
-                </ToastProvider>
-              </CreatorEventsProvider>
+              <NotificationProvider>
+                <PriceAlertProvider>
+                  <CreatorEventsProvider>
+                    <ToastProvider>
+                      <PredictionSlipProvider>
+                        <ConfirmProvider>
+                          <Suspense fallback={null}>
+                            <RouteProgress />
+                          </Suspense>
+                          <PwaManager />
+                          <a href="#main-content" className="skip-link">
+                            Skip to main content
+                          </a>
+                          <div id="main-content" tabIndex={-1}>
+                            <Suspense fallback={<StandardPageLoadingSkeleton />}>
+                              {children}
+                            </Suspense>
+                          </div>
+                          <PredictionSlipFloatingButton />
+                          <PredictionSlipPanel />
+                        </ConfirmProvider>
+                      </PredictionSlipProvider>
+                    </ToastProvider>
+                  </CreatorEventsProvider>
+                </PriceAlertProvider>
+              </NotificationProvider>
             </FavoritesProvider>
           </WalletProvider>
         </ThemeProvider>

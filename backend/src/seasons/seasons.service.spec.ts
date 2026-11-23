@@ -523,6 +523,16 @@ describe('SeasonsService', () => {
           ok: true,
           season: 13,
         },
+        {
+          // #1853: one unit before the existing range's end (199 < 200) must
+          // be flagged as overlapping, distinguishing this from the adjacent
+          // start-at-end case directly above it.
+          label: '[199, 300] starts one unit before existing end => reject',
+          start: 199,
+          end: 300,
+          ok: false,
+          season: 14,
+        },
       ] as const;
 
       for (const a of attempts) {
@@ -532,6 +542,7 @@ describe('SeasonsService', () => {
           getCount: jest.fn().mockResolvedValue(overlapFor(a.start, a.end)),
         } as never;
         seasonsRepository.createQueryBuilder.mockReturnValue(qb);
+        seasonsRepository.save.mockClear();
 
         if (!a.ok) {
           await expect(
@@ -1063,6 +1074,246 @@ describe('SeasonsService', () => {
 
       expect(result.matches).toBe(true);
       expect(result.totalDistributed).toBe('100');
+    });
+
+    it('after a partial failure, identifies only the recipients still missing a confirmed payout', async () => {
+      const succeededEntry = {
+        id: 'ledger-succeeded',
+        amount_stroops: '60',
+        status: DistributionLedgerStatus.SUCCEEDED,
+        recipient_stellar_address: 'GSUCCEEDED',
+      };
+      const failedEntry = {
+        id: 'ledger-failed',
+        amount_stroops: '30',
+        status: DistributionLedgerStatus.FAILED,
+        recipient_stellar_address: 'GFAILED',
+      };
+      const pendingEntry = {
+        id: 'ledger-pending',
+        amount_stroops: '10',
+        status: DistributionLedgerStatus.PENDING,
+        recipient_stellar_address: 'GPENDING',
+      };
+      distributionLedgerRepository.find.mockResolvedValue([
+        succeededEntry,
+        failedEntry,
+        pendingEntry,
+      ]);
+
+      const result = await service.reconcileSeasonDistribution(
+        'season-1',
+        100n,
+      );
+
+      // Distributed total reflects only the SUCCEEDED row, so a partial
+      // failure is correctly flagged as a mismatch...
+      expect(result.matches).toBe(false);
+      expect(result.totalDistributed).toBe('60');
+      // ...but the season isn't re-flagged as wholesale undistributed: the
+      // succeeded recipient is excluded from what's still owed.
+      expect(result.missingRecipients).toHaveLength(2);
+      expect(result.missingRecipients).toEqual(
+        expect.arrayContaining([failedEntry, pendingEntry]),
+      );
+      expect(result.missingRecipients).not.toContainEqual(succeededEntry);
+    });
+
+    it('reports no missing recipients and a match for a season with fully confirmed payouts (no-op)', async () => {
+      distributionLedgerRepository.find.mockResolvedValue([
+        { amount_stroops: '100', status: DistributionLedgerStatus.SUCCEEDED },
+      ]);
+
+      const result = await service.reconcileSeasonDistribution(
+        'season-1',
+        100n,
+      );
+
+      expect(result.matches).toBe(true);
+      expect(result.missingRecipients).toEqual([]);
+    });
+
+    it('reports every recipient as missing when nothing has succeeded yet', async () => {
+      distributionLedgerRepository.find.mockResolvedValue([
+        { amount_stroops: '100', status: DistributionLedgerStatus.PENDING },
+      ]);
+
+      const result = await service.reconcileSeasonDistribution(
+        'season-1',
+        100n,
+      );
+
+      expect(result.matches).toBe(false);
+      expect(result.totalDistributed).toBe('0');
+      expect(result.missingRecipients).toHaveLength(1);
+    });
+  });
+
+  describe('reconcileSeasonDistribution does not cause a re-pay of a succeeded recipient', () => {
+    it('re-running computeSeasonRewards after a successful payout does not create a new ledger row or re-notify', async () => {
+      const winner = {
+        id: 'winner-1',
+        username: 'winner',
+        stellar_address: 'GWINNER',
+        season_points: 10,
+      } as Season['top_winner'];
+      const season: Season = {
+        id: 'season-1',
+        season_number: 1,
+        name: 'Season 1',
+        starts_at: new Date('2020-01-01T00:00:00.000Z'),
+        ends_at: new Date('2020-06-01T00:00:00.000Z'),
+        reward_pool_stroops: '100',
+        is_active: false,
+        is_finalized: true,
+        participant_count: 0,
+        top_winner: winner,
+        on_chain_season_id: null,
+        soroban_tx_hash: null,
+        rollover_processed_at: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      };
+
+      // Simulate a prior successful run: the ledger already has a SUCCEEDED
+      // row for this recipient.
+      distributionLedgerRepository.findOne.mockResolvedValue({
+        id: 'ledger-1',
+        status: DistributionLedgerStatus.SUCCEEDED,
+      });
+      distributionLedgerRepository.find.mockResolvedValue([
+        {
+          id: 'ledger-1',
+          amount_stroops: '100',
+          status: DistributionLedgerStatus.SUCCEEDED,
+          recipient_stellar_address: 'GWINNER',
+        },
+      ]);
+
+      const rewardsResult = await service.computeSeasonRewards(season);
+      const reconcileResult = await service.reconcileSeasonDistribution(
+        season.id,
+        100n,
+      );
+
+      expect(rewardsResult).toBe(true);
+      expect(distributionLedgerRepository.save).not.toHaveBeenCalled();
+      expect(notificationsService.create).not.toHaveBeenCalled();
+      expect(reconcileResult.matches).toBe(true);
+      expect(reconcileResult.missingRecipients).toEqual([]);
+    });
+  });
+
+  describe('season rollover boundary scoring (#1950)', () => {
+    const rolloverTime = new Date('2026-07-01T00:00:00.000Z');
+
+    const season1: Season = {
+      id: 'season-1',
+      season_number: 1,
+      name: 'Season 1',
+      starts_at: new Date('2026-04-01T00:00:00.000Z'),
+      ends_at: rolloverTime,
+      reward_pool_stroops: '1000',
+      is_active: false,
+      is_finalized: true,
+      participant_count: 50,
+      top_winner: null,
+      on_chain_season_id: '1',
+      soroban_tx_hash: null,
+      rollover_processed_at: rolloverTime,
+      created_at: new Date('2026-04-01T00:00:00.000Z'),
+      updated_at: rolloverTime,
+    };
+
+    const season2: Season = {
+      id: 'season-2',
+      season_number: 2,
+      name: 'Season 2',
+      starts_at: rolloverTime,
+      ends_at: new Date('2026-10-01T00:00:00.000Z'),
+      reward_pool_stroops: '1000',
+      is_active: true,
+      is_finalized: false,
+      participant_count: 0,
+      top_winner: null,
+      on_chain_season_id: '2',
+      soroban_tx_hash: null,
+      rollover_processed_at: null,
+      created_at: rolloverTime,
+      updated_at: rolloverTime,
+    };
+
+    const allSeasons = [season1, season2];
+
+    beforeEach(() => {
+      seasonsRepository.find.mockResolvedValue(allSeasons);
+    });
+
+    it('a prediction made before rollover scores in the prior season', async () => {
+      const prediction = {
+        id: 'pred-1',
+        submitted_at: new Date(rolloverTime.getTime() - 60_000), // 1 min before rollover
+        resolved_at: new Date(rolloverTime.getTime() + 60_000), // resolved after rollover
+        is_correct: true,
+      };
+
+      const result = await service.scorePredictionForSeason(
+        prediction,
+        15,
+        allSeasons,
+      );
+
+      expect(result.season?.id).toBe(season1.id);
+      expect(result.attributedSeasonNumber).toBe(1);
+      expect(result.pointsAwarded).toBe(15);
+    });
+
+    it('a prediction resolved after rollover is attributed per the rule', async () => {
+      const predBeforeRollover = {
+        id: 'pred-2',
+        submitted_at: new Date(rolloverTime.getTime() - 10_000),
+        resolved_at: new Date('2026-07-05T12:00:00.000Z'), // days after rollover
+      };
+
+      const attrBefore = await service.attributePredictionToSeason(
+        predBeforeRollover,
+        allSeasons,
+      );
+      expect(attrBefore?.id).toBe(season1.id);
+
+      const predAfterRollover = {
+        id: 'pred-3',
+        submitted_at: new Date(rolloverTime.getTime() + 10_000),
+        resolved_at: new Date('2026-07-05T12:00:00.000Z'),
+      };
+
+      const attrAfter = await service.attributePredictionToSeason(
+        predAfterRollover,
+        allSeasons,
+      );
+      expect(attrAfter?.id).toBe(season2.id);
+    });
+
+    it('boundary-exact timestamps follow the documented inclusive/exclusive policy', async () => {
+      // 1 ms before rollover: belongs to season 1 (t < season1.ends_at)
+      const justBefore = {
+        submitted_at: new Date(rolloverTime.getTime() - 1),
+      };
+      const attrJustBefore = await service.attributePredictionToSeason(
+        justBefore,
+        allSeasons,
+      );
+      expect(attrJustBefore?.id).toBe(season1.id);
+
+      // Exact rollover boundary: season1 ends_at is exclusive (< ends_at), season2 starts_at is inclusive (>= starts_at)
+      const exactBoundary = {
+        submitted_at: rolloverTime,
+      };
+      const attrBoundary = await service.attributePredictionToSeason(
+        exactBoundary,
+        allSeasons,
+      );
+      expect(attrBoundary?.id).toBe(season2.id);
     });
   });
 });

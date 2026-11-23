@@ -30,6 +30,14 @@ export interface UseLeaderboardReturn {
   /** True when the server returned zero entries (not the same as loading). */
   isEmpty: boolean;
 
+  // ── Pagination ──────────────────────────────────────────────────────────
+  /** Load more entries for infinite scroll */
+  loadMore: () => void;
+  /** True when loading additional pages */
+  isLoadingMore: boolean;
+  /** True when all entries have been loaded */
+  hasMore: boolean;
+
   // ── Snapshot compare ────────────────────────────────────────────────────
   /** ISO date string the compare snapshot is pinned to, or null when off. */
   compareDate: string | null;
@@ -60,6 +68,12 @@ export function useLeaderboard(): UseLeaderboardReturn {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Pagination state
+  const [page, setPage] = useState(1);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [total, setTotal] = useState(0);
+
   const [compareDate, setCompareDateState] = useState<string | null>(null);
   const [snapshotEntries, setSnapshotEntries] = useState<SnapshotRankingEntry[]>([]);
   const [isSnapshotLoading, setIsSnapshotLoading] = useState(false);
@@ -85,29 +99,58 @@ export function useLeaderboard(): UseLeaderboardReturn {
   // Load leaderboard entries + seasons list
   // ---------------------------------------------------------------------------
 
-  const fetchLeaderboard = useCallback(async (sid: string | undefined) => {
+  const fetchLeaderboard = useCallback(async (sid: string | undefined, pageNum: number, append = false) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     const { signal } = controller;
 
-    setIsLoading(true);
-    setError(null);
+    if (!append) {
+      setIsLoading(true);
+      setError(null);
+    } else {
+      setIsLoadingMore(true);
+    }
 
     try {
-      // Fetch leaderboard + seasons list in parallel.
-      const [leaderboardData, seasonsData] = await Promise.all([
-        getLeaderboard({ season_id: sid, limit: 100 }, { signal }),
-        getSeasons({ signal }),
-      ]);
+      // Fetch leaderboard + seasons list in parallel (only fetch seasons on first load)
+      const promises = [
+        getLeaderboard({ season_id: sid, limit: 50, page: pageNum }, { signal }),
+      ];
+      
+      if (!append) {
+        promises.push(getSeasons({ signal }));
+      }
+
+      const results = await Promise.all(promises);
+      const leaderboardData = results[0];
+      const seasonsData = results[1];
 
       if (signal.aborted) return;
 
-      setEntries(leaderboardData.data);
-      setSeasons(seasonsData.data);
+      // Check for duplicates before appending
+      if (append) {
+        const existingAddresses = new Set(entries.map(e => e.stellar_address));
+        const newEntries = leaderboardData.data.filter(
+          e => !existingAddresses.has(e.stellar_address)
+        );
+        setEntries(prev => [...prev, ...newEntries]);
+      } else {
+        setEntries(leaderboardData.data);
+      }
+
+      setTotal(leaderboardData.total);
+      setHasMore(leaderboardData.data.length === 50 && 
+                 (append ? entries.length : 0) + leaderboardData.data.length < leaderboardData.total);
+      
+      if (seasonsData) {
+        setSeasons(seasonsData.data);
+      }
     } catch (err) {
       if (signal.aborted) return;
-      setEntries([]);
+      if (!append) {
+        setEntries([]);
+      }
       setError(
         logHookError(err, {
           fallbackMessage: "Failed to load leaderboard.",
@@ -115,13 +158,19 @@ export function useLeaderboard(): UseLeaderboardReturn {
         }),
       );
     } finally {
-      if (!signal.aborted) setIsLoading(false);
+      if (!signal.aborted) {
+        setIsLoading(false);
+        setIsLoadingMore(false);
+      }
     }
-  }, []);
+  }, [entries]);
 
   // Re-fetch whenever the season changes.
   useEffect(() => {
-    fetchLeaderboard(seasonId);
+    setPage(1);
+    setEntries([]);
+    setHasMore(true);
+    fetchLeaderboard(seasonId, 1, false);
     return () => abortRef.current?.abort();
   }, [seasonId, fetchLeaderboard]);
 
@@ -197,6 +246,13 @@ export function useLeaderboard(): UseLeaderboardReturn {
   // Public setters
   // ---------------------------------------------------------------------------
 
+  const loadMore = useCallback(() => {
+    if (!hasMore || isLoadingMore || isLoading) return;
+    const nextPage = page + 1;
+    setPage(nextPage);
+    fetchLeaderboard(seasonId, nextPage, true);
+  }, [hasMore, isLoadingMore, isLoading, page, seasonId, fetchLeaderboard]);
+
   const setSeasonId = useCallback((id: string | undefined) => {
     setSeasonIdState(id);
     // Clear any compare snapshot when the season changes — the snapshot dates
@@ -209,7 +265,10 @@ export function useLeaderboard(): UseLeaderboardReturn {
   }, []);
 
   const refetch = useCallback(() => {
-    fetchLeaderboard(seasonId);
+    setPage(1);
+    setEntries([]);
+    setHasMore(true);
+    fetchLeaderboard(seasonId, 1, false);
     if (compareDate) fetchSnapshot(compareDate, seasonId);
   }, [seasonId, compareDate, fetchLeaderboard, fetchSnapshot]);
 
@@ -221,6 +280,9 @@ export function useLeaderboard(): UseLeaderboardReturn {
     isLoading,
     error,
     isEmpty: !isLoading && !error && entries.length === 0,
+    loadMore,
+    isLoadingMore,
+    hasMore,
     compareDate,
     setCompareDate,
     snapshotEntries,

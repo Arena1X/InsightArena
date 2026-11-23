@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { X, Check, AlertCircle, ExternalLink } from "lucide-react";
+import { useModalA11y } from "@/hooks/useModalA11y";
 
 type ModalStep = "idle" | "connecting" | "success" | "error";
 
@@ -10,7 +11,45 @@ type ErrorType =
   | "locked"
   | "user_rejected"
   | "wrong_network"
+  | "timeout"
+  | "network_error"
   | "connection_failed";
+
+const CONNECT_TIMEOUT_MS = 20_000;
+
+class ConnectTimeoutError extends Error {
+  constructor() {
+    super("Connection timed out");
+    this.name = "ConnectTimeoutError";
+  }
+}
+
+/** Rejects with ConnectTimeoutError if `promise` hasn't settled within `ms`. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ConnectTimeoutError()), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+const ERROR_TITLES: Record<ErrorType, string> = {
+  not_installed: "Wallet Not Installed",
+  locked: "Wallet Locked",
+  user_rejected: "Connection Rejected",
+  wrong_network: "Wrong Network",
+  timeout: "Connection Timed Out",
+  network_error: "Network Error",
+  connection_failed: "Connection Failed",
+};
 
 interface ConnectWalletModalProps {
   isOpen: boolean;
@@ -31,6 +70,7 @@ export default function ConnectWalletModal({
   onClose,
   onSuccess,
 }: ConnectWalletModalProps) {
+  const { containerRef, titleId } = useModalA11y({ isOpen, onClose });
   const [step, setStep] = useState<ModalStep>("idle");
   const [wallets, setWallets] = useState<WalletOption[]>([]);
   const [error, setError] = useState("");
@@ -110,7 +150,10 @@ export default function ConnectWalletModal({
         await import("@creit-tech/stellar-wallets-kit/sdk");
 
       StellarWalletsKit.setWallet(walletId);
-      const { address } = await StellarWalletsKit.fetchAddress();
+      const { address } = await withTimeout(
+        StellarWalletsKit.fetchAddress(),
+        CONNECT_TIMEOUT_MS,
+      );
 
       setConnectedAddress(address);
       setStep("success");
@@ -120,6 +163,13 @@ export default function ConnectWalletModal({
         onSuccess(address, walletId);
       }, 1200);
     } catch (err: unknown) {
+      if (err instanceof ConnectTimeoutError) {
+        setErrorType("timeout");
+        setError("The connection request took too long. Check your wallet extension for a pending prompt.");
+        setStep("error");
+        return;
+      }
+
       const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
 
       // Categorize errors
@@ -135,9 +185,22 @@ export default function ConnectWalletModal({
       } else if (msg.includes("locked")) {
         setErrorType("locked");
         setError("Wallet is locked. Please unlock it and try again.");
-      } else if (msg.includes("network") || msg.includes("testnet") || msg.includes("public")) {
+      } else if (
+        msg.includes("wrong network") ||
+        msg.includes("testnet") ||
+        msg.includes("public network") ||
+        (msg.includes("switch") && msg.includes("network"))
+      ) {
         setErrorType("wrong_network");
         setError("Please switch to the Stellar Public network in your wallet");
+      } else if (
+        err instanceof TypeError ||
+        msg.includes("network error") ||
+        msg.includes("failed to fetch") ||
+        msg.includes("fetch failed")
+      ) {
+        setErrorType("network_error");
+        setError("Network error. Please check your connection and try again.");
       } else {
         setErrorType("connection_failed");
         setError(err instanceof Error ? err.message : "Connection failed. Please try again.");
@@ -159,7 +222,13 @@ export default function ConnectWalletModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="relative w-full max-w-[480px] mx-4 rounded-2xl border border-white/10 bg-[#111726] p-8">
+      <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="relative w-full max-w-[480px] mx-4 rounded-2xl border border-white/10 bg-[#111726] p-8"
+      >
         {step !== "success" && (
           <button
             onClick={handleClose}
@@ -174,7 +243,7 @@ export default function ConnectWalletModal({
         {step === "idle" && (
           <div className="space-y-6">
             <div>
-              <h2 className="text-2xl font-semibold text-white">
+              <h2 id={titleId} className="text-2xl font-semibold text-white">
                 Connect Your Wallet
               </h2>
               <p className="mt-2 text-sm text-[#9aa4bc]">
@@ -303,13 +372,7 @@ export default function ConnectWalletModal({
                 </div>
               </div>
               <h3 className="text-lg font-semibold text-white">
-                {errorType === "not_installed"
-                  ? "Wallet Not Installed"
-                  : errorType === "locked"
-                    ? "Wallet Locked"
-                    : errorType === "wrong_network"
-                      ? "Wrong Network"
-                      : "Connection Failed"}
+                {ERROR_TITLES[errorType ?? "connection_failed"]}
               </h3>
               <p className="mt-2 text-sm text-[#9aa4bc]">{error}</p>
 
@@ -322,6 +385,12 @@ export default function ConnectWalletModal({
               {errorType === "wrong_network" && (
                 <p className="mt-3 text-xs text-[#4FD1C5]">
                   Open your wallet extension and switch to the Stellar Public network
+                </p>
+              )}
+
+              {errorType === "timeout" && (
+                <p className="mt-3 text-xs text-[#4FD1C5]">
+                  Approve or dismiss any pending prompt in your wallet, then retry
                 </p>
               )}
             </div>

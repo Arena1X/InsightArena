@@ -84,6 +84,8 @@ const DEFAULT_CONTEXT_VALUE: WalletContextValue = {
 
 // Persisted wallet session — id/type + public key only, never secret material.
 const WALLET_STORAGE_KEY = "insightarena.wallet.v1";
+const AUTO_RECONNECT_ATTEMPTS = 3;
+const AUTO_RECONNECT_DELAY_MS = 250;
 
 interface StoredWalletSession {
   walletId: string;
@@ -214,6 +216,14 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [isRestoring, setIsRestoring] = useState(true);
   const walletKitRef = useRef<any>(null);
   const accountCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectGenerationRef = useRef(0);
+
+  useEffect(
+    () => () => {
+      reconnectGenerationRef.current += 1;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -379,7 +389,52 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           setAddress(null);
           setToken(null);
           setUser(null);
-          clearStoredSession();
+
+          if (walletErr.type === "disconnected") {
+            const stored = readStoredSession();
+            if (stored?.address === address) {
+              const reconnectGeneration = ++reconnectGenerationRef.current;
+
+              for (let attempt = 0; attempt < AUTO_RECONNECT_ATTEMPTS; attempt += 1) {
+                await new Promise((resolve) => setTimeout(resolve, AUTO_RECONNECT_DELAY_MS));
+                if (reconnectGeneration !== reconnectGenerationRef.current) return;
+
+                try {
+                  walletKitRef.current.setWallet(stored.walletId);
+                  const { address: reconnectedAddress } =
+                    await walletKitRef.current.fetchAddress();
+                  if (reconnectGeneration !== reconnectGenerationRef.current) return;
+
+                  if (reconnectedAddress === stored.address) {
+                    setAddress(reconnectedAddress);
+                    setToken(`wallet_${reconnectedAddress}`);
+                    setUser({ username: "Alex" });
+                    setWalletError(null);
+                    writeStoredSession({ ...stored, address: reconnectedAddress });
+                    return;
+                  }
+
+                  if (reconnectedAddress) {
+                    clearStoredSession();
+                    setWalletError({
+                      type: "account_switched",
+                      message: "Wallet account was switched. Please reconnect.",
+                      retryable: false,
+                    });
+                    return;
+                  }
+                } catch {
+                  // Continue with the remaining bounded reconnect attempts.
+                }
+              }
+
+              if (reconnectGeneration === reconnectGenerationRef.current) {
+                setWalletError(walletErr);
+              }
+              return;
+            }
+          }
+
           setWalletError(walletErr);
         }
       }
@@ -434,6 +489,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(() => {
+    reconnectGenerationRef.current += 1;
+
     // Clear monitoring interval
     if (accountCheckIntervalRef.current) {
       clearInterval(accountCheckIntervalRef.current);
@@ -467,6 +524,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   );
 
   const retry = useCallback(async () => {
+    reconnectGenerationRef.current += 1;
     setWalletError(null);
     setAuthError(null);
     openConnectModal();

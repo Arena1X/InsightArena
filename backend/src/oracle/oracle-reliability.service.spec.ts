@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { OracleReliabilityService } from './oracle-reliability.service';
 import { OracleSourceReliability } from './entities/oracle-source-reliability.entity';
 import { OracleReliabilityHistory } from './entities/oracle-reliability-history.entity';
@@ -15,10 +16,30 @@ describe('OracleReliabilityService', () => {
   let service: OracleReliabilityService;
   let reliabilityRepo: ReturnType<typeof mockRepo>;
   let historyRepo: ReturnType<typeof mockRepo>;
+  let configService: { get: jest.Mock };
+
+  const DECAY_RATE_PER_DAY = 0.05;
+  const DECAY_GRACE_PERIOD_DAYS = 7;
+  const DECAY_FLOOR = 0.1;
+  const DAY_MS = 24 * 60 * 60 * 1000;
 
   beforeEach(async () => {
     reliabilityRepo = mockRepo();
     historyRepo = mockRepo();
+    configService = {
+      get: jest.fn((key: string, defaultValue?: any) => {
+        switch (key) {
+          case 'oracle.reliability.decayRatePerDay':
+            return DECAY_RATE_PER_DAY;
+          case 'oracle.reliability.decayGracePeriodDays':
+            return DECAY_GRACE_PERIOD_DAYS;
+          case 'oracle.reliability.decayFloor':
+            return DECAY_FLOOR;
+          default:
+            return defaultValue;
+        }
+      }),
+    };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OracleReliabilityService,
@@ -30,10 +51,18 @@ describe('OracleReliabilityService', () => {
           provide: getRepositoryToken(OracleReliabilityHistory),
           useValue: historyRepo,
         },
+        {
+          provide: ConfigService,
+          useValue: configService,
+        },
       ],
     }).compile();
 
     service = module.get(OracleReliabilityService);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   describe('recordOutcome', () => {
@@ -133,6 +162,30 @@ describe('OracleReliabilityService', () => {
         expect.objectContaining({ reliability_score: 1 }),
       );
     });
+
+    it('gradually raises weight as accuracy improves, still bounded below by the floor', async () => {
+      const existing = {
+        data_source: 'src-low',
+        total_submissions: 1,
+        correct_submissions: 0,
+        reliability_score: 0,
+      };
+      reliabilityRepo.findOne.mockResolvedValue(existing);
+      reliabilityRepo.save.mockImplementation(async (r: any) => ({
+        ...r,
+        updated_at: new Date(),
+      }));
+      historyRepo.create.mockImplementation((data: any) => data);
+      historyRepo.save.mockImplementation(async (r: any) => r);
+
+      await service.recordOutcome('src-low', 'match-1', true);
+
+      const saved = reliabilityRepo.save.mock.calls[0][0];
+      expect(saved.reliability_score).toBeGreaterThanOrEqual(
+        service.getWeightFloor(),
+      );
+      expect(saved.reliability_score).toBeGreaterThan(0);
+    });
   });
 
   describe('getScores', () => {
@@ -183,6 +236,23 @@ describe('OracleReliabilityService', () => {
       reliabilityRepo.findOne.mockResolvedValue({ reliability_score: 1.2 }); // Over max
       expect(await service.getWeight('src-over')).toBe(1.0);
     });
+
+    it('never returns below the weight floor for a poor accuracy history', async () => {
+      reliabilityRepo.findOne.mockResolvedValue({ reliability_score: 0.05 });
+      const weight = await service.getWeight('src-poor');
+      expect(weight).toBeGreaterThanOrEqual(service.getWeightFloor());
+    });
+
+    it('returns the documented default weight for a source with zero recorded outcomes', async () => {
+      reliabilityRepo.findOne.mockResolvedValue({
+        total_submissions: 0,
+        correct_submissions: 0,
+        reliability_score: null,
+      });
+      expect(await service.getWeight('src-new')).toBe(
+        service.getDefaultWeight(),
+      );
+    });
   });
 
   describe('getScoreHistory', () => {
@@ -218,6 +288,64 @@ describe('OracleReliabilityService', () => {
 
     it('getDefaultWeight returns configured default', () => {
       expect(service.getDefaultWeight()).toBe(1.0);
+    });
+  });
+
+  describe('reliability decay over inactivity', () => {
+    const now = new Date('2024-06-01T00:00:00.000Z').getTime();
+
+    const daysAgo = (days: number) => new Date(now - days * DAY_MS);
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.setSystemTime(now);
+    });
+
+    it('decays an inactive oracle score over the configured period', async () => {
+      const inactiveDays = DECAY_GRACE_PERIOD_DAYS + 10;
+      reliabilityRepo.findOne.mockResolvedValue({
+        data_source: 'src-inactive',
+        total_submissions: 10,
+        correct_submissions: 9,
+        reliability_score: 0.9,
+        updated_at: daysAgo(inactiveDays),
+      });
+
+      const weight = await service.getWeight('src-inactive');
+
+      const expectedDecay = DECAY_RATE_PER_DAY * 10;
+      expect(weight).toBeCloseTo(0.9 - expectedDecay, 5);
+      expect(weight).toBeLessThan(0.9);
+    });
+
+    it('does not decay an active oracle score', async () => {
+      reliabilityRepo.findOne.mockResolvedValue({
+        data_source: 'src-active',
+        total_submissions: 10,
+        correct_submissions: 9,
+        reliability_score: 0.9,
+        updated_at: daysAgo(1),
+      });
+
+      const weight = await service.getWeight('src-active');
+
+      expect(weight).toBeCloseTo(0.9, 5);
+    });
+
+    it('never decays the score below the documented floor', async () => {
+      const veryInactiveDays = DECAY_GRACE_PERIOD_DAYS + 1000;
+      reliabilityRepo.findOne.mockResolvedValue({
+        data_source: 'src-stale',
+        total_submissions: 10,
+        correct_submissions: 9,
+        reliability_score: 0.9,
+        updated_at: daysAgo(veryInactiveDays),
+      });
+
+      const weight = await service.getWeight('src-stale');
+
+      expect(weight).toBeCloseTo(DECAY_FLOOR, 5);
+      expect(weight).toBeGreaterThanOrEqual(DECAY_FLOOR);
     });
   });
 });

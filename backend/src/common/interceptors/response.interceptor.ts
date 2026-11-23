@@ -8,8 +8,9 @@ import {
 import { Reflector } from '@nestjs/core';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { PAGINATED_KEY } from '../decorators/paginated.decorator';
+import { bindCorrelationId } from '../correlation-id';
 
 export interface PaginationEnvelopeMeta {
   nextCursor: string | null;
@@ -34,11 +35,22 @@ const NO_BODY_STATUS_CODES = new Set([204, 304]);
 
 @Injectable()
 export class ResponseInterceptor implements NestInterceptor {
-  constructor(private readonly reflector: Reflector) {}
+  constructor(private readonly reflector?: Reflector) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const http = context.switchToHttp();
-    const response = http.getResponse<Response>();
+    if (!context.getType || context.getType() === 'http') {
+      const http = context.switchToHttp();
+      const request = http.getRequest<Request>();
+      const response = http.getResponse<Response>();
+      if (request) {
+        bindCorrelationId(request, response);
+      }
+    }
+
+    const isPaginated = this.reflector?.getAllAndOverride<boolean | undefined>(
+      PAGINATED_KEY,
+      [context.getHandler(), context.getClass()],
+    );
 
     const isPaginated = this.reflector.getAllAndOverride<boolean | undefined>(
       PAGINATED_KEY,
@@ -50,7 +62,10 @@ export class ResponseInterceptor implements NestInterceptor {
         if (data instanceof StreamableFile) {
           return data;
         }
-        if (NO_BODY_STATUS_CODES.has(response.statusCode)) {
+
+        const http = context.switchToHttp();
+        const response = http.getResponse<Response>();
+        if (response && NO_BODY_STATUS_CODES.has(response.statusCode)) {
           return data;
         }
 

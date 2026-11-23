@@ -12,6 +12,12 @@ on:
     paths:
       - "backend/**"
       - ".github/workflows/backend-ci.yml"
+  workflow_dispatch:
+    inputs:
+      perf_smoke:
+        description: "Run the k6 smoke performance check"
+        type: boolean
+        default: true
 
 jobs:
   lint:
@@ -99,6 +105,9 @@ jobs:
       - name: Run unit tests
         run: pnpm run test
 
+      - name: Verify Swagger docs export
+        run: pnpm run docs:verify
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -139,3 +148,127 @@ jobs:
 
       - name: Build project
         run: pnpm run build
+
+  # Optional smoke-level performance check (#2212). Runs only when triggered
+  # manually (workflow_dispatch with perf_smoke) or on a PR labelled "perf",
+  # so regular CI stays fast. k6 exits non-zero when a threshold defined in
+  # backend/performance/k6-config.js is breached, which fails this job.
+  perf-smoke:
+    name: Performance smoke (k6)
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.perf_smoke) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'perf'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: insightarena
+          POSTGRES_PASSWORD: insightarena
+          POSTGRES_DB: insightarena
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      PORT: 3000
+      DATABASE_URL: postgresql://insightarena:insightarena@localhost:5432/insightarena
+      JWT_SECRET: ci-perf-smoke-jwt-secret-at-least-32-chars
+      JWT_EXPIRES_IN: 1h
+      STELLAR_NETWORK: testnet
+      SOROBAN_CONTRACT_ID: ci-placeholder-contract-id
+      SERVER_SECRET_KEY: ci-placeholder-secret-key
+      RECONCILE_ENABLED: "false"
+      DIGEST_ENABLED: "false"
+      CACHE_WARMING_ENABLED: "false"
+      API_BASE_URL: http://localhost:3000
+      SMOKE_DURATION: 30s
+      SMOKE_VUS: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build project
+        run: pnpm run build
+
+      - name: Run database migrations
+        run: pnpm run migration:run
+
+      - name: Start API in background
+        run: |
+          node dist/src/main > /tmp/api.log 2>&1 &
+          echo $! > /tmp/api.pid
+
+      - name: Wait for API to be ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3000/api/v1/health/live > /dev/null; then
+              echo "API is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API did not become ready in time" >&2
+          cat /tmp/api.log
+          exit 1
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Run k6 smoke check (thresholds enforced)
+        run: pnpm run perf:smoke
+
+      - name: Verify a breached threshold fails the run
+        run: pnpm run perf:smoke:breach-check
+
+      - name: Upload API logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-smoke-api-logs
+          path: /tmp/api.log
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f /tmp/api.pid ]; then
+            kill "$(cat /tmp/api.pid)" || true
+          fi

@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from "@headlessui/react";
 import { AlertTriangle } from "lucide-react";
+import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
@@ -16,7 +17,7 @@ export type ConfirmVariant = "default" | "destructive";
 export interface ConfirmDialogProps {
   open: boolean;
   title: string;
-  description?: string;
+  description?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: ConfirmVariant;
@@ -127,17 +128,17 @@ export function ConfirmDialog({
                         ? "confirm-dialog-reason-hint"
                         : undefined
                     }
-                    className="mt-1.5 w-full resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-orange-500/50 focus:outline-none focus:ring-1 focus:ring-orange-500/30"
+                    className="mt-1.5 w-full resize-none rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-muted-foreground focus:border-orange-500/50 focus:outline-none focus:ring-1 focus:ring-orange-500/30"
                   />
                   {reasonTrimmed.length === 0 && (
                     <p
                       id="confirm-dialog-reason-hint"
-                      className="mt-1 text-xs text-gray-500"
+                      className="mt-1 text-xs text-muted-foreground"
                     >
                       A reason is required before confirming.
                     </p>
                   )}
-                  <p className="mt-1 text-right text-xs text-gray-600">
+                  <p className="mt-1 text-right text-xs text-muted-foreground">
                     {reason.length}/500
                   </p>
                 </div>

@@ -1,0 +1,13 @@
+{
+  // audit-ci configuration for the frontend.
+  // Fail CI on any high or critical severity advisory.
+  //
+  // To allowlist a known advisory that has been reviewed and accepted:
+  // 1. Add the advisory ID (e.g. "GHSA-xxxx-xxxx-xxxx") to the array below.
+  // 2. Add a comment explaining why it is accepted and when it should be revisited.
+  //
+  // Example:
+  //   "allowlist": ["GHSA-1234-5678-abcd"]  // accepted: no fix available, mitigated by <reason>, revisit <date>
+  "severity": "high",
+  "allowlist": []
+}

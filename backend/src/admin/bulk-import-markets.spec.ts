@@ -58,6 +58,12 @@ describe('AdminService (Bulk CSV Market Import)', () => {
         { provide: getRepositoryToken(CreatorEvent), useValue: emptyRepo },
         { provide: getRepositoryToken(VerifiedAddress), useValue: emptyRepo },
         { provide: getRepositoryToken(FeeHistory), useValue: emptyRepo },
+        {
+          provide: getRepositoryToken(
+            require('./entities/admin-audit-log.entity').AdminAuditLog,
+          ),
+          useValue: emptyRepo,
+        },
         { provide: MarketsService, useValue: marketsService },
         { provide: AnalyticsService, useValue: {} },
         { provide: NotificationsService, useValue: {} },

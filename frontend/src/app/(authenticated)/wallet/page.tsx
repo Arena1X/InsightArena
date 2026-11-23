@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useWallet } from "@/context/WalletContext";
 import { useToast } from "@/hooks/useToast";
+import { EmptyState } from "@/component/ui/empty-state";
 
 type TxType = "Stake" | "Payout" | "Refund" | "Season Reward";
 type TxStatus = "Confirmed" | "Pending";
@@ -21,7 +23,7 @@ interface Transaction {
 function getSeedFromAddress(address: string): number {
   let seed = 0;
   for (let i = 0; i < address.length; i++) {
-    seed += address.charCodeAt(i); // Adds up the computer code value of each letter
+    seed += address.charCodeAt(i);
   }
   return seed;
 }
@@ -29,6 +31,11 @@ const PLACEHOLDER_ADDRESS =
   "GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37";
 
 const baseSeed = getSeedFromAddress(PLACEHOLDER_ADDRESS);
+
+// Simple asset data with mock prices
+const ASSETS = [
+  { symbol: "XLM", name: "Stellar", priceUSD: 0.12 },
+];
 
 const marketPool = [
   "Will XLM close above $0.25?",
@@ -79,32 +86,122 @@ const STATUS_COLORS: Record<TxStatus, string> = {
   Pending: "text-yellow-400",
 };
 
-function truncateAddress(addr: string) {
-  return `${addr.slice(0, 8)}...${addr.slice(-6)}`;
+const TX_FILTER_OPTIONS: TxFilter[] = [
+  "All",
+  "Stake",
+  "Payout",
+  "Refund",
+  "Season Reward",
+];
+
+function isValidTxFilter(value: string | null): value is TxFilter {
+  return (
+    value !== null &&
+    (TX_FILTER_OPTIONS as string[]).includes(value)
+  );
+}
+
+function isValidDate(value: string | null): value is string {
+  if (!value) return false;
+  const d = new Date(value);
+  return !isNaN(d.getTime());
+}
+
+function useTransactionFilters() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const rawType = searchParams.get("type");
+  const rawFrom = searchParams.get("from");
+  const rawTo = searchParams.get("to");
+
+  const typeFilter: TxFilter = isValidTxFilter(rawType) ? rawType : "All";
+  const dateFrom: string = isValidDate(rawFrom) ? rawFrom : "";
+  const dateTo: string = isValidDate(rawTo) ? rawTo : "";
+
+  const updateParams = useCallback(
+    (patch: { type?: TxFilter; from?: string; to?: string }) => {
+      const next = new URLSearchParams(searchParams.toString());
+
+      const newType = patch.type ?? typeFilter;
+      const newFrom = patch.from !== undefined ? patch.from : dateFrom;
+      const newTo = patch.to !== undefined ? patch.to : dateTo;
+
+      if (newType === "All") {
+        next.delete("type");
+      } else {
+        next.set("type", newType);
+      }
+
+      if (newFrom) {
+        next.set("from", newFrom);
+      } else {
+        next.delete("from");
+      }
+
+      if (newTo) {
+        next.set("to", newTo);
+      } else {
+        next.delete("to");
+      }
+
+      router.replace(`?${next.toString()}`, { scroll: false });
+    },
+    [router, searchParams, typeFilter, dateFrom, dateTo],
+  );
+
+  const clearFilters = useCallback(() => {
+    router.replace("?", { scroll: false });
+  }, [router]);
+
+  return { typeFilter, dateFrom, dateTo, updateParams, clearFilters };
+}
+
+function applyFilters(
+  transactions: Transaction[],
+  typeFilter: TxFilter,
+  dateFrom: string,
+  dateTo: string,
+): Transaction[] {
+  return transactions.filter((tx) => {
+    if (typeFilter !== "All" && tx.type !== typeFilter) return false;
+    if (dateFrom && tx.date < dateFrom) return false;
+    if (dateTo && tx.date > dateTo) return false;
+    return true;
+  });
 }
 
 export default function WalletPage() {
   const { logout } = useWallet();
   const toast = useToast();
   const [copied, setCopied] = useState(false);
-  const [typeFilter, setTypeFilter] = useState<TxFilter>("All");
   const [isExporting, setIsExporting] = useState(false);
 
   // Dynamically calculate individual card summary strings based on the wallet seed
-  const dynamicAvailable = `${(1000 + (baseSeed % 850) + 0.5).toLocaleString(undefined, { minimumFractionDigits: 2 })} XLM`;
-  const dynamicStaked = `${(50 + (baseSeed % 200)).toFixed(2)} XLM`;
-  const dynamicWinnings = `${(100 + (baseSeed % 500)).toFixed(2)} XLM`;
+  const availableXLM = 1000 + (baseSeed % 850) + 0.5;
+  const stakedXLM = 50 + (baseSeed % 200);
+  const winningsXLM = 100 + (baseSeed % 500);
+
+  // Calculate fiat values
+  const xlmPrice = ASSETS[0].priceUSD;
+  const totalXLM = availableXLM + stakedXLM + winningsXLM;
+  const totalPortfolioUSD = totalXLM * xlmPrice;
+
+  const dynamicAvailable = `${availableXLM.toLocaleString(undefined, { minimumFractionDigits: 2 })} XLM`;
+  const dynamicStaked = `${stakedXLM.toFixed(2)} XLM`;
+  const dynamicWinnings = `${winningsXLM.toFixed(2)} XLM`;
+  const totalPortfolio = `$${totalPortfolioUSD.toFixed(2)} USD`;
+
+  const filteredTx = applyFilters(TRANSACTIONS, typeFilter, dateFrom, dateTo);
+
+  const hasActiveFilters =
+    typeFilter !== "All" || dateFrom !== "" || dateTo !== "";
 
   const handleCopy = () => {
     navigator.clipboard.writeText(PLACEHOLDER_ADDRESS).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
-
-  const filteredTx =
-    typeFilter === "All"
-      ? TRANSACTIONS
-      : TRANSACTIONS.filter((t) => t.type === typeFilter);
 
   const buildCsv = () => {
     const escapeValue = (value: string) => `"${value.replaceAll('"', '""')}"`;
@@ -118,7 +215,6 @@ export default function WalletPage() {
         transaction.status,
       ]),
     ];
-
     return rows.map((row) => row.map(escapeValue).join(",")).join("\r\n");
   };
 
@@ -137,7 +233,6 @@ export default function WalletPage() {
       });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
-
       link.href = url;
       link.download = `insightarena-transactions-${typeFilter.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
       document.body.appendChild(link);
@@ -176,6 +271,13 @@ export default function WalletPage() {
         >
           Disconnect Wallet
         </button>
+      </div>
+
+      {/* Portfolio Summary */}
+      <div className="rounded-xl border border-white/10 bg-white/5 p-5 space-y-3">
+        <p className="text-xs text-gray-400">Total Portfolio Value</p>
+        <p className="text-3xl font-bold text-blue-400">{totalPortfolio}</p>
+        <p className="text-sm text-gray-400">{totalXLM.toFixed(2)} XLM @ ${xlmPrice}/XLM</p>
       </div>
 
       {/* Balance Cards */}
@@ -228,68 +330,151 @@ export default function WalletPage() {
 
       {/* Transaction History */}
       <div className="space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
           <h2 className="text-lg font-semibold text-white">
             Transaction History
           </h2>
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value as TxFilter)}
-            className="rounded-lg border border-white/10 bg-gray-900 px-3 py-1.5 text-sm text-gray-300 focus:outline-none"
+
+          {/* Filters */}
+          <div
+            className="flex flex-col sm:flex-row gap-2 sm:items-end"
+            data-testid="transaction-filters"
           >
-            {["All", "Stake", "Payout", "Refund", "Season Reward"].map((t) => (
-              <option key={t}>{t}</option>
-            ))}
-          </select>
+            {/* Type filter */}
+            <div className="flex flex-col gap-1">
+              <label
+                htmlFor="tx-type-filter"
+                className="text-xs text-gray-400 sr-only"
+              >
+                Filter by type
+              </label>
+              <select
+                id="tx-type-filter"
+                aria-label="Filter by transaction type"
+                value={typeFilter}
+                onChange={(e) =>
+                  updateParams({ type: e.target.value as TxFilter })
+                }
+                className="rounded-lg border border-white/10 bg-gray-900 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-orange-500/50"
+              >
+                {TX_FILTER_OPTIONS.map((t) => (
+                  <option key={t} value={t}>
+                    {t === "All" ? "All Types" : t}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Date from */}
+            <div className="flex flex-col gap-1">
+              <label
+                htmlFor="tx-date-from"
+                className="text-xs text-gray-400"
+              >
+                From
+              </label>
+              <input
+                id="tx-date-from"
+                type="date"
+                aria-label="Filter from date"
+                value={dateFrom}
+                max={dateTo || undefined}
+                onChange={(e) => updateParams({ from: e.target.value })}
+                className="rounded-lg border border-white/10 bg-gray-900 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-orange-500/50"
+              />
+            </div>
+
+            {/* Date to */}
+            <div className="flex flex-col gap-1">
+              <label
+                htmlFor="tx-date-to"
+                className="text-xs text-gray-400"
+              >
+                To
+              </label>
+              <input
+                id="tx-date-to"
+                type="date"
+                aria-label="Filter to date"
+                value={dateTo}
+                min={dateFrom || undefined}
+                onChange={(e) => updateParams({ to: e.target.value })}
+                className="rounded-lg border border-white/10 bg-gray-900 px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:ring-1 focus:ring-orange-500/50"
+              />
+            </div>
+
+            {/* Clear filters button — only shown when a filter is active */}
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-medium text-gray-400 hover:text-white hover:bg-white/10 transition-colors self-end"
+                aria-label="Clear all filters"
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="overflow-x-auto rounded-xl border border-white/10">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-white/5 text-gray-400 uppercase text-xs tracking-wider">
-              <tr>
-                <th className="px-4 py-3">Date</th>
-                <th className="px-4 py-3">Type</th>
-                <th className="px-4 py-3">Market / Description</th>
-                <th className="px-4 py-3">Amount</th>
-                <th className="px-4 py-3">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {filteredTx.map((tx) => (
-                <tr key={tx.id} className="bg-black/20 hover:bg-white/5">
-                  <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
-                    {tx.date}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${TYPE_COLORS[tx.type]}`}
-                    >
-                      {tx.type}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-gray-300 max-w-[200px] truncate">
-                    {tx.description}
-                  </td>
-                  <td
-                    className={`px-4 py-3 font-medium whitespace-nowrap ${tx.amount.startsWith("+") ? "text-emerald-400" : "text-gray-300"}`}
-                  >
-                    {tx.amount}
-                  </td>
-                  <td
-                    className={`px-4 py-3 font-medium ${STATUS_COLORS[tx.status]}`}
-                  >
-                    {tx.status}
-                  </td>
+        {filteredTx.length === 0 ? (
+          <EmptyState
+            title="No transactions match"
+            description={
+              hasActiveFilters
+                ? "Try adjusting the type or date range filters."
+                : "Your transaction history will appear here."
+            }
+            secondaryAction={
+              hasActiveFilters
+                ? { label: "Clear filters", onClick: clearFilters }
+                : undefined
+            }
+          />
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-white/10">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-white/5 text-gray-400 uppercase text-xs tracking-wider">
+                <tr>
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Market / Description</th>
+                  <th className="px-4 py-3">Amount</th>
+                  <th className="px-4 py-3">Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          {filteredTx.length === 0 && (
-            <div className="py-10 text-center text-gray-400 text-sm">
-              No transactions match the filter.
-            </div>
-          )}
-        </div>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {filteredTx.map((tx) => (
+                  <tr key={tx.id} className="bg-black/20 hover:bg-white/5">
+                    <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
+                      {tx.date}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${TYPE_COLORS[tx.type]}`}
+                      >
+                        {tx.type}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-300 max-w-[200px] truncate">
+                      {tx.description}
+                    </td>
+                    <td
+                      className={`px-4 py-3 font-medium whitespace-nowrap ${tx.amount.startsWith("+") ? "text-emerald-400" : "text-gray-300"}`}
+                    >
+                      {tx.amount}
+                    </td>
+                    <td
+                      className={`px-4 py-3 font-medium ${STATUS_COLORS[tx.status]}`}
+                    >
+                      {tx.status}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

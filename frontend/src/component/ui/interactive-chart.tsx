@@ -2,6 +2,8 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { ChevronDown } from "lucide-react";
+import { Skeleton } from "./skeleton";
+import { EmptyState } from "./empty-state";
 
 export interface ChartDataPoint {
   label: string;
@@ -23,6 +25,77 @@ interface InteractiveChartProps {
   description?: string;
   tooltipFormatter?: (value: number, series: ChartSeries) => string;
   height?: number;
+  /** When true, renders a loading skeleton instead of the chart. */
+  isLoading?: boolean;
+  /** Message shown in the empty state when there is no data to plot. */
+  emptyMessage?: string;
+}
+
+/**
+ * True when there is no plottable data at all: no series, or every series
+ * has an empty data array.
+ */
+function hasNoData(series: ChartSeries[]): boolean {
+  return series.length === 0 || series.every((s) => s.data.length === 0);
+}
+
+/**
+ * A human-readable summary of the chart's series for screen readers, since
+ * the bars themselves are decorative/interactive rather than semantic text.
+ */
+function buildAccessibleSummary(
+  series: ChartSeries[],
+  formatter: (value: number, series: ChartSeries) => string,
+): string {
+  return series
+    .map((s) => {
+      if (s.data.length === 0) {
+        return `${s.name}: no data`;
+      }
+      if (s.data.length === 1) {
+        const point = s.data[0];
+        return `${s.name}: single value ${formatter(point.value, s)} at ${point.date || point.label}`;
+      }
+      const first = s.data[0];
+      const last = s.data[s.data.length - 1];
+      return `${s.name}: ${s.data.length} points, from ${formatter(first.value, s)} at ${first.date || first.label} to ${formatter(last.value, s)} at ${last.date || last.label}`;
+    })
+    .join(". ");
+}
+
+function ChartSkeleton({
+  title,
+  description,
+  height,
+}: {
+  title?: string;
+  description?: string;
+  height: number;
+}) {
+  return (
+    <div
+      className="space-y-4 rounded-xl border border-white/10 bg-slate-900/50 p-6"
+      role="status"
+      aria-label={title ? `Loading ${title}` : "Loading chart"}
+    >
+      {title && (
+        <div>
+          <h3 className="text-lg font-semibold text-white">{title}</h3>
+          {description && (
+            <p className="mt-1 text-sm text-slate-400">{description}</p>
+          )}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-3">
+        <Skeleton className="h-9 w-24 bg-white/5" />
+        <Skeleton className="h-9 w-24 bg-white/5" />
+      </div>
+      <Skeleton
+        className="w-full rounded-lg bg-slate-950/50"
+        style={{ height: `${height}px` }}
+      />
+    </div>
+  );
 }
 
 export function InteractiveChart({
@@ -31,6 +104,8 @@ export function InteractiveChart({
   description,
   tooltipFormatter,
   height = 300,
+  isLoading = false,
+  emptyMessage = "No data yet. Check back once activity comes in.",
 }: InteractiveChartProps) {
   const [visibleSeries, setVisibleSeries] = useState(
     new Set(series.map((s) => s.id)),
@@ -80,18 +155,49 @@ export function InteractiveChart({
   const defaultFormatter = (value: number) => value.toFixed(2);
   const formatter = tooltipFormatter || defaultFormatter;
 
-  // Calculate chart dimensions
-  const maxValue = Math.max(
-    ...series
-      .filter((s) => visibleSeries.has(s.id))
-      .flatMap((s) => s.data.map((d) => d.value)),
-  );
+  if (isLoading) {
+    return (
+      <ChartSkeleton title={title} description={description} height={height} />
+    );
+  }
+
+  if (hasNoData(series)) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-slate-900/50 p-6">
+        {title && (
+          <div className="mb-2">
+            <h3 className="text-lg font-semibold text-white">{title}</h3>
+            {description && (
+              <p className="mt-1 text-sm text-slate-400">{description}</p>
+            )}
+          </div>
+        )}
+        <EmptyState
+          title="No data yet"
+          description={emptyMessage}
+          className="py-8"
+        />
+      </div>
+    );
+  }
+
+  // Calculate chart dimensions. Guard against every visible value being 0
+  // or the visible series having only a single point, either of which would
+  // otherwise produce a maxValue of 0/-Infinity and break percentage-based
+  // scaling (division by zero, NaN heights).
+  const visibleValues = series
+    .filter((s) => visibleSeries.has(s.id))
+    .flatMap((s) => s.data.map((d) => d.value));
+  const rawMaxValue = visibleValues.length > 0 ? Math.max(...visibleValues) : 0;
+  const maxValue = rawMaxValue > 0 ? rawMaxValue : 1;
 
   const visibleData = series.filter((s) => visibleSeries.has(s.id));
   const dataPoints = series[0]?.data.length || 0;
+  const accessibleSummary = buildAccessibleSummary(series, formatter);
 
   return (
     <div className="space-y-4 rounded-xl border border-white/10 bg-slate-900/50 p-6">
+      <p className="sr-only">{accessibleSummary}</p>
       {title && (
         <div>
           <h3 className="text-lg font-semibold text-white">{title}</h3>
@@ -112,7 +218,7 @@ export function InteractiveChart({
               className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                 isVisible
                   ? "bg-white/10 text-white"
-                  : "bg-white/5 text-slate-500 opacity-50"
+                  : "bg-white/5 text-muted-foreground"
               } hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-[#4FD1C5] focus:ring-offset-2 focus:ring-offset-slate-900`}
               aria-pressed={isVisible}
               title={isVisible ? `Hide ${s.name}` : `Show ${s.name}`}
@@ -138,7 +244,7 @@ export function InteractiveChart({
         aria-label={title}
       >
         {/* Y-axis labels */}
-        <div className="absolute left-0 top-0 flex h-full flex-col justify-between bg-gradient-to-r from-slate-900 to-transparent px-3 py-2 text-xs text-slate-500">
+        <div className="absolute left-0 top-0 flex h-full flex-col justify-between bg-gradient-to-r from-slate-900 to-transparent px-3 py-2 text-xs text-muted-foreground">
           <span>{maxValue.toFixed(0)}</span>
           <span>{(maxValue * 0.5).toFixed(0)}</span>
           <span>0</span>
@@ -234,7 +340,7 @@ export function InteractiveChart({
       </div>
 
       {/* X-axis labels (sample) */}
-      <div className="mt-3 flex justify-between text-xs text-slate-500">
+      <div className="mt-3 flex justify-between text-xs text-muted-foreground">
         <span>{series[0]?.data[0]?.label}</span>
         <span>{series[0]?.data[Math.floor(dataPoints / 2)]?.label}</span>
         <span>{series[0]?.data[dataPoints - 1]?.label}</span>

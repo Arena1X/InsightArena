@@ -38,24 +38,17 @@ fn register_token(env: &Env) -> Address {
         .address()
 }
 
-fn deploy_with_token(
-    env: &Env,
-) -> (
-    InsightArenaContractClient<'_>,
-    Address,
-    Address,
-    Address,
-) {
+fn deploy_with_token(env: &Env) -> (InsightArenaContractClient<'_>, Address, Address, Address) {
     let id = env.register(InsightArenaContract, ());
     let client = InsightArenaContractClient::new(env, &id);
     let admin = Address::generate(env);
     let oracle = Address::generate(env);
     let xlm_token = register_token(env);
     client.initialize(&admin, &oracle, &200_u32, &xlm_token);
-    
+
     // Add the "test" category to the whitelist
     client.add_category(&admin, &symbol_short!("test"));
-    
+
     (client, admin, oracle, xlm_token)
 }
 
@@ -231,7 +224,12 @@ fn test_ring_buffer_wraparound_rejects_oversized_window() {
     let num_swaps: u32 = TWAP_RING_BUFFER_CAPACITY + 20;
     let swap_amount = 1_000_i128;
     sa.mint(&trader, &(swap_amount * num_swaps as i128));
-    token.approve(&trader, &client.address, &(swap_amount * num_swaps as i128), &9999);
+    token.approve(
+        &trader,
+        &client.address,
+        &(swap_amount * num_swaps as i128),
+        &9999,
+    );
 
     for _ in 0..num_swaps {
         env.ledger().with_mut(|l| l.timestamp += 50);
@@ -242,6 +240,7 @@ fn test_ring_buffer_wraparound_rejects_oversized_window() {
             &symbol_short!("no"),
             &swap_amount,
             &0_i128,
+            &None::<u64>,
         );
     }
 
@@ -265,7 +264,10 @@ fn test_ring_buffer_wraparound_rejects_oversized_window() {
     let recent_window: u64 = (TWAP_RING_BUFFER_CAPACITY as u64 / 2) * 50;
     let twap = client.get_twap(&market_id, &symbol_short!("yes"), &recent_window);
 
-    assert!(twap > 0, "TWAP should succeed for window within retained history");
+    assert!(
+        twap > 0,
+        "TWAP should succeed for window within retained history"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -424,6 +426,7 @@ fn test_valid_twap_query_succeeds() {
             &symbol_short!("no"),
             &swap_amount,
             &0_i128,
+            &None::<u64>,
         );
     }
 
@@ -437,6 +440,91 @@ fn test_valid_twap_query_succeeds() {
         twap > 0,
         "TWAP should return a positive value for valid query with sufficient history"
     );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SETTLEMENT GUARD: Spot Price vs TWAP Deviation
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Creates a funded pool at t=1000 and advances the ledger to the market's
+/// resolution time (t=91_000), returning the market id.
+fn setup_settlement_pool(
+    env: &Env,
+    client: &InsightArenaContractClient<'_>,
+    admin: &Address,
+    xlm_token: &Address,
+) -> u64 {
+    let provider = Address::generate(env);
+    let market_id = client.create_market(admin, &lp_market_params(env));
+
+    let sa = StellarAssetClient::new(env, xlm_token);
+    let token = TokenClient::new(env, xlm_token);
+    let liquidity = 100_000_000_i128;
+    sa.mint(&provider, &liquidity);
+    token.approve(&provider, &client.address, &liquidity, &9999);
+    client.add_liquidity(&provider, &market_id, &liquidity);
+
+    env.ledger().with_mut(|l| l.timestamp = 91_000);
+    market_id
+}
+
+/// **Test Case**: a spot price pushed far from its TWAP right before settlement
+/// must cause `resolve_market` to reject with `InvalidInput`, leaving the market
+/// unresolved.
+///
+/// **Rationale**: A large swap at settlement moves the spot reserve immediately
+/// but contributes nothing to the TWAP until time passes, so the deviation guard
+/// must catch it.
+#[test]
+fn test_manipulated_spot_price_rejected_at_settlement() {
+    let env = Env::default();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy_with_token(&env);
+    let market_id = setup_settlement_pool(&env, &client, &admin, &xlm_token);
+
+    let trader = Address::generate(&env);
+    let sa = StellarAssetClient::new(&env, &xlm_token);
+    let token = TokenClient::new(&env, &xlm_token);
+    let manipulation = 100_000_000_i128;
+    sa.mint(&trader, &manipulation);
+    token.approve(&trader, &client.address, &manipulation, &9999);
+    client.swap_outcome(
+        &trader,
+        &market_id,
+        &symbol_short!("no"),
+        &symbol_short!("yes"),
+        &manipulation,
+        &0_i128,
+        &None::<u64>,
+    );
+
+    let result = client.try_resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+    assert!(
+        matches!(result, Err(Ok(InsightArenaError::InvalidInput))),
+        "Expected settlement to reject manipulated spot price, got: {:?}",
+        result
+    );
+    assert!(!client.get_market(&market_id).is_resolved);
+}
+
+/// **Test Case**: a spot price that tracks its TWAP passes the settlement guard
+/// and the market resolves.
+#[test]
+fn test_normal_spot_price_passes_settlement() {
+    let env = Env::default();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+    env.mock_all_auths();
+    let (client, admin, oracle, xlm_token) = deploy_with_token(&env);
+    let market_id = setup_settlement_pool(&env, &client, &admin, &xlm_token);
+
+    let result = client.try_resolve_market(&oracle, &market_id, &symbol_short!("yes"));
+    assert!(
+        result.is_ok(),
+        "Expected settlement with normal spot price to succeed, got: {:?}",
+        result
+    );
+    assert!(client.get_market(&market_id).is_resolved);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -477,8 +565,3 @@ fn test_single_observation_twap_succeeds() {
         "TWAP should succeed with single observation and valid window"
     );
 }
-
-
-
-
-

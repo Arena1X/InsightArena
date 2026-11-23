@@ -32,7 +32,9 @@ export class DeprecationInterceptor implements NestInterceptor {
     if (options) {
       const response = context.switchToHttp().getResponse<Response>();
       response.setHeader('Deprecation', 'true');
-      response.setHeader('Sunset', options.sunset);
+      if (options.sunset) {
+        response.setHeader('Sunset', options.sunset);
+      }
       if (options.link) {
         response.setHeader('Link', `<${options.link}>; rel="deprecation"`);
       }

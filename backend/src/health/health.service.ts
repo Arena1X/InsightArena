@@ -21,7 +21,29 @@ import { DetailedHealthDto, HealthSummaryDto } from './dto/detailed-health.dto';
 const START_TIME = Date.now();
 const CACHE_PROBE_KEY = '__health_check_probe__';
 
-type DependencyStatus = { status: string; latency_ms: number };
+/**
+ * Per-dependency probe timeouts. Each dependency check is bounded by its own
+ * timeout so a single slow dependency (e.g. a hung DB connection or an
+ * unresponsive Soroban RPC) is reported as unhealthy instead of stalling the
+ * whole health response.
+ */
+export const DATABASE_PROBE_TIMEOUT_MS = 2000;
+export const SOROBAN_PROBE_TIMEOUT_MS = 5000;
+export const CACHE_PROBE_TIMEOUT_MS = 2000;
+
+/**
+ * Upper bound on how long checkDetailed/checkReadiness can take. Probes run in
+ * parallel, so the aggregate is the slowest individual probe timeout.
+ */
+export const HEALTH_AGGREGATE_TIMEOUT_MS = Math.max(
+  DATABASE_PROBE_TIMEOUT_MS,
+  SOROBAN_PROBE_TIMEOUT_MS,
+  CACHE_PROBE_TIMEOUT_MS,
+);
+
+type DependencyStatus = { status: string; latency_ms: number; error?: string };
+
+class ProbeTimeoutError extends Error {}
 
 @Injectable()
 export class HealthService {
@@ -78,7 +100,9 @@ export class HealthService {
 
   /**
    * Detailed health check with individual component status and latency for monitoring.
-   * Probes the database, Soroban RPC, and cache independently and in parallel.
+   * Probes the database, Soroban RPC, and cache independently and in parallel,
+   * each bounded by its own timeout, so the response always returns within
+   * HEALTH_AGGREGATE_TIMEOUT_MS even if a dependency hangs.
    *
    * The database is treated as a critical dependency: its failure brings the
    * overall status to 'down'. Soroban RPC and cache are non-critical: their
@@ -176,54 +200,121 @@ export class HealthService {
     return 'healthy';
   }
 
-  private async checkDatabase(): Promise<DependencyStatus> {
+  async checkDatabase(): Promise<DependencyStatus> {
     const start = Date.now();
     try {
-      await this.dataSource.query('SELECT 1');
+      await this.withTimeout(
+        this.dataSource.query('SELECT 1'),
+        DATABASE_PROBE_TIMEOUT_MS,
+        'database probe timed out',
+      );
       return { status: 'up', latency_ms: Date.now() - start };
-    } catch {
-      return { status: 'down', latency_ms: Date.now() - start };
+    } catch (error) {
+      return {
+        status: 'down',
+        latency_ms: Date.now() - start,
+        error: this.describeProbeError(error, 'database query failed'),
+      };
     }
   }
 
-  private async checkSoroban(): Promise<DependencyStatus> {
+  async checkSoroban(): Promise<DependencyStatus> {
     const rpcUrl =
       process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org';
     const start = Date.now();
+    const controller = new AbortController();
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      const response = await fetch(rpcUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'getHealth',
-          params: [],
+      // Abort the underlying request on timeout so it does not linger, and
+      // race it against the timer in case the fetch ignores the signal.
+      const response = await this.withTimeout(
+        fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'getHealth',
+            params: [],
+          }),
+          signal: controller.signal,
         }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
+        SOROBAN_PROBE_TIMEOUT_MS,
+        'soroban probe timed out',
+        () => controller.abort(),
+      );
       const latency = Date.now() - start;
       return { status: response.ok ? 'up' : 'degraded', latency_ms: latency };
-    } catch {
-      return { status: 'down', latency_ms: Date.now() - start };
+    } catch (error) {
+      return {
+        status: 'down',
+        latency_ms: Date.now() - start,
+        error: this.describeProbeError(error, 'soroban rpc unreachable'),
+      };
     }
   }
 
-  /** Round-trips a probe value through the cache to verify it is reachable. */
-  private async checkCache(): Promise<DependencyStatus> {
+  /**
+   * Round-trips a probe value through the cache to verify it is reachable.
+   * The probe is bounded by CACHE_PROBE_TIMEOUT_MS so a hung connection
+   * cannot stall checkDetailed/checkReadiness indefinitely. A timeout is
+   * reported as unhealthy with a distinct reason from a connection-refused
+   * failure.
+   */
+  async checkCache(): Promise<DependencyStatus> {
     const start = Date.now();
     try {
-      await this.cacheManager.set(CACHE_PROBE_KEY, 'ok', 5000);
-      const value = await this.cacheManager.get(CACHE_PROBE_KEY);
+      const value = await this.withTimeout(
+        (async () => {
+          await this.cacheManager.set(CACHE_PROBE_KEY, 'ok', 5000);
+          return this.cacheManager.get(CACHE_PROBE_KEY);
+        })(),
+        CACHE_PROBE_TIMEOUT_MS,
+        'cache probe timed out',
+      );
       return {
         status: value === 'ok' ? 'up' : 'down',
         latency_ms: Date.now() - start,
       };
-    } catch {
-      return { status: 'down', latency_ms: Date.now() - start };
+    } catch (error) {
+      return {
+        status: 'down',
+        latency_ms: Date.now() - start,
+        error: this.describeProbeError(error, 'cache connection refused'),
+      };
     }
+  }
+
+  /** Distinguishes a probe timeout from any other dependency failure. */
+  private describeProbeError(error: unknown, fallback: string): string {
+    return error instanceof ProbeTimeoutError ? error.message : fallback;
+  }
+
+  /**
+   * Rejects with a ProbeTimeoutError if the promise does not settle within
+   * `ms`. The optional `onTimeout` hook lets callers cancel the underlying
+   * work (e.g. abort an in-flight fetch).
+   */
+  private withTimeout<T>(
+    promise: Promise<T>,
+    ms: number,
+    message: string,
+    onTimeout?: () => void,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        onTimeout?.();
+        reject(new ProbeTimeoutError(message));
+      }, ms);
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
   }
 }

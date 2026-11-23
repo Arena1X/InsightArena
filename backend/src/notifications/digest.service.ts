@@ -162,7 +162,7 @@ export class DigestService {
     hour: number,
   ): Promise<void> {
     const periodKey = this.getLocalDailyPeriodKey(now, timezone);
-    const windowStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const windowStart = this.getPreviousLocalDigestTime(now, timezone, hour, 1);
     this.logger.log(
       `Running daily digest for ${timezone} @ ${hour}:00 local, period ${periodKey}`,
     );
@@ -175,7 +175,7 @@ export class DigestService {
     hour: number,
   ): Promise<void> {
     const periodKey = this.getLocalWeeklyPeriodKey(now, timezone);
-    const windowStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const windowStart = this.getPreviousLocalDigestTime(now, timezone, hour, 7);
     this.logger.log(
       `Running weekly digest for ${timezone} @ ${hour}:00 local, period ${periodKey}`,
     );
@@ -353,6 +353,71 @@ export class DigestService {
       parseInt(parts.find((p) => p.type === type)?.value ?? '0', 10);
 
     return { year: get('year'), month: get('month'), day: get('day') };
+  }
+
+  /**
+   * The instant of `hour`:00 local time, `daysBack` local calendar days before
+   * `date`. Used as the window start so each digest covers exactly the span
+   * since the previous scheduled digest, even across DST transitions (a fixed
+   * 24h/7d offset would be an hour off on those days).
+   */
+  private getPreviousLocalDigestTime(
+    date: Date,
+    timezone: string,
+    hour: number,
+    daysBack: number,
+  ): Date {
+    const { year, month, day } = this.getLocalDateParts(date, timezone);
+    const prev = new Date(Date.UTC(year, month - 1, day - daysBack));
+    return this.localWallTimeToUtc(
+      prev.getUTCFullYear(),
+      prev.getUTCMonth() + 1,
+      prev.getUTCDate(),
+      hour,
+      timezone,
+    );
+  }
+
+  /** The instant at which the local wall clock in `timezone` reads y-m-d hh:00. */
+  private localWallTimeToUtc(
+    year: number,
+    month: number,
+    day: number,
+    hour: number,
+    timezone: string,
+  ): Date {
+    const wallAsUtc = Date.UTC(year, month - 1, day, hour);
+    const offset = this.getTimeZoneOffsetMs(new Date(wallAsUtc), timezone);
+    let utc = wallAsUtc - offset;
+    // Re-check the offset at the candidate instant in case it differs (DST boundary).
+    const corrected = this.getTimeZoneOffsetMs(new Date(utc), timezone);
+    if (corrected !== offset) utc = wallAsUtc - corrected;
+    return new Date(utc);
+  }
+
+  /** The UTC offset of `timezone` at instant `date`, in milliseconds. */
+  private getTimeZoneOffsetMs(date: Date, timezone: string): number {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+    }).formatToParts(date);
+    const get = (type: string) =>
+      parseInt(parts.find((p) => p.type === type)?.value ?? '0', 10);
+    const wallAsUtc = Date.UTC(
+      get('year'),
+      get('month') - 1,
+      get('day'),
+      get('hour'),
+      get('minute'),
+      get('second'),
+    );
+    return wallAsUtc - Math.floor(date.getTime() / 1000) * 1000;
   }
 
   private getLocalDailyPeriodKey(date: Date, timezone: string): string {

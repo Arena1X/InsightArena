@@ -4,7 +4,7 @@ use crate::admin;
 use crate::event::{self, EventError};
 use crate::leaderboard;
 use crate::storage::{self};
-use crate::storage_types::{Match, MatchResult};
+use crate::storage_types::{Match, MatchResult, MATCH_RESULT_OVERTURN_WINDOW_SECONDS};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -39,6 +39,25 @@ pub enum MatchError {
     /// finalized — prize payouts are already staged, so the result is
     /// immutable at that point (#1701).
     EventAlreadyFinalized = 11,
+    /// overturn_match_result called after the overturn window
+    /// ([`MATCH_RESULT_OVERTURN_WINDOW_SECONDS`] from the original
+    /// submission) has closed, or after the result was marked final.
+    OverturnWindowClosed = 12,
+    /// finalize_match_result called before the overturn window has closed.
+    OverturnWindowOpen = 13,
+    /// finalize_match_result called on a result that is already final.
+    ResultAlreadyFinal = 14,
+}
+
+/// Timestamp at which a submitted result's overturn window closes, i.e.
+/// `submitted_at + MATCH_RESULT_OVERTURN_WINDOW_SECONDS` (saturating).
+/// Returns `None` when the match has no submitted result.
+pub fn overturn_window_end(m: &Match) -> Option<u64> {
+    if !m.result_submitted {
+        return None;
+    }
+    m.submitted_at
+        .map(|t| t.saturating_add(MATCH_RESULT_OVERTURN_WINDOW_SECONDS))
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +237,26 @@ pub fn list_event_matches(env: &Env, event_id: u64) -> Result<Vec<Match>, EventE
     Ok(matches)
 }
 
+/// Return the on-chain deadline after which predictions for `match_record`
+/// can no longer be edited (#2204).
+///
+/// The deadline is derived from the match start: it is `match_time` minus
+/// the prediction lock lead-time configured (via
+/// `admin::set_prediction_lock_lead_seconds`) when the match was created,
+/// i.e. the stored `prediction_lock_time`. Edits are allowed strictly before
+/// this timestamp and rejected at or after it.
+pub fn prediction_edit_deadline(match_record: &Match) -> u64 {
+    match_record.prediction_lock_time
+}
+
+/// Return the prediction edit deadline for `match_id` (#2204).
+///
+/// Returns [`MatchError::MatchNotFound`] if the match does not exist.
+pub fn get_prediction_edit_deadline(env: &Env, match_id: u64) -> Result<u64, MatchError> {
+    let match_record = get_match(env, match_id)?;
+    Ok(prediction_edit_deadline(&match_record))
+}
+
 /// Retrieve a single match by its unique match_id.
 ///
 /// Extends the storage TTL on read.
@@ -235,10 +274,13 @@ pub fn get_match(env: &Env, match_id: u64) -> Result<Match, MatchError> {
 /// direct resubmission is rejected by [`Match::submit_result`] and
 /// `oracle::submit_match_result`.
 ///
-/// Only the contract admin may call this, and only before the parent event
+/// Only the contract admin may call this, only before the parent event
 /// has been finalized (once `finalize_event` runs, prize allocations are
 /// staged from the standings computed at that time, so the result becomes
-/// immutable).
+/// immutable), and only within [`MATCH_RESULT_OVERTURN_WINDOW_SECONDS`] of
+/// the result's **original** submission. Overturning does not restart the
+/// window — `submitted_at` keeps the original submission time — so a result
+/// cannot be kept contestable indefinitely.
 ///
 /// Re-derives the winning outcome from the corrected scoreline, re-grades
 /// every prediction for the match, and recomputes the event's weighted
@@ -252,6 +294,9 @@ pub fn get_match(env: &Env, match_id: u64) -> Result<Match, MatchError> {
 /// * [`MatchError::EventNotFound`] — the match's parent event is missing.
 /// * [`MatchError::EventAlreadyFinalized`] — the parent event has already
 ///   been finalized.
+/// * [`MatchError::OverturnWindowClosed`] — the overturn window has closed
+///   (`now >= submitted_at + MATCH_RESULT_OVERTURN_WINDOW_SECONDS`) or the
+///   result has already been marked final.
 ///
 /// # Events
 /// Emits `(Symbol("match"), Symbol("result_overturned"))` with data
@@ -288,6 +333,17 @@ pub fn overturn_match_result(
         return Err(MatchError::EventAlreadyFinalized);
     }
 
+    // Bounded overturn window: once the result is final (explicitly marked,
+    // or the window measured from the original submission has elapsed) it
+    // can no longer be changed.
+    if storage::get_match_result_finalized_at(env, match_id).is_some() {
+        return Err(MatchError::OverturnWindowClosed);
+    }
+    let window_end = overturn_window_end(&match_record).ok_or(MatchError::ResultNotSubmitted)?;
+    if env.ledger().timestamp() >= window_end {
+        return Err(MatchError::OverturnWindowClosed);
+    }
+
     let old_home_score = match_record.home_score.unwrap_or(0);
     let old_away_score = match_record.away_score.unwrap_or(0);
 
@@ -295,7 +351,8 @@ pub fn overturn_match_result(
     match_record.winning_team = Some(result.to_u32());
     match_record.home_score = Some(new_home_score);
     match_record.away_score = Some(new_away_score);
-    match_record.submitted_at = Some(env.ledger().timestamp());
+    // `submitted_at` is intentionally left at the original submission time so
+    // the overturn window cannot be extended by repeated overturns.
     storage::set_match(env, match_id, &match_record);
 
     // Re-grade every prediction against the corrected scoreline.

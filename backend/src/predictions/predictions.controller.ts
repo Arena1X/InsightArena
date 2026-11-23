@@ -12,8 +12,10 @@ import {
   ParseUUIDPipe,
   Res,
   UseFilters,
+  Headers,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { pipeline } from 'stream';
 import { BanGuard } from '../common/guards/ban.guard';
 import { PredictionsRateLimitGuard } from '../common/guards/predictions-rate-limit.guard';
 import {
@@ -39,7 +41,11 @@ import {
   PaginatedMarketPredictionsResponse,
   PaginatedMarketPredictionsResponseDto,
 } from './dto/list-market-predictions.dto';
-import { ExportPredictionsDto } from './dto/export-predictions.dto';
+import {
+  EXPORT_MAX_ROWS,
+  EXPORT_ROW_CAP_HEADER,
+  ExportPredictionsDto,
+} from './dto/export-predictions.dto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
 import { Idempotent } from '../common/idempotency/idempotent.decorator';
@@ -90,8 +96,13 @@ export class PredictionsController {
   async submit(
     @Body() dto: SubmitPredictionDto,
     @CurrentUser() user: User,
+    @Headers('x-device-fingerprint') deviceFingerprint?: string,
   ): Promise<SubmitPredictionResponseDto> {
-    return this.predictionsService.submit(dto, user);
+    return this.predictionsService.submit(
+      dto,
+      user,
+      normalizeDeviceFingerprint(deviceFingerprint),
+    );
   }
 
   @Post('batch')
@@ -126,8 +137,13 @@ export class PredictionsController {
   async submitBatch(
     @Body() dto: SubmitBatchPredictionsDto,
     @CurrentUser() user: User,
+    @Headers('x-device-fingerprint') deviceFingerprint?: string,
   ): Promise<BatchSubmitResponseDto> {
-    return this.predictionsService.submitBatch(dto, user);
+    return this.predictionsService.submitBatch(
+      dto,
+      user,
+      normalizeDeviceFingerprint(deviceFingerprint),
+    );
   }
 
   @Get('me')
@@ -205,6 +221,7 @@ export class PredictionsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: "Export the authenticated user's prediction history as CSV",
+    description: `Rows are streamed (most recent first) rather than buffered, and capped at ${EXPORT_MAX_ROWS} per export; use start_date/end_date to export older history. The cap is echoed in the ${EXPORT_ROW_CAP_HEADER} response header.`,
   })
   @ApiResponse({
     status: 200,
@@ -222,9 +239,16 @@ export class PredictionsController {
       'Content-Disposition',
       `attachment; filename="predictions-${dateStr}.csv"`,
     );
+    res.setHeader(EXPORT_ROW_CAP_HEADER, String(EXPORT_MAX_ROWS));
 
     const stream = this.predictionsService.exportCsv(user, query);
-    stream.pipe(res);
+    // pipeline (unlike pipe) destroys the source when the client disconnects
+    // or the stream errors, so the database cursor is released promptly.
+    pipeline(stream, res, (err) => {
+      if (err && !res.writableEnded) {
+        res.destroy(err);
+      }
+    });
   }
 
   @Get(':id')
@@ -307,4 +331,10 @@ export class PredictionsController {
   ): Promise<PaginatedMarketPredictionsResponse> {
     return this.predictionsService.findByMarket(marketId, query);
   }
+}
+
+/** Trim and bound the client-supplied fingerprint to the column length. */
+function normalizeDeviceFingerprint(value?: string): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(0, 128) : null;
 }

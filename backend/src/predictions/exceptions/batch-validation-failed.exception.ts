@@ -1,7 +1,11 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
+import type { BatchPredictionResultDto } from '../dto/batch-submit-response.dto';
 
 export class BatchValidationFailedException extends HttpException {
-  constructor(errors: Array<{ index: number; error: string }>) {
+  constructor(
+    errors: Array<{ index: number; error: string }>,
+    results: BatchPredictionResultDto[] = [],
+  ) {
     super(
       {
         success: false,
@@ -11,6 +15,7 @@ export class BatchValidationFailedException extends HttpException {
           message:
             'Batch submission failed validation - no predictions were submitted',
           errors,
+          results,
         },
       },
       HttpStatus.BAD_REQUEST,

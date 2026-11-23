@@ -42,6 +42,10 @@ import { Comment } from './entities/comment.entity';
 import { moderateCommentContent } from '../common/comment-moderation.util';
 import { MarketTemplate } from './entities/market-template.entity';
 import { Market, MarketSettlementState } from './entities/market.entity';
+import {
+  canTransition,
+  describeIllegalTransition,
+} from './market-settlement-state.util';
 import { UserBookmark } from './entities/user-bookmark.entity';
 import { MarketPriceSnapshot } from './entities/market-price-snapshot.entity';
 import { Prediction } from '../predictions/entities/prediction.entity';
@@ -490,8 +494,22 @@ export class MarketsService {
   async resolveMarket(id: string, outcome: string): Promise<Market> {
     const market = await this.findByIdOrOnChainId(id);
 
+    // Double-resolve guard: check if market is already resolved
     if (market.is_resolved) {
-      throw new ConflictException('Market is already resolved');
+      this.logger.warn(
+        `Attempt to resolve already resolved market "${market.title}" (${market.id}). Current outcome: ${market.resolved_outcome}`,
+      );
+      throw new ConflictException(
+        `Market is already resolved with outcome "${market.resolved_outcome}"`,
+      );
+    }
+
+    // Additional settlement state check for grace-period workflow
+    if (market.settlement_state === MarketSettlementState.SETTLED) {
+      this.logger.warn(
+        `Attempt to resolve market "${market.title}" (${market.id}) that is already in SETTLED state`,
+      );
+      throw new ConflictException('Market settlement is already finalized');
     }
 
     if (!market.outcome_options.includes(outcome)) {
@@ -564,9 +582,14 @@ export class MarketsService {
       throw new ConflictException('Market is already resolved');
     }
 
-    if (market.settlement_state !== MarketSettlementState.PENDING) {
+    if (
+      !canTransition(market.settlement_state, MarketSettlementState.PROPOSED)
+    ) {
       throw new ConflictException(
-        `Cannot propose a resolution while market is in "${market.settlement_state}" state`,
+        describeIllegalTransition(
+          market.settlement_state,
+          MarketSettlementState.PROPOSED,
+        ),
       );
     }
 
@@ -616,9 +639,14 @@ export class MarketsService {
   ): Promise<Market> {
     const market = await this.findByIdOrOnChainId(id);
 
-    if (market.settlement_state !== MarketSettlementState.PROPOSED) {
+    if (
+      !canTransition(market.settlement_state, MarketSettlementState.CHALLENGED)
+    ) {
       throw new BadRequestException(
-        'Market does not have a resolution pending challenge',
+        describeIllegalTransition(
+          market.settlement_state,
+          MarketSettlementState.CHALLENGED,
+        ),
       );
     }
 
@@ -660,8 +688,15 @@ export class MarketsService {
 
     const market = await this.findByIdOrOnChainId(id);
 
-    if (market.settlement_state !== MarketSettlementState.CHALLENGED) {
-      throw new BadRequestException('Market does not have an active challenge');
+    if (
+      !canTransition(market.settlement_state, MarketSettlementState.SETTLED)
+    ) {
+      throw new BadRequestException(
+        describeIllegalTransition(
+          market.settlement_state,
+          MarketSettlementState.SETTLED,
+        ),
+      );
     }
 
     if (!market.outcome_options.includes(dto.outcome)) {

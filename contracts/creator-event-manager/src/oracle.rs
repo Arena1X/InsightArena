@@ -5,6 +5,7 @@ use crate::leaderboard;
 use crate::storage::{self, StorageError};
 use crate::storage_types::{
     Event, Match, MatchResult, MatchResultSubmission, OracleSubmission, PendingMatchResult,
+    MIN_ORACLE_CONSENSUS_THRESHOLD,
 };
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,11 @@ pub enum OracleError {
     /// time; wait for it to be verified (or admin-corrected) before
     /// resubmitting.
     ResultPendingVerification = 16,
+    /// The event's submission deadline has passed (current time > deadline). (#2010)
+    SubmissionDeadlinePassed = 17,
+    /// The requested per-event consensus threshold is outside the allowed
+    /// range `MIN_ORACLE_CONSENSUS_THRESHOLD..=sources.len()`. (#2202)
+    InvalidConsensusThreshold = 18,
 }
 
 impl From<StorageError> for OracleError {
@@ -99,6 +105,16 @@ fn emit_oracle_sources_configured(env: &Env, source_count: u32, min_sources: u32
     );
 }
 
+fn emit_consensus_threshold_set(env: &Env, event_id: u64, threshold: u32) {
+    env.events().publish(
+        (
+            Symbol::new(env, "oracle"),
+            Symbol::new(env, "threshold_set"),
+        ),
+        (event_id, threshold),
+    );
+}
+
 fn emit_oracle_value_submitted(env: &Env, match_id: u64, source: &Address, value: i128) {
     env.events().publish(
         (
@@ -138,7 +154,9 @@ fn emit_oracle_value_submitted(env: &Env, match_id: u64, source: &Address, value
 /// 4. Retrieve the match and verify it exists.
 /// 5. Verify a result has not already been submitted.
 /// 6. Verify the match has started (`now >= match_time`).
-/// 7. If no verifier threshold is configured, finalize immediately (record
+/// 7. Verify the event submission deadline has not passed (`now <= event.end_time`).
+///    Submissions at `now == deadline` are accepted (inclusive boundary rule).
+/// 8. If no verifier threshold is configured, finalize immediately (record
 ///    the result, grade predictions, recompute standings, emit). Otherwise,
 ///    stage the scoreline pending verifier sign-off and emit a
 ///    `("match", "result_pending")` event.
@@ -147,8 +165,11 @@ fn emit_oracle_value_submitted(env: &Env, match_id: u64, source: &Address, value
 /// * [`OracleError::Paused`] — the contract is paused.
 /// * [`OracleError::Unauthorized`] — caller is not the AI agent.
 /// * [`OracleError::MatchNotFound`] — no match with the given id.
+/// * [`OracleError::EventNotFound`] — event associated with the match was not found.
 /// * [`OracleError::ResultAlreadySubmitted`] — result already recorded.
 /// * [`OracleError::MatchNotStarted`] — match has not started yet.
+/// * [`OracleError::SubmissionDeadlinePassed`] — current ledger timestamp is past
+///   the event's submission deadline (`now > event.end_time`).
 /// * [`OracleError::ResultPendingVerification`] — a result is already staged
 ///   for this match awaiting verifier sign-off.
 pub fn submit_match_result(
@@ -186,7 +207,17 @@ pub fn submit_match_result(
         return Err(OracleError::MatchNotStarted);
     }
 
-    // 6. No verifier threshold configured: legacy single-oracle finalization.
+    // 6. Enforce event submission deadline (#2010).
+    // Submissions made after the event's submission deadline (`event.end_time`)
+    // are rejected. A submission exactly at the boundary (`now == deadline`)
+    // is accepted (inclusive: `now <= deadline`).
+    let event: Event = storage::get_event(env, match_record.event_id)
+        .map_err(|_| OracleError::EventNotFound)?;
+    if now > event.submission_deadline() {
+        return Err(OracleError::SubmissionDeadlinePassed);
+    }
+
+    // 7. No verifier threshold configured: legacy single-oracle finalization.
     let threshold = admin::get_verifier_threshold(env);
     if threshold == 0 {
         return finalize_match_result(
@@ -408,6 +439,53 @@ pub fn configure_oracle_sources(
 }
 
 // ---------------------------------------------------------------------------
+// Per-event consensus threshold (#2202)
+// ---------------------------------------------------------------------------
+
+/// Configure how many distinct oracle sources must agree on a scoreline
+/// before a match in `event_id` is finalized by [`propose_match_result`].
+///
+/// Only the admin may call this. The threshold must lie within
+/// `MIN_ORACLE_CONSENSUS_THRESHOLD..=sources.len()` — at least one source,
+/// and never more than the number of configured sources (which would make
+/// consensus unreachable). Events without an override use the global
+/// `min_sources` from [`configure_oracle_sources`].
+///
+/// # Errors
+/// * [`OracleError::Unauthorized`] — caller is not the admin.
+/// * [`OracleError::EventNotFound`] — no event with the given id.
+/// * [`OracleError::InvalidConsensusThreshold`] — `threshold` is out of range.
+pub fn set_event_consensus_threshold(
+    env: &Env,
+    caller: Address,
+    event_id: u64,
+    threshold: u32,
+) -> Result<(), OracleError> {
+    admin::require_is_admin(env, &caller).map_err(|_| OracleError::Unauthorized)?;
+
+    if storage::get_event_raw(env, event_id).is_none() {
+        return Err(OracleError::EventNotFound);
+    }
+
+    let source_count = storage::get_oracle_sources(env).len();
+    if threshold < MIN_ORACLE_CONSENSUS_THRESHOLD || threshold > source_count {
+        return Err(OracleError::InvalidConsensusThreshold);
+    }
+
+    storage::set_event_consensus_threshold(env, event_id, threshold);
+    emit_consensus_threshold_set(env, event_id, threshold);
+
+    Ok(())
+}
+
+/// Return the consensus threshold that applies to `event_id`: its configured
+/// override, or the global `min_sources` when none has been set.
+pub fn get_event_consensus_threshold(env: &Env, event_id: u64) -> u32 {
+    storage::get_event_consensus_threshold(env, event_id)
+        .unwrap_or_else(|| storage::get_oracle_min_sources(env))
+}
+
+// ---------------------------------------------------------------------------
 // Multi-submitter match result consensus (#1698)
 // ---------------------------------------------------------------------------
 
@@ -416,8 +494,9 @@ pub fn configure_oracle_sources(
 ///
 /// Each configured source (`oracle::configure_oracle_sources`) may submit one
 /// proposal per match. Once distinct sources have proposed the **same**
-/// scoreline `min_sources` times (the configured agreement threshold), the
-/// match is finalized exactly as `submit_match_result` would: the winning
+/// scoreline as many times as the event's consensus threshold
+/// ([`get_event_consensus_threshold`]: the per-event override, or the global
+/// `min_sources` by default — #2202), the match is finalized exactly as `submit_match_result` would: the winning
 /// outcome is recorded, every prediction for the match is graded, and the
 /// event's weighted standings are recomputed.
 ///
@@ -429,10 +508,14 @@ pub fn configure_oracle_sources(
 /// # Errors
 /// * [`OracleError::Paused`] — the contract is paused.
 /// * [`OracleError::MatchNotFound`] — no match with the given id.
+/// * [`OracleError::EventNotFound`] — event associated with the match was not found.
 /// * [`OracleError::NotAnOracleSource`] — `source` is not in the configured
 ///   oracle source set.
 /// * [`OracleError::ResultAlreadySubmitted`] — the match already has a
 ///   finalized result; no further proposals are accepted.
+/// * [`OracleError::SubmissionDeadlinePassed`] — current ledger timestamp is past
+///   the event's submission deadline (`now > event.end_time`). Submissions
+///   at `now == deadline` are accepted (inclusive boundary rule).
 /// * [`OracleError::DuplicateResultProposal`] — `source` has already
 ///   proposed a scoreline for this match's consensus round.
 ///
@@ -466,6 +549,17 @@ pub fn propose_match_result(
         return Err(OracleError::ResultAlreadySubmitted);
     }
 
+    // Enforce event submission deadline (#2010).
+    // Submissions made after the event's submission deadline (`event.end_time`)
+    // are rejected. A submission exactly at the boundary (`now == deadline`)
+    // is accepted (inclusive: `now <= deadline`).
+    let now = env.ledger().timestamp();
+    let event: Event = storage::get_event(env, match_record.event_id)
+        .map_err(|_| OracleError::EventNotFound)?;
+    if now > event.submission_deadline() {
+        return Err(OracleError::SubmissionDeadlinePassed);
+    }
+
     let existing = storage::get_match_result_proposals(env, match_id);
     for submission in existing.iter() {
         if submission.source == source {
@@ -473,7 +567,6 @@ pub fn propose_match_result(
         }
     }
 
-    let now = env.ledger().timestamp();
     let submission = MatchResultSubmission {
         source: source.clone(),
         match_id,
@@ -494,8 +587,8 @@ pub fn propose_match_result(
         }
     }
 
-    let min_sources = storage::get_oracle_min_sources(env);
-    if min_sources == 0 || agreement_count < min_sources {
+    let threshold = get_event_consensus_threshold(env, match_record.event_id);
+    if threshold == 0 || agreement_count < threshold {
         return Ok(false);
     }
 
@@ -535,8 +628,12 @@ fn emit_match_result_proposed(
 /// # Errors
 /// * [`OracleError::Paused`] — the contract is paused.
 /// * [`OracleError::MatchNotFound`] — no match with the given id.
+/// * [`OracleError::EventNotFound`] — event associated with the match was not found.
 /// * [`OracleError::NotAnOracleSource`] — `source` is not in the configured
 ///   oracle source set.
+/// * [`OracleError::SubmissionDeadlinePassed`] — current ledger timestamp is past
+///   the event's submission deadline (`now > event.end_time`). Submissions
+///   at `now == deadline` are accepted (inclusive boundary rule).
 /// * [`OracleError::DuplicateOracleSubmission`] — `source` has already
 ///   submitted a value for this match.
 pub fn submit_oracle_value(
@@ -557,7 +654,19 @@ pub fn submit_oracle_value(
     }
 
     // Match must exist.
-    storage::get_match(env, match_id).map_err(|_| OracleError::MatchNotFound)?;
+    let match_record: Match =
+        storage::get_match(env, match_id).map_err(|_| OracleError::MatchNotFound)?;
+
+    // Enforce event submission deadline (#2010).
+    // Submissions made after the event's submission deadline (`event.end_time`)
+    // are rejected. A submission exactly at the boundary (`now == deadline`)
+    // is accepted (inclusive: `now <= deadline`).
+    let now = env.ledger().timestamp();
+    let event: Event = storage::get_event(env, match_record.event_id)
+        .map_err(|_| OracleError::EventNotFound)?;
+    if now > event.submission_deadline() {
+        return Err(OracleError::SubmissionDeadlinePassed);
+    }
 
     let existing = storage::get_oracle_submissions(env, match_id);
     for submission in existing.iter() {
@@ -570,7 +679,7 @@ pub fn submit_oracle_value(
         source: source.clone(),
         match_id,
         value,
-        submitted_at: env.ledger().timestamp(),
+        submitted_at: now,
     };
     storage::add_oracle_submission(env, match_id, &submission);
 

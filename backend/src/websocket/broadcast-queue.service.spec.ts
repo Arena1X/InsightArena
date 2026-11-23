@@ -2,11 +2,17 @@ import { BroadcastQueueService } from './broadcast-queue.service';
 
 /** Minimal fake of the socket.io Server surface BroadcastQueueService touches. */
 const makeFakeServer = () => {
-  const sockets = new Map<string, { emit: jest.Mock }>();
+  const sockets = new Map<
+    string,
+    { emit: jest.Mock; conn: { writeBuffer: unknown[] } }
+  >();
   return {
     sockets: { sockets },
     _addSocket: (id: string) => {
-      const socket = { emit: jest.fn() };
+      const socket = {
+        emit: jest.fn(),
+        conn: { writeBuffer: [] as unknown[] },
+      };
       sockets.set(id, socket);
       return socket;
     },
@@ -153,5 +159,90 @@ describe('BroadcastQueueService', () => {
     }
 
     expect(service.getQueueDepth('socket-1')).toBeLessThanOrEqual(3);
+  });
+
+  describe('backpressure', () => {
+    /** Simulates a client whose transport isn't draining (default limit: 50). */
+    const stall = (socket: { conn: { writeBuffer: unknown[] } }) => {
+      socket.conn.writeBuffer = new Array(50).fill({});
+    };
+
+    it('keeps the queue bounded under sustained backpressure', () => {
+      jest.useFakeTimers();
+      const server = makeFakeServer();
+      const socket = server._addSocket('slow');
+      stall(socket);
+
+      for (let i = 0; i < 500; i++) {
+        service.enqueue(server as never, 'slow', `k${i}`, 'ev', { v: i });
+        if (i % 10 === 0) jest.advanceTimersByTime(50);
+        expect(service.getQueueDepth('slow')).toBeLessThanOrEqual(3);
+      }
+
+      // Nothing was pushed into the stalled transport's buffer.
+      expect(socket.emit).not.toHaveBeenCalled();
+      expect(service.getMetrics().deferred).toBeGreaterThan(0);
+      expect(service.getMetrics().dropped).toBe(500 - 3);
+
+      jest.useRealTimers();
+    });
+
+    it('applies the drop-oldest / coalesce policy when the queue is full', () => {
+      jest.useFakeTimers();
+      const server = makeFakeServer();
+      const socket = server._addSocket('slow');
+      stall(socket);
+
+      service.enqueue(server as never, 'slow', 'k1', 'ev', { v: 1 });
+      service.enqueue(server as never, 'slow', 'k2', 'ev', { v: 2 });
+      service.enqueue(server as never, 'slow', 'k3', 'ev', { v: 3 });
+      jest.advanceTimersByTime(50);
+
+      // Full: a coalescable message replaces in place without dropping.
+      service.enqueue(server as never, 'slow', 'k2', 'ev', { v: 22 });
+      expect(service.getMetrics().dropped).toBe(0);
+      expect(service.getMetrics().coalesced).toBe(1);
+
+      // Full: a new key evicts the oldest queued message (k1).
+      service.enqueue(server as never, 'slow', 'k4', 'ev', { v: 4 });
+      expect(service.getMetrics().dropped).toBe(1);
+      expect(service.getQueueDepth('slow')).toBe(3);
+
+      // Transport drains → the surviving (latest) messages are delivered.
+      socket.conn.writeBuffer = [];
+      jest.advanceTimersByTime(50);
+
+      expect(socket.emit.mock.calls).toEqual([
+        ['ev', { v: 22 }],
+        ['ev', { v: 3 }],
+        ['ev', { v: 4 }],
+      ]);
+
+      jest.useRealTimers();
+    });
+
+    it('delivers every message under normal throughput', () => {
+      jest.useFakeTimers();
+      const server = makeFakeServer();
+      const socket = server._addSocket('fast');
+
+      for (let tick = 0; tick < 10; tick++) {
+        for (let j = 0; j < 3; j++) {
+          service.enqueue(server as never, 'fast', `k${tick}-${j}`, 'ev', {
+            v: tick * 3 + j,
+          });
+        }
+        jest.advanceTimersByTime(50);
+      }
+
+      expect(socket.emit).toHaveBeenCalledTimes(30);
+      expect(socket.emit.mock.calls.map(([, p]) => p.v)).toEqual(
+        Array.from({ length: 30 }, (_, i) => i),
+      );
+      expect(service.getMetrics().dropped).toBe(0);
+      expect(service.getMetrics().sent).toBe(30);
+
+      jest.useRealTimers();
+    });
   });
 });

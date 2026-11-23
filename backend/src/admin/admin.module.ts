@@ -18,8 +18,10 @@ import { PredictionsModule } from '../predictions/predictions.module';
 import { User } from '../users/entities/user.entity';
 import { UserFlag } from './entities/user-flag.entity';
 import { VerifiedAddress } from './entities/verified-address.entity';
+import { AdminAuditLog } from './entities/admin-audit-log.entity';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
+import { AdminAuditLogSubscriber } from './subscribers/admin-audit-log.subscriber';
 
 @Module({
   imports: [
@@ -36,6 +38,7 @@ import { AdminService } from './admin.service';
       VerifiedAddress,
       FeeHistory,
       UserFlag,
+      AdminAuditLog,
     ]),
     AnalyticsModule,
     FlagsModule,
@@ -45,7 +48,7 @@ import { AdminService } from './admin.service';
     CacheModule.register(),
   ],
   controllers: [AdminController],
-  providers: [AdminService],
+  providers: [AdminService, AdminAuditLogSubscriber],
   exports: [AdminService],
 })
 export class AdminModule {}

@@ -1,4 +1,5 @@
-import { ReactNode } from "react";
+import { ReactNode, useRef, useEffect } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -136,6 +137,12 @@ interface LeaderboardTableProps {
   /** When true, render a Δ column showing rank_delta for each entry. */
   showDelta?: boolean;
   isLoading?: boolean;
+  /** Callback to load more entries for infinite scroll */
+  onLoadMore?: () => void;
+  /** True when loading more entries */
+  isLoadingMore?: boolean;
+  /** True when all entries have been loaded */
+  hasMore?: boolean;
 }
 
 function SkeletonRow() {
@@ -155,7 +162,37 @@ export default function LeaderboardTable({
   currentUser,
   showDelta = false,
   isLoading = false,
+  onLoadMore,
+  isLoadingMore = false,
+  hasMore = false,
 }: LeaderboardTableProps) {
+  const parentRef = useRef<HTMLDivElement>(null);
+
+  // Configure the virtualizer
+  const rowVirtualizer = useVirtualizer({
+    count: isLoading ? 5 : entries.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 60, // Estimated row height in pixels
+    overscan: 5, // Number of items to render outside visible area
+  });
+
+  // Infinite scroll: load more when scrolling near the bottom
+  useEffect(() => {
+    const scrollElement = parentRef.current;
+    if (!scrollElement || !onLoadMore || !hasMore || isLoadingMore) return;
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = scrollElement;
+      // Trigger load when within 200px of bottom
+      if (scrollHeight - scrollTop - clientHeight < 200) {
+        onLoadMore();
+      }
+    };
+
+    scrollElement.addEventListener('scroll', handleScroll);
+    return () => scrollElement.removeEventListener('scroll', handleScroll);
+  }, [onLoadMore, hasMore, isLoadingMore]);
+
   return (
     <div
       className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden"
@@ -163,7 +200,7 @@ export default function LeaderboardTable({
     >
       <div className="overflow-x-auto">
         <table className="w-full min-w-[480px]">
-          <thead className="border-b border-white/8">
+          <thead className="border-b border-white/8 sticky top-0 bg-white/5 z-10">
             <tr>
               <Th className="w-14">Rank</Th>
               {showDelta && <Th className="w-12">Δ</Th>}
@@ -173,76 +210,129 @@ export default function LeaderboardTable({
               <Th className="text-right hidden md:table-cell">Predictions</Th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-white/5">
-            {isLoading ? (
-              <>
-                {[...Array(5)].map((_, i) => (
-                  <SkeletonRow key={i} />
-                ))}
-              </>
-            ) : entries.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={showDelta ? 6 : 5}
-                  className="px-4 py-10 text-center text-sm text-gray-500"
-                >
-                  No entries for this season yet.
-                </td>
-              </tr>
-            ) : (
-              entries.map((entry) => {
-                const rowAccent = RANK_STYLES[entry.rank]?.row ?? "";
-                const isCurrentUser =
-                  currentUser &&
-                  (entry.username === currentUser ||
-                    (entry.stellar_address && entry.stellar_address === currentUser));
-                return (
-                  <tr
-                    key={`${entry.rank}-${entry.stellar_address ?? entry.username ?? entry.rank}`}
-                    className={`transition hover:bg-white/[0.03] ${rowAccent} ${entry.rank <= 3 ? "bg-white/[0.02]" : ""} ${isCurrentUser ? "bg-orange-500/10 ring-1 ring-inset ring-orange-500/20" : ""}`}
-                  >
-                    <td className="px-4 py-3.5">
-                      <RankBadge rank={entry.rank} />
-                    </td>
-                    {showDelta && (
-                      <td className="px-4 py-3.5">
-                        <RankDelta delta={entry.rank_delta} />
-                      </td>
-                    )}
-                    <td className="px-4 py-3.5">
-                      <div className="flex items-center gap-3">
-                        <Avatar username={entry.username} />
-                        <span className="text-sm font-medium text-white truncate max-w-[140px]">
-                          {entry.username ?? (entry.stellar_address ? entry.stellar_address.slice(0, 8) + "…" : "Unknown")}
-                          {isCurrentUser && (
-                            <span className="ml-2 text-[10px] font-semibold text-orange-400 uppercase tracking-wider">
-                              You
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3.5 text-right">
-                      <span className="text-sm font-semibold text-orange-400">
-                        {entry.points.toLocaleString()}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3.5 text-right hidden sm:table-cell">
-                      <span className="text-sm text-gray-300">
-                        {entry.winRate}%
-                      </span>
-                    </td>
-                    <td className="px-4 py-3.5 text-right hidden md:table-cell">
-                      <span className="text-sm text-gray-400">
-                        {entry.predictions}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
         </table>
+      </div>
+
+      <div
+        ref={parentRef}
+        className="overflow-auto"
+        style={{ height: "600px" }}
+      >
+        <div
+          style={{
+            height: `${rowVirtualizer.getTotalSize()}px`,
+            width: "100%",
+            position: "relative",
+          }}
+        >
+          <table className="w-full min-w-[480px]">
+            <tbody>
+              {isLoading ? (
+                <>
+                  {rowVirtualizer.getVirtualItems().map((virtualRow) => (
+                    <tr
+                      key={virtualRow.key}
+                      className="animate-pulse"
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      {[...Array(showDelta ? 6 : 5)].map((_, i) => (
+                        <td key={i} className="px-4 py-3.5">
+                          <div className="h-4 rounded bg-white/10" />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </>
+              ) : entries.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={showDelta ? 6 : 5}
+                    className="px-4 py-10 text-center text-sm text-gray-500"
+                  >
+                    No entries for this season yet.
+                  </td>
+                </tr>
+              ) : (
+                rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const entry = entries[virtualRow.index];
+                  if (!entry) return null;
+
+                  const rowAccent = RANK_STYLES[entry.rank]?.row ?? "";
+                  const isCurrentUser =
+                    currentUser &&
+                    (entry.username === currentUser ||
+                      (entry.stellar_address && entry.stellar_address === currentUser));
+
+                  return (
+                    <tr
+                      key={`${entry.rank}-${entry.stellar_address ?? entry.username ?? entry.rank}`}
+                      className={`transition hover:bg-white/[0.03] ${rowAccent} ${entry.rank <= 3 ? "bg-white/[0.02]" : ""} ${isCurrentUser ? "bg-orange-500/10 ring-1 ring-inset ring-orange-500/20" : ""}`}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                      data-index={virtualRow.index}
+                    >
+                      <td className="px-4 py-3.5">
+                        <RankBadge rank={entry.rank} />
+                      </td>
+                      {showDelta && (
+                        <td className="px-4 py-3.5">
+                          <RankDelta delta={entry.rank_delta} />
+                        </td>
+                      )}
+                      <td className="px-4 py-3.5">
+                        <div className="flex items-center gap-3">
+                          <Avatar username={entry.username} />
+                          <span className="text-sm font-medium text-white truncate max-w-[140px]">
+                            {entry.username ?? (entry.stellar_address ? entry.stellar_address.slice(0, 8) + "…" : "Unknown")}
+                            {isCurrentUser && (
+                              <span className="ml-2 text-[10px] font-semibold text-orange-400 uppercase tracking-wider">
+                                You
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5 text-right">
+                        <span className="text-sm font-semibold text-orange-400">
+                          {entry.points.toLocaleString()}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-right hidden sm:table-cell">
+                        <span className="text-sm text-gray-300">
+                          {entry.winRate}%
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-right hidden md:table-cell">
+                        <span className="text-sm text-gray-400">
+                          {entry.predictions}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+        
+        {/* Loading more indicator */}
+        {isLoadingMore && (
+          <div className="flex items-center justify-center py-4">
+            <div className="animate-spin rounded-full h-6 w-6 border-2 border-orange-500 border-t-transparent" />
+            <span className="ml-2 text-sm text-gray-400">Loading more...</span>
+          </div>
+        )}
       </div>
     </div>
   );

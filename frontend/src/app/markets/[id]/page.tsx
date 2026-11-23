@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState, useMemo, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { apiClient, ApiError } from "@/lib/api";
 import { usePredictionSlip } from "@/context/PredictionSlipContext";
 import { InteractiveChart, type ChartSeries } from "@/component/ui/interactive-chart";
 import { Button } from "@/component/ui/button";
 import { Badge } from "@/component/ui/badge";
 import { Skeleton } from "@/component/ui/skeleton";
+import MarketDisputePanel from "@/component/markets/MarketDisputePanel";
+import { MarketDetailSkeleton } from "@/component/markets/MarketDetailSkeleton";
 import { ArrowLeft, AlertCircle, TrendingUp, Zap } from "lucide-react";
 
 interface MarketDetail {
@@ -20,6 +22,8 @@ interface MarketDetail {
   closeAt: string;
   status: string;
   volume24h: number;
+  /** ISO timestamp the market was resolved at, or null while still open. */
+  resolvedAt: string | null;
 }
 
 interface PricePoint {
@@ -28,6 +32,7 @@ interface PricePoint {
 }
 
 type RangeKey = "1H" | "1D" | "1W" | "All";
+type TabKey = "chart" | "disputes";
 
 const RANGE_OPTIONS: { label: RangeKey; ms: number }[] = [
   { label: "1H", ms: 3_600_000 },
@@ -36,9 +41,16 @@ const RANGE_OPTIONS: { label: RangeKey; ms: number }[] = [
   { label: "All", ms: Infinity },
 ];
 
+const VALID_TABS: TabKey[] = ["chart", "disputes"];
+
+function isValidTab(value: string | null): value is TabKey {
+  return value !== null && (VALID_TABS as string[]).includes(value);
+}
+
 export default function MarketDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { addItem, openSlip } = usePredictionSlip();
   const marketId = params.id as string;
 
@@ -49,6 +61,26 @@ export default function MarketDetailPage() {
   const [priceLoading, setPriceLoading] = useState(true);
   const [priceError, setPriceError] = useState<string | null>(null);
   const [selectedRange, setSelectedRange] = useState<RangeKey>("1W");
+
+  // Derive active tab from URL; default to "chart".
+  const rawTab = searchParams.get("tab");
+  const activeTab: TabKey = isValidTab(rawTab) ? rawTab : "chart";
+
+  const setActiveTab = useCallback(
+    (tab: TabKey) => {
+      const next = new URLSearchParams(searchParams.toString());
+      if (tab === "chart") {
+        next.delete("tab");
+        // Clear dispute sub-params when leaving the disputes tab.
+        next.delete("dispute");
+        next.delete("disputeForm");
+      } else {
+        next.set("tab", tab);
+      }
+      router.replace(`?${next.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
 
   useEffect(() => {
     if (!marketId) return;
@@ -134,15 +166,7 @@ export default function MarketDetailPage() {
   }, [market, addItem, openSlip]);
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900 p-6 md:p-10">
-        <div className="mx-auto max-w-4xl space-y-6">
-          <Skeleton className="h-8 w-32" />
-          <Skeleton className="h-10 w-3/4" />
-          <Skeleton className="h-64 w-full" />
-        </div>
-      </div>
-    );
+    return <MarketDetailSkeleton />;
   }
 
   if (error || !market) {
@@ -170,6 +194,7 @@ export default function MarketDetailPage() {
   }
 
   const probabilityPct = Math.round(market.probability * 100);
+  const isResolved = market.status === "resolved";
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900 p-6 md:p-10">
@@ -253,56 +278,127 @@ export default function MarketDetailPage() {
               </p>
             </div>
           </div>
+
+          <MarketDisputePanel
+            marketId={market.id}
+            marketTitle={market.title}
+            isResolved={Boolean(market.resolvedAt)}
+            resolvedAt={market.resolvedAt}
+          />
         </div>
 
+        {/* Tab bar — only show Disputes tab for resolved markets */}
         <div className="mt-8">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <TrendingUp className="h-5 w-5 text-slate-400" />
-              <h2 className="text-lg font-semibold text-white">
-                Price History
-              </h2>
-            </div>
-            <div className="flex gap-1 rounded-lg border border-white/10 bg-white/5 p-1">
-              {RANGE_OPTIONS.map(({ label }) => (
-                <button
-                  key={label}
-                  onClick={() => setSelectedRange(label)}
-                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                    selectedRange === label
-                      ? "bg-orange-500 text-white"
-                      : "text-slate-400 hover:text-white"
-                  }`}
-                  aria-pressed={selectedRange === label}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+          <div
+            role="tablist"
+            aria-label="Market sections"
+            className="flex gap-1 rounded-xl border border-white/10 bg-white/5 p-1 w-fit"
+          >
+            <button
+              role="tab"
+              aria-selected={activeTab === "chart"}
+              aria-controls="panel-chart"
+              id="tab-chart"
+              onClick={() => setActiveTab("chart")}
+              className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition ${
+                activeTab === "chart"
+                  ? "bg-orange-500 text-white"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <TrendingUp className="h-4 w-4" />
+              Price History
+            </button>
+            {isResolved && (
+              <button
+                role="tab"
+                aria-selected={activeTab === "disputes"}
+                aria-controls="panel-disputes"
+                id="tab-disputes"
+                onClick={() => setActiveTab("disputes")}
+                className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition ${
+                  activeTab === "disputes"
+                    ? "bg-orange-500 text-white"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <Scale className="h-4 w-4" />
+                Disputes
+              </button>
+            )}
           </div>
 
-          {priceLoading ? (
-            <Skeleton className="h-80 w-full rounded-xl" />
-          ) : priceError ? (
-            <div className="flex items-center gap-3 rounded-xl border border-red-500/20 bg-red-500/5 p-6">
-              <AlertCircle className="h-5 w-5 shrink-0 text-red-400" />
-              <p className="text-sm text-red-300">{priceError}</p>
+          {/* Price History panel */}
+          <div
+            role="tabpanel"
+            id="panel-chart"
+            aria-labelledby="tab-chart"
+            hidden={activeTab !== "chart"}
+          >
+            <div className="flex items-center justify-between mb-4 mt-6">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="h-5 w-5 text-slate-400" />
+                <h2 className="text-lg font-semibold text-white">
+                  Price History
+                </h2>
+              </div>
+              <div className="flex gap-1 rounded-lg border border-white/10 bg-white/5 p-1">
+                {RANGE_OPTIONS.map(({ label }) => (
+                  <button
+                    key={label}
+                    onClick={() => setSelectedRange(label)}
+                    className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                      selectedRange === label
+                        ? "bg-orange-500 text-white"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                    aria-pressed={selectedRange === label}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
-          ) : chartSeries.length > 0 ? (
-            <InteractiveChart
-              series={chartSeries}
-              title="Odds History"
-              height={320}
-            />
-          ) : (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-white/5 p-12 text-center">
-              <TrendingUp className="h-10 w-10 text-slate-600" />
-              <p className="mt-4 text-sm font-medium text-slate-400">
-                No price history available
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                Price data will appear once trading begins.
-              </p>
+
+            {priceLoading ? (
+              <Skeleton className="h-80 w-full rounded-xl" />
+            ) : priceError ? (
+              <div className="flex items-center gap-3 rounded-xl border border-red-500/20 bg-red-500/5 p-6">
+                <AlertCircle className="h-5 w-5 shrink-0 text-red-400" />
+                <p className="text-sm text-red-300">{priceError}</p>
+              </div>
+            ) : chartSeries.length > 0 ? (
+              <InteractiveChart
+                series={chartSeries}
+                title="Odds History"
+                height={320}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-white/5 p-12 text-center">
+                <TrendingUp className="h-10 w-10 text-slate-600" />
+                <p className="mt-4 text-sm font-medium text-slate-400">
+                  No price history available
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Price data will appear once trading begins.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Disputes panel — only rendered for resolved markets */}
+          {isResolved && (
+            <div
+              role="tabpanel"
+              id="panel-disputes"
+              aria-labelledby="tab-disputes"
+              hidden={activeTab !== "disputes"}
+            >
+              <MarketDisputePanel
+                marketId={marketId}
+                marketTitle={market.title}
+                isResolved={isResolved}
+              />
             </div>
           )}
         </div>

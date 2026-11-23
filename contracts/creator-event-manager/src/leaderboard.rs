@@ -43,12 +43,11 @@ impl From<EventError> for LeaderboardError {
 /// points earned from predictions. The leaderboard is available before all
 /// matches are resolved; predictions for unresolved matches contribute 0 points.
 ///
-/// # Ranking Rules (documented tie-break order #1343):
+/// # Ranking Rules:
 /// 1. **Higher total_points** — primary sort key (descending).
-/// 2. **Higher exact_scores** — tiebreaker (descending).
-/// 3. **Earlier tie_break_key** — earliest qualifying prediction timestamp
-///    (ascending); stored on each entry for auditability.
-/// 4. **Address byte comparison** — final deterministic tiebreaker.
+/// 2. **Earlier submission** — the earliest prediction timestamp (ascending),
+///    stored on each entry for auditability.
+/// 3. **Address byte comparison** — final deterministic tiebreaker.
 ///
 /// # Flow:
 /// 1. Verify the event exists.
@@ -127,7 +126,7 @@ pub fn get_event_leaderboard(
                 if prediction.predicted_at > last_prediction_time {
                     last_prediction_time = prediction.predicted_at;
                 }
-                // Earliest qualifying timestamp is the stored tie-break key.
+                // Keep the earliest submission timestamp as the tie-break key.
                 if prediction.predicted_at < tie_break_key {
                     tie_break_key = prediction.predicted_at;
                 }
@@ -211,12 +210,11 @@ pub fn get_user_rank(env: &Env, event_id: u64, user: Address) -> Result<u32, Lea
 ///   the winning outcome.
 ///
 /// # Tie-break ordering (see [`StandingEntry::outranks`])
-/// weighted score ↓ → correct count ↓ → achieved_at ↑ → address ↑
+/// weighted score ↓ → earliest prediction submission ↑ → address ↑
 ///
 /// # Bounded iteration
-/// One pass over the event's matches, and for each resolved match one pass
-/// over its predictions (loaded once per match), plus an insertion sort over
-/// the participants. Total work is O(P + M·K + P²) for P participants,
+/// One pass over the event's matches and their predictions, plus an insertion
+/// sort over the participants. Total work is O(P + M·K + P²) for P participants,
 /// M matches, and K predictions per match — all bounded by the event's own
 /// stored indexes; no unbounded scans.
 ///
@@ -238,12 +236,35 @@ pub fn recompute_standings(
         );
     }
 
+    let mut earliest_submissions: Map<Address, u64> = Map::new(env);
+    for participant in participants.iter() {
+        earliest_submissions.set(participant, u64::MAX);
+    }
+
     let match_ids = storage::get_event_matches(env, event_id);
     for match_id in match_ids.iter() {
         let m = match storage::get_match(env, match_id) {
             Ok(m) => m,
             Err(_) => continue,
         };
+
+        // Load each prediction once. Submission timestamps participate in
+        // tie-breaking even while a match remains unresolved.
+        let prediction_ids = storage::get_match_predictions(env, match_id);
+        let mut predictions: Vec<Prediction> = Vec::new(env);
+        let mut outcome_counts: [u32; 3] = [0, 0, 0];
+        for prediction_id in prediction_ids.iter() {
+            if let Ok(prediction) = storage::get_prediction(env, prediction_id) {
+                if let Some(earliest) = earliest_submissions.get(prediction.predictor.clone()) {
+                    if prediction.predicted_at < earliest {
+                        earliest_submissions
+                            .set(prediction.predictor.clone(), prediction.predicted_at);
+                    }
+                }
+                predictions.push_back(prediction);
+            }
+        }
+
         if !m.result_submitted {
             continue;
         }
@@ -252,21 +273,13 @@ pub fn recompute_standings(
             _ => continue,
         };
 
-        // Load the match's predictions once, tallying picks per outcome so the
-        // underdog check needs no second storage pass.
-        let prediction_ids = storage::get_match_predictions(env, match_id);
-        let mut predictions: Vec<Prediction> = Vec::new(env);
-        let mut outcome_counts: [u32; 3] = [0, 0, 0];
-        for prediction_id in prediction_ids.iter() {
-            if let Ok(prediction) = storage::get_prediction(env, prediction_id) {
-                let outcome = MatchResult::from_scores(
-                    prediction.predicted_home_score,
-                    prediction.predicted_away_score,
-                )
-                .to_u8() as usize;
-                outcome_counts[outcome] += 1;
-                predictions.push_back(prediction);
-            }
+        for prediction in predictions.iter() {
+            let outcome = MatchResult::from_scores(
+                prediction.predicted_home_score,
+                prediction.predicted_away_score,
+            )
+            .to_u8() as usize;
+            outcome_counts[outcome] += 1;
         }
 
         let total_picks = predictions.len() as u64;
@@ -340,7 +353,13 @@ pub fn recompute_standings(
         while j > 0 {
             let prev = standings.get(j - 1).unwrap();
             let curr = standings.get(j).unwrap();
-            if prev.outranks(&curr) {
+            let prev_earliest = earliest_submissions
+                .get(prev.user.clone())
+                .unwrap_or(u64::MAX);
+            let curr_earliest = earliest_submissions
+                .get(curr.user.clone())
+                .unwrap_or(u64::MAX);
+            if prev.outranks(&curr, prev_earliest, curr_earliest) {
                 break;
             }
             standings.set(j - 1, curr);

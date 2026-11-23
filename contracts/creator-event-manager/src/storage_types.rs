@@ -27,6 +27,9 @@ pub const MAX_EVENT_DURATION_SECONDS: u64 = 7_776_000;
 /// their allocation before it becomes eligible for `clawback_unclaimed` to
 /// treasury (#1312).
 pub const CLAIM_PERIOD_SECONDS: u64 = 2_592_000; // 30 days
+/// Smallest per-event oracle consensus threshold that may be configured
+/// (#2202). The upper bound is the number of configured oracle sources.
+pub const MIN_ORACLE_CONSENSUS_THRESHOLD: u32 = 1;
 /// XLM bond (in stroops) that must be locked to call `finalize_event` (#1344).
 /// Held during the challenge window; returned if unchallenged, or fully
 /// slashed to treasury if a challenge succeeds.
@@ -34,10 +37,24 @@ pub const FINALIZATION_BOND_STROOPS: i128 = 10_000_000; // 1 XLM
 /// Challenge window (seconds) after finalization during which the result may
 /// be disputed via `challenge_finalization` (#1344).
 pub const FINALIZATION_CHALLENGE_WINDOW_SECONDS: u64 = 86_400; // 1 day
+/// Window (seconds) after a match result is first submitted during which the
+/// admin may still correct it via `overturn_match_result`. Once the window
+/// closes the result is final: overturns are rejected and anyone may call
+/// `finalize_match_result` to record (and announce) finality.
+///
+/// The window is anchored to the **original** submission time — overturning
+/// a result does not restart it, so a result can never be kept contestable
+/// indefinitely.
+pub const MATCH_RESULT_OVERTURN_WINDOW_SECONDS: u64 = 86_400; // 1 day
 /// Valid predicted outcome symbols
 pub const OUTCOME_TEAM_A: &str = "TEAM_A";
 pub const OUTCOME_TEAM_B: &str = "TEAM_B";
 pub const OUTCOME_DRAW: &str = "DRAW";
+
+/// Default minimum number of oracle submissions required before a match
+/// result can be finalized. Configurable per match via
+/// [`DataKey::MatchQuorum`].
+pub const DEFAULT_ORACLE_QUORUM: u32 = 1;
 
 /// Points awarded for predicting the correct 1X2 result (wrong scoreline)
 pub const POINTS_CORRECT_RESULT: u32 = 1;
@@ -115,6 +132,94 @@ pub fn weighted_contribution(
         0
     };
     (base, timing, underdog)
+}
+
+// ---------------------------------------------------------------------------
+// Oracle consensus
+// ---------------------------------------------------------------------------
+
+/// A single oracle's submitted outcome for a match.
+///
+/// Submissions are stored in insertion order; the earliest submission is the
+/// first element of the stored vector. This ordering is what makes the
+/// tie-break rule deterministic.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleSubmission {
+    /// Oracle that submitted this outcome.
+    pub oracle: Address,
+    /// The outcome the oracle voted for.
+    pub outcome: MatchResult,
+    /// Ledger timestamp at which the submission was recorded.
+    pub submitted_at: u64,
+}
+
+/// Result of tallying oracle submissions for a match.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsensusTally {
+    /// The winning outcome after applying the deterministic tie-break.
+    pub winning_outcome: MatchResult,
+    /// Number of votes cast for the winning outcome.
+    pub winning_votes: u32,
+    /// Total number of submissions considered.
+    pub total_votes: u32,
+    /// Minimum quorum that was required to finalize.
+    pub quorum: u32,
+}
+
+/// Tally oracle submissions and pick a winner deterministically.
+///
+/// Tie-break rule: when two or more outcomes share the highest vote count,
+/// the outcome whose *earliest* submission (lowest index in `submissions`,
+/// which is insertion order) came first wins. Because `submissions` is stored
+/// in insertion order and never reordered, this is identical across runs.
+///
+/// Returns `None` when `submissions` is empty.
+pub fn tally_submissions(submissions: &Vec<OracleSubmission>) -> Option<ConsensusTally> {
+    let total = submissions.len();
+    if total == 0 {
+        return None;
+    }
+
+    // Count votes per outcome (0 = TeamA, 1 = TeamB, 2 = Draw).
+    let mut counts = [0u32; 3];
+    // Earliest submission index per outcome; u32::MAX means "no vote yet".
+    let mut earliest = [u32::MAX; 3];
+
+    let mut i: u32 = 0;
+    while i < total {
+        let sub = submissions.get(i).unwrap();
+        let idx = sub.outcome.to_u8() as usize;
+        counts[idx] = counts[idx].saturating_add(1);
+        if earliest[idx] == u32::MAX {
+            earliest[idx] = i;
+        }
+        i += 1;
+    }
+
+    // Pick the outcome with the most votes; ties broken by earliest first
+    // submission, then by lowest outcome code for total determinism.
+    let mut best: usize = 0;
+    let mut j: usize = 1;
+    while j < 3 {
+        let better = counts[j] > counts[best]
+            || (counts[j] == counts[best]
+                && counts[j] > 0
+                && earliest[j] < earliest[best]);
+        if better {
+            best = j;
+        }
+        j += 1;
+    }
+
+    let winning_outcome = MatchResult::from_u8(best as u8).unwrap();
+    Some(ConsensusTally {
+        winning_outcome,
+        winning_votes: counts[best],
+        total_votes: total,
+        quorum: 0,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +410,22 @@ pub enum DataKey {
     /// `verification::submit_verification`.
     EventVerificationSigners(u64),
 
+    // ── Oracle consensus (#oracle-quorum) ────────────────────────────────────
+    /// Minimum number of oracle submissions required before a match may be
+    /// finalized  (match_id) → u32. Falls back to
+    /// [`DEFAULT_ORACLE_QUORUM`] when unset.
+    MatchQuorum(u64),
+
+    /// Recorded oracle submissions for a match  (match_id) →
+    /// Vec<OracleSubmission>. Order of insertion is preserved so the
+    /// deterministic tie-break (earliest submission wins) is stable across
+    /// runs.
+    MatchSubmissions(u64),
+
+    /// Finalized consensus outcome for a match  (match_id) → MatchResult.
+    /// Written once by `finalize`.
+    MatchOutcome(u64),
+
     // ── Verifier signature keys (#1705) ──────────────────────────────────────
     /// The raw ed25519 public key (32 bytes) bound to a configured verifier
     /// signer's `Address`  (signer). Written by `admin::set_verifier_config`.
@@ -328,6 +449,13 @@ pub enum DataKey {
     /// oracle sources for a match  (match_id). Written by
     /// `oracle::submit_oracle_value`.
     OracleSubmissions(u64),
+
+    /// Per-event override of the oracle consensus threshold  (event_id): the
+    /// number of distinct oracle sources that must agree on a scoreline
+    /// before `oracle::propose_match_result` finalizes a match in this event.
+    /// Absent means the global `OracleMinSources` applies. Written by
+    /// `oracle::set_event_consensus_threshold` (#2202).
+    EventConsensusThreshold(u64),
 
     // ── Finalization challenge bond (#1344) ──────────────────────────────────
     /// Bond locked by the caller of `finalize_event` for an event  (event_id).
@@ -382,6 +510,17 @@ pub enum DataKey {
     /// verification for a match's pending result so far  (match_id). Written
     /// by `verification::submit_match_verification`.
     MatchVerificationSigners(u64),
+
+    /// Revocation marker for an invite code. Kept separate from
+    /// [`InviteCodeData`] so existing invite records remain readable.
+    InviteRevoked(Symbol),
+
+    // ── Bounded match-result overturn window ─────────────────────────────────
+    /// Ledger timestamp at which a match's result became final  (match_id) →
+    /// u64. Written once, either by `finalize::finalize_match_result` after
+    /// the overturn window closes, or by `finalize::finalize_event` for every
+    /// match of the event. Its presence makes the result immutable.
+    MatchResultFinalizedAt(u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +533,7 @@ pub enum DataKey {
 /// `expires_at == 0` means the code never expires; `max_uses == 0` means the
 /// code has no redemption cap. Both defaults preserve the original
 /// unrestricted invite-code behaviour for events that never configure limits.
+/// Revocation is stored separately so existing records remain compatible.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InviteCodeData {
@@ -458,8 +598,8 @@ pub struct InviteCodeInfo {
     /// (unlimited).
     pub remaining_uses: u32,
 
-    /// `true` when the code is currently redeemable — neither expired nor at
-    /// its use cap, as of the current ledger time.
+    /// `true` when the code is currently redeemable — not expired, revoked,
+    /// or at its use cap, as of the current ledger time.
     pub is_valid: bool,
 }
 
@@ -583,6 +723,11 @@ impl Event {
     /// `true` if `time` falls within `[start_time, end_time]` (inclusive).
     pub fn is_within_window(&self, time: u64) -> bool {
         time >= self.start_time && time <= self.end_time
+    }
+
+    /// Return the submission deadline timestamp for oracle results (#2010).
+    pub fn submission_deadline(&self) -> u64 {
+        self.end_time
     }
 
     /// Returns `true` when the event can still accept new participants.
@@ -1023,13 +1168,12 @@ impl Prediction {
 /// and deterministic tie-breaking. This replaces the binary Winner model to
 /// support top-N prize splits and flexible reward distributions.
 ///
-/// ## Documented tie-break order (#1343)
+/// ## Documented tie-break order
 /// Applied consistently by [`LeaderboardEntry::outranks`] and every ranking
 /// path that builds the leaderboard:
 /// 1. Higher `total_points` (descending)
-/// 2. Higher `exact_scores` (descending)
-/// 3. Lower `tie_break_key` — earliest qualifying prediction timestamp (ascending)
-/// 4. Smaller `user` address (ascending, final deterministic key)
+/// 2. Lower `tie_break_key` — earliest prediction submission timestamp (ascending)
+/// 3. Smaller `user` address (ascending, final deterministic key)
 ///
 /// Stored in Vec<LeaderboardEntry> (typically temporary, computed on-demand).
 #[contracttype]
@@ -1056,7 +1200,7 @@ pub struct LeaderboardEntry {
     /// Unix timestamp of this user's most recent prediction (informational).
     pub last_prediction_time: u64,
 
-    /// Deterministic tie-break key: the earliest prediction timestamp for
+    /// Deterministic tie-break key: the earliest prediction submission time for
     /// this participant in the event (`u64::MAX` when they have none).
     /// Stored alongside the entry so clients can audit ranking without
     /// recomputing (#1343).
@@ -1093,17 +1237,13 @@ impl LeaderboardEntry {
     }
 
     /// Returns `true` if this entry outranks `other` according to the
-    /// documented tie-break order (#1343):
+    /// documented tie-break order:
     /// 1. Higher `total_points`
-    /// 2. Higher `exact_scores`
-    /// 3. Earlier `tie_break_key` (lower timestamp = better rank)
-    /// 4. Smaller address (final deterministic tiebreaker)
+    /// 2. Earlier submission (`tie_break_key`, lower timestamp)
+    /// 3. Smaller address (final deterministic tiebreaker)
     pub fn outranks(&self, other: &LeaderboardEntry) -> bool {
         if self.total_points != other.total_points {
             return self.total_points > other.total_points;
-        }
-        if self.exact_scores != other.exact_scores {
-            return self.exact_scores > other.exact_scores;
         }
         if self.tie_break_key != other.tie_break_key {
             return self.tie_break_key < other.tie_break_key;
@@ -1187,9 +1327,8 @@ pub struct ParticipantScore {
     /// Ledger timestamp at which the participant's weighted score last
     /// increased — i.e. the `submitted_at` of the most recent match result
     /// that added to their score. `0` when they have not scored yet.
-    /// Used as the "earliest achievement" tie-breaker: of two participants
-    /// with identical scores, the one who reached that score first ranks
-    /// higher.
+    /// Retained for transparency: the latest result submission that increased
+    /// this score.
     pub achieved_at: u64,
 }
 
@@ -1240,22 +1379,24 @@ pub struct StandingEntry {
 }
 
 impl StandingEntry {
-    /// Returns `true` if this entry outranks `other`.
+    /// Returns `true` if this entry outranks `other`, using each participant's
+    /// earliest prediction submission timestamp as the secondary key.
     ///
-    /// Deterministic tie-break ordering (#1311), applied in order:
+    /// Deterministic tie-break ordering, applied in order:
     /// 1. Higher `weighted_score` wins.
-    /// 2. On tie: higher `correct_count` wins.
-    /// 3. On tie: earlier `achieved_at` wins (reached the score first).
-    /// 4. On tie: smaller address wins (final deterministic tie-breaker).
-    pub fn outranks(&self, other: &StandingEntry) -> bool {
+    /// 2. On tie: earlier prediction submission wins.
+    /// 3. On tie: smaller address wins.
+    pub fn outranks(
+        &self,
+        other: &StandingEntry,
+        self_earliest_submission: u64,
+        other_earliest_submission: u64,
+    ) -> bool {
         if self.weighted_score != other.weighted_score {
             return self.weighted_score > other.weighted_score;
         }
-        if self.correct_count != other.correct_count {
-            return self.correct_count > other.correct_count;
-        }
-        if self.achieved_at != other.achieved_at {
-            return self.achieved_at < other.achieved_at;
+        if self_earliest_submission != other_earliest_submission {
+            return self_earliest_submission < other_earliest_submission;
         }
         self.user < other.user
     }

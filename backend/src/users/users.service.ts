@@ -5,7 +5,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, QueryFailedError, Repository } from 'typeorm';
 import { Prediction } from '../predictions/entities/prediction.entity';
 import {
   ListUserPredictionsDto,
@@ -58,10 +58,58 @@ import {
   predictorTierFromReputation,
 } from '../analytics/analytics.service';
 import { GetFeedQueryDto } from './dto/get-feed-query.dto';
-import {
-  FeedItemDto,
-  FeedResponseDto,
-} from './dto/feed-response.dto';
+import { FeedItemDto, FeedResponseDto } from './dto/feed-response.dto';
+
+/** Postgres SQLSTATE for a unique-constraint violation. */
+const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * Canonical form of a Stellar address: surrounding whitespace removed and
+ * upper-cased. Stellar StrKey addresses are RFC 4648 base32, whose alphabet
+ * is upper-case only, so `gabc…` and `GABC…` are the same account. Every
+ * address is normalized before it is stored or used in a lookup, which makes
+ * the unique constraint on `users.stellar_address` apply to the canonical
+ * form.
+ */
+export function normalizeStellarAddress(stellar_address: string): string {
+  return stellar_address.trim().toUpperCase();
+}
+
+export type ProfileCompletenessField = 'username' | 'avatar_url' | 'email';
+
+/** Weight of each profile field in the completeness score (relative, not %). */
+export const PROFILE_COMPLETENESS_WEIGHTS: Record<
+  ProfileCompletenessField,
+  number
+> = {
+  username: 40,
+  avatar_url: 30,
+  email: 30,
+};
+
+/**
+ * Percentage (0-100, integer) of the weighted profile fields that are filled.
+ * Blank strings count as unfilled. Clamped to [0, 100] so odd weights
+ * (e.g. negative) can never push the score out of range.
+ */
+export function computeProfileCompleteness(
+  user: Partial<Record<ProfileCompletenessField, string | null>>,
+  weights: Record<ProfileCompletenessField, number> = PROFILE_COMPLETENESS_WEIGHTS,
+): number {
+  const fields = Object.keys(weights) as ProfileCompletenessField[];
+  const total = fields.reduce((sum, field) => sum + weights[field], 0);
+  if (total <= 0) {
+    return 0;
+  }
+
+  const filled = fields.reduce(
+    (sum, field) => sum + (user[field]?.trim() ? weights[field] : 0),
+    0,
+  );
+  const score = Math.round((filled / total) * 100);
+
+  return Math.min(100, Math.max(0, score));
+}
 
 @Injectable()
 export class UsersService {
@@ -117,15 +165,50 @@ export class UsersService {
   }
 
   async findByAddress(stellar_address: string): Promise<User> {
+    const address = normalizeStellarAddress(stellar_address);
     const user = await this.usersRepository.findOne({
-      where: { stellar_address, deleted_at: IsNull() },
+      where: { stellar_address: address, deleted_at: IsNull() },
     });
     if (!user) {
-      throw new NotFoundException(
-        `User with address ${stellar_address} not found`,
-      );
+      throw new NotFoundException(`User with address ${address} not found`);
     }
     return user;
+  }
+
+  /**
+   * Returns the user for `stellar_address`, creating it if needed. The
+   * address is normalized first, so differently-cased forms of the same
+   * address always resolve to a single user. If a concurrent request
+   * inserts the same canonical address first, the unique constraint
+   * rejects our insert and the existing row is returned instead.
+   */
+  async findOrCreateByAddress(stellar_address: string): Promise<User> {
+    const address = normalizeStellarAddress(stellar_address);
+
+    const existing = await this.usersRepository.findOne({
+      where: { stellar_address: address },
+    });
+    if (existing) {
+      return existing;
+    }
+
+    try {
+      return await this.usersRepository.save(
+        this.usersRepository.create({ stellar_address: address }),
+      );
+    } catch (error) {
+      const code = (error as { driverError?: { code?: string } }).driverError
+        ?.code;
+      if (error instanceof QueryFailedError && code === PG_UNIQUE_VIOLATION) {
+        const winner = await this.usersRepository.findOne({
+          where: { stellar_address: address },
+        });
+        if (winner) {
+          return winner;
+        }
+      }
+      throw error;
+    }
   }
 
   async findPublicPredictionsByAddress(
@@ -725,7 +808,10 @@ export class UsersService {
    * activity/event entity. Broader activity types are out of scope for this
    * iteration.
    */
-  async getFeed(userId: string, dto: GetFeedQueryDto): Promise<FeedResponseDto> {
+  async getFeed(
+    userId: string,
+    dto: GetFeedQueryDto,
+  ): Promise<FeedResponseDto> {
     const page = dto.page ?? 1;
     const limit = Math.min(dto.limit ?? 20, 50);
     const skip = (page - 1) * limit;

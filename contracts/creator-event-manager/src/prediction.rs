@@ -2,6 +2,7 @@ use soroban_sdk::{token::Client as TokenClient, Address, Env, Symbol, Vec};
 
 use crate::admin;
 use crate::invite::{self, InviteError};
+use crate::r#match;
 use crate::storage::{self};
 use crate::storage_types::{Event, Match, Prediction};
 use crate::token::TokenHelper;
@@ -28,6 +29,14 @@ pub enum PredictionError {
     InviteCodeExpired = 15,
     /// The invite code has already been redeemed `max_uses` times (#1699).
     InviteCodeUsesExceeded = 16,
+    /// The invite code has been revoked by its creator.
+    InviteCodeRevoked = 17,
+    /// Caller is not the owner of the prediction being edited (#2204).
+    NotPredictionOwner = 18,
+    /// The prediction edit deadline (derived from match start) has passed (#2204).
+    EditDeadlinePassed = 19,
+    /// The prediction has already been graded and can no longer change (#2204).
+    AlreadyGraded = 20,
 }
 
 impl From<InviteError> for PredictionError {
@@ -36,6 +45,7 @@ impl From<InviteError> for PredictionError {
             InviteError::InvalidCode => PredictionError::InvalidInviteCode,
             InviteError::CodeExpired => PredictionError::InviteCodeExpired,
             InviteError::CodeUsesExceeded => PredictionError::InviteCodeUsesExceeded,
+            InviteError::CodeRevoked => PredictionError::InviteCodeRevoked,
             InviteError::CodeGenerationFailed => PredictionError::InvalidInviteCode,
         }
     }
@@ -67,6 +77,49 @@ fn emit_prediction_submitted(
             event_id,
             predictor.clone(),
             predicted_outcome.clone(),
+        ),
+    );
+}
+
+fn emit_prediction_edited(
+    env: &Env,
+    prediction_id: u64,
+    match_id: u64,
+    predictor: &Address,
+    predicted_home_score: u32,
+    predicted_away_score: u32,
+) {
+    env.events().publish(
+        (Symbol::new(env, "prediction"), Symbol::new(env, "edited")),
+        (
+            prediction_id,
+            match_id,
+            predictor.clone(),
+            predicted_home_score,
+            predicted_away_score,
+        ),
+    );
+}
+
+fn emit_prediction_edit_rejected(
+    env: &Env,
+    prediction_id: u64,
+    match_id: u64,
+    predictor: &Address,
+    deadline: u64,
+    attempted_at: u64,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "prediction"),
+            Symbol::new(env, "edit_rejected"),
+        ),
+        (
+            prediction_id,
+            match_id,
+            predictor.clone(),
+            deadline,
+            attempted_at,
         ),
     );
 }
@@ -230,6 +283,89 @@ pub fn submit_prediction(
     );
 
     Ok(prediction_id)
+}
+
+/// Edit the scoreline of an existing prediction (#2204).
+///
+/// Edits are only accepted strictly before the match's on-chain edit
+/// deadline, which is derived from the match start
+/// (see `r#match::prediction_edit_deadline`). An edit at or after the
+/// deadline is rejected with [`PredictionError::EditDeadlinePassed`] and a
+/// `("prediction", "edit_rejected")` event carrying
+/// `(prediction_id, match_id, predictor, deadline, attempted_at)` is emitted.
+///
+/// A successful edit updates the scoreline and derived outcome, keeps the
+/// original `predicted_at`, and emits `("prediction", "edited")` with
+/// `(prediction_id, match_id, predictor, home_score, away_score)`.
+pub fn edit_prediction(
+    env: &Env,
+    predictor: Address,
+    prediction_id: u64,
+    predicted_home_score: u32,
+    predicted_away_score: u32,
+) -> Result<(), PredictionError> {
+    predictor.require_auth();
+
+    if admin::is_paused(env) {
+        return Err(PredictionError::Paused);
+    }
+
+    let existing: Prediction = storage::get_prediction(env, prediction_id)
+        .map_err(|_| PredictionError::PredictionNotFound)?;
+
+    if existing.predictor != predictor {
+        return Err(PredictionError::NotPredictionOwner);
+    }
+
+    let match_record: Match = storage::get_match(env, existing.match_id)
+        .map_err(|_| PredictionError::MatchNotFound)?;
+    let event: Event = storage::get_event(env, match_record.event_id)
+        .map_err(|_| PredictionError::EventNotFound)?;
+
+    if !event.is_active || event.is_cancelled {
+        return Err(PredictionError::EventCancelled);
+    }
+
+    if existing.is_correct.is_some() || match_record.result_submitted {
+        return Err(PredictionError::AlreadyGraded);
+    }
+
+    let now = env.ledger().timestamp();
+    let deadline = r#match::prediction_edit_deadline(&match_record);
+    if now >= deadline {
+        emit_prediction_edit_rejected(
+            env,
+            prediction_id,
+            existing.match_id,
+            &predictor,
+            deadline,
+            now,
+        );
+        return Err(PredictionError::EditDeadlinePassed);
+    }
+
+    let updated = Prediction::new(
+        prediction_id,
+        existing.match_id,
+        existing.event_id,
+        predictor.clone(),
+        predicted_home_score,
+        predicted_away_score,
+        existing.predicted_at,
+        env,
+    );
+    storage::set_prediction(env, prediction_id, &updated);
+
+    emit_prediction_edited(
+        env,
+        prediction_id,
+        existing.match_id,
+        &predictor,
+        predicted_home_score,
+        predicted_away_score,
+    );
+
+    Ok(())
 }
 
 /// Fetch a prediction by ID and extend its TTL on read.

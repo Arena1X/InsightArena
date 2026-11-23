@@ -1,13 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ChevronLeft,
   ChevronsDownUp,
   ChevronsUpDown,
   Plus,
   Minus,
+  Search,
+  X,
 } from "lucide-react";
 
 import Footer from "@/component/Footer";
@@ -61,10 +63,68 @@ function getSlugFromHash(hash: string): string {
   return hash.replace(/^#/, "");
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchesQuery(text: string, query: string): boolean {
+  return text.toLowerCase().includes(query.toLowerCase());
+}
+
+/**
+ * Wraps every case-insensitive occurrence of `query` in `text` with a
+ * <mark> so search matches stand out in the results.
+ */
+function highlightMatches(text: string, query: string): ReactNode {
+  if (!query) return text;
+  const parts = text.split(new RegExp(`(${escapeRegExp(query)})`, "gi"));
+  return parts.map((part, index) =>
+    index % 2 === 1 ? (
+      <mark
+        key={index}
+        data-testid="faq-highlight"
+        className="rounded bg-[#4FD1C5]/30 px-0.5 text-white"
+      >
+        {part}
+      </mark>
+    ) : (
+      part
+    )
+  );
+}
+
 export default function CryptoFAQ() {
   const [openIds, setOpenIds] = useState<Set<number>>(
     () => new Set(DEFAULT_OPEN_IDS)
   );
+  const [searchQuery, setSearchQuery] = useState("");
+  const trimmedQuery = searchQuery.trim();
+
+  const visibleItems = useMemo(
+    () =>
+      trimmedQuery
+        ? FAQ_ITEMS.filter(
+            (item) =>
+              matchesQuery(item.question, trimmedQuery) ||
+              matchesQuery(item.answer, trimmedQuery)
+          )
+        : FAQ_ITEMS,
+    [trimmedQuery]
+  );
+
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value);
+    const query = value.trim();
+    if (!query) return;
+    // Open entries whose answer matches so highlighted text is visible.
+    setOpenIds(
+      new Set(
+        FAQ_ITEMS.filter((item) => matchesQuery(item.answer, query)).map(
+          (item) => item.id
+        )
+      )
+    );
+  };
 
   const openItemForHash = useCallback((hash: string, scrollIntoView: boolean) => {
     const slug = getSlugFromHash(hash);
@@ -119,7 +179,11 @@ export default function CryptoFAQ() {
   };
 
   const expandAll = () => {
-    setOpenIds(new Set(FAQ_ITEMS.map((item) => item.id)));
+    setOpenIds((prev) => {
+      const next = new Set(prev);
+      visibleItems.forEach((item) => next.add(item.id));
+      return next;
+    });
   };
 
   const collapseAll = () => {
@@ -127,8 +191,8 @@ export default function CryptoFAQ() {
     updateHash(null);
   };
 
-  const allExpanded = openIds.size === FAQ_ITEMS.length;
-  const allCollapsed = openIds.size === 0;
+  const allExpanded = visibleItems.every((item) => openIds.has(item.id));
+  const allCollapsed = visibleItems.every((item) => !openIds.has(item.id));
 
   return (
     <PageBackground>
@@ -159,29 +223,64 @@ export default function CryptoFAQ() {
             </Link>
           </div>
 
-          <div className="mt-6 flex items-center justify-end gap-3">
-            <button
-              type="button"
-              onClick={expandAll}
-              disabled={allExpanded}
-              className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-[#d8dee9] transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <ChevronsUpDown size={16} />
-              Expand all
-            </button>
-            <button
-              type="button"
-              onClick={collapseAll}
-              disabled={allCollapsed}
-              className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-[#d8dee9] transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <ChevronsDownUp size={16} />
-              Collapse all
-            </button>
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="relative flex-1">
+              <Search
+                size={18}
+                className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[#94a3b8]"
+              />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                placeholder="Search questions and answers..."
+                aria-label="Search FAQ"
+                className="w-full rounded-xl border border-white/10 bg-white/5 py-2.5 pl-11 pr-10 text-sm text-white outline-none transition placeholder:text-[#64748b] focus:border-[#4FD1C5] focus:ring-2 focus:ring-[#4FD1C5]/20"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => handleSearchChange("")}
+                  aria-label="Clear search"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[#94a3b8] transition hover:text-white"
+                >
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={expandAll}
+                disabled={allExpanded}
+                className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-[#d8dee9] transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronsUpDown size={16} />
+                Expand all
+              </button>
+              <button
+                type="button"
+                onClick={collapseAll}
+                disabled={allCollapsed}
+                className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-[#d8dee9] transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronsDownUp size={16} />
+                Collapse all
+              </button>
+            </div>
           </div>
 
           <div className="mt-4 space-y-4">
-            {FAQ_ITEMS.map((item) => {
+            {visibleItems.length === 0 && (
+              <p
+                role="status"
+                className="rounded-2xl border border-dashed border-white/10 px-5 py-8 text-center text-sm text-[#94a3b8]"
+              >
+                No questions match &ldquo;{trimmedQuery}&rdquo;. Try a
+                different search term.
+              </p>
+            )}
+            {visibleItems.map((item) => {
               const isOpen = openIds.has(item.id);
               const buttonId = `faq-question-${item.slug}`;
               const panelId = `faq-panel-${item.slug}`;
@@ -201,7 +300,7 @@ export default function CryptoFAQ() {
                     onClick={() => toggleFAQ(item.id, item.slug)}
                   >
                     <h2 className="text-lg font-semibold text-white sm:text-xl">
-                      {item.id}. {item.question}
+                      {item.id}. {highlightMatches(item.question, trimmedQuery)}
                     </h2>
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#4FD1C5] text-[#0f172a]">
                       {isOpen ? <Minus size={18} /> : <Plus size={18} />}
@@ -215,7 +314,7 @@ export default function CryptoFAQ() {
                     hidden={!isOpen}
                     className="border-t border-white/10 px-5 py-5 text-[15px] leading-7 text-[#cbd5e1]"
                   >
-                    <p>{item.answer}</p>
+                    <p>{highlightMatches(item.answer, trimmedQuery)}</p>
                   </div>
                 </div>
               );
