@@ -6,12 +6,12 @@
 ///
 /// Counter helpers return the *new* value after incrementing so callers can use
 /// the returned ID immediately.
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{Address, Env, Symbol, Vec};
 
 use crate::storage_types::{
-    CreatorVestingSchedule, DataKey, Event, FinalizationBond, Match, MatchResultSubmission,
-    OracleSubmission, ParticipantScore, PendingMatchResult, Prediction, PrizeAllocation,
-    StandingEntry,
+    CreatorVestingSchedule, DataKey, Event, FinalizationBond, InviteCodeData, Match,
+    MatchResultSubmission, OracleSubmission, ParticipantScore, PendingMatchResult, Prediction,
+    PrizeAllocation, StandingEntry,
 };
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,67 @@ pub const THRESHOLD: u32 = TTL_THRESHOLD;
 
 /// Named alias for bump.
 pub const BUMP: u32 = TTL_BUMP;
+
+// ---------------------------------------------------------------------------
+// Invite-code helpers
+// ---------------------------------------------------------------------------
+
+fn extend_invite_revoked_ttl(env: &Env, code: &Symbol) {
+    let key = DataKey::InviteRevoked(code.clone());
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+    }
+}
+
+/// Read invite-code state and extend its TTL.
+pub fn get_invite_data(env: &Env, code: &Symbol) -> Option<InviteCodeData> {
+    let key = DataKey::InviteCode(code.clone());
+    match env.storage().persistent().get::<DataKey, InviteCodeData>(&key) {
+        Some(data) => {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+            extend_invite_revoked_ttl(env, code);
+            Some(data)
+        }
+        None => None,
+    }
+}
+
+/// Persist invite-code state and set its TTL.
+pub fn set_invite_data(env: &Env, code: &Symbol, data: &InviteCodeData) {
+    let key = DataKey::InviteCode(code.clone());
+    env.storage().persistent().set(&key, data);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+    extend_invite_revoked_ttl(env, code);
+}
+
+/// Read an invite-code revocation marker, extending its TTL when set.
+pub fn is_invite_revoked(env: &Env, code: &Symbol) -> bool {
+    let key = DataKey::InviteRevoked(code.clone());
+    match env.storage().persistent().get::<DataKey, bool>(&key) {
+        Some(revoked) => {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+            revoked
+        }
+        None => false,
+    }
+}
+
+/// Mark an invite code revoked and set the marker TTL.
+pub fn set_invite_revoked(env: &Env, code: &Symbol) {
+    let key = DataKey::InviteRevoked(code.clone());
+    env.storage().persistent().set(&key, &true);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
+}
 
 // ---------------------------------------------------------------------------
 // Active event status helpers

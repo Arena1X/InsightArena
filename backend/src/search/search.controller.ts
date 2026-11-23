@@ -104,7 +104,8 @@ export class SearchController {
   @ApiOperation({
     summary: 'Typo-tolerant fuzzy search using trigram similarity (public)',
     description:
-      'Returns results ranked by trigram similarity score. Exact matches rank above fuzzy ones. ' +
+      'Ranking: exact title match, then title prefix, then trigram similarity; ' +
+      'ties are broken by most recent created_at, then title and id (deterministic). ' +
       'Use the threshold parameter to control minimum similarity (default 0.1).',
   })
   @ApiResponse({ status: 200, type: FuzzySearchResponseDto })

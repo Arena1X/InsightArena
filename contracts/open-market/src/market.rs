@@ -703,9 +703,7 @@ pub fn set_market_liquidity_cap(
     config::ensure_not_paused(env)?;
     require_admin(env, &admin)?;
 
-    if cap < 0 {
-        return Err(InsightArenaError::InvalidInput);
-    }
+    config::validate_max_liquidity_per_outcome(cap)?;
 
     let mut market = get_market(env, market_id)?;
     let old_cap = market.outcome_liquidity_cap;

@@ -590,7 +590,7 @@ fn validate_insurance_pool_share_bps(share_bps: u32) -> Result<(), InsightArenaE
     Ok(())
 }
 
-fn validate_max_liquidity_per_outcome(cap: i128) -> Result<(), InsightArenaError> {
+pub(crate) fn validate_max_liquidity_per_outcome(cap: i128) -> Result<(), InsightArenaError> {
     if !(MIN_MAX_LIQUIDITY_PER_OUTCOME..=MAX_MAX_LIQUIDITY_PER_OUTCOME).contains(&cap) {
         return Err(InsightArenaError::InvalidInput);
     }

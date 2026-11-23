@@ -18,6 +18,7 @@ import { PredictionsModule } from '../predictions/predictions.module';
 import { User } from '../users/entities/user.entity';
 import { UserFlag } from './entities/user-flag.entity';
 import { VerifiedAddress } from './entities/verified-address.entity';
+import { AdminAuditLog } from './entities/admin-audit-log.entity';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { AdminAuditLogSubscriber } from './subscribers/admin-audit-log.subscriber';
@@ -37,6 +38,7 @@ import { AdminAuditLogSubscriber } from './subscribers/admin-audit-log.subscribe
       VerifiedAddress,
       FeeHistory,
       UserFlag,
+      AdminAuditLog,
     ]),
     AnalyticsModule,
     FlagsModule,

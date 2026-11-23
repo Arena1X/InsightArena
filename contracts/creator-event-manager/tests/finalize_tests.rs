@@ -281,6 +281,54 @@ fn test_finalize_event_distributes_top5_split() {
     assert_eq!(snapshot, payouts);
 }
 
+#[test]
+fn test_prize_ranking_matches_deterministic_standings_tiebreak() {
+    let (env, client, contract_id, creator, ai_agent, xlm_token) = setup();
+    let distribution = reward_dist(&env, &[50, 50]);
+    let (event_id, invite_code, match_ids) = create_funded_event(
+        &env,
+        &contract_id,
+        &client,
+        &creator,
+        &xlm_token,
+        PRIZE,
+        distribution,
+        1,
+    );
+    let earlier = Address::generate(&env);
+    let later = Address::generate(&env);
+
+    client.join_event(&earlier, &invite_code);
+    client.submit_prediction(&earlier, &match_ids.get(0).unwrap(), &1u32, &0u32);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 10);
+    client.join_event(&later, &invite_code);
+    client.submit_prediction(&later, &match_ids.get(0).unwrap(), &1u32, &0u32);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 7_300);
+    submit_result(
+        &client,
+        &ai_agent,
+        match_ids.get(0).unwrap(),
+        MatchResult::TeamA,
+    );
+
+    let leaderboard = client.get_event_leaderboard(&event_id);
+    let standings = client.get_event_standings(&event_id);
+    assert_eq!(leaderboard.get(0).unwrap().user, earlier);
+    assert_eq!(standings.get(0).unwrap().user, earlier);
+    assert_eq!(leaderboard.get(1).unwrap().user, later);
+    assert_eq!(standings.get(1).unwrap().user, later);
+
+    let finalizer = Address::generate(&env);
+    fund_finalizer_bond(&env, &xlm_token, &finalizer);
+    let payouts = client.finalize_event(&finalizer, &event_id);
+
+    assert_eq!(payouts.len(), 2);
+    assert_eq!(payouts.get(0).unwrap().0, leaderboard.get(0).unwrap().user);
+    assert_eq!(payouts.get(1).unwrap().0, leaderboard.get(1).unwrap().user);
+    assert_eq!(client.get_event_standings(&event_id), standings);
+}
+
 // ---------------------------------------------------------------------------
 // Rejections
 // ---------------------------------------------------------------------------

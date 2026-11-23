@@ -8,13 +8,21 @@ import { Prediction } from '../predictions/entities/prediction.entity';
 import { User } from '../users/entities/user.entity';
 import { SystemState } from './entities/system-state.entity';
 import { ReconciliationService } from '../indexer/reconciliation.service';
+import { computeBackoffDelay } from '../common/retry.util';
 
 const LAST_LEDGER_KEY = 'soroban:last_processed_ledger';
+const BACKOFF_BASE_MS = 30_000;
+const BACKOFF_MAX_MS = 5 * 60_000;
+// Backoff resets only after this long without a failure.
+const STABLE_PERIOD_MS = 5 * 60_000;
 
 @Injectable()
 export class SorobanListener {
   private readonly logger = new Logger(SorobanListener.name);
   private isPolling = false;
+  private consecutiveFailures = 0;
+  private lastFailureAt = 0;
+  private nextPollAt = 0;
 
   constructor(
     private readonly sorobanService: SorobanService,
@@ -37,6 +45,10 @@ export class SorobanListener {
       return; // Skip polling until a real contract is deployed
     }
 
+    if (Date.now() < this.nextPollAt) {
+      return; // Backing off after repeated failures
+    }
+
     if (this.isPolling) {
       this.logger.warn(
         'Soroban listener skipped because previous poll is still running',
@@ -47,6 +59,8 @@ export class SorobanListener {
     this.isPolling = true;
 
     try {
+      // Each poll rebuilds the contract event filter in getEvents, so topics
+      // are resubscribed on every reconnect, resuming from the persisted ledger.
       const lastProcessedLedger = await this.getLastProcessedLedger();
       const fromLedger = Math.max(lastProcessedLedger + 1, 1);
 
@@ -56,6 +70,7 @@ export class SorobanListener {
         if (latestLedger > lastProcessedLedger) {
           await this.persistLastProcessedLedger(latestLedger);
         }
+        this.recordSuccess();
         return;
       }
 
@@ -79,11 +94,35 @@ export class SorobanListener {
           finalLedger,
         );
       }
+      this.recordSuccess();
     } catch (error) {
-      this.logger.error('Failed to poll Soroban events', error);
+      this.recordFailure(error);
     } finally {
       this.isPolling = false;
     }
+  }
+
+  private recordSuccess(): void {
+    if (
+      this.consecutiveFailures > 0 &&
+      Date.now() - this.lastFailureAt >= STABLE_PERIOD_MS
+    ) {
+      this.consecutiveFailures = 0;
+    }
+  }
+
+  private recordFailure(error: unknown): void {
+    const delay = Math.min(
+      computeBackoffDelay(BACKOFF_BASE_MS, this.consecutiveFailures),
+      BACKOFF_MAX_MS,
+    );
+    this.consecutiveFailures += 1;
+    this.lastFailureAt = Date.now();
+    this.nextPollAt = this.lastFailureAt + delay;
+    this.logger.error(
+      `Failed to poll Soroban events; retrying in ${delay}ms (failure #${this.consecutiveFailures})`,
+      error,
+    );
   }
 
   private async processEvent(event: SorobanRpcEvent): Promise<void> {

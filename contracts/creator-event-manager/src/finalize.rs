@@ -48,7 +48,7 @@ use crate::token::TokenHelper;
 ///
 /// # Payout
 /// The leaderboard ([`leaderboard::get_event_leaderboard`]) is fully
-/// deterministic (points → exact_scores → earliest prediction → address), so
+/// deterministic (points → earliest prediction → address), so
 /// there are **no shared ranks**: every participant has a distinct rank and
 /// therefore a distinct (possibly zero) payout. There is intentionally no
 /// "split the rank" logic here — determinism is handled upstream.
@@ -200,9 +200,14 @@ pub fn finalize_event(
     let refund_to_creator = prize_pool - total_distributed;
     if refund_to_creator > 0 {
         let vest_share_bps = fee::get_creator_vest_share_bps(env);
-        let vested_amount = fee::calculate_bounded_fee(refund_to_creator, vest_share_bps)
-            .map_err(|_| EventError::Overflow)?;
-        let immediate_amount = refund_to_creator - vested_amount;
+        let immediate_share_bps =
+            crate::storage_types::MAX_FEE_BPS.saturating_sub(vest_share_bps);
+        let (vested_amount, immediate_amount) = fee::split_fee_amount(
+            refund_to_creator,
+            vest_share_bps,
+            immediate_share_bps,
+        )
+        .map_err(|_| EventError::Overflow)?;
 
         if immediate_amount > 0 {
             TokenHelper::distribute_winnings(env, &xlm_token, &event.creator, immediate_amount)
