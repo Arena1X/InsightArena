@@ -75,7 +75,30 @@ pnpm run test          # Run unit tests
 pnpm run test:cov      # Run tests with coverage
 pnpm run test:e2e      # Run end-to-end tests
 pnpm run format        # Format with Prettier
+pnpm run swagger:export # Export OpenAPI spec and static API reference to docs/
+pnpm run docs:generate # Alias for swagger:export
+pnpm run docs:verify   # Validate OpenAPI spec and static docs generation
 ```
+
+---
+
+## API Documentation & Reference
+
+InsightArena maintains a browsable, offline-capable static API reference in `docs/`:
+
+- **Static HTML Reference**: Open `docs/index.html` in your browser.
+- **OpenAPI 3.0 Spec**: `docs/openapi.json` (and `backend/docs/openapi.json`).
+- **Live Swagger UI**: Accessible at `http://localhost:3000/api/v1/docs` when the app is running.
+
+To regenerate the documentation after updating endpoints or DTOs:
+
+```bash
+pnpm run swagger:export
+```
+
+See [docs/README.md](../docs/README.md) for full instructions on regenerating and verifying the API reference.
+
+---
 
 ---
 

@@ -99,6 +99,9 @@ jobs:
       - name: Run unit tests
         run: pnpm run test
 
+      - name: Verify Swagger docs export
+        run: pnpm run docs:verify
+
   build:
     name: Build
     runs-on: ubuntu-latest
