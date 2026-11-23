@@ -2,8 +2,7 @@
 ///
 /// Tests cover:
 /// - Basic leaderboard ranking by total points
-/// - Tiebreaking by exact scores count
-/// - Tiebreaking by earliest prediction time
+/// - Tiebreaking by earliest prediction time after points
 /// - Live leaderboard before all matches are resolved
 /// - Empty event (no participants)
 /// - Single participant
@@ -190,52 +189,44 @@ fn test_leaderboard_ranks_by_total_points_desc() {
 }
 
 #[test]
-fn test_leaderboard_tiebreak_by_exact_scores() {
+fn test_leaderboard_earliest_submission_precedes_exact_scores() {
     let (env, client, contract_id, creator, ai_agent, xlm_token) = setup();
     let user1 = Address::generate(&env);
     let user2 = Address::generate(&env);
 
-    // Create event with 2 matches
+    // Both participants score 5 points, but user1 has one exact score and
+    // user2 has five correct-result scores. The earlier submission wins.
     let (event_id, invite_code, match_ids) =
-        create_event_with_matches(&env, &contract_id, &client, &creator, &xlm_token, 2);
+        create_event_with_matches(&env, &contract_id, &client, &creator, &xlm_token, 5);
 
-    // User1: 1 exact (4 pts) + 1 correct result (1 pt) = 5 pts, 1 exact
-    client.join_event(&user1, &invite_code);
-    client.submit_prediction(&user1, &match_ids.get(0).unwrap(), &1u32, &1u32); // Draw - EXACT (1-1)
-    client.submit_prediction(&user1, &match_ids.get(1).unwrap(), &2u32, &0u32); // TeamA wins - CORRECT RESULT (2-0 instead of 1-0) = 1 pt
-
-    // User2: 1 exact (4 pts) + 0 correct = 4 pts, 1 exact
     client.join_event(&user2, &invite_code);
-    client.submit_prediction(&user2, &match_ids.get(0).unwrap(), &1u32, &1u32); // Draw - EXACT (1-1)
-    client.submit_prediction(&user2, &match_ids.get(1).unwrap(), &0u32, &1u32); // WRONG - TeamB wins
+    for match_id in match_ids.iter() {
+        client.submit_prediction(&user2, &match_id, &2u32, &0u32);
+    }
 
-    // Advance time and submit results
-    env.ledger().set_timestamp(env.ledger().timestamp() + 200);
-    submit_match_result(
-        &env,
-        &client,
-        &ai_agent,
-        *match_ids.get(0).unwrap(),
-        MatchResult::Draw,
-    );
-    submit_match_result(
-        &env,
-        &client,
-        &ai_agent,
-        *match_ids.get(1).unwrap(),
-        MatchResult::TeamA,
-    );
+    env.ledger().set_timestamp(env.ledger().timestamp() + 10);
+    client.join_event(&user1, &invite_code);
+    client.submit_prediction(&user1, &match_ids.get(0).unwrap(), &1u32, &0u32);
+    client.submit_prediction(&user1, &match_ids.get(1).unwrap(), &2u32, &0u32);
+    client.submit_prediction(&user1, &match_ids.get(2).unwrap(), &0u32, &1u32);
+    client.submit_prediction(&user1, &match_ids.get(3).unwrap(), &0u32, &1u32);
+    client.submit_prediction(&user1, &match_ids.get(4).unwrap(), &0u32, &1u32);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 300);
+    for match_id in match_ids.iter() {
+        submit_match_result(&env, &client, &ai_agent, match_id, MatchResult::TeamA);
+    }
 
     let leaderboard = client.get_event_leaderboard(&event_id);
 
     assert_eq!(leaderboard.len(), 2);
-    assert_eq!(leaderboard.get(0).unwrap().user, user1);
+    assert_eq!(leaderboard.get(0).unwrap().user, user2);
     assert_eq!(leaderboard.get(0).unwrap().total_points, 5);
-    assert_eq!(leaderboard.get(0).unwrap().exact_scores, 1);
+    assert_eq!(leaderboard.get(0).unwrap().exact_scores, 0);
     assert_eq!(leaderboard.get(0).unwrap().rank, 1);
 
-    assert_eq!(leaderboard.get(1).unwrap().user, user2);
-    assert_eq!(leaderboard.get(1).unwrap().total_points, 4);
+    assert_eq!(leaderboard.get(1).unwrap().user, user1);
+    assert_eq!(leaderboard.get(1).unwrap().total_points, 5);
     assert_eq!(leaderboard.get(1).unwrap().exact_scores, 1);
     assert_eq!(leaderboard.get(1).unwrap().rank, 2);
 }
@@ -449,7 +440,7 @@ fn test_leaderboard_address_tiebreaker_insertion_order_irrelevant() {
 // ---------------------------------------------------------------------------
 
 /// Three participants with identical scores are ordered by earliest
-/// qualifying timestamp, then address. Ranks are stable across repeated reads
+/// submission timestamp, then address. Ranks are stable across repeated reads
 /// and match `get_user_rank`.
 #[test]
 fn test_leaderboard_multiway_tie_earliest_timestamp_then_address() {

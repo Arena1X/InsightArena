@@ -396,7 +396,7 @@ pub enum DataKey {
     /// Vec<Address> of distinct verifier signers who have submitted
     /// verification for an event so far  (event_id). Written by
     /// `verification::submit_verification`.
-    EventVerificati
+    EventVerificationSigners(u64),
 
     // ── Oracle consensus (#oracle-quorum) ────────────────────────────────────
     /// Minimum number of oracle submissions required before a match may be
@@ -412,7 +412,7 @@ pub enum DataKey {
 
     /// Finalized consensus outcome for a match  (match_id) → MatchResult.
     /// Written once by `finalize`.
-    MatchOutcome(u64),onSigners(u64),
+    MatchOutcome(u64),
 
     // ── Verifier signature keys (#1705) ──────────────────────────────────────
     /// The raw ed25519 public key (32 bytes) bound to a configured verifier
@@ -491,6 +491,10 @@ pub enum DataKey {
     /// verification for a match's pending result so far  (match_id). Written
     /// by `verification::submit_match_verification`.
     MatchVerificationSigners(u64),
+
+    /// Revocation marker for an invite code. Kept separate from
+    /// [`InviteCodeData`] so existing invite records remain readable.
+    InviteRevoked(Symbol),
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +507,7 @@ pub enum DataKey {
 /// `expires_at == 0` means the code never expires; `max_uses == 0` means the
 /// code has no redemption cap. Both defaults preserve the original
 /// unrestricted invite-code behaviour for events that never configure limits.
+/// Revocation is stored separately so existing records remain compatible.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InviteCodeData {
@@ -567,8 +572,8 @@ pub struct InviteCodeInfo {
     /// (unlimited).
     pub remaining_uses: u32,
 
-    /// `true` when the code is currently redeemable — neither expired nor at
-    /// its use cap, as of the current ledger time.
+    /// `true` when the code is currently redeemable — not expired, revoked,
+    /// or at its use cap, as of the current ledger time.
     pub is_valid: bool,
 }
 
@@ -1137,13 +1142,12 @@ impl Prediction {
 /// and deterministic tie-breaking. This replaces the binary Winner model to
 /// support top-N prize splits and flexible reward distributions.
 ///
-/// ## Documented tie-break order (#1343)
+/// ## Documented tie-break order
 /// Applied consistently by [`LeaderboardEntry::outranks`] and every ranking
 /// path that builds the leaderboard:
 /// 1. Higher `total_points` (descending)
-/// 2. Higher `exact_scores` (descending)
-/// 3. Lower `tie_break_key` — earliest qualifying prediction timestamp (ascending)
-/// 4. Smaller `user` address (ascending, final deterministic key)
+/// 2. Lower `tie_break_key` — earliest prediction submission timestamp (ascending)
+/// 3. Smaller `user` address (ascending, final deterministic key)
 ///
 /// Stored in Vec<LeaderboardEntry> (typically temporary, computed on-demand).
 #[contracttype]
@@ -1170,7 +1174,7 @@ pub struct LeaderboardEntry {
     /// Unix timestamp of this user's most recent prediction (informational).
     pub last_prediction_time: u64,
 
-    /// Deterministic tie-break key: the earliest prediction timestamp for
+    /// Deterministic tie-break key: the earliest prediction submission time for
     /// this participant in the event (`u64::MAX` when they have none).
     /// Stored alongside the entry so clients can audit ranking without
     /// recomputing (#1343).
@@ -1207,17 +1211,13 @@ impl LeaderboardEntry {
     }
 
     /// Returns `true` if this entry outranks `other` according to the
-    /// documented tie-break order (#1343):
+    /// documented tie-break order:
     /// 1. Higher `total_points`
-    /// 2. Higher `exact_scores`
-    /// 3. Earlier `tie_break_key` (lower timestamp = better rank)
-    /// 4. Smaller address (final deterministic tiebreaker)
+    /// 2. Earlier submission (`tie_break_key`, lower timestamp)
+    /// 3. Smaller address (final deterministic tiebreaker)
     pub fn outranks(&self, other: &LeaderboardEntry) -> bool {
         if self.total_points != other.total_points {
             return self.total_points > other.total_points;
-        }
-        if self.exact_scores != other.exact_scores {
-            return self.exact_scores > other.exact_scores;
         }
         if self.tie_break_key != other.tie_break_key {
             return self.tie_break_key < other.tie_break_key;
@@ -1301,9 +1301,8 @@ pub struct ParticipantScore {
     /// Ledger timestamp at which the participant's weighted score last
     /// increased — i.e. the `submitted_at` of the most recent match result
     /// that added to their score. `0` when they have not scored yet.
-    /// Used as the "earliest achievement" tie-breaker: of two participants
-    /// with identical scores, the one who reached that score first ranks
-    /// higher.
+    /// Retained for transparency: the latest result submission that increased
+    /// this score.
     pub achieved_at: u64,
 }
 
@@ -1354,22 +1353,24 @@ pub struct StandingEntry {
 }
 
 impl StandingEntry {
-    /// Returns `true` if this entry outranks `other`.
+    /// Returns `true` if this entry outranks `other`, using each participant's
+    /// earliest prediction submission timestamp as the secondary key.
     ///
-    /// Deterministic tie-break ordering (#1311), applied in order:
+    /// Deterministic tie-break ordering, applied in order:
     /// 1. Higher `weighted_score` wins.
-    /// 2. On tie: higher `correct_count` wins.
-    /// 3. On tie: earlier `achieved_at` wins (reached the score first).
-    /// 4. On tie: smaller address wins (final deterministic tie-breaker).
-    pub fn outranks(&self, other: &StandingEntry) -> bool {
+    /// 2. On tie: earlier prediction submission wins.
+    /// 3. On tie: smaller address wins.
+    pub fn outranks(
+        &self,
+        other: &StandingEntry,
+        self_earliest_submission: u64,
+        other_earliest_submission: u64,
+    ) -> bool {
         if self.weighted_score != other.weighted_score {
             return self.weighted_score > other.weighted_score;
         }
-        if self.correct_count != other.correct_count {
-            return self.correct_count > other.correct_count;
-        }
-        if self.achieved_at != other.achieved_at {
-            return self.achieved_at < other.achieved_at;
+        if self_earliest_submission != other_earliest_submission {
+            return self_earliest_submission < other_earliest_submission;
         }
         self.user < other.user
     }
