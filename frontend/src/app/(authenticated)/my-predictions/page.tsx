@@ -10,7 +10,7 @@ import { EmptyState } from "@/component/ui/empty-state";
 import { formatPnlXlm } from "@/lib/utils";
 
 type PredictionStatus = "Active" | "Won" | "Lost" | "Pending" | "Refunded";
-type FilterTab = "All" | "Won" | "Lost" | "Pending" | "Refunded";
+type FilterTab = "All" | "Open" | "Won" | "Lost" | "Settled" | "Pending" | "Refunded";
 
 interface Prediction {
   id: string;
@@ -155,10 +155,24 @@ function getCategoryBadgeClasses(category: string): string {
   }
 }
 
-const FILTER_TABS: FilterTab[] = ["All", "Won", "Lost", "Pending", "Refunded"];
+const FILTER_TABS: FilterTab[] = ["All", "Open", "Won", "Lost", "Settled", "Pending", "Refunded"];
 
 function isFilterTab(value: string | null): value is FilterTab {
   return !!value && (FILTER_TABS as string[]).includes(value);
+}
+
+/** Open = still active ("Active" status); Settled = resolved as Won or Lost. */
+function matchesFilter(prediction: Prediction, filter: FilterTab): boolean {
+  switch (filter) {
+    case "All":
+      return true;
+    case "Open":
+      return prediction.status === "Active";
+    case "Settled":
+      return prediction.status === "Won" || prediction.status === "Lost";
+    default:
+      return prediction.status === filter;
+  }
 }
 
 /** Parses a stake/payout string like "50 XLM" into its numeric amount. */
@@ -204,10 +218,7 @@ export default function MyPredictionsPage() {
   }, [activeFilter, searchQuery]);
 
   const filteredPredictions = useMemo(() => {
-    let result = predictions;
-    if (activeFilter !== "All") {
-      result = result.filter((pred) => pred.status === activeFilter);
-    }
+    let result = predictions.filter((pred) => matchesFilter(pred, activeFilter));
     const query = searchQuery.trim().toLowerCase();
     if (query) {
       result = result.filter((pred) =>
@@ -260,13 +271,11 @@ export default function MyPredictionsPage() {
   }, [filteredPredictions]);
 
   const filterCounts = useMemo(() => {
-    return {
-      All: predictions.length,
-      Won: predictions.filter((p) => p.status === "Won").length,
-      Lost: predictions.filter((p) => p.status === "Lost").length,
-      Pending: predictions.filter((p) => p.status === "Pending").length,
-      Refunded: predictions.filter((p) => p.status === "Refunded").length,
-    };
+    const counts = {} as Record<FilterTab, number>;
+    for (const tab of FILTER_TABS) {
+      counts[tab] = predictions.filter((p) => matchesFilter(p, tab)).length;
+    }
+    return counts;
   }, [predictions]);
 
   const handleFilterChange = (filter: FilterTab) => {
