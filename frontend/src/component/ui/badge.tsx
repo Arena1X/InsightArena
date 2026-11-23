@@ -18,9 +18,9 @@ const badgeVariants = cva(
         outline:
           "text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
         success:
-          "border-transparent bg-emerald-500 text-white [a&]:hover:bg-emerald-500/90 focus-visible:ring-emerald-500/20 dark:focus-visible:ring-emerald-500/40 dark:bg-emerald-600",
+          "border-transparent bg-success text-success-foreground [a&]:hover:bg-success/90 focus-visible:ring-emerald-500/20 dark:focus-visible:ring-emerald-500/40",
         warning:
-          "border-transparent bg-amber-500 text-white [a&]:hover:bg-amber-500/90 focus-visible:ring-amber-500/20 dark:focus-visible:ring-amber-500/40 dark:bg-amber-600",
+          "border-transparent bg-warning text-warning-foreground [a&]:hover:bg-warning/90 focus-visible:ring-amber-500/20 dark:focus-visible:ring-amber-500/40",
         muted:
           "border-transparent bg-muted text-muted-foreground [a&]:hover:bg-muted/80",
       },
