@@ -59,6 +59,25 @@ const TRGM_SIMILARITY_THRESHOLD = 0.1;
 /** How long a prefix's suggestion results are cached for */
 const SUGGEST_CACHE_TTL_MS = 30_000;
 
+/** Fuzzy result with the recency key kept for cross-type tie-breaking. */
+type RankedFuzzyItem = FuzzySearchItemDto & { created_at: Date };
+
+/**
+ * Match tier of a title against :query, lower ranks first:
+ * 0 = exact (case-insensitive), 1 = prefix, 2 = fuzzy/other.
+ * Mirrors matchTier() below; the SQL side only orders, so the tier stays in sync.
+ */
+function matchTierSql(column: string): string {
+  return `(CASE WHEN lower(${column}) = lower(:query) THEN 0 WHEN left(lower(${column}), char_length(lower(:query))) = lower(:query) THEN 1 ELSE 2 END)`;
+}
+
+function matchTier(title: string, query: string): number {
+  const t = title.toLowerCase();
+  const q = query.toLowerCase();
+  if (t === q) return 0;
+  return t.startsWith(q) ? 1 : 2;
+}
+
 export interface CreatorEventSearchParams {
   query: string;
   skip: number;
@@ -324,8 +343,9 @@ export class SearchService {
   }
 
   /**
-   * Fuzzy search using trigram similarity. Ranks exact matches above fuzzy
-   * ones and filters by a configurable similarity threshold.
+   * Fuzzy search using trigram similarity. Ranking: exact title match, then
+   * title prefix, then similarity; ties broken by most recent created_at,
+   * then title and id so repeated queries return the same order.
    */
   async fuzzySearch(dto: FuzzySearchDto): Promise<FuzzySearchResponseDto> {
     const query = sanitizeSearchInput(dto.query ?? '');
@@ -346,11 +366,14 @@ export class SearchService {
     const all: FuzzySearchItemDto[] = [...markets, ...users, ...competitions]
       .sort(
         (a, b) =>
+          matchTier(a.title, query) - matchTier(b.title, query) ||
           b.similarity - a.similarity ||
+          b.created_at.getTime() - a.created_at.getTime() ||
           (a.title ?? '').localeCompare(b.title ?? '') ||
           a.id.localeCompare(b.id),
       )
-      .slice(0, limit);
+      .slice(0, limit)
+      .map(({ created_at, ...item }) => item);
 
     return { data: all, total: all.length, query: dto.query };
   }
@@ -359,10 +382,15 @@ export class SearchService {
     query: string,
     threshold: number,
     limit: number,
-  ): Promise<FuzzySearchItemDto[]> {
+  ): Promise<RankedFuzzyItem[]> {
     const rows = await this.marketsRepository
       .createQueryBuilder('market')
-      .select(['market.id', 'market.title', 'market.description'])
+      .select([
+        'market.id',
+        'market.title',
+        'market.description',
+        'market.created_at',
+      ])
       .addSelect(
         `greatest(similarity(market.title, :query), similarity(coalesce(market.description, ''), :query))`,
         'sim',
@@ -373,7 +401,9 @@ export class SearchService {
         { query, threshold },
       )
       .setParameter('query', query)
-      .orderBy('sim', 'DESC')
+      .orderBy(matchTierSql('market.title'), 'ASC')
+      .addOrderBy('sim', 'DESC')
+      .addOrderBy('market.created_at', 'DESC')
       .addOrderBy('market.title', 'ASC')
       .addOrderBy('market.id', 'ASC')
       .take(limit)
@@ -385,6 +415,7 @@ export class SearchService {
       title: m.title,
       similarity: parseFloat(m.sim ?? '0'),
       description: m.description,
+      created_at: m.created_at,
     }));
   }
 
@@ -392,10 +423,10 @@ export class SearchService {
     query: string,
     threshold: number,
     limit: number,
-  ): Promise<FuzzySearchItemDto[]> {
+  ): Promise<RankedFuzzyItem[]> {
     const rows = await this.usersRepository
       .createQueryBuilder('user')
-      .select(['user.id', 'user.username'])
+      .select(['user.id', 'user.username', 'user.created_at'])
       .addSelect(`similarity(user.username, :query)`, 'sim')
       .where('user.is_banned = :banned', { banned: false })
       .andWhere('user.username IS NOT NULL')
@@ -404,7 +435,9 @@ export class SearchService {
         threshold,
       })
       .setParameter('query', query)
-      .orderBy('sim', 'DESC')
+      .orderBy(matchTierSql('user.username'), 'ASC')
+      .addOrderBy('sim', 'DESC')
+      .addOrderBy('user.created_at', 'DESC')
       .addOrderBy('user.username', 'ASC')
       .addOrderBy('user.id', 'ASC')
       .take(limit)
@@ -415,6 +448,7 @@ export class SearchService {
       type: 'user' as const,
       title: u.username as string,
       similarity: parseFloat(u.sim ?? '0'),
+      created_at: u.created_at,
     }));
   }
 
@@ -422,13 +456,14 @@ export class SearchService {
     query: string,
     threshold: number,
     limit: number,
-  ): Promise<FuzzySearchItemDto[]> {
+  ): Promise<RankedFuzzyItem[]> {
     const rows = await this.competitionsRepository
       .createQueryBuilder('competition')
       .select([
         'competition.id',
         'competition.title',
         'competition.description',
+        'competition.created_at',
       ])
       .addSelect(
         `greatest(similarity(competition.title, :query), similarity(coalesce(competition.description, ''), :query))`,
@@ -442,7 +477,9 @@ export class SearchService {
         { query, threshold },
       )
       .setParameter('query', query)
-      .orderBy('sim', 'DESC')
+      .orderBy(matchTierSql('competition.title'), 'ASC')
+      .addOrderBy('sim', 'DESC')
+      .addOrderBy('competition.created_at', 'DESC')
       .addOrderBy('competition.title', 'ASC')
       .addOrderBy('competition.id', 'ASC')
       .take(limit)
@@ -454,6 +491,7 @@ export class SearchService {
       title: c.title,
       similarity: parseFloat(c.sim ?? '0'),
       description: c.description,
+      created_at: c.created_at,
     }));
   }
 
