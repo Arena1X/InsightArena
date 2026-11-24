@@ -72,7 +72,7 @@ describe('ResponseInterceptor', () => {
 
     mockCallHandler = {
       handle: jest.fn(),
-    } as unknown as jest.Mocked<CallHandler>;
+    };
   });
 
   afterEach(() => {
@@ -96,7 +96,8 @@ describe('ResponseInterceptor', () => {
               timestamp: expect.any(String),
             }),
           );
-          expect((result as ApiSuccessEnvelope).timestamp).toMatch(
+          const envelope = result as ApiSuccessEnvelope;
+          expect(envelope.timestamp).toMatch(
             /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
           );
           done();
@@ -415,7 +416,7 @@ describe('ResponseInterceptor', () => {
       const { interceptor: pi, context: ctx } = makeInterceptor(true);
       const callHandler: jest.Mocked<CallHandler> = {
         handle: jest.fn(),
-      } as unknown as jest.Mocked<CallHandler>;
+      };
 
       const payload = {
         items: [{ id: 1 }, { id: 2 }],
@@ -440,7 +441,7 @@ describe('ResponseInterceptor', () => {
       const { interceptor: pi, context: ctx } = makeInterceptor(true);
       const callHandler: jest.Mocked<CallHandler> = {
         handle: jest.fn(),
-      } as unknown as jest.Mocked<CallHandler>;
+      };
 
       const payload = {
         items: [{ id: 10 }],
@@ -464,7 +465,7 @@ describe('ResponseInterceptor', () => {
       const { interceptor: pi, context: ctx } = makeInterceptor(undefined);
       const callHandler: jest.Mocked<CallHandler> = {
         handle: jest.fn(),
-      } as unknown as jest.Mocked<CallHandler>;
+      };
 
       const responseData = { id: 99, name: 'plain response' };
       callHandler.handle.mockReturnValue(of(responseData));
