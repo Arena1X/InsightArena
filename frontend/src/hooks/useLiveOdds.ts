@@ -25,6 +25,11 @@ export interface UseLiveOddsResult {
   odds: OddsUpdate | null;
   pool: PoolStats | null;
   status: ConnectionStatus;
+  isDisconnected: boolean;
+  error: string | null;
+  retryCount: number;
+  retryExhausted: boolean;
+  retry: () => void;
   lastUpdatedAt: number | null;
   isStale: boolean;
   /**
@@ -37,6 +42,7 @@ export interface UseLiveOddsResult {
 
 const BASE_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
+export const MAX_RECONNECT_ATTEMPTS = 5;
 const POLL_INTERVAL_MS = 10_000;
 const POOL_UPDATE_DEBOUNCE_MS = 150;
 export const STALE_THRESHOLD_MS = 30_000;
@@ -127,6 +133,9 @@ export function useLiveOdds(
   const [odds, setOdds] = useState<OddsUpdate | null>(null);
   const [pool, setPool] = useState<PoolStats | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const [retryExhausted, setRetryExhausted] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const [isStale, setIsStale] = useState(false);
   const socketRef = useRef<Socket | null>(null);
@@ -198,21 +207,27 @@ export function useLiveOdds(
       socket.on("connect", () => {
         if (!mountedRef.current) return;
         attemptRef.current = 0;
+        setRetryCount(0);
+        setRetryExhausted(false);
+        setError(null);
         socket.emit("subscribe:market", id);
         setStatus("connected");
       });
       socket.on("odds:update", (payload: RawOddsUpdate) => {
         if (mountedRef.current) applyUpdate(normalizeOddsUpdate(id, payload));
       });
-      socket.on("connect_error", () => {
+      const handleFailure = (message: string) => {
         if (!mountedRef.current || closingRef.current) return;
         socket.disconnect();
+        setError(message);
         attemptRef.current += 1;
+        setRetryCount(attemptRef.current);
         const backoff = Math.min(
           BASE_BACKOFF_MS * 2 ** (attemptRef.current - 1),
           MAX_BACKOFF_MS,
         );
-        if (attemptRef.current > 5) {
+        if (attemptRef.current > MAX_RECONNECT_ATTEMPTS) {
+          setRetryExhausted(true);
           startPolling(id);
           return;
         }
@@ -221,24 +236,13 @@ export function useLiveOdds(
           () => connect(id, authToken),
           backoff,
         );
-      });
-      socket.on("disconnect", () => {
-        if (!mountedRef.current || closingRef.current) return;
-        attemptRef.current += 1;
-        const backoff = Math.min(
-          BASE_BACKOFF_MS * 2 ** (attemptRef.current - 1),
-          MAX_BACKOFF_MS,
-        );
-        if (attemptRef.current > 5) {
-          startPolling(id);
-          return;
-        }
-        setStatus("disconnected");
-        reconnectTimerRef.current = setTimeout(
-          () => connect(id, authToken),
-          backoff,
-        );
-      });
+      };
+      socket.on("connect_error", () =>
+        handleFailure("Live odds connection failed"),
+      );
+      socket.on("disconnect", () =>
+        handleFailure("Live odds connection lost"),
+      );
     },
     [applyUpdate, startPolling],
   );
@@ -321,5 +325,30 @@ export function useLiveOdds(
     return freshData;
   }, [marketId, lastUpdatedAt, odds, applyUpdate]);
 
-  return { odds, pool, status, lastUpdatedAt, isStale, getFreshOdds };
+  const retry = useCallback(() => {
+    if (!marketId || !token || !mountedRef.current) return;
+    clearTimers();
+    closingRef.current = true;
+    socketRef.current?.disconnect();
+    socketRef.current = null;
+    attemptRef.current = 0;
+    setRetryCount(0);
+    setRetryExhausted(false);
+    setError(null);
+    connect(marketId, token);
+  }, [marketId, token, clearTimers, connect]);
+
+  return {
+    odds,
+    pool,
+    status,
+    isDisconnected: status === "disconnected",
+    error,
+    retryCount,
+    retryExhausted,
+    retry,
+    lastUpdatedAt,
+    isStale,
+    getFreshOdds,
+  };
 }

@@ -6,7 +6,7 @@ import {
   DialogPanel,
   DialogTitle,
 } from "@headlessui/react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
@@ -29,6 +29,10 @@ export interface ConfirmDialogProps {
   reasonLabel?: string;
   /** Placeholder text for the reason textarea. */
   reasonPlaceholder?: string;
+  /** Whether an async confirm action is currently in-flight. */
+  loading?: boolean;
+  /** Error message to display when an async confirm action rejects. */
+  error?: string | null;
   onConfirm: (reason?: string) => void;
   onCancel: () => void;
 }
@@ -42,6 +46,8 @@ export function ConfirmDialog({
   variant = "default",
   reasonLabel,
   reasonPlaceholder = "Enter a reason…",
+  loading = false,
+  error = null,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -64,15 +70,20 @@ export function ConfirmDialog({
 
   const requiresReason = Boolean(reasonLabel);
   const reasonTrimmed = reason.trim();
-  const confirmDisabled = requiresReason && reasonTrimmed.length === 0;
+  const confirmDisabled = loading || (requiresReason && reasonTrimmed.length === 0);
 
   function handleConfirm() {
     if (confirmDisabled) return;
     onConfirm(requiresReason ? reasonTrimmed : undefined);
   }
 
+  function handleClose() {
+    if (loading) return;
+    onCancel();
+  }
+
   return (
-    <Dialog open={open} onClose={onCancel} transition className="relative z-[300]">
+    <Dialog open={open} onClose={handleClose} transition className="relative z-[300]">
       <DialogBackdrop
         transition
         className="fixed inset-0 bg-black/60 backdrop-blur-sm duration-200 ease-out data-closed:opacity-0"
@@ -143,14 +154,21 @@ export function ConfirmDialog({
                   </p>
                 </div>
               )}
+
+              {error && (
+                <p role="alert" className="mt-3 text-sm text-red-400">
+                  {error}
+                </p>
+              )}
             </div>
           </div>
 
           <div className="mt-6 flex justify-end gap-3">
             <button
               type="button"
-              onClick={onCancel}
-              className="rounded-xl border border-white/10 bg-transparent px-4 py-2 text-sm font-medium text-white transition hover:bg-white/5"
+              onClick={handleClose}
+              disabled={loading}
+              className="rounded-xl border border-white/10 bg-transparent px-4 py-2 text-sm font-medium text-white transition hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {cancelLabel}
             </button>
@@ -160,13 +178,17 @@ export function ConfirmDialog({
               disabled={confirmDisabled}
               autoFocus={!reasonLabel}
               aria-disabled={confirmDisabled}
+              aria-busy={loading}
               className={cn(
-                "rounded-xl px-4 py-2 text-sm font-semibold transition",
+                "inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition",
                 variant === "destructive"
                   ? "bg-red-500 text-white hover:bg-red-600 disabled:bg-red-500/40 disabled:cursor-not-allowed"
                   : "bg-[#4FD1C5] text-[#0a0f1a] hover:bg-[#43bfb4] disabled:bg-[#4FD1C5]/40 disabled:cursor-not-allowed",
               )}
             >
+              {loading && (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              )}
               {confirmLabel}
             </button>
           </div>
