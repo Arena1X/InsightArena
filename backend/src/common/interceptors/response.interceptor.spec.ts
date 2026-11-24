@@ -72,7 +72,7 @@ describe('ResponseInterceptor', () => {
 
     mockCallHandler = {
       handle: jest.fn(),
-    } as unknown as jest.Mocked<CallHandler>;
+    };
   });
 
   afterEach(() => {
@@ -96,7 +96,8 @@ describe('ResponseInterceptor', () => {
               timestamp: expect.any(String),
             }),
           );
-          expect((result as ApiSuccessEnvelope).timestamp).toMatch(
+          const envelope = result as ApiSuccessEnvelope;
+          expect(envelope.timestamp).toMatch(
             /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
           );
           done();
@@ -394,6 +395,77 @@ describe('ResponseInterceptor', () => {
       const callHandler: jest.Mocked<CallHandler> = {
         handle: jest.fn(),
       } as unknown as jest.Mocked<CallHandler>;
+
+      const responseData = { id: 99, name: 'plain response' };
+      callHandler.handle.mockReturnValue(of(responseData));
+
+      pi.intercept(ctx, callHandler).subscribe((result) => {
+        const envelope = result as ApiSuccessEnvelope;
+        expect(envelope.success).toBe(true);
+        expect(envelope.data).toEqual(responseData);
+        expect(envelope.pagination).toBeUndefined();
+        done();
+      });
+    });
+  });
+
+  // ─── new: pagination metadata ─────────────────────────────────────────────
+
+  describe('pagination metadata (opted-in endpoints)', () => {
+    it('includes pagination block when handler is marked @Paginated()', (done) => {
+      const { interceptor: pi, context: ctx } = makeInterceptor(true);
+      const callHandler: jest.Mocked<CallHandler> = {
+        handle: jest.fn(),
+      };
+
+      const payload = {
+        items: [{ id: 1 }, { id: 2 }],
+        total: 42,
+        nextCursor: 'cursor-abc',
+      };
+      callHandler.handle.mockReturnValue(of(payload));
+
+      pi.intercept(ctx, callHandler).subscribe((result) => {
+        const envelope = result as ApiSuccessEnvelope;
+        expect(envelope.success).toBe(true);
+        expect(envelope.data).toEqual(payload);
+        expect(envelope.pagination).toEqual({
+          nextCursor: 'cursor-abc',
+          total: 42,
+        });
+        done();
+      });
+    });
+
+    it('sets nextCursor to null on the last page', (done) => {
+      const { interceptor: pi, context: ctx } = makeInterceptor(true);
+      const callHandler: jest.Mocked<CallHandler> = {
+        handle: jest.fn(),
+      };
+
+      const payload = {
+        items: [{ id: 10 }],
+        total: 1,
+        nextCursor: null,
+      };
+      callHandler.handle.mockReturnValue(of(payload));
+
+      pi.intercept(ctx, callHandler).subscribe((result) => {
+        const envelope = result as ApiSuccessEnvelope;
+        expect(envelope.pagination).toEqual({
+          nextCursor: null,
+          total: 1,
+        });
+        done();
+      });
+    });
+
+    it('does not add pagination block to non-paginated responses', (done) => {
+      // reflector returns undefined — no @Paginated() decorator present
+      const { interceptor: pi, context: ctx } = makeInterceptor(undefined);
+      const callHandler: jest.Mocked<CallHandler> = {
+        handle: jest.fn(),
+      };
 
       const responseData = { id: 99, name: 'plain response' };
       callHandler.handle.mockReturnValue(of(responseData));

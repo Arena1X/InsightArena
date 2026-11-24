@@ -52,6 +52,11 @@ export class ResponseInterceptor implements NestInterceptor {
       [context.getHandler(), context.getClass()],
     );
 
+    const isPaginated = this.reflector.getAllAndOverride<boolean | undefined>(
+      PAGINATED_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
     return next.handle().pipe(
       map((data: unknown) => {
         if (data instanceof StreamableFile) {
