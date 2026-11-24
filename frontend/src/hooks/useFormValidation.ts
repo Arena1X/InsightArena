@@ -22,14 +22,14 @@ export type ValidatorFn = (value: any) => string | undefined;
 /**
  * Async validator — receives the current value and an AbortSignal so callers
  * can cancel in-flight network requests when a newer validation supersedes this
- * one. Should return a Promise that resolves to an error string or undefined.
- * Throw / reject if the request itself failed (the hook will silently ignore
- * aborted requests).
+ * one. Should return a Promise that resolves to an error string, null, or
+ * undefined. Throw / reject if the request itself failed (the hook will
+ * silently ignore aborted requests).
  */
 export type AsyncValidatorFn = (
   value: any,
   signal: AbortSignal,
-) => Promise<string | undefined>;
+) => Promise<string | null | undefined>;
 
 export interface FieldValidator {
   [fieldName: string]: ValidatorFn[];
@@ -62,6 +62,8 @@ interface UseFormValidationReturn {
   errors: Record<string, string | undefined>;
   /** True when any async validator for a field is in-flight. */
   pending: Record<string, boolean>;
+  /** Alias for `pending` — true when any async validator for a field is in-flight. */
+  validating: Record<string, boolean>;
   setState: (field: string, value: any) => void;
   setTouched: (field: string, touched: boolean) => void;
   setFieldError: (field: string, error?: string) => void;
@@ -136,6 +138,22 @@ export function useFormValidation({
   // Track validation sequence numbers per field to prevent race conditions.
   // Only the result from the highest sequence number should update state.
   const validationSequence = useRef<Record<string, number>>({});
+
+  // Cancel any pending debounce timers and in-flight async validators on unmount.
+  useEffect(() => {
+    const timers = debounceTimers;
+    const controllers = abortControllers;
+    return () => {
+      for (const timer of Object.values(timers.current)) {
+        clearTimeout(timer);
+      }
+      timers.current = {};
+      for (const controller of Object.values(controllers.current)) {
+        controller.abort();
+      }
+      controllers.current = {};
+    };
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Sync helpers
@@ -540,6 +558,7 @@ export function useFormValidation({
     touched,
     errors,
     pending,
+    validating: pending,
     setState: setStateWithAsyncValidation,
     setTouched,
     setFieldError,

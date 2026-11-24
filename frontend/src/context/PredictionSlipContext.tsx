@@ -6,8 +6,11 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+
+export const DEFAULT_MAX_SLIP_ITEMS = 10;
 
 export interface SlipItem {
   marketId: string;
@@ -23,11 +26,14 @@ export interface PredictionSlipContextValue {
   totalStake: number;
   totalPayout: number;
   itemCount: number;
+  maxItems: number;
+  slipError: string | null;
+  clearSlipError: () => void;
   isOpen: boolean;
   openSlip: () => void;
   closeSlip: () => void;
   toggleSlip: () => void;
-  addItem: (item: Omit<SlipItem, "amount">) => void;
+  addItem: (item: Omit<SlipItem, "amount">) => boolean;
   removeItem: (marketId: string) => void;
   updateAmount: (marketId: string, amount: number) => void;
   restoreItem: (item: SlipItem) => void;
@@ -39,11 +45,14 @@ const DEFAULT_CONTEXT_VALUE: PredictionSlipContextValue = {
   totalStake: 0,
   totalPayout: 0,
   itemCount: 0,
+  maxItems: DEFAULT_MAX_SLIP_ITEMS,
+  slipError: null,
+  clearSlipError: () => {},
   isOpen: false,
   openSlip: () => {},
   closeSlip: () => {},
   toggleSlip: () => {},
-  addItem: () => {},
+  addItem: () => false,
   removeItem: () => {},
   updateAmount: () => {},
   restoreItem: () => {},
@@ -78,20 +87,26 @@ function writeStoredSlip(items: SlipItem[]) {
 
 export function PredictionSlipProvider({
   children,
+  maxItems = DEFAULT_MAX_SLIP_ITEMS,
 }: {
   children: React.ReactNode;
+  maxItems?: number;
 }) {
+  const effectiveMaxItems = Math.max(1, Math.floor(maxItems));
   const [items, setItems] = useState<SlipItem[]>([]);
+  const itemsRef = useRef<SlipItem[]>([]);
+  const [slipError, setSlipError] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    const stored = readStoredSlip();
+    const stored = readStoredSlip().slice(0, effectiveMaxItems);
     if (stored.length > 0) {
+      itemsRef.current = stored;
       setItems(stored);
     }
     setHydrated(true);
-  }, []);
+  }, [effectiveMaxItems]);
 
   useEffect(() => {
     if (hydrated) {
@@ -99,43 +114,83 @@ export function PredictionSlipProvider({
     }
   }, [items, hydrated]);
 
-  const addItem = useCallback((item: Omit<SlipItem, "amount">) => {
-    setItems((prev) => {
-      const existing = prev.find((i) => i.marketId === item.marketId);
+  const clearSlipError = useCallback(() => {
+    setSlipError(null);
+  }, []);
+
+  const addItem = useCallback(
+    (item: Omit<SlipItem, "amount">): boolean => {
+      const current = itemsRef.current;
+      const existing = current.find((i) => i.marketId === item.marketId);
       if (existing) {
-        return prev.map((i) =>
+        const next = current.map((i) =>
           i.marketId === item.marketId
             ? { ...i, outcome: item.outcome, odds: item.odds }
             : i,
         );
+        itemsRef.current = next;
+        setItems(next);
+        setSlipError(null);
+        setIsOpen(true);
+        return true;
       }
-      return [...prev, { ...item, amount: 10 }];
-    });
-    setIsOpen(true);
-  }, []);
+
+      if (current.length >= effectiveMaxItems) {
+        setSlipError(
+          `Maximum of ${effectiveMaxItems} item${effectiveMaxItems === 1 ? "" : "s"} allowed in the prediction slip. Remove an item to add another.`,
+        );
+        return false;
+      }
+
+      const next = [...current, { ...item, amount: 10 }];
+      itemsRef.current = next;
+      setItems(next);
+      setSlipError(null);
+      setIsOpen(true);
+      return true;
+    },
+    [effectiveMaxItems],
+  );
 
   const removeItem = useCallback((marketId: string) => {
-    setItems((prev) => prev.filter((i) => i.marketId !== marketId));
+    const next = itemsRef.current.filter((i) => i.marketId !== marketId);
+    itemsRef.current = next;
+    setItems(next);
+    setSlipError(null);
   }, []);
 
   const updateAmount = useCallback((marketId: string, amount: number) => {
-    setItems((prev) =>
-      prev.map((i) =>
-        i.marketId === marketId ? { ...i, amount: Math.max(1, amount) } : i,
-      ),
+    const next = itemsRef.current.map((i) =>
+      i.marketId === marketId ? { ...i, amount: Math.max(1, amount) } : i,
     );
+    itemsRef.current = next;
+    setItems(next);
   }, []);
 
-  const restoreItem = useCallback((item: SlipItem) => {
-    setItems((prev) => {
-      const withoutStaleCopy = prev.filter((candidate) => candidate.marketId !== item.marketId);
-      return [...withoutStaleCopy, { ...item }];
-    });
-    setIsOpen(true);
-  }, []);
+  const restoreItem = useCallback(
+    (item: SlipItem) => {
+      const withoutStaleCopy = itemsRef.current.filter(
+        (candidate) => candidate.marketId !== item.marketId,
+      );
+      if (withoutStaleCopy.length >= effectiveMaxItems) {
+        setSlipError(
+          `Maximum of ${effectiveMaxItems} item${effectiveMaxItems === 1 ? "" : "s"} allowed in the prediction slip. Remove an item to add another.`,
+        );
+        return;
+      }
+      const next = [...withoutStaleCopy, { ...item }];
+      itemsRef.current = next;
+      setItems(next);
+      setSlipError(null);
+      setIsOpen(true);
+    },
+    [effectiveMaxItems],
+  );
 
   const clearSlip = useCallback(() => {
+    itemsRef.current = [];
     setItems([]);
+    setSlipError(null);
   }, []);
 
   const openSlip = useCallback(() => setIsOpen(true), []);
@@ -158,6 +213,9 @@ export function PredictionSlipProvider({
       totalStake,
       totalPayout,
       itemCount: items.length,
+      maxItems: effectiveMaxItems,
+      slipError,
+      clearSlipError,
       isOpen,
       openSlip,
       closeSlip,
@@ -172,6 +230,9 @@ export function PredictionSlipProvider({
       items,
       totalStake,
       totalPayout,
+      effectiveMaxItems,
+      slipError,
+      clearSlipError,
       isOpen,
       openSlip,
       closeSlip,

@@ -352,6 +352,56 @@ describe("useFormValidation", () => {
       expect(result.current.errors.name).toBe("error from stale call");
       expect(result.current.pending.name).toBe(false);
     });
+
+    it("does not clobber newer valid result when an older slower validator resolves out-of-order", async () => {
+      const outOfOrderValidator: AsyncValidatorFn = async (value) => {
+        if (value === "slow-invalid") {
+          await delay(200);
+          return "Old invalid error";
+        }
+        await delay(50);
+        return null;
+      };
+
+      const { result } = renderHook(() =>
+        useFormValidation({
+          initialValues: { name: "" },
+          asyncValidators: { name: [outOfOrderValidator] },
+          asyncDebounceMs: 0,
+        })
+      );
+
+      let p1: Promise<boolean>;
+      let p2: Promise<boolean>;
+
+      act(() => {
+        result.current.setState("name", "slow-invalid");
+      });
+      act(() => {
+        p1 = result.current.validateFieldAsync("name");
+      });
+      expect(result.current.validating.name).toBe(true);
+
+      act(() => {
+        result.current.setState("name", "fast-valid");
+        p2 = result.current.validateFieldAsync("name");
+      });
+
+      // Resolve p2 (50ms) first, then p1 (200ms) later.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60);
+      });
+      expect(result.current.errors.name).toBeUndefined();
+      expect(result.current.validating.name).toBe(false);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(200);
+        await Promise.allSettled([p1!, p2!]);
+      });
+
+      expect(result.current.errors.name).toBeUndefined();
+      expect(result.current.validating.name).toBe(false);
+    });
   });
 
   // -------------------------------------------------------------------------

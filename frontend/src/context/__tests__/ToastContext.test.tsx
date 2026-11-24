@@ -26,20 +26,40 @@ describe('Toast dedup', () => {
     expect(result.current.toasts).toHaveLength(1);
   });
 
-  it('allows identical messages after the dedup window', () => {
+  it('coalesces duplicate active messages even after the dedup window', () => {
     const { result } = renderHook(() => useToast(), { wrapper });
 
-    act(() => result.current.show({ description: 'Error occurred' }));
+    const id1 = act(() =>
+      result.current.show({ description: 'Persistent error', duration: 5000 }),
+    );
+    act(() => vi.advanceTimersByTime(4000));
+    const id2 = act(() =>
+      result.current.show({ description: 'Persistent error', duration: 5000 }),
+    );
+
+    expect(id1).toBeTruthy();
+    expect(id2).toBe('');
+    expect(result.current.toasts).toHaveLength(1);
+  });
+
+  it('allows identical messages after the dedup window once dismissed', () => {
+    const { result } = renderHook(() => useToast(), { wrapper });
+
+    let id1 = '';
+    act(() => {
+      id1 = result.current.show({ description: 'Error occurred' });
+    });
+    act(() => result.current.dismiss(id1));
     act(() => vi.advanceTimersByTime(4000));
     const id2 = act(() => result.current.show({ description: 'Error occurred' }));
 
     expect(id2).toBeTruthy();
-    expect(result.current.toasts).toHaveLength(2);
+    expect(result.current.toasts).toHaveLength(1);
   });
 });
 
-describe('Toast cap', () => {
-  it('drops new arrivals when five concurrent toasts are already shown', () => {
+describe('Toast cap and queue', () => {
+  it('caps visible toasts at five and queues the rest', () => {
     const { result } = renderHook(() => useToast(), { wrapper });
 
     const ids: string[] = [];
@@ -50,8 +70,7 @@ describe('Toast cap', () => {
     }
 
     expect(result.current.toasts).toHaveLength(5);
-    expect(ids.slice(0, 5).every(Boolean)).toBe(true);
-    expect(ids.slice(5)).toEqual(['', '']);
+    expect(ids.every(Boolean)).toBe(true);
     expect(result.current.toasts.map((toast) => toast.description)).toEqual([
       'Toast 0',
       'Toast 1',
@@ -61,26 +80,34 @@ describe('Toast cap', () => {
     ]);
   });
 
-  it('accepts a new toast after one is dismissed', () => {
+  it('promotes queued toasts as visible ones dismiss', () => {
     const { result } = renderHook(() => useToast(), { wrapper });
     let firstId = '';
 
     act(() => {
-      firstId = result.current.show({ description: 'First toast', duration: 0 });
-      for (let i = 1; i < 5; i++) {
-        result.current.show({ description: `Toast ${i}`, duration: 0 });
+      firstId = result.current.show({ description: 'First toast', duration: 1000 });
+      for (let i = 1; i < 6; i++) {
+        result.current.show({ description: `Toast ${i}`, duration: 5000 });
       }
     });
 
-    act(() => result.current.dismiss(firstId));
-    let nextId = '';
-    act(() => {
-      nextId = result.current.show({ description: 'Next toast', duration: 0 });
-    });
-
-    expect(nextId).toBeTruthy();
     expect(result.current.toasts).toHaveLength(5);
-    expect(result.current.toasts.at(-1)?.description).toBe('Next toast');
+    expect(result.current.toasts.some((t) => t.description === 'Toast 5')).toBe(false);
+
+    act(() => result.current.dismiss(firstId));
+
+    expect(result.current.toasts).toHaveLength(5);
+    expect(result.current.toasts.at(-1)?.description).toBe('Toast 5');
+
+    // Auto-dismiss promotes queued toasts too
+    act(() => {
+      result.current.show({ description: 'Toast 6', duration: 2000 });
+    });
+    expect(result.current.toasts).toHaveLength(5);
+
+    act(() => vi.advanceTimersByTime(5000));
+    expect(result.current.toasts).toHaveLength(1);
+    expect(result.current.toasts[0].description).toBe('Toast 6');
   });
 });
 
