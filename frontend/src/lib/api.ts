@@ -915,14 +915,32 @@ export function getCreatorMarkets(
 // Notifications
 // ---------------------------------------------------------------------------
 
+export interface NotificationMutationResponse {
+  unreadCount?: number;
+}
+
+/**
+ * `PATCH /api/notifications/:id/read` — marks a single notification as read.
+ */
+export async function markNotificationAsRead(
+  id: string,
+  options?: ApiOptions,
+): Promise<NotificationMutationResponse | void> {
+  return apiClient.patch<NotificationMutationResponse | void>(
+    `/api/notifications/${encodeURIComponent(id)}/read`,
+    undefined,
+    options,
+  );
+}
+
 /**
  * `POST /api/notifications/mark-all-read` — marks all notifications as read.
  * Integration point: once the backend adds this endpoint, the call will succeed.
  */
 export async function markAllNotificationsAsRead(
   options?: ApiOptions,
-): Promise<void> {
-  return apiClient.post<void>(
+): Promise<NotificationMutationResponse | void> {
+  return apiClient.post<NotificationMutationResponse | void>(
     '/api/notifications/mark-all-read',
     undefined,
     options,
