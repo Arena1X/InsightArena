@@ -241,6 +241,13 @@ function OnboardingTourCard({ tour }: { tour: UseOnboardingTourResult }) {
         <div className="flex gap-2">
           <button
             type="button"
+            onClick={tour.skipStep}
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-sm font-medium text-gray-300 transition hover:bg-white/5"
+          >
+            Skip step
+          </button>
+          <button
+            type="button"
             onClick={tour.prev}
             disabled={!tour.canGoBack}
             className="rounded-lg border border-white/10 px-3 py-1.5 text-sm font-medium text-gray-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"

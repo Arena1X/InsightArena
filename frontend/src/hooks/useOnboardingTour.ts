@@ -48,9 +48,25 @@ interface TourState {
   stepIndex: number;
   completed: boolean;
   dismissed: boolean;
+  /** Ids of steps the user moved past with Next. */
+  seen?: string[];
+  /** Ids of steps the user skipped individually. */
+  skipped?: string[];
 }
 
 const INITIAL_STATE: TourState = { stepIndex: 0, completed: false, dismissed: false };
+
+function stepIds(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+}
+
+/** Returns the first step at or after `from` that the user has not seen or skipped. */
+function nextUnhandledIndex(state: TourState, from: number): number {
+  const handled = new Set([...(state.seen ?? []), ...(state.skipped ?? [])]);
+  let index = from;
+  while (index < ONBOARDING_STEPS.length - 1 && handled.has(ONBOARDING_STEPS[index].id)) index++;
+  return index;
+}
 
 function clampStep(index: unknown): number {
   if (typeof index !== "number" || !Number.isInteger(index)) return 0;
@@ -66,6 +82,8 @@ function readState(key: string): TourState {
       stepIndex: clampStep(parsed.stepIndex),
       completed: parsed.completed === true,
       dismissed: parsed.dismissed === true,
+      seen: stepIds(parsed.seen),
+      skipped: stepIds(parsed.skipped),
     };
   } catch {
     return INITIAL_STATE;
@@ -94,6 +112,9 @@ export interface UseOnboardingTourResult {
   restart: () => void;
   next: () => void;
   prev: () => void;
+  /** Skips only the current step and moves on. */
+  skipStep: () => void;
+  /** Skips the whole tour (suppresses auto-start until `restart()`). */
   skip: () => void;
   complete: () => void;
   canGoBack: boolean;
@@ -129,7 +150,7 @@ export function useOnboardingTour(userId?: string | null): UseOnboardingTourResu
   // Load this user's progress after hydration and auto-resume unfinished tours.
   useEffect(() => {
     const state = readState(storageKey);
-    setStepIndex(state.stepIndex);
+    setStepIndex(nextUnhandledIndex(state, state.stepIndex));
     setIsOpen(!state.completed && !state.dismissed);
   }, [storageKey]);
 
@@ -144,7 +165,7 @@ export function useOnboardingTour(userId?: string | null): UseOnboardingTourResu
   const start = useCallback(() => {
     const state = readState(storageKey);
     writeState(storageKey, { ...state, dismissed: false });
-    setStepIndex(state.completed ? 0 : state.stepIndex);
+    setStepIndex(state.completed ? 0 : nextUnhandledIndex(state, state.stepIndex));
     setIsOpen(true);
   }, [storageKey]);
 
@@ -165,13 +186,24 @@ export function useOnboardingTour(userId?: string | null): UseOnboardingTourResu
     writeState(storageKey, { stepIndex: 0, completed: true, dismissed: false });
   }, [storageKey]);
 
-  const next = useCallback(() => {
-    if (stepIndex + 1 >= ONBOARDING_STEPS.length) {
-      complete();
-      return;
-    }
-    goTo(stepIndex + 1);
-  }, [complete, goTo, stepIndex]);
+  // Records the current step under `field`, then moves to the next one.
+  const advance = useCallback(
+    (field: "seen" | "skipped") => {
+      const state = readState(storageKey);
+      const ids = state[field] ?? [];
+      const id = ONBOARDING_STEPS[stepIndex].id;
+      writeState(storageKey, { ...state, [field]: ids.includes(id) ? ids : [...ids, id] });
+      if (stepIndex + 1 >= ONBOARDING_STEPS.length) {
+        complete();
+        return;
+      }
+      goTo(stepIndex + 1);
+    },
+    [complete, goTo, stepIndex, storageKey],
+  );
+
+  const next = useCallback(() => advance("seen"), [advance]);
+  const skipStep = useCallback(() => advance("skipped"), [advance]);
 
   const prev = useCallback(() => {
     goTo(Math.max(0, stepIndex - 1));
@@ -190,6 +222,7 @@ export function useOnboardingTour(userId?: string | null): UseOnboardingTourResu
     restart,
     next,
     prev,
+    skipStep,
     skip,
     complete,
     canGoBack: stepIndex > 0,
