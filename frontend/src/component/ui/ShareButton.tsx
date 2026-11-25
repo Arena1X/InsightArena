@@ -141,7 +141,7 @@ export function ShareButton({
       </button>
 
       <span className="sr-only" role="status" aria-live="polite">
-        {copyStatus === "copied" ? "Link copied to clipboard" : copyStatus === "error" ? "Could not copy link" : ""}
+        {copyStatus === "copied" ? "Link copied to clipboard" : copyStatus === "error" ? "Could not copy link. Allow clipboard access in your browser and try again." : ""}
       </span>
     </div>
   );
