@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Repository, DataSource, In } from 'typeorm';
@@ -398,8 +398,10 @@ export class PredictionsService {
           shares_received: result.shares_received || '0',
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        failures.set(index, `On-chain submission failed: ${message}`);
+        failures.set(
+          index,
+          `On-chain submission failed: ${this.getBatchErrorReason(err)}`,
+        );
 
         if (atomic) {
           throw new BatchChainSubmissionFailedException(
@@ -546,6 +548,19 @@ export class PredictionsService {
       ).length,
       atomic,
     };
+  }
+
+  /** Map domain exceptions (e.g. slippage) to a readable per-item reason. */
+  private getBatchErrorReason(err: unknown): string {
+    if (err instanceof HttpException) {
+      const body = err.getResponse() as {
+        error?: { message?: string };
+        message?: string | string[];
+      };
+      const message = body?.error?.message ?? body?.message;
+      if (message) return Array.isArray(message) ? message.join('; ') : message;
+    }
+    return err instanceof Error ? err.message : String(err);
   }
 
   /**
