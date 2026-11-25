@@ -442,3 +442,126 @@ fn test_non_oracle_cannot_resolve_after_oracle_update() {
     client.resolve_market(&new_oracle, &id, &symbol_short!("yes"));
     assert!(client.get_market(&id).is_resolved);
 }
+
+#[test]
+fn test_resolve_market_with_custom_outcomes() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, oracle) = deploy(&env);
+    let creator = Address::generate(&env);
+    let now = env.ledger().timestamp();
+
+    // Create market with custom outcomes
+    let mut params = default_params(&env);
+    params.outcomes = vec![
+        &env,
+        Symbol::new(&env, "team_a"),
+        Symbol::new(&env, "team_b"),
+        Symbol::new(&env, "draw"),
+    ];
+    params.resolution_time = now + 2000;
+
+    let id = client.create_market(&creator, &params);
+
+    env.ledger().set_timestamp(now + 2000);
+
+    // Resolve with valid custom outcome
+    client.resolve_market(&oracle, &id, &Symbol::new(&env, "draw"));
+
+    let market = client.get_market(&id);
+    assert!(market.is_resolved);
+    assert_eq!(market.resolved_outcome, Some(Symbol::new(&env, "draw")));
+}
+
+#[test]
+fn test_resolve_market_with_empty_outcome_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, oracle) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    let id = client.create_market(&creator, &default_params(&env));
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+
+    // Try to resolve with an outcome not in the list
+    let result = client.try_resolve_market(&oracle, &id, &Symbol::new(&env, ""));
+    assert!(matches!(result, Err(Ok(InsightArenaError::InvalidOutcome))));
+}
+
+#[test]
+fn test_oracle_update_to_same_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, oracle) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    // Update oracle to the same address (should work)
+    client.update_oracle(&admin, &oracle);
+
+    let id = client.create_market(&creator, &default_params(&env));
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+
+    // Oracle should still be able to resolve
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    let market = client.get_market(&id);
+    assert!(market.is_resolved);
+}
+
+#[test]
+fn test_resolve_market_timestamp_recorded_correctly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, oracle) = deploy(&env);
+    let creator = Address::generate(&env);
+    let now = env.ledger().timestamp();
+
+    let id = client.create_market(&creator, &default_params(&env));
+
+    // Advance to specific timestamp
+    let resolution_timestamp = now + 5500;
+    env.ledger().set_timestamp(resolution_timestamp);
+
+    client.resolve_market(&oracle, &id, &symbol_short!("yes"));
+
+    let market = client.get_market(&id);
+    assert!(market.is_resolved);
+    assert_eq!(market.resolved_at, Some(resolution_timestamp));
+    
+    // Verify resolved_at matches the ledger timestamp when resolved
+    assert_eq!(market.resolved_at.unwrap(), resolution_timestamp);
+}
+
+#[test]
+fn test_resolve_market_while_paused_fails_consistently() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, oracle) = deploy(&env);
+    let creator = Address::generate(&env);
+
+    let id1 = client.create_market(&creator, &default_params(&env));
+    let id2 = client.create_market(&creator, &default_params(&env));
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2000);
+
+    // Pause the contract
+    client.set_paused(&true, &1u32);
+
+    // Both resolution attempts should fail when paused
+    let result1 = client.try_resolve_market(&oracle, &id1, &symbol_short!("yes"));
+    assert!(matches!(result1, Err(Ok(InsightArenaError::Paused))));
+
+    let result2 = client.try_resolve_market(&oracle, &id2, &symbol_short!("no"));
+    assert!(matches!(result2, Err(Ok(InsightArenaError::Paused))));
+
+    // Unpause the contract
+    client.set_paused(&false, &1u32);
+
+    // Now resolution should work
+    client.resolve_market(&oracle, &id1, &symbol_short!("yes"));
+    client.resolve_market(&oracle, &id2, &symbol_short!("no"));
+
+    assert!(client.get_market(&id1).is_resolved);
+    assert!(client.get_market(&id2).is_resolved);
+}
