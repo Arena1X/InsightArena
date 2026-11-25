@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ToastViewport } from "@/component/ui/toast";
 
@@ -51,6 +51,7 @@ function generateId() {
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastsRef = useRef<ToastItem[]>([]);
+  const queueRef = useRef<ToastItem[]>([]);
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const recentMessages = useRef<Map<string, number>>(new Map());
 
@@ -62,10 +63,34 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  useEffect(() => {
+    const activeTimers = timers;
+    return () => {
+      for (const timer of activeTimers.current.values()) {
+        clearTimeout(timer);
+      }
+      activeTimers.current.clear();
+    };
+  }, []);
+
+  const scheduleDismissRef = useRef<(id: string, duration: number) => void>(() => {});
+
   const dismiss = useCallback(
     (id: string) => {
       clearTimer(id);
+      const wasVisible = toastsRef.current.some((toast) => toast.id === id);
+      if (!wasVisible) {
+        queueRef.current = queueRef.current.filter((toast) => toast.id !== id);
+        return;
+      }
+
       const next = toastsRef.current.filter((toast) => toast.id !== id);
+      while (next.length < MAX_TOASTS && queueRef.current.length > 0) {
+        const promoted = queueRef.current.shift()!;
+        next.push(promoted);
+        scheduleDismissRef.current(promoted.id, promoted.duration);
+      }
+
       toastsRef.current = next;
       setToasts(next);
     },
@@ -82,20 +107,38 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     [clearTimer, dismiss],
   );
 
+  scheduleDismissRef.current = scheduleDismiss;
+
   const show = useCallback(
     (options: ToastOptions) => {
       const variant = options.variant ?? "info";
       const description = options.description;
+      const duration = options.duration ?? DEFAULT_DURATION;
+      const now = Date.now();
+
+      // Coalesce duplicate active toasts (visible or queued)
+      const existingVisible = toastsRef.current.find(
+        (toast) => toast.description === description && toast.variant === variant,
+      );
+      if (existingVisible) {
+        recentMessages.current.set(description, now);
+        scheduleDismiss(existingVisible.id, duration);
+        return "";
+      }
+
+      const existingQueued = queueRef.current.find(
+        (toast) => toast.description === description && toast.variant === variant,
+      );
+      if (existingQueued) {
+        recentMessages.current.set(description, now);
+        return "";
+      }
 
       // Dedup: skip identical messages within the window
-      const now = Date.now();
       const lastSeen = recentMessages.current.get(description);
       if (lastSeen && now - lastSeen < DEDUP_WINDOW_MS) {
         return "";
       }
-
-      // Overflow policy: keep the first five concurrent toasts and drop new arrivals.
-      if (toastsRef.current.length >= MAX_TOASTS) return "";
 
       recentMessages.current.set(description, now);
 
@@ -107,7 +150,6 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       }
 
       const id = generateId();
-      const duration = options.duration ?? DEFAULT_DURATION;
       const toast: ToastItem = {
         id,
         title: options.title,
@@ -116,6 +158,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         duration,
         action: options.action,
       };
+
+      // Cap visible toasts and queue the rest
+      if (toastsRef.current.length >= MAX_TOASTS) {
+        queueRef.current.push(toast);
+        return id;
+      }
 
       const next = [...toastsRef.current, toast];
       toastsRef.current = next;
@@ -130,10 +178,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const pause = useCallback((id: string) => clearTimer(id), [clearTimer]);
   const resume = useCallback(
     (id: string) => {
-      const toast = toasts.find((t) => t.id === id);
+      const toast = toastsRef.current.find((t) => t.id === id);
       if (toast) scheduleDismiss(id, toast.duration);
     },
-    [toasts, scheduleDismiss],
+    [scheduleDismiss],
   );
 
   const success = useCallback<ToastContextValue["success"]>(

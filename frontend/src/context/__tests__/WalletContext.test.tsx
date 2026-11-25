@@ -270,14 +270,74 @@ describe("WalletContext", () => {
             });
 
             await act(async () => {
-                await vi.advanceTimersByTimeAsync(4000);
+                await vi.advanceTimersByTimeAsync(5000);
             });
 
             expect(mockFetchAddress).toHaveBeenCalledTimes(5);
             expect(result.current.address).toBeNull();
+            expect(result.current.isReconnecting).toBe(false);
             expect(result.current.walletError?.type).toBe("disconnected");
+            expect(result.current.walletError?.message).toContain("Auto-reconnect failed");
             expect(result.current.walletError?.retryable).toBe(true);
             expect(localStorage.getItem("insightarena.wallet.v1")).not.toBeNull();
+        });
+
+        it("backs off between reconnect attempts and stops at the cap", async () => {
+            localStorage.setItem("insightarena.wallet.v1", JSON.stringify({
+                walletId: "freighter",
+                address: "GTEST123",
+                network: "PUBLIC",
+            }));
+            mockFetchAddress
+                .mockResolvedValueOnce({ address: "GTEST123" })
+                .mockRejectedValue(new Error("Connection lost"));
+
+            const { result } = renderHook(() => useWallet(), {
+                wrapper: WalletProvider,
+            });
+
+            await waitFor(() => {
+                expect(result.current.isRestoring).toBe(false);
+            });
+
+            // 1 initial restore call; poll at 3000ms triggers disconnect + enters reconnecting
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(3000);
+            });
+            expect(mockFetchAddress).toHaveBeenCalledTimes(2);
+            expect(result.current.isReconnecting).toBe(true);
+
+            // Attempt 1 after 250ms backoff
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(250);
+            });
+            expect(mockFetchAddress).toHaveBeenCalledTimes(3);
+
+            // Not yet attempt 2 after only 250ms (needs 500ms backoff)
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(250);
+            });
+            expect(mockFetchAddress).toHaveBeenCalledTimes(3);
+
+            // Attempt 2 fires after remaining 250ms (total 500ms)
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(250);
+            });
+            expect(mockFetchAddress).toHaveBeenCalledTimes(4);
+
+            // Attempt 3 fires after 1000ms backoff and hits the cap
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(1000);
+            });
+            expect(mockFetchAddress).toHaveBeenCalledTimes(5);
+            expect(result.current.isReconnecting).toBe(false);
+            expect(result.current.walletError?.type).toBe("disconnected");
+
+            // No more attempts after the cap
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(5000);
+            });
+            expect(mockFetchAddress).toHaveBeenCalledTimes(5);
         });
 
         it("restores the selected account when reconnect succeeds", async () => {

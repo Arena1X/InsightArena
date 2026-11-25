@@ -44,6 +44,7 @@ export interface WalletContextValue {
   isAuthenticated: boolean;
   isAuthenticating: boolean;
   isRestoring: boolean;
+  isReconnecting: boolean;
   user: AuthUser | null;
   token: string | null;
   authError: string | null;
@@ -69,6 +70,7 @@ const DEFAULT_CONTEXT_VALUE: WalletContextValue = {
   isAuthenticated: false,
   isAuthenticating: false,
   isRestoring: false,
+  isReconnecting: false,
   user: null,
   token: null,
   authError: null,
@@ -214,6 +216,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
   const [isRestoring, setIsRestoring] = useState(true);
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const walletKitRef = useRef<any>(null);
   const accountCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectGenerationRef = useRef(0);
@@ -394,9 +397,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
             const stored = readStoredSession();
             if (stored?.address === address) {
               const reconnectGeneration = ++reconnectGenerationRef.current;
+              setIsReconnecting(true);
 
               for (let attempt = 0; attempt < AUTO_RECONNECT_ATTEMPTS; attempt += 1) {
-                await new Promise((resolve) => setTimeout(resolve, AUTO_RECONNECT_DELAY_MS));
+                const backoffDelayMs = AUTO_RECONNECT_DELAY_MS * 2 ** attempt;
+                await new Promise((resolve) => setTimeout(resolve, backoffDelayMs));
                 if (reconnectGeneration !== reconnectGenerationRef.current) return;
 
                 try {
@@ -406,6 +411,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
                   if (reconnectGeneration !== reconnectGenerationRef.current) return;
 
                   if (reconnectedAddress === stored.address) {
+                    setIsReconnecting(false);
                     setAddress(reconnectedAddress);
                     setToken(`wallet_${reconnectedAddress}`);
                     setUser({ username: "Alex" });
@@ -415,6 +421,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
                   }
 
                   if (reconnectedAddress) {
+                    setIsReconnecting(false);
                     clearStoredSession();
                     setWalletError({
                       type: "account_switched",
@@ -429,7 +436,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
               }
 
               if (reconnectGeneration === reconnectGenerationRef.current) {
-                setWalletError(walletErr);
+                setIsReconnecting(false);
+                setWalletError({
+                  ...walletErr,
+                  message: `Wallet connection lost. Auto-reconnect failed after ${AUTO_RECONNECT_ATTEMPTS} attempts.`,
+                });
               }
               return;
             }
@@ -490,6 +501,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(() => {
     reconnectGenerationRef.current += 1;
+    setIsReconnecting(false);
 
     // Clear monitoring interval
     if (accountCheckIntervalRef.current) {
@@ -525,6 +537,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const retry = useCallback(async () => {
     reconnectGenerationRef.current += 1;
+    setIsReconnecting(false);
     setWalletError(null);
     setAuthError(null);
     openConnectModal();
@@ -543,6 +556,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       isAuthenticated,
       isAuthenticating,
       isRestoring,
+      isReconnecting,
       user,
       token,
       authError,
@@ -562,6 +576,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       isAuthenticated,
       isAuthenticating,
       isRestoring,
+      isReconnecting,
       user,
       token,
       authError,
