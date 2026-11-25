@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import MarketDetailPage from "./page";
+import MarketDetailPage, { generateMetadata } from "./page";
 import { apiClient, ApiError } from "@/lib/api";
 
 // Mock navigation hooks
@@ -370,6 +370,52 @@ describe("MarketDetailPage", () => {
           true
         );
       });
+    });
+  });
+
+  describe("Dynamic SEO Metadata", () => {
+    it("emits market-specific title, description, and Open Graph tags", async () => {
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue({
+          ok: true,
+          json: async () => mockMarketData,
+        } as Response);
+
+      const metadata = await generateMetadata({
+        params: Promise.resolve({ id: "market-123" }),
+      });
+
+      expect(metadata.title).toBe("Will Bitcoin reach $100k by 2025? | InsightArena");
+      expect(metadata.description).toBe(mockMarketData.description);
+      expect(metadata.openGraph).toMatchObject({
+        title: "Will Bitcoin reach $100k by 2025? | InsightArena",
+        description: mockMarketData.description,
+        type: "website",
+        siteName: "InsightArena",
+      });
+
+      fetchSpy.mockRestore();
+    });
+
+    it("falls back gracefully when market data is missing or fetch fails", async () => {
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockRejectedValue(new Error("Network failure"));
+
+      const metadata = await generateMetadata({
+        params: Promise.resolve({ id: "missing-market" }),
+      });
+
+      expect(metadata.title).toBe("Market Details | InsightArena");
+      expect(metadata.description).toBe(
+        "Explore live prediction market odds, liquidity, and outcomes on InsightArena."
+      );
+      expect(metadata.openGraph).toMatchObject({
+        title: "Market Details | InsightArena",
+      });
+
+      fetchSpy.mockRestore();
     });
   });
 });

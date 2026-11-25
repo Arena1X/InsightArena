@@ -407,4 +407,32 @@ describe("useModalA11y", () => {
       }).not.toThrow();
     });
   });
+
+  describe("focus trap — edge cases", () => {
+    it("wraps Shift+Tab from the modal container to the last focusable element without reaching background", () => {
+      const { container, buttons, triggerButton } = buildModalDOM(2);
+      container.setAttribute("tabindex", "-1");
+
+      const hiddenInput = document.createElement("input");
+      hiddenInput.type = "hidden";
+      container.appendChild(hiddenInput);
+
+      const { result } = renderHook(() =>
+        useModalA11y({ isOpen: true, onClose: vi.fn() }),
+      );
+
+      act(() => {
+        (result.current.containerRef as React.MutableRefObject<HTMLDivElement>).current =
+          container;
+      });
+
+      container.focus();
+      expect(document.activeElement).toBe(container);
+
+      fireKey("Tab", true);
+
+      expect(document.activeElement).toBe(buttons[1]);
+      expect(document.activeElement).not.toBe(triggerButton);
+    });
+  });
 });

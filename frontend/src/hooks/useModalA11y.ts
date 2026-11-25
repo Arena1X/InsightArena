@@ -28,7 +28,7 @@ import { useEffect, useId, useRef } from "react";
 const FOCUSABLE_SELECTOR = [
   "a[href]",
   "button:not([disabled])",
-  "input:not([disabled])",
+  "input:not([disabled]):not([type='hidden'])",
   "select:not([disabled])",
   "textarea:not([disabled])",
   "[tabindex]:not([tabindex='-1'])",
@@ -36,7 +36,7 @@ const FOCUSABLE_SELECTOR = [
   "audio[controls]",
   "video[controls]",
 ]
-  .map((s) => `${s}:not([hidden]):not([aria-hidden='true'])`)
+  .map((s) => `${s}:not([hidden]):not([aria-hidden='true']):not([inert])`)
   .join(",");
 
 function getFocusableElements(container: HTMLElement): HTMLElement[] {
@@ -171,9 +171,11 @@ export function useModalA11y({
       // 5. Focus trap: wrap around at boundaries.
       // -------------------------------------------------------------------
       if (event.shiftKey) {
-        // Shift+Tab: if focus is on (or before) the first element, jump to last.
+        // Shift+Tab: if focus is on the first element, on the container itself,
+        // or outside the modal, jump to last.
         if (
           document.activeElement === first ||
+          document.activeElement === container ||
           !container.contains(document.activeElement)
         ) {
           event.preventDefault();
@@ -210,7 +212,11 @@ export function useModalA11y({
         // Defer slightly so the modal's exit animation (if any) doesn't fight
         // with focus movement and so the focus event fires after the modal is
         // unmounted from the DOM.
-        window.setTimeout(() => target.focus(), 0);
+        window.setTimeout(() => {
+          if (target.isConnected) {
+            target.focus();
+          }
+        }, 0);
       }
     };
   }, [isOpen]);

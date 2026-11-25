@@ -68,3 +68,87 @@ describe("ConfirmProvider keyboard accessibility", () => {
     await waitFor(() => expect(onResult).toHaveBeenCalledWith(false));
   });
 });
+
+describe("ConfirmProvider async confirm support", () => {
+  it("stays pending with loading state until async action resolves", async () => {
+    let resolveAction!: () => void;
+    const onConfirm = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveAction = resolve;
+        }),
+    );
+    const onResult = vi.fn();
+
+    function AsyncTrigger() {
+      const confirm = useConfirm();
+      return (
+        <button
+          type="button"
+          onClick={async () =>
+            onResult(await confirm({ title: "Delete item?", onConfirm }))
+          }
+        >
+          Trigger async
+        </button>
+      );
+    }
+
+    render(
+      <ConfirmProvider>
+        <AsyncTrigger />
+      </ConfirmProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Trigger async" }));
+    const confirmBtn = await screen.findByRole("button", { name: "Confirm" });
+    fireEvent.click(confirmBtn);
+
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(confirmBtn).toBeDisabled();
+    expect(confirmBtn).toHaveAttribute("aria-busy", "true");
+    expect(onResult).not.toHaveBeenCalled();
+
+    resolveAction();
+
+    await waitFor(() => expect(onResult).toHaveBeenCalledWith(true));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the dialog open and shows an error when the async action rejects", async () => {
+    const onConfirm = vi.fn().mockRejectedValue(new Error("Server unavailable"));
+    const onResult = vi.fn();
+
+    function AsyncTrigger() {
+      const confirm = useConfirm();
+      return (
+        <button
+          type="button"
+          onClick={async () =>
+            onResult(await confirm({ title: "Delete item?", onConfirm }))
+          }
+        >
+          Trigger async
+        </button>
+      );
+    }
+
+    render(
+      <ConfirmProvider>
+        <AsyncTrigger />
+      </ConfirmProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Trigger async" }));
+    const confirmBtn = await screen.findByRole("button", { name: "Confirm" });
+    fireEvent.click(confirmBtn);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Server unavailable");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(confirmBtn).not.toBeDisabled();
+    expect(onResult).not.toHaveBeenCalled();
+  });
+});
