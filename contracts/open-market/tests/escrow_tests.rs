@@ -1326,3 +1326,296 @@ fn test_refund_against_empty_escrow_returns_escrow_empty() {
     assert_eq!(result, Err(InsightArenaError::EscrowEmpty));
     assert_eq!(token.balance(&recipient), 0);
 }
+
+// ── New Additional Tests ──────────────────────────────────────────────────────
+
+/// Test that multiple sequential lock_stake operations from the same user
+/// accumulate correctly in the contract balance.
+/// Verifies: repeated stakes from same user are properly tracked.
+#[test]
+fn test_lock_stake_sequential_same_user() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+    let predictor = Address::generate(&env);
+    
+    let stake_1 = 5_000_000_i128;
+    let stake_2 = 10_000_000_i128;
+    let stake_3 = 15_000_000_i128;
+    let total_stakes = stake_1 + stake_2 + stake_3;
+
+    fund(&env, &xlm_token, &predictor, total_stakes);
+
+    let token = TokenClient::new(&env, &xlm_token);
+    assert_eq!(token.balance(&predictor), total_stakes);
+
+    // Execute three sequential lock_stake operations
+    env.as_contract(&client.address, || {
+        lock_stake(&env, &predictor, stake_1).unwrap();
+    });
+    assert_eq!(token.balance(&client.address), stake_1);
+
+    env.as_contract(&client.address, || {
+        lock_stake(&env, &predictor, stake_2).unwrap();
+    });
+    assert_eq!(token.balance(&client.address), stake_1 + stake_2);
+
+    env.as_contract(&client.address, || {
+        lock_stake(&env, &predictor, stake_3).unwrap();
+    });
+    assert_eq!(token.balance(&client.address), total_stakes);
+    assert_eq!(token.balance(&predictor), 0);
+}
+
+/// Test that treasury balance tracking remains independent when mixed with
+/// escrow operations (locks and payouts).
+/// Verifies: treasury accounting is isolated from escrow operations.
+#[test]
+fn test_treasury_isolation_from_escrow_operations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+    let predictor = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    
+    let treasury_amount = 2_000_000_i128;
+    let stake_amount = 10_000_000_i128;
+    let payout_amount = 5_000_000_i128;
+
+    // Set up treasury
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Treasury, &treasury_amount);
+    });
+
+    // Fund predictor and lock stake
+    fund(&env, &xlm_token, &predictor, stake_amount);
+    env.as_contract(&client.address, || {
+        lock_stake(&env, &predictor, stake_amount).unwrap();
+    });
+
+    // Verify treasury unchanged after lock
+    let treasury_after_lock = env.as_contract(&client.address, || get_treasury_balance(&env));
+    assert_eq!(treasury_after_lock, treasury_amount);
+
+    // Release payout
+    env.as_contract(&client.address, || {
+        release_payout(&env, &recipient, payout_amount).unwrap();
+    });
+
+    // Verify treasury still unchanged after payout
+    let treasury_after_payout = env.as_contract(&client.address, || get_treasury_balance(&env));
+    assert_eq!(treasury_after_payout, treasury_amount);
+
+    // Verify contract balance reflects only escrow operations
+    let contract_balance = env.as_contract(&client.address, || get_contract_balance(&env));
+    assert_eq!(contract_balance, stake_amount - payout_amount);
+}
+
+/// Test that assert_escrow_solvent correctly handles multiple markets with
+/// varying stake amounts and unclaimed predictions.
+/// Verifies: solvency check accurately sums obligations across all markets.
+#[test]
+fn test_assert_escrow_solvent_multiple_markets_varying_stakes() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+
+    let predictor_m1_a = Address::generate(&env);
+    let predictor_m1_b = Address::generate(&env);
+    let predictor_m2 = Address::generate(&env);
+    let predictor_m3 = Address::generate(&env);
+
+    let stake_m1_a = 10_000_000_i128;
+    let stake_m1_b = 15_000_000_i128;
+    let stake_m2 = 20_000_000_i128;
+    let stake_m3 = 5_000_000_i128;
+    let total_obligations = stake_m1_a + stake_m1_b + stake_m2 + stake_m3;
+
+    // Seed three markets
+    seed_unresolved_market(&env, &client, 1);
+    seed_unresolved_market(&env, &client, 2);
+    seed_unresolved_market(&env, &client, 3);
+
+    env.as_contract(&client.address, || {
+        // Market 1: two predictors
+        let mut predictors_m1 = Vec::new(&env);
+        predictors_m1.push_back(predictor_m1_a.clone());
+        predictors_m1.push_back(predictor_m1_b.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::PredictorList(1), &predictors_m1);
+
+        env.storage().persistent().set(
+            &DataKey::Prediction(1, predictor_m1_a.clone()),
+            &Prediction::new(
+                1,
+                predictor_m1_a.clone(),
+                symbol_short!("yes"),
+                stake_m1_a,
+                env.ledger().timestamp(),
+            ),
+        );
+        env.storage().persistent().set(
+            &DataKey::Prediction(1, predictor_m1_b.clone()),
+            &Prediction::new(
+                1,
+                predictor_m1_b.clone(),
+                symbol_short!("no"),
+                stake_m1_b,
+                env.ledger().timestamp(),
+            ),
+        );
+
+        // Market 2: one predictor
+        let mut predictors_m2 = Vec::new(&env);
+        predictors_m2.push_back(predictor_m2.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::PredictorList(2), &predictors_m2);
+
+        env.storage().persistent().set(
+            &DataKey::Prediction(2, predictor_m2.clone()),
+            &Prediction::new(
+                2,
+                predictor_m2.clone(),
+                symbol_short!("yes"),
+                stake_m2,
+                env.ledger().timestamp(),
+            ),
+        );
+
+        // Market 3: one predictor
+        let mut predictors_m3 = Vec::new(&env);
+        predictors_m3.push_back(predictor_m3.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::PredictorList(3), &predictors_m3);
+
+        env.storage().persistent().set(
+            &DataKey::Prediction(3, predictor_m3.clone()),
+            &Prediction::new(
+                3,
+                predictor_m3.clone(),
+                symbol_short!("no"),
+                stake_m3,
+                env.ledger().timestamp(),
+            ),
+        );
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::MarketCount, &3_u64);
+    });
+
+    // Fund contract with exact total obligations
+    fund(&env, &xlm_token, &client.address, total_obligations);
+
+    // Should pass with exact balance
+    let result_exact = env.as_contract(&client.address, || assert_escrow_solvent(&env));
+    assert_eq!(result_exact, Ok(()));
+
+    // Fund additional buffer
+    fund(&env, &xlm_token, &client.address, 1_000_000);
+
+    // Should still pass with surplus
+    let result_surplus = env.as_contract(&client.address, || assert_escrow_solvent(&env));
+    assert_eq!(result_surplus, Ok(()));
+}
+
+/// Test that withdraw_treasury correctly decrements treasury storage and
+/// reverts when attempting to withdraw more than available, even if
+/// contract has sufficient token balance.
+/// Verifies: treasury withdrawal respects storage-tracked limits.
+#[test]
+fn test_withdraw_treasury_respects_storage_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+
+    let cfg = env.as_contract(&client.address, || config::get_config(&env).unwrap());
+    let admin = cfg.admin.clone();
+
+    let treasury_stored = 5_000_000_i128;
+    let contract_token_balance = 20_000_000_i128;
+
+    // Set treasury storage to smaller amount
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Treasury, &treasury_stored);
+    });
+
+    // Fund contract with much larger token balance
+    fund(&env, &xlm_token, &client.address, contract_token_balance);
+
+    let token = TokenClient::new(&env, &xlm_token);
+
+    // Attempt to withdraw more than treasury storage allows
+    let overdraft_attempt = treasury_stored + 1_000_000;
+    let result = env.as_contract(&client.address, || {
+        withdraw_treasury(env.clone(), admin.clone(), overdraft_attempt)
+    });
+    assert_eq!(result, Err(InsightArenaError::InsufficientFunds));
+
+    // Verify no tokens moved
+    assert_eq!(token.balance(&admin), 0);
+
+    // Withdraw partial amount within treasury limit
+    let partial_withdraw = 2_000_000_i128;
+    let result_partial = env.as_contract(&client.address, || {
+        withdraw_treasury(env.clone(), admin.clone(), partial_withdraw)
+    });
+    assert_eq!(result_partial, Ok(()));
+
+    // Verify correct amounts
+    assert_eq!(token.balance(&admin), partial_withdraw);
+    let remaining_treasury = env.as_contract(&client.address, || get_treasury_balance(&env));
+    assert_eq!(remaining_treasury, treasury_stored - partial_withdraw);
+
+    // Verify contract token balance decreased by withdrawal
+    assert_eq!(
+        token.balance(&client.address),
+        contract_token_balance - partial_withdraw
+    );
+}
+
+/// Test that refund for exact balance succeeds (boundary condition).
+/// Verifies: refund logic correctly handles edge case where refund amount
+/// equals total escrow balance.
+#[test]
+fn test_refund_exact_balance_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let xlm_token = register_token(&env);
+    let client = deploy(&env, &xlm_token);
+    let recipient = Address::generate(&env);
+
+    let exact_amount = 25_000_000_i128;
+    fund(&env, &xlm_token, &client.address, exact_amount);
+
+    let token = TokenClient::new(&env, &xlm_token);
+
+    // Verify initial state
+    assert_eq!(token.balance(&client.address), exact_amount);
+    assert_eq!(token.balance(&recipient), 0);
+
+    // Refund exact balance
+    let result = env.as_contract(&client.address, || {
+        refund(&env, &recipient, exact_amount)
+    });
+    assert_eq!(result, Ok(()));
+
+    // Verify complete transfer
+    assert_eq!(token.balance(&recipient), exact_amount);
+    assert_eq!(token.balance(&client.address), 0);
+
+    // Verify solvency check passes with zero obligations
+    let solvency_result = env.as_contract(&client.address, || assert_escrow_solvent(&env));
+    assert_eq!(solvency_result, Ok(()));
+}
